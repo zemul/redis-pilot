@@ -1,6 +1,28 @@
 port: 8080
 token: ""
 data_dir: /opt/redis-server/state
+
+# Envoy 配置输出目录，为空则不生成
+envoy_dir: ""
+# 写完配置后执行的重载命令，为空则跳过
+# 示例: podman kill --signal HUP envoy
+envoy_reload_cmd: ""
+
+# 端口分配范围
+ports:
+  redis:
+    start: 6379
+    end: 6499
+  envoy_readwrite:
+    start: 16379
+    end: 16499
+  envoy_writeonly:
+    start: 16500
+    end: 16619
+  envoy_mgmt:
+    start: 26379
+    end: 26499
+
 log:
   dir: /opt/redis-server/logs   # 为空则不写文件
   stdout: true
