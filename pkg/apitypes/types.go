@@ -2,22 +2,22 @@ package apitypes
 
 // PoolServer 服务器资源池中的一台服务器
 type PoolServer struct {
-	Endpoint   string            `yaml:"endpoint"`
-	AgentPort  int               `yaml:"agent_port"`
-	AgentToken string            `yaml:"agent_token"`
-	Labels     map[string]string `yaml:"labels"`
-	Capacity   ResourceSpec      `yaml:"capacity"`
-	Allocated  ResourceSpec      `yaml:"allocated"`
-	Instances  []string          `yaml:"instances"`
-	Status     string            `yaml:"status"` // healthy | unhealthy | drain
-	LastHeartbeat string         `yaml:"last_heartbeat"`
+	Endpoint      string            `yaml:"endpoint" json:"endpoint"`
+	AgentPort     int               `yaml:"agent_port" json:"agent_port"`
+	AgentToken    string            `yaml:"agent_token" json:"agent_token"`
+	Labels        map[string]string `yaml:"labels" json:"labels"`
+	Capacity      ResourceSpec      `yaml:"capacity" json:"capacity"`
+	Allocated     ResourceSpec      `yaml:"allocated" json:"allocated"`
+	Instances     []string          `yaml:"instances" json:"instances"`
+	Status        string            `yaml:"status" json:"status"` // healthy | unhealthy | drain
+	LastHeartbeat string            `yaml:"last_heartbeat" json:"last_heartbeat"`
 }
 
 // ResourceSpec 资源规格
 type ResourceSpec struct {
-	CPUCores int    `yaml:"cpu_cores"`
-	Memory   string `yaml:"memory"`
-	Disk     string `yaml:"disk"`
+	CPUCores int    `yaml:"cpu_cores" json:"cpu_cores"`
+	Memory   string `yaml:"memory" json:"memory"`
+	Disk     string `yaml:"disk" json:"disk"`
 }
 
 // PoolState pool-state.yaml 根结构

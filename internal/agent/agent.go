@@ -204,6 +204,10 @@ func (a *Agent) instanceConfig(c *gin.Context) {
 		Engine          string            `json:"engine" binding:"required"`
 		ConfigOverrides map[string]string `json:"config_overrides" binding:"required"`
 		Restart         bool              `json:"restart"`
+		Password        string            `json:"password"`
+		Memory          string            `json:"memory"`
+		Category        string            `json:"category"`
+		ReplicaOf       string            `json:"replica_of"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		fail(c, http.StatusBadRequest, err.Error())
@@ -217,9 +221,28 @@ func (a *Agent) instanceConfig(c *gin.Context) {
 		dataDir := filepath.Join(a.cfg.DataDir, req.Name)
 		overrides := configOverridesString(req.ConfigOverrides)
 		if req.Engine == "kvrocks" {
-			writeKvrocksConfig(dataDir, KvrocksConfigParams{ConfigOverrides: overrides})
+			writeKvrocksConfig(dataDir, KvrocksConfigParams{
+				Password:        req.Password,
+				ReplicaOf:       req.ReplicaOf,
+				ConfigOverrides: overrides,
+			})
 		} else {
-			writeRedisConfig(dataDir, RedisConfigParams{ConfigOverrides: overrides})
+			policy := "allkeys-lru"
+			if req.Category == "persistent" {
+				policy = "noeviction"
+			}
+			aof := "yes"
+			if req.Category == "cache" {
+				aof = "no"
+			}
+			writeRedisConfig(dataDir, RedisConfigParams{
+				Password:        req.Password,
+				Memory:          req.Memory,
+				MaxmemoryPolicy: policy,
+				Appendonly:      aof,
+				ReplicaOf:       req.ReplicaOf,
+				ConfigOverrides: overrides,
+			})
 		}
 		a.runtime.Stop(containerName)
 		a.runtime.Start(containerName)

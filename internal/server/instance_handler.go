@@ -51,39 +51,13 @@ func (s *Server) instanceCreate(c *gin.Context) {
 		return
 	}
 
-	// 检查实例名冲突
-	instances, err := s.state.ReadInstances()
-	if err != nil {
-		fail(c, http.StatusInternalServerError, err.Error())
-		return
-	}
-	if _, exists := instances.Instances[req.Name]; exists {
-		fail(c, http.StatusConflict, "instance already exists: "+req.Name)
-		return
-	}
-
-	// 查找目标服务器
+	// 查找目标服务器（需要在原子操作外读 pool，因为调度需要 instances 快照）
 	pool, err := s.state.ReadPool()
 	if err != nil {
 		fail(c, http.StatusInternalServerError, err.Error())
 		return
 	}
-	if req.Server == "" {
-		// 自动调度
-		selected, err := selectServer(pool, instances, req.Memory, req.CPUs, req.ReplicaOf)
-		if err != nil {
-			fail(c, http.StatusBadRequest, "auto schedule: "+err.Error())
-			return
-		}
-		req.Server = selected
-	}
-	srv, exists := pool.Servers[req.Server]
-	if !exists {
-		fail(c, http.StatusBadRequest, "server not found: "+req.Server)
-		return
-	}
 
-	// 写入 creating 状态
 	dataDir := "/data/redis/" + req.Name
 	role := "standalone"
 	if req.Type == "replication" {
@@ -94,57 +68,112 @@ func (s *Server) instanceCreate(c *gin.Context) {
 		}
 	}
 
-	// 自动分配 Redis 端口（请求未指定时）
-	if req.Port == 0 {
-		p, err := allocRedisPort(s.cfg.Ports, instances, req.Server)
-		if err != nil {
-			fail(c, http.StatusBadRequest, err.Error())
-			return
-		}
-		req.Port = p
-	}
+	var inst *apitypes.Instance
+	var srv *apitypes.PoolServer
+	var masterName string // 用于维护 Replicas 列表
 
-	// 自动分配 Envoy 端口（master/standalone 自动分配）
-	var envoyConf *apitypes.EnvoyConfig
-	if role == "master" || role == "standalone" {
-		ec, err := allocEnvoyPorts(s.cfg.Ports, instances)
-		if err != nil {
-			fail(c, http.StatusBadRequest, err.Error())
-			return
+	// 原子操作：检查冲突 → 调度 → 分配端口 → 写入 creating 状态
+	err = s.state.WithInstances(func(instances *apitypes.InstancesState) error {
+		if _, exists := instances.Instances[req.Name]; exists {
+			return fmt.Errorf("conflict: instance already exists: %s", req.Name)
 		}
-		envoyConf = ec
-	}
 
-	instances.Instances[req.Name] = &apitypes.Instance{
-		Category:        req.Category,
-		Engine:          req.Engine,
-		Type:            req.Type,
-		Role:            role,
-		Server:          req.Server,
-		Container:       req.Engine + "-" + req.Name,
-		Port:            req.Port,
-		Memory:          req.Memory,
-		CPUs:            req.CPUs,
-		Password:        req.Password,
-		ConfigPath:      dataDir + "/conf",
-		DataPath:        dataDir + "/data",
-		BackupPath:      dataDir + "/backup",
-		ConfigOverrides: req.ConfigOverrides,
-		ReplicaOf:       req.ReplicaOf,
-		Envoy:           envoyConf,
-		Status:          "creating",
-		CreatedAt:       time.Now().Format(time.RFC3339),
-	}
-	if err := s.state.WriteInstances(instances); err != nil {
-		fail(c, http.StatusInternalServerError, err.Error())
+		if req.Server == "" {
+			selected, err := selectServer(pool, instances, req.Memory, req.CPUs, req.ReplicaOf)
+			if err != nil {
+				return fmt.Errorf("schedule: %s", err.Error())
+			}
+			req.Server = selected
+		}
+		var exists bool
+		srv, exists = pool.Servers[req.Server]
+		if !exists {
+			return fmt.Errorf("server not found: %s", req.Server)
+		}
+
+		if req.Port == 0 {
+			p, err := allocRedisPort(s.cfg.Ports, instances, req.Server)
+			if err != nil {
+				return err
+			}
+			req.Port = p
+		}
+
+		var envoyConf *apitypes.EnvoyConfig
+		if role == "master" || role == "standalone" {
+			ec, err := allocEnvoyPorts(s.cfg.Ports, instances)
+			if err != nil {
+				return err
+			}
+			envoyConf = ec
+		}
+
+		inst = &apitypes.Instance{
+			Category:        req.Category,
+			Engine:          req.Engine,
+			Type:            req.Type,
+			Role:            role,
+			Server:          req.Server,
+			Container:       req.Engine + "-" + req.Name,
+			Port:            req.Port,
+			Memory:          req.Memory,
+			CPUs:            req.CPUs,
+			Password:        req.Password,
+			ConfigPath:      dataDir + "/conf",
+			DataPath:        dataDir + "/data",
+			BackupPath:      dataDir + "/backup",
+			ConfigOverrides: req.ConfigOverrides,
+			ReplicaOf:       req.ReplicaOf,
+			Envoy:           envoyConf,
+			Status:          "creating",
+			CreatedAt:       time.Now().Format(time.RFC3339),
+		}
+		instances.Instances[req.Name] = inst
+
+		// 维护主库的 Replicas 列表
+		if role == "replica" && req.ReplicaOf != "" {
+			for n, i := range instances.Instances {
+				if i.Role == "master" || i.Role == "standalone" {
+					addr := fmt.Sprintf("%s:%d", poolEndpoint(pool, i.Server), i.Port)
+					if addr == req.ReplicaOf {
+						i.Replicas = append(i.Replicas, req.Name)
+						masterName = n
+						break
+					}
+				}
+			}
+		}
+
+		return nil
+	})
+	if err != nil {
+		if strings.Contains(err.Error(), "conflict:") {
+			fail(c, http.StatusConflict, err.Error())
+		} else {
+			fail(c, http.StatusBadRequest, err.Error())
+		}
 		return
 	}
 
 	// 调用 Agent 创建
 	client := newAgentClient(srv)
 	if _, err := client.post("/instance/create", req); err != nil {
-		instances.Instances[req.Name].Status = "failed"
-		s.state.WriteInstances(instances)
+		// Agent 失败：清理实例记录和主库 Replicas
+		s.state.WithInstances(func(instances *apitypes.InstancesState) error {
+			delete(instances.Instances, req.Name)
+			if masterName != "" {
+				if m := instances.Instances[masterName]; m != nil {
+					filtered := m.Replicas[:0]
+					for _, r := range m.Replicas {
+						if r != req.Name {
+							filtered = append(filtered, r)
+						}
+					}
+					m.Replicas = filtered
+				}
+			}
+			return nil
+		})
 		s.audit.Log(audit.Record{Action: "instance.create", Level: audit.LevelImportant, Result: "failed", Detail: err.Error(),
 			Target: map[string]interface{}{"instance": req.Name, "server": req.Server}})
 		fail(c, http.StatusInternalServerError, "agent create failed: "+err.Error())
@@ -152,11 +181,12 @@ func (s *Server) instanceCreate(c *gin.Context) {
 	}
 
 	// 更新状态为 running
-	instances.Instances[req.Name].Status = "running"
-	if err := s.state.WriteInstances(instances); err != nil {
-		fail(c, http.StatusInternalServerError, err.Error())
-		return
-	}
+	s.state.WithInstances(func(instances *apitypes.InstancesState) error {
+		if i := instances.Instances[req.Name]; i != nil {
+			i.Status = "running"
+		}
+		return nil
+	})
 
 	// 更新 pool-state: allocated + instances 列表
 	s.updatePoolAllocated(pool, req.Server, req.Memory, req.CPUs, req.Name, true)
@@ -172,7 +202,7 @@ func (s *Server) instanceCreate(c *gin.Context) {
 
 	s.log.Infof("instance created: %s on %s", req.Name, req.Server)
 	s.refreshEnvoy()
-	ok(c, instances.Instances[req.Name])
+	ok(c, inst)
 }
 
 func (s *Server) instanceDelete(c *gin.Context) {
@@ -186,28 +216,23 @@ func (s *Server) instanceDelete(c *gin.Context) {
 		return
 	}
 
-	instances, err := s.state.ReadInstances()
-	if err != nil {
-		fail(c, http.StatusInternalServerError, err.Error())
-		return
-	}
-	inst, exists := instances.Instances[req.Name]
-	if !exists {
-		fail(c, http.StatusNotFound, "instance not found: "+req.Name)
-		return
-	}
-
-	// 原子加锁
+	// 原子加锁并获取实例信息
 	sessionID := c.GetHeader("X-Session-ID")
 	if sessionID == "" {
 		sessionID = fmt.Sprintf("auto-%d", time.Now().UnixNano())
 	}
+	var inst apitypes.Instance // 拷贝一份，避免后续引用过期
 	var group []string
-	err = s.state.WithInstances(func(is *apitypes.InstancesState) error {
+	err := s.state.WithInstances(func(is *apitypes.InstancesState) error {
+		i, exists := is.Instances[req.Name]
+		if !exists {
+			return fmt.Errorf("not found: %s", req.Name)
+		}
+		inst = *i
 		group = state.InstanceGroup(is, req.Name)
 		for _, n := range group {
-			if i, ok2 := is.Instances[n]; ok2 {
-				if err := state.TryAcquireLock(i, sessionID, "delete", 300); err != nil {
+			if gi, ok2 := is.Instances[n]; ok2 {
+				if err := state.TryAcquireLock(gi, sessionID, "delete", 300); err != nil {
 					return fmt.Errorf("instance %s: %s", n, err.Error())
 				}
 			}
@@ -215,7 +240,11 @@ func (s *Server) instanceDelete(c *gin.Context) {
 		return nil
 	})
 	if err != nil {
-		fail(c, http.StatusConflict, err.Error())
+		if strings.Contains(err.Error(), "not found:") {
+			fail(c, http.StatusNotFound, "instance not found: "+req.Name)
+		} else {
+			fail(c, http.StatusConflict, err.Error())
+		}
 		return
 	}
 	defer s.releaseLockGroup(group, sessionID)
@@ -244,8 +273,11 @@ func (s *Server) instanceDelete(c *gin.Context) {
 	// 释放资源
 	s.updatePoolAllocated(pool, inst.Server, inst.Memory, inst.CPUs, req.Name, false)
 
-	delete(instances.Instances, req.Name)
-	if err := s.state.WriteInstances(instances); err != nil {
+	// 原子删除实例记录
+	if err := s.state.WithInstances(func(is *apitypes.InstancesState) error {
+		delete(is.Instances, req.Name)
+		return nil
+	}); err != nil {
 		fail(c, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -293,22 +325,27 @@ func (s *Server) instanceConfig(c *gin.Context) {
 		"engine":           inst.Engine,
 		"config_overrides": req.ConfigOverrides,
 		"restart":          req.Restart,
+		"password":         inst.Password,
+		"memory":           inst.Memory,
+		"category":         inst.Category,
+		"replica_of":       inst.ReplicaOf,
 	}); err != nil {
 		fail(c, http.StatusInternalServerError, "agent config failed: "+err.Error())
 		return
 	}
 
 	// 更新 instances-state 中的 config_overrides
-	instances, _ := s.state.ReadInstances()
-	if i, ok2 := instances.Instances[req.Name]; ok2 {
-		if i.ConfigOverrides == nil {
-			i.ConfigOverrides = make(map[string]string)
+	s.state.WithInstances(func(is *apitypes.InstancesState) error {
+		if i, ok2 := is.Instances[req.Name]; ok2 {
+			if i.ConfigOverrides == nil {
+				i.ConfigOverrides = make(map[string]string)
+			}
+			for k, v := range req.ConfigOverrides {
+				i.ConfigOverrides[k] = v
+			}
 		}
-		for k, v := range req.ConfigOverrides {
-			i.ConfigOverrides[k] = v
-		}
-		s.state.WriteInstances(instances)
-	}
+		return nil
+	})
 
 	s.audit.Log(audit.Record{
 		Action: "config.update", Level: audit.LevelImportant, Result: "success",
@@ -336,19 +373,44 @@ func (s *Server) instancePromote(c *gin.Context) {
 	}
 	defer unlock()
 
+	if inst.Role != "replica" {
+		fail(c, http.StatusBadRequest, "only replica can be promoted, current role: "+inst.Role)
+		return
+	}
+
 	client := newAgentClient(srv)
 	if _, err := client.post("/instance/promote", map[string]string{"name": req.Name}); err != nil {
 		fail(c, http.StatusInternalServerError, "agent promote failed: "+err.Error())
 		return
 	}
 
-	// 更新状态
-	instances, _ := s.state.ReadInstances()
-	if i, ok2 := instances.Instances[req.Name]; ok2 {
+	// 更新状态：角色变更 + 从旧主库 Replicas 移除 + 分配 Envoy 端口
+	s.state.WithInstances(func(is *apitypes.InstancesState) error {
+		i := is.Instances[req.Name]
+		if i == nil {
+			return nil
+		}
+		// 从旧主库的 Replicas 列表移除
+		for _, other := range is.Instances {
+			filtered := other.Replicas[:0]
+			for _, r := range other.Replicas {
+				if r != req.Name {
+					filtered = append(filtered, r)
+				}
+			}
+			other.Replicas = filtered
+		}
 		i.Role = "master"
 		i.ReplicaOf = ""
-		s.state.WriteInstances(instances)
-	}
+		// 分配 Envoy 端口
+		if i.Envoy == nil {
+			ec, err := allocEnvoyPorts(s.cfg.Ports, is)
+			if err == nil {
+				i.Envoy = ec
+			}
+		}
+		return nil
+	})
 
 	s.audit.Log(audit.Record{
 		Action: "topology.failover", Level: audit.LevelCritical, Result: "success",
@@ -386,13 +448,41 @@ func (s *Server) instanceReplicate(c *gin.Context) {
 		return
 	}
 
-	// 更新状态
-	instances, _ := s.state.ReadInstances()
-	if i, ok2 := instances.Instances[req.Name]; ok2 {
+	// 更新状态：角色变更 + 维护新旧主库 Replicas + 清理 Envoy 端口
+	pool, _ := s.state.ReadPool()
+	s.state.WithInstances(func(is *apitypes.InstancesState) error {
+		i := is.Instances[req.Name]
+		if i == nil {
+			return nil
+		}
+		// 从旧主库的 Replicas 移除
+		for _, other := range is.Instances {
+			filtered := other.Replicas[:0]
+			for _, r := range other.Replicas {
+				if r != req.Name {
+					filtered = append(filtered, r)
+				}
+			}
+			other.Replicas = filtered
+		}
+		// 加入新主库的 Replicas
+		for _, other := range is.Instances {
+			if other.Role == "master" || other.Role == "standalone" {
+				addr := fmt.Sprintf("%s:%d", poolEndpoint(pool, other.Server), other.Port)
+				if addr == req.ReplicaOf {
+					other.Replicas = append(other.Replicas, req.Name)
+					break
+				}
+			}
+		}
+		// 如果原来是 master/standalone 有 Envoy 端口，变 replica 后释放
+		if i.Role == "master" || i.Role == "standalone" {
+			i.Envoy = nil
+		}
 		i.Role = "replica"
 		i.ReplicaOf = req.ReplicaOf
-		s.state.WriteInstances(instances)
-	}
+		return nil
+	})
 
 	s.audit.Log(audit.Record{
 		Action: "topology.replicate", Level: audit.LevelImportant, Result: "success",
@@ -434,14 +524,15 @@ func (s *Server) backupExec(c *gin.Context) {
 	}
 
 	// 更新 last_backup
-	instances, _ := s.state.ReadInstances()
-	if i, ok2 := instances.Instances[req.Name]; ok2 {
-		if i.Backup == nil {
-			i.Backup = &apitypes.BackupConfig{}
+	s.state.WithInstances(func(is *apitypes.InstancesState) error {
+		if i, ok2 := is.Instances[req.Name]; ok2 {
+			if i.Backup == nil {
+				i.Backup = &apitypes.BackupConfig{}
+			}
+			i.Backup.LastBackup = time.Now().Format(time.RFC3339)
 		}
-		i.Backup.LastBackup = time.Now().Format(time.RFC3339)
-		s.state.WriteInstances(instances)
-	}
+		return nil
+	})
 
 	s.audit.Log(audit.Record{
 		Action: "backup.create", Level: audit.LevelNormal, Result: "success",
@@ -545,13 +636,14 @@ func (s *Server) instanceSimpleOp(c *gin.Context, newStatus, agentPath, auditAct
 	}
 
 	statusMap := map[string]string{"start": "running", "stop": "stopped"}
-	instances, _ := s.state.ReadInstances()
-	if i, ok2 := instances.Instances[req.Name]; ok2 {
-		if status, ok3 := statusMap[newStatus]; ok3 {
-			i.Status = status
+	s.state.WithInstances(func(is *apitypes.InstancesState) error {
+		if i, ok2 := is.Instances[req.Name]; ok2 {
+			if status, ok3 := statusMap[newStatus]; ok3 {
+				i.Status = status
+			}
 		}
-		s.state.WriteInstances(instances)
-	}
+		return nil
+	})
 
 	s.audit.Log(audit.Record{
 		Action: auditAction, Level: level, Result: "success",
@@ -572,7 +664,7 @@ func (s *Server) resolveInstance(c *gin.Context, name string) (*apitypes.Instanc
 	inst, exists := instances.Instances[name]
 	if !exists {
 		fail(c, http.StatusNotFound, "instance not found: "+name)
-		return nil, nil, err
+		return nil, nil, fmt.Errorf("instance not found: %s", name)
 	}
 
 	pool, err := s.state.ReadPool()
@@ -583,7 +675,7 @@ func (s *Server) resolveInstance(c *gin.Context, name string) (*apitypes.Instanc
 	srv := pool.Servers[inst.Server]
 	if srv == nil {
 		fail(c, http.StatusBadRequest, "server not found: "+inst.Server)
-		return nil, nil, err
+		return nil, nil, fmt.Errorf("server not found: %s", inst.Server)
 	}
 	return inst, srv, nil
 }
