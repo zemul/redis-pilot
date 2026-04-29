@@ -76,11 +76,19 @@ func (s *Server) instanceCreate(c *gin.Context) {
 
 	// 写入 creating 状态
 	dataDir := "/data/redis/" + req.Name
+	role := "standalone"
+	if req.Type == "replication" {
+		if req.ReplicaOf != "" {
+			role = "replica"
+		} else {
+			role = "master"
+		}
+	}
 	instances.Instances[req.Name] = &apitypes.Instance{
 		Category:        req.Category,
 		Engine:          req.Engine,
 		Type:            req.Type,
-		Role:            req.Type,
+		Role:            role,
 		Server:          req.Server,
 		Container:       req.Engine + "-" + req.Name,
 		Port:            req.Port,

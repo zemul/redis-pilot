@@ -16,16 +16,18 @@ import (
 )
 
 type Agent struct {
-	cfg *Config
-	log *logger.Logger
-	mon *monitor
+	cfg     *Config
+	log     *logger.Logger
+	mon     *monitor
+	runtime podman.ContainerRuntime
 }
 
 func New(cfg *Config) *Agent {
 	a := &Agent{
-		cfg: cfg,
-		log: logger.New(cfg.Log.Dir, cfg.Log.Stdout),
-		mon: newMonitor(),
+		cfg:     cfg,
+		log:     logger.New(cfg.Log.Dir, cfg.Log.Stdout),
+		mon:     newMonitor(),
+		runtime: podman.NewRuntime(),
 	}
 	return a
 }
@@ -130,12 +132,7 @@ func (a *Agent) instanceCreate(c *gin.Context) {
 
 	// 启动容器
 	containerName := req.Engine + "-" + req.Name
-	var containerID string
-	if req.Engine == "kvrocks" {
-		containerID, createErr = podman.CreateKvrocks(containerName, req.Port, req.Memory, req.CPUs, dataDir)
-	} else {
-		containerID, createErr = podman.CreateRedis(containerName, req.Port, req.Memory, req.CPUs, dataDir)
-	}
+	containerID, createErr := a.runtime.Create(req.Engine, containerName, req.Port, req.Memory, req.CPUs, dataDir)
 	if createErr != nil {
 		fail(c, http.StatusInternalServerError, "podman create: "+createErr.Error())
 		return
@@ -158,7 +155,7 @@ func (a *Agent) instanceStart(c *gin.Context) {
 		fail(c, http.StatusBadRequest, err.Error())
 		return
 	}
-	if err := podman.Start(req.Engine + "-" + req.Name); err != nil {
+	if err := a.runtime.Start(req.Engine + "-" + req.Name); err != nil {
 		fail(c, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -174,7 +171,7 @@ func (a *Agent) instanceStop(c *gin.Context) {
 		fail(c, http.StatusBadRequest, err.Error())
 		return
 	}
-	if err := podman.Stop(req.Engine + "-" + req.Name); err != nil {
+	if err := a.runtime.Stop(req.Engine + "-" + req.Name); err != nil {
 		fail(c, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -191,7 +188,7 @@ func (a *Agent) instanceDelete(c *gin.Context) {
 		fail(c, http.StatusBadRequest, err.Error())
 		return
 	}
-	if err := podman.Remove(req.Engine + "-" + req.Name); err != nil {
+	if err := a.runtime.Remove(req.Engine + "-" + req.Name); err != nil {
 		fail(c, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -224,8 +221,8 @@ func (a *Agent) instanceConfig(c *gin.Context) {
 		} else {
 			writeRedisConfig(dataDir, RedisConfigParams{ConfigOverrides: overrides})
 		}
-		podman.Stop(containerName)
-		podman.Start(containerName)
+		a.runtime.Stop(containerName)
+		a.runtime.Start(containerName)
 	} else {
 		// 热更新：通过 CONFIG SET 逐个设置
 		for k, v := range req.ConfigOverrides {
@@ -276,7 +273,7 @@ func (a *Agent) instanceReplicate(c *gin.Context) {
 }
 
 func (a *Agent) instanceList(c *gin.Context) {
-	out, err := podman.Run("ps", "--format", "{{.Names}}\t{{.Status}}")
+	out, err := a.runtime.Run("ps", "--format", "{{.Names}}\t{{.Status}}")
 	if err != nil {
 		fail(c, http.StatusInternalServerError, err.Error())
 		return
@@ -399,7 +396,7 @@ func (a *Agent) instanceRestore(c *gin.Context) {
 	dataDir := filepath.Join(a.cfg.DataDir, req.Name, "data")
 	containerName := req.Engine + "-" + req.Name
 
-	podman.Stop(containerName)
+	a.runtime.Stop(containerName)
 
 	if req.Engine == "kvrocks" {
 		src := filepath.Join(backupDir, req.BackupTs+".checkpoint.tar.gz")
@@ -437,7 +434,7 @@ func (a *Agent) instanceRestore(c *gin.Context) {
 		}
 	}
 
-	podman.Start(containerName)
+	a.runtime.Start(containerName)
 	ok(c, nil)
 }
 
