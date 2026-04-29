@@ -26,6 +26,7 @@ func main() {
 	}
 
 	s := server.New(cfg)
+	s.StartReconcileLoop()
 	addr := fmt.Sprintf(":%d", cfg.Port)
 	log.Printf("redis-pilot server listening on %s", addr)
 	if err := s.Router().Run(addr); err != nil {

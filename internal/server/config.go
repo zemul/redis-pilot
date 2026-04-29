@@ -12,10 +12,11 @@ type LogConfig struct {
 }
 
 type Config struct {
-	Port    int       `yaml:"port"`
-	Token   string    `yaml:"token"`
-	DataDir string    `yaml:"data_dir"`
-	Log     LogConfig `yaml:"log"`
+	Port     int       `yaml:"port"`
+	Token    string    `yaml:"token"`
+	DataDir  string    `yaml:"data_dir"`
+	EnvoyDir string    `yaml:"envoy_dir"` // Envoy 配置输出目录，为空则不生成
+	Log      LogConfig `yaml:"log"`
 }
 
 func LoadConfig(path string) (*Config, error) {

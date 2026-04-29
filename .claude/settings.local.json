@@ -3,7 +3,16 @@
     "allow": [
       "Bash(go env:*)",
       "Bash(go build:*)",
-      "Bash(echo \"EXIT: $?\")"
+      "Bash(go test:*)",
+      "Bash(grep:*)",
+      "Bash(find:*)",
+      "Bash(ls:*)",
+      "Bash(cat:*)",
+      "Bash(head:*)",
+      "Bash(tail:*)",
+      "Bash(wc:*)",
+      "Bash(which:*)",
+      "Bash(echo:*)"
     ]
   }
 }

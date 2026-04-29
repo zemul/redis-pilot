@@ -17,8 +17,9 @@ import (
 
 // fakeRuntime 记录调用但不执行真实命令
 type fakeRuntime struct {
-	mu    sync.Mutex
-	calls []string // 记录调用，如 "Create:redis:redis-myinst"
+	mu         sync.Mutex
+	calls      []string // 记录调用，如 "Create:redis:redis-myinst"
+	containers []podman.ContainerStatus
 }
 
 var _ podman.ContainerRuntime = (*fakeRuntime)(nil)
@@ -39,6 +40,11 @@ func (f *fakeRuntime) Remove(name string) error { f.record("Remove:" + name); re
 func (f *fakeRuntime) Run(args ...string) (string, error) {
 	f.record("Run:" + strings.Join(args, " "))
 	return "", nil
+}
+func (f *fakeRuntime) ListAll() ([]podman.ContainerStatus, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.containers, nil
 }
 
 func (f *fakeRuntime) hasCalled(prefix string) bool {
@@ -617,12 +623,17 @@ func TestInstanceDelete_KeepData(t *testing.T) {
 
 func TestInstanceList_FullFlow(t *testing.T) {
 	a, fake := newTestAgentWithFake(t)
+	fake.containers = []podman.ContainerStatus{
+		{Name: "redis-myinst", Running: true},
+		{Name: "kvrocks-other", Running: false},
+	}
 	r := a.Router()
 	w := doAgentRequest(r, "GET", "/instance/list", nil)
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", w.Code)
 	}
-	if !fake.hasCalled("Run:ps") {
-		t.Errorf("expected Run ps call, got %v", fake.calls)
+	resp := parseAgentResponse(t, w)
+	if !resp.Success {
+		t.Fatalf("expected success: %s", resp.Error)
 	}
 }

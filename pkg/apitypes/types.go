@@ -107,7 +107,7 @@ type CreateInstanceRequest struct {
 	Category        string            `json:"category" binding:"required"` // cache | persistent
 	Engine          string            `json:"engine" binding:"required"`   // redis | kvrocks
 	Type            string            `json:"type" binding:"required"`     // standalone | replication
-	Server          string            `json:"server" binding:"required"`
+	Server          string            `json:"server"`                    // 可选，为空时自动调度
 	Port            int               `json:"port"`
 	Memory          string            `json:"memory" binding:"required"`
 	CPUs            int               `json:"cpus"`

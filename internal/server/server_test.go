@@ -440,6 +440,160 @@ func TestInstanceDelete_WithFakeAgent(t *testing.T) {
 	}
 }
 
+// ---------- Reconcile 测试 ----------
+
+// newFakeAgentWithContainers 创建一个返回指定容器列表的 fake agent
+func newFakeAgentWithContainers(containers []map[string]interface{}) *httptest.Server {
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/instance/list" {
+			json.NewEncoder(w).Encode(apitypes.APIResponse{
+				Success: true,
+				Data:    map[string]interface{}{"containers": containers},
+			})
+		} else {
+			json.NewEncoder(w).Encode(apitypes.APIResponse{Success: true})
+		}
+	}))
+}
+
+func TestReconcile_AllConsistent(t *testing.T) {
+	agent := newFakeAgentWithContainers([]map[string]interface{}{
+		{"name": "redis-redis-1", "running": true},
+	})
+	defer agent.Close()
+
+	s := newTestServer(t, "")
+	agentHost, agentPort := fakeAgentHostPort(agent.Listener.Addr().String())
+	s.state.WritePool(&apitypes.PoolState{
+		Servers: map[string]*apitypes.PoolServer{
+			"srv1": {Endpoint: agentHost, AgentPort: agentPort},
+		},
+	})
+	s.state.WriteInstances(&apitypes.InstancesState{
+		Instances: map[string]*apitypes.Instance{
+			"redis-1": {Engine: "redis", Server: "srv1", Container: "redis-redis-1", Status: "running"},
+		},
+	})
+
+	w := doRequest(s.Router(), "POST", "/reconcile", nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// 状态不应变化
+	instances, _ := s.state.ReadInstances()
+	if instances.Instances["redis-1"].Status != "running" {
+		t.Fatalf("expected running, got %s", instances.Instances["redis-1"].Status)
+	}
+}
+
+func TestReconcile_CreatingButRunning(t *testing.T) {
+	agent := newFakeAgentWithContainers([]map[string]interface{}{
+		{"name": "redis-redis-1", "running": true},
+	})
+	defer agent.Close()
+
+	s := newTestServer(t, "")
+	agentHost, agentPort := fakeAgentHostPort(agent.Listener.Addr().String())
+	s.state.WritePool(&apitypes.PoolState{
+		Servers: map[string]*apitypes.PoolServer{
+			"srv1": {Endpoint: agentHost, AgentPort: agentPort},
+		},
+	})
+	s.state.WriteInstances(&apitypes.InstancesState{
+		Instances: map[string]*apitypes.Instance{
+			"redis-1": {Engine: "redis", Server: "srv1", Container: "redis-redis-1", Status: "creating"},
+		},
+	})
+
+	doRequest(s.Router(), "POST", "/reconcile", nil)
+
+	instances, _ := s.state.ReadInstances()
+	if instances.Instances["redis-1"].Status != "running" {
+		t.Fatalf("expected status updated to running, got %s", instances.Instances["redis-1"].Status)
+	}
+}
+
+func TestReconcile_RunningButStopped(t *testing.T) {
+	agent := newFakeAgentWithContainers([]map[string]interface{}{
+		{"name": "redis-redis-1", "running": false},
+	})
+	defer agent.Close()
+
+	s := newTestServer(t, "")
+	agentHost, agentPort := fakeAgentHostPort(agent.Listener.Addr().String())
+	s.state.WritePool(&apitypes.PoolState{
+		Servers: map[string]*apitypes.PoolServer{
+			"srv1": {Endpoint: agentHost, AgentPort: agentPort},
+		},
+	})
+	s.state.WriteInstances(&apitypes.InstancesState{
+		Instances: map[string]*apitypes.Instance{
+			"redis-1": {Engine: "redis", Server: "srv1", Container: "redis-redis-1", Status: "running"},
+		},
+	})
+
+	doRequest(s.Router(), "POST", "/reconcile", nil)
+
+	instances, _ := s.state.ReadInstances()
+	if instances.Instances["redis-1"].Status != "unexpected_stopped" {
+		t.Fatalf("expected unexpected_stopped, got %s", instances.Instances["redis-1"].Status)
+	}
+}
+
+func TestReconcile_RunningButMissing(t *testing.T) {
+	// Agent 返回空容器列表
+	agent := newFakeAgentWithContainers([]map[string]interface{}{})
+	defer agent.Close()
+
+	s := newTestServer(t, "")
+	agentHost, agentPort := fakeAgentHostPort(agent.Listener.Addr().String())
+	s.state.WritePool(&apitypes.PoolState{
+		Servers: map[string]*apitypes.PoolServer{
+			"srv1": {Endpoint: agentHost, AgentPort: agentPort},
+		},
+	})
+	s.state.WriteInstances(&apitypes.InstancesState{
+		Instances: map[string]*apitypes.Instance{
+			"redis-1": {Engine: "redis", Server: "srv1", Container: "redis-redis-1", Status: "running"},
+		},
+	})
+
+	doRequest(s.Router(), "POST", "/reconcile", nil)
+
+	instances, _ := s.state.ReadInstances()
+	if instances.Instances["redis-1"].Status != "failed" {
+		t.Fatalf("expected failed, got %s", instances.Instances["redis-1"].Status)
+	}
+}
+
+func TestReconcile_FailedButRunning(t *testing.T) {
+	agent := newFakeAgentWithContainers([]map[string]interface{}{
+		{"name": "redis-redis-1", "running": true},
+	})
+	defer agent.Close()
+
+	s := newTestServer(t, "")
+	agentHost, agentPort := fakeAgentHostPort(agent.Listener.Addr().String())
+	s.state.WritePool(&apitypes.PoolState{
+		Servers: map[string]*apitypes.PoolServer{
+			"srv1": {Endpoint: agentHost, AgentPort: agentPort},
+		},
+	})
+	s.state.WriteInstances(&apitypes.InstancesState{
+		Instances: map[string]*apitypes.Instance{
+			"redis-1": {Engine: "redis", Server: "srv1", Container: "redis-redis-1", Status: "failed"},
+		},
+	})
+
+	doRequest(s.Router(), "POST", "/reconcile", nil)
+
+	instances, _ := s.state.ReadInstances()
+	if instances.Instances["redis-1"].Status != "running" {
+		t.Fatalf("expected status corrected to running, got %s", instances.Instances["redis-1"].Status)
+	}
+}
+
 // ---------- 辅助函数 ----------
 
 func fakeAgentHostPort(addr string) (string, int) {

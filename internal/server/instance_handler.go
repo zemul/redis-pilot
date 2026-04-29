@@ -68,6 +68,15 @@ func (s *Server) instanceCreate(c *gin.Context) {
 		fail(c, http.StatusInternalServerError, err.Error())
 		return
 	}
+	if req.Server == "" {
+		// 自动调度
+		selected, err := selectServer(pool, instances, req.Memory, req.CPUs, req.ReplicaOf)
+		if err != nil {
+			fail(c, http.StatusBadRequest, "auto schedule: "+err.Error())
+			return
+		}
+		req.Server = selected
+	}
 	srv, exists := pool.Servers[req.Server]
 	if !exists {
 		fail(c, http.StatusBadRequest, "server not found: "+req.Server)
@@ -139,6 +148,7 @@ func (s *Server) instanceCreate(c *gin.Context) {
 	})
 
 	s.log.Infof("instance created: %s on %s", req.Name, req.Server)
+	s.refreshEnvoy()
 	ok(c, instances.Instances[req.Name])
 }
 
@@ -224,6 +234,7 @@ func (s *Server) instanceDelete(c *gin.Context) {
 	})
 
 	s.log.Infof("instance deleted: %s", req.Name)
+	s.refreshEnvoy()
 	ok(c, nil)
 }
 
@@ -322,6 +333,7 @@ func (s *Server) instancePromote(c *gin.Context) {
 		Target:   map[string]interface{}{"instance": req.Name, "server": inst.Server},
 	})
 
+	s.refreshEnvoy()
 	ok(c, nil)
 }
 
@@ -366,6 +378,7 @@ func (s *Server) instanceReplicate(c *gin.Context) {
 		Params:   map[string]interface{}{"replica_of": req.ReplicaOf},
 	})
 
+	s.refreshEnvoy()
 	ok(c, nil)
 }
 

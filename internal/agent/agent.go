@@ -273,12 +273,12 @@ func (a *Agent) instanceReplicate(c *gin.Context) {
 }
 
 func (a *Agent) instanceList(c *gin.Context) {
-	out, err := a.runtime.Run("ps", "--format", "{{.Names}}\t{{.Status}}")
+	containers, err := a.runtime.ListAll()
 	if err != nil {
 		fail(c, http.StatusInternalServerError, err.Error())
 		return
 	}
-	ok(c, gin.H{"raw": out})
+	ok(c, gin.H{"containers": containers})
 }
 
 func (a *Agent) instanceStatus(c *gin.Context) {

@@ -30,6 +30,24 @@ func New(cfg *Config) *Server {
 	}
 }
 
+// StartReconcileLoop 启动定时状态校验，每 5 分钟执行一次
+func (s *Server) StartReconcileLoop() {
+	go func() {
+		for range time.Tick(5 * time.Minute) {
+			results, err := s.runReconcile()
+			if err != nil {
+				s.log.Errorf("reconcile failed: %v", err)
+				continue
+			}
+			for _, r := range results {
+				if r.Action != "none" {
+					s.log.Infof("reconcile: %s on %s: desired=%s actual=%s action=%s", r.Instance, r.Server, r.Desired, r.Actual, r.Action)
+				}
+			}
+		}
+	}()
+}
+
 func (s *Server) Router() *gin.Engine {
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
@@ -61,6 +79,14 @@ func (s *Server) Router() *gin.Engine {
 		backup.POST("/exec", s.backupExec)
 		backup.POST("/restore", s.backupRestore)
 		backup.GET("/list", s.backupList)
+	}
+
+	r.POST("/reconcile", s.reconcile)
+
+	envoy := r.Group("/envoy")
+	{
+		envoy.POST("/route/update", s.envoyRouteUpdate)
+		envoy.GET("/config", s.envoyConfig)
 	}
 
 	return r
