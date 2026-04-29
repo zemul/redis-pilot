@@ -1,0 +1,6 @@
+port: 8080
+token: ""
+data_dir: /opt/redis-server/state
+log:
+  dir: /opt/redis-server/logs   # 为空则不写文件
+  stdout: true

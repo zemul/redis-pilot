@@ -1,0 +1,6 @@
+port: 8400
+token: ""
+data_dir: /data/redis
+log:
+  dir: /opt/redis-agent/logs
+  stdout: true
