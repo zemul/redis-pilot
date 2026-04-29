@@ -93,6 +93,28 @@ func (s *Server) instanceCreate(c *gin.Context) {
 			role = "master"
 		}
 	}
+
+	// 自动分配 Redis 端口（请求未指定时）
+	if req.Port == 0 {
+		p, err := allocRedisPort(s.cfg.Ports, instances, req.Server)
+		if err != nil {
+			fail(c, http.StatusBadRequest, err.Error())
+			return
+		}
+		req.Port = p
+	}
+
+	// 自动分配 Envoy 端口（master/standalone 自动分配）
+	var envoyConf *apitypes.EnvoyConfig
+	if role == "master" || role == "standalone" {
+		ec, err := allocEnvoyPorts(s.cfg.Ports, instances)
+		if err != nil {
+			fail(c, http.StatusBadRequest, err.Error())
+			return
+		}
+		envoyConf = ec
+	}
+
 	instances.Instances[req.Name] = &apitypes.Instance{
 		Category:        req.Category,
 		Engine:          req.Engine,
@@ -109,6 +131,7 @@ func (s *Server) instanceCreate(c *gin.Context) {
 		BackupPath:      dataDir + "/backup",
 		ConfigOverrides: req.ConfigOverrides,
 		ReplicaOf:       req.ReplicaOf,
+		Envoy:           envoyConf,
 		Status:          "creating",
 		CreatedAt:       time.Now().Format(time.RFC3339),
 	}
