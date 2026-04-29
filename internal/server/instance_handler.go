@@ -197,28 +197,28 @@ func (s *Server) instanceDelete(c *gin.Context) {
 		return
 	}
 
-	// 对实例组加操作锁
+	// 原子加锁
 	sessionID := c.GetHeader("X-Session-ID")
-	group := state.InstanceGroup(instances, req.Name)
-	for _, n := range group {
-		if i, ok2 := instances.Instances[n]; ok2 {
-			if err := state.TryAcquireLock(i, sessionID, "delete", 300); err != nil {
-				fail(c, http.StatusConflict, fmt.Sprintf("instance %s: %s", n, err.Error()))
-				return
-			}
-		}
+	if sessionID == "" {
+		sessionID = fmt.Sprintf("auto-%d", time.Now().UnixNano())
 	}
-	s.state.WriteInstances(instances)
-	defer func() {
-		if is, err := s.state.ReadInstances(); err == nil {
-			for _, n := range group {
-				if i, ok2 := is.Instances[n]; ok2 {
-					state.ReleaseLock(i, sessionID)
+	var group []string
+	err = s.state.WithInstances(func(is *apitypes.InstancesState) error {
+		group = state.InstanceGroup(is, req.Name)
+		for _, n := range group {
+			if i, ok2 := is.Instances[n]; ok2 {
+				if err := state.TryAcquireLock(i, sessionID, "delete", 300); err != nil {
+					return fmt.Errorf("instance %s: %s", n, err.Error())
 				}
 			}
-			s.state.WriteInstances(is)
 		}
-	}()
+		return nil
+	})
+	if err != nil {
+		fail(c, http.StatusConflict, err.Error())
+		return
+	}
+	defer s.releaseLockGroup(group, sessionID)
 
 	pool, err := s.state.ReadPool()
 	if err != nil {
@@ -590,52 +590,68 @@ func (s *Server) resolveInstance(c *gin.Context, name string) (*apitypes.Instanc
 
 // resolveAndLock 查找实例 + 对整个实例组加操作锁（写操作用）。返回 unlock 函数供 defer 调用。
 func (s *Server) resolveAndLock(c *gin.Context, name, operation string) (*apitypes.Instance, *apitypes.PoolServer, func(), error) {
-	instances, err := s.state.ReadInstances()
-	if err != nil {
-		fail(c, http.StatusInternalServerError, err.Error())
-		return nil, nil, nil, err
-	}
-	inst, exists := instances.Instances[name]
-	if !exists {
-		fail(c, http.StatusNotFound, "instance not found: "+name)
-		return nil, nil, nil, fmt.Errorf("not found")
+	sessionID := c.GetHeader("X-Session-ID")
+	if sessionID == "" {
+		sessionID = fmt.Sprintf("auto-%d", time.Now().UnixNano())
 	}
 
-	// 锁整个实例组（主库+所有从库）
-	sessionID := c.GetHeader("X-Session-ID")
-	group := state.InstanceGroup(instances, name)
-	for _, n := range group {
-		if i, ok := instances.Instances[n]; ok {
-			if err := state.TryAcquireLock(i, sessionID, operation, 300); err != nil {
-				fail(c, http.StatusConflict, fmt.Sprintf("instance %s: %s", n, err.Error()))
-				return nil, nil, nil, err
+	var inst *apitypes.Instance
+	var group []string
+
+	// 原子操作：read → 加锁 → write
+	err := s.state.WithInstances(func(instances *apitypes.InstancesState) error {
+		var exists bool
+		inst, exists = instances.Instances[name]
+		if !exists {
+			return fmt.Errorf("not found")
+		}
+		group = state.InstanceGroup(instances, name)
+		for _, n := range group {
+			if i, ok := instances.Instances[n]; ok {
+				if err := state.TryAcquireLock(i, sessionID, operation, 300); err != nil {
+					return fmt.Errorf("instance %s: %s", n, err.Error())
+				}
 			}
 		}
+		return nil
+	})
+	if err != nil {
+		if strings.Contains(err.Error(), "not found") {
+			fail(c, http.StatusNotFound, "instance not found: "+name)
+		} else {
+			fail(c, http.StatusConflict, err.Error())
+		}
+		return nil, nil, nil, err
 	}
-	s.state.WriteInstances(instances)
 
+	// 加锁成功后查找服务器，失败时释放锁
 	pool, err := s.state.ReadPool()
 	if err != nil {
+		s.releaseLockGroup(group, sessionID)
 		fail(c, http.StatusInternalServerError, err.Error())
 		return nil, nil, nil, err
 	}
 	srv := pool.Servers[inst.Server]
 	if srv == nil {
+		s.releaseLockGroup(group, sessionID)
 		fail(c, http.StatusBadRequest, "server not found: "+inst.Server)
 		return nil, nil, nil, fmt.Errorf("server not found")
 	}
 
-	unlock := func() {
-		if is, err := s.state.ReadInstances(); err == nil {
-			for _, n := range group {
-				if i, ok := is.Instances[n]; ok {
-					state.ReleaseLock(i, sessionID)
-				}
-			}
-			s.state.WriteInstances(is)
-		}
-	}
+	unlock := func() { s.releaseLockGroup(group, sessionID) }
 	return inst, srv, unlock, nil
+}
+
+// releaseLockGroup 原子释放实例组的操作锁。
+func (s *Server) releaseLockGroup(group []string, sessionID string) {
+	s.state.WithInstances(func(instances *apitypes.InstancesState) error {
+		for _, n := range group {
+			if i, ok := instances.Instances[n]; ok {
+				state.ReleaseLock(i, sessionID)
+			}
+		}
+		return nil
+	})
 }
 
 // updatePoolAllocated 更新 pool-state 的资源分配

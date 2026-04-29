@@ -29,7 +29,8 @@ type Config struct {
 	Port     int        `yaml:"port"`
 	Token    string     `yaml:"token"`
 	DataDir  string     `yaml:"data_dir"`
-	EnvoyDir string     `yaml:"envoy_dir"` // Envoy 配置输出目录，为空则不生成
+	EnvoyDir       string `yaml:"envoy_dir"`        // Envoy 配置输出目录，为空则不生成
+	EnvoyReloadCmd string `yaml:"envoy_reload_cmd"` // 写完配置后执行的重载命令，为空则跳过（如 podman kill --signal HUP envoy）
 	Ports    PortConfig `yaml:"ports"`
 	Log      LogConfig  `yaml:"log"`
 }

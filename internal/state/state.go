@@ -86,6 +86,33 @@ func (m *Manager) WriteInstances(state *apitypes.InstancesState) error {
 	return writeYAML(m.instancesStatePath(), state)
 }
 
+// WithInstances 在写锁保护下原子执行 read → fn → write。
+// fn 可修改 InstancesState，返回 error 时不写入。
+func (m *Manager) WithInstances(fn func(*apitypes.InstancesState) error) error {
+	m.instMu.Lock()
+	defer m.instMu.Unlock()
+
+	var st apitypes.InstancesState
+	data, err := os.ReadFile(m.instancesStatePath())
+	if os.IsNotExist(err) {
+		st.Instances = make(map[string]*apitypes.Instance)
+	} else if err != nil {
+		return err
+	} else {
+		if err := yaml.Unmarshal(data, &st); err != nil {
+			return err
+		}
+		if st.Instances == nil {
+			st.Instances = make(map[string]*apitypes.Instance)
+		}
+	}
+
+	if err := fn(&st); err != nil {
+		return err
+	}
+	return writeYAML(m.instancesStatePath(), &st)
+}
+
 // TryAcquireLock 在已读取的实例上尝试获取操作锁，成功则修改 inst.Lock。
 // 调用方负责 ReadInstances / WriteInstances。
 func TryAcquireLock(inst *apitypes.Instance, heldBy, operation string, timeout int) error {
@@ -94,7 +121,11 @@ func TryAcquireLock(inst *apitypes.Instance, heldBy, operation string, timeout i
 		if inst.Lock.HeldBy == heldBy {
 			return nil // 同会话可重入
 		}
-		acquired, _ := time.Parse(time.RFC3339, inst.Lock.AcquiredAt)
+		acquired, err := time.Parse(time.RFC3339, inst.Lock.AcquiredAt)
+		if err != nil {
+			// 时间格式损坏，视为锁仍有效，拒绝抢占
+			return fmt.Errorf("locked by %s (operation: %s, bad acquired_at)", inst.Lock.HeldBy, inst.Lock.Operation)
+		}
 		if now.Sub(acquired) < time.Duration(inst.Lock.Timeout)*time.Second {
 			return fmt.Errorf("locked by %s (operation: %s)", inst.Lock.HeldBy, inst.Lock.Operation)
 		}

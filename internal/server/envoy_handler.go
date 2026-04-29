@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"text/template"
@@ -97,6 +98,7 @@ func (s *Server) envoyRouteUpdate(c *gin.Context) {
 			fail(c, http.StatusInternalServerError, "write envoy config: "+err.Error())
 			return
 		}
+		s.reloadEnvoy()
 	}
 	ok(c, gin.H{"config": config})
 }
@@ -250,4 +252,18 @@ func (s *Server) refreshEnvoy() {
 		return
 	}
 	s.log.Infof("envoy config updated: %s", fmt.Sprintf("%s/envoy-redis.yaml", s.cfg.EnvoyDir))
+	s.reloadEnvoy()
+}
+
+// reloadEnvoy 执行用户配置的重载命令（静默失败）
+func (s *Server) reloadEnvoy() {
+	if s.cfg.EnvoyReloadCmd == "" {
+		return
+	}
+	out, err := exec.Command("sh", "-c", s.cfg.EnvoyReloadCmd).CombinedOutput()
+	if err != nil {
+		s.log.Errorf("envoy reload failed: %v, output: %s", err, string(out))
+		return
+	}
+	s.log.Infof("envoy reloaded via: %s", s.cfg.EnvoyReloadCmd)
 }
