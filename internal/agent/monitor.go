@@ -72,7 +72,7 @@ func (a *Agent) runHealthCheck() {
 		}
 		for _, name := range containers {
 			instName := trimPrefix(name)
-			if _, err := redisCmd(instName, "PING"); err != nil {
+			if _, err := redisCmd(instName, a.getPassword(instName), "PING"); err != nil {
 				a.log.Errorf("instance %s unhealthy, restarting", name)
 				podmanRestart(name)
 			}
@@ -89,7 +89,7 @@ func (a *Agent) runMetricsCollect() {
 		}
 		for _, name := range containers {
 			instName := trimPrefix(name)
-			info, err := redisCmd(instName, "INFO")
+			info, err := redisCmd(instName, a.getPassword(instName), "INFO")
 			if err == nil {
 				a.mon.set(instName, info)
 			}

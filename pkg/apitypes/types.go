@@ -29,7 +29,6 @@ type PoolState struct {
 type EnvoyConfig struct {
 	ReadWritePort int `yaml:"readwrite_port,omitempty"`
 	WriteOnlyPort int `yaml:"writeonly_port,omitempty"`
-	MgmtPort      int `yaml:"mgmt_port,omitempty"`
 }
 
 // BackupConfig 备份配置
@@ -99,6 +98,56 @@ type APIResponse struct {
 	Success bool        `json:"success"`
 	Data    interface{} `json:"data,omitempty"`
 	Error   string      `json:"error,omitempty"`
+}
+
+// PortInventoryItem 端口-实例映射（视图 A）
+type PortInventoryItem struct {
+	EnvoyPort      int      `json:"envoy_port"`
+	Mode           string   `json:"mode"` // readwrite | writeonly
+	InstanceName   string   `json:"instance_name"`
+	Engine         string   `json:"engine"`
+	Category       string   `json:"category"`
+	Role           string   `json:"role"`
+	BackendServers []string `json:"backend_servers"`
+}
+
+// ServerInventoryItem 服务器-实例分布（视图 B）
+type ServerInventoryItem struct {
+	IP              string                  `json:"ip"`
+	Instances       []ServerInstanceSummary `json:"instances"`
+	AllocatedMemory string                  `json:"allocated_memory"`
+	TotalMemory     string                  `json:"total_memory"`
+	AllocatedCPU    int                     `json:"allocated_cpu"`
+	TotalCPU        int                     `json:"total_cpu"`
+}
+
+// ServerInstanceSummary 服务器上的实例摘要
+type ServerInstanceSummary struct {
+	Name          string `json:"name"`
+	Engine        string `json:"engine"`
+	ContainerPort int    `json:"container_port"`
+	Memory        string `json:"memory"`
+	CPUs          int    `json:"cpus"`
+	Status        string `json:"status"`
+}
+
+// InventorySummary 全局摘要（视图 C）
+type InventorySummary struct {
+	Instances       []InstanceSummaryItem `json:"instances"`
+	TotalInstances  int                   `json:"total_instances"`
+	TotalServers    int                   `json:"total_servers"`
+	AllocatedMemory string                `json:"allocated_memory"`
+	AllocatedCPU    int                   `json:"allocated_cpu"`
+}
+
+// InstanceSummaryItem 实例摘要条目
+type InstanceSummaryItem struct {
+	Name       string `json:"name"`
+	Engine     string `json:"engine"`
+	Category   string `json:"category"`
+	EnvoyPorts string `json:"envoy_ports"`
+	Server     string `json:"server"`
+	Status     string `json:"status"`
 }
 
 // CreateInstanceRequest 创建实例请求

@@ -6,7 +6,10 @@ GOFLAGS := -trimpath
 BINS := server agent cli
 OUT  := bin
 
-.PHONY: all clean $(BINS)
+DEPLOY_SERVER := redis01
+DEPLOY_AGENTS := redis01 redis02 redis03
+
+.PHONY: all clean $(BINS) build-linux deploy deploy-server deploy-agent deploy-cli setup
 
 all: $(BINS)
 
@@ -15,3 +18,30 @@ $(BINS):
 
 clean:
 	rm -rf $(OUT)
+
+build-linux:
+	GOOS=linux GOARCH=amd64 $(MAKE) all
+
+deploy: build-linux deploy-server deploy-agent deploy-cli
+
+deploy-server:
+	ssh $(DEPLOY_SERVER) systemctl stop redis-pilot-server || true
+	scp bin/redis-server $(DEPLOY_SERVER):/opt/redis-pilot-server/redis-pilot-server
+	ssh $(DEPLOY_SERVER) systemctl start redis-pilot-server
+
+deploy-agent:
+	@for h in $(DEPLOY_AGENTS); do \
+		echo "→ agent $$h"; \
+		ssh $$h systemctl stop redis-pilot-agent || true; \
+		scp bin/redis-agent $$h:/opt/redis-pilot-agent/redis-pilot-agent; \
+		ssh $$h systemctl start redis-pilot-agent; \
+	done
+
+deploy-cli:
+	@for h in $(DEPLOY_AGENTS); do \
+		echo "→ cli $$h"; \
+		scp bin/redis-cli $$h:/usr/local/bin/redis-pilot-cli; \
+	done
+
+setup:
+	bash scripts/setup.sh

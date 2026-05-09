@@ -108,7 +108,6 @@
    │ :16379       │  ← 订单主库（读写分离）
    │ :16380       │  ← 订单主库（仅写）
    │ :16381       │  ← 用户主库
-   │ :26379       │  ← 管理端口（INFO/CONFIG 等管理命令）
    └──────────────┘
 ```
 
@@ -546,8 +545,7 @@ Redis 协议无 Host Header，**只能通过端口区分不同实例**：
 | 端口范围 | 用途 | 说明 |
 |----------|------|------|
 | 16379-16399 | 业务读写端口 | 每个实例组分配一个，Envoy 自动读写分离 |
-| 16400-16419 | 业务仅写端口 | 需要显式写主库时使用 |
-| 26379-26399 | 管理端口 | INFO / CONFIG / SLOWLOG 等管理命令 |
+| 16400-16419 | 业务仅写端口 | 需要显式写主库时使用，也可用于管理命令（INFO/CONFIG/SLOWLOG 等） |
 
 #### 3.4.2 代理模式
 
@@ -630,16 +628,9 @@ static_resources:
 > - `unhealthy_threshold: 2`：连续 2 次健康检查失败后摘除，避免单次网络抖动误判
 > - `drain_connections_on_host_removal: true`：端点移除时优雅排空连接，防止正在执行的命令被中断
 
-#### 3.4.4 管理端口
+#### 3.4.4 管理命令
 
-管理端口直连主库，不走读写分离，用于执行：
-
-- `INFO` / `INFO replication`
-- `CONFIG GET / SET / REWRITE`
-- `SLOWLOG GET`
-- `CLIENT LIST`
-- `MEMORY DOCTOR`
-- `DEBUG` 命令
+管理命令（`INFO`、`CONFIG GET/SET`、`SLOWLOG GET`、`CLIENT LIST` 等）应通过仅写端口（WriteOnly）执行，该端口使用 `read_policy: MASTER` 直连主库。
 
 ---
 
@@ -815,11 +806,6 @@ port_inventory:
     role: standalone
     purpose: "用户会话缓存"
     backend_servers: ["server-c:6379(standalone)"]
-
-  - mgmt_port: 26379
-    instance_group: order
-    purpose: "订单集群管理端口"
-    backend: "server-a:6379"
 ```
 
 **视图 B：服务器-实例分布表**（面向容量规划）
@@ -1511,7 +1497,7 @@ redis-diagnose Skill
 
 - 写操作：经 Envoy 写集群路由到主库，强一致
 - 读操作：经 Envoy 读集群路由到从库，存在复制延迟（通常 < 1ms）
-- 对一致性要求极高的读操作，应直连主库或使用管理端口（§3.4.4）
+- 对一致性要求极高的读操作，应直连主库或使用仅写端口（§3.4.4）
 
 ### 10.4 拓扑约束
 

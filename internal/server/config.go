@@ -22,7 +22,6 @@ type PortConfig struct {
 	Redis        PortRange `yaml:"redis"`          // Redis 实例端口范围
 	EnvoyRW      PortRange `yaml:"envoy_readwrite"` // Envoy 读写端口范围
 	EnvoyWO      PortRange `yaml:"envoy_writeonly"` // Envoy 仅写端口范围
-	EnvoyMgmt    PortRange `yaml:"envoy_mgmt"`      // Envoy 管理端口范围
 }
 
 type Config struct {
@@ -40,10 +39,9 @@ func LoadConfig(path string) (*Config, error) {
 		Port:    8080,
 		DataDir: "/opt/redis-server/state",
 		Ports: PortConfig{
-			Redis:     PortRange{Start: 6379, End: 6499},
-			EnvoyRW:   PortRange{Start: 16379, End: 16499},
-			EnvoyWO:   PortRange{Start: 16500, End: 16619},
-			EnvoyMgmt: PortRange{Start: 26379, End: 26499},
+			Redis:   PortRange{Start: 6379, End: 6499},
+			EnvoyRW: PortRange{Start: 16379, End: 16499},
+			EnvoyWO: PortRange{Start: 16500, End: 16619},
 		},
 		Log: LogConfig{
 			Stdout: true,

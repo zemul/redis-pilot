@@ -11,12 +11,16 @@ import (
 )
 
 // redisCmd 通过 podman exec 执行 redis-cli 命令
-func redisCmd(instanceName string, args ...string) (string, error) {
+func redisCmd(instanceName, password string, args ...string) (string, error) {
 	// 尝试 redis- 和 kvrocks- 前缀
 	for _, prefix := range []string{"redis-", "kvrocks-"} {
 		container := prefix + instanceName
-		cmdArgs := append([]string{"exec", container, "redis-cli"}, args...)
-		out, err := exec.Command("podman", cmdArgs...).CombinedOutput()
+		cliArgs := []string{"exec", container, "redis-cli"}
+		if password != "" {
+			cliArgs = append(cliArgs, "-a", password, "--no-auth-warning")
+		}
+		cliArgs = append(cliArgs, args...)
+		out, err := exec.Command("podman", cliArgs...).CombinedOutput()
 		if err == nil {
 			return strings.TrimSpace(string(out)), nil
 		}

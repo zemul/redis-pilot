@@ -15,6 +15,39 @@ import (
 	"gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/pkg/apitypes"
 )
 
+// resolveReplicaOf 将 replica_of 参数解析为 ip:port 和主库实例名。
+// 支持两种格式：实例名（如 "order-master"）或 ip:port（如 "10.0.1.10:6379"）。
+func resolveReplicaOf(pool *apitypes.PoolState, instances *apitypes.InstancesState, replicaOf string) (addr string, masterName string, err error) {
+	if replicaOf == "" {
+		return "", "", nil
+	}
+	if strings.Contains(replicaOf, ":") {
+		// ip:port 格式，反查实例名
+		for name, inst := range instances.Instances {
+			if inst.Role == "master" || inst.Role == "standalone" {
+				a := fmt.Sprintf("%s:%d", poolEndpoint(pool, inst.Server), inst.Port)
+				if a == replicaOf {
+					return replicaOf, name, nil
+				}
+			}
+		}
+		return replicaOf, "", nil
+	}
+	// 实例名格式，解析为 ip:port
+	inst, exists := instances.Instances[replicaOf]
+	if !exists {
+		return "", "", fmt.Errorf("replica_of instance not found: %s", replicaOf)
+	}
+	if inst.Role != "master" && inst.Role != "standalone" {
+		return "", "", fmt.Errorf("replica_of target must be master or standalone, got %s", inst.Role)
+	}
+	endpoint := poolEndpoint(pool, inst.Server)
+	if endpoint == "" {
+		return "", "", fmt.Errorf("cannot resolve endpoint for server: %s", inst.Server)
+	}
+	return fmt.Sprintf("%s:%d", endpoint, inst.Port), replicaOf, nil
+}
+
 func (s *Server) instanceList(c *gin.Context) {
 	state, err := s.state.ReadInstances()
 	if err != nil {
@@ -73,13 +106,26 @@ func (s *Server) instanceCreate(c *gin.Context) {
 	var masterName string // 用于维护 Replicas 列表
 
 	// 原子操作：检查冲突 → 调度 → 分配端口 → 写入 creating 状态
+	var resolvedAddr string // replica_of 解析后的 ip:port，用于 Agent 调用
 	err = s.state.WithInstances(func(instances *apitypes.InstancesState) error {
 		if _, exists := instances.Instances[req.Name]; exists {
 			return fmt.Errorf("conflict: instance already exists: %s", req.Name)
 		}
 
+		// 解析 replica_of：支持实例名或 ip:port
+		if req.ReplicaOf != "" {
+			addr, mName, err := resolveReplicaOf(pool, instances, req.ReplicaOf)
+			if err != nil {
+				return err
+			}
+			resolvedAddr = addr
+			if mName != "" {
+				masterName = mName
+			}
+		}
+
 		if req.Server == "" {
-			selected, err := selectServer(pool, instances, req.Memory, req.CPUs, req.ReplicaOf)
+			selected, err := selectServer(pool, instances, req.Memory, req.CPUs, resolvedAddr)
 			if err != nil {
 				return fmt.Errorf("schedule: %s", err.Error())
 			}
@@ -123,7 +169,7 @@ func (s *Server) instanceCreate(c *gin.Context) {
 			DataPath:        dataDir + "/data",
 			BackupPath:      dataDir + "/backup",
 			ConfigOverrides: req.ConfigOverrides,
-			ReplicaOf:       req.ReplicaOf,
+			ReplicaOf:       masterName, // 存实例名而非 ip:port
 			Envoy:           envoyConf,
 			Status:          "creating",
 			CreatedAt:       time.Now().Format(time.RFC3339),
@@ -131,16 +177,9 @@ func (s *Server) instanceCreate(c *gin.Context) {
 		instances.Instances[req.Name] = inst
 
 		// 维护主库的 Replicas 列表
-		if role == "replica" && req.ReplicaOf != "" {
-			for n, i := range instances.Instances {
-				if i.Role == "master" || i.Role == "standalone" {
-					addr := fmt.Sprintf("%s:%d", poolEndpoint(pool, i.Server), i.Port)
-					if addr == req.ReplicaOf {
-						i.Replicas = append(i.Replicas, req.Name)
-						masterName = n
-						break
-					}
-				}
+		if role == "replica" && masterName != "" {
+			if master := instances.Instances[masterName]; master != nil {
+				master.Replicas = append(master.Replicas, req.Name)
 			}
 		}
 
@@ -155,10 +194,17 @@ func (s *Server) instanceCreate(c *gin.Context) {
 		return
 	}
 
-	// 调用 Agent 创建
+	// 调用 Agent 创建（传解析后的 ip:port）
+	req.ReplicaOf = resolvedAddr
 	client := newAgentClient(srv)
 	if _, err := client.post("/instance/create", req); err != nil {
-		// Agent 失败：清理实例记录和主库 Replicas
+		// 调用 Agent 清理已创建的资源（best-effort，忽略错误）
+		client.post("/instance/delete", map[string]interface{}{
+			"name":       req.Name,
+			"engine":     req.Engine,
+			"clean_data": true,
+		})
+		// 清理实例记录和主库 Replicas
 		s.state.WithInstances(func(instances *apitypes.InstancesState) error {
 			delete(instances.Instances, req.Name)
 			if masterName != "" {
@@ -323,6 +369,7 @@ func (s *Server) instanceConfig(c *gin.Context) {
 	if _, err := client.post("/instance/config", map[string]interface{}{
 		"name":             req.Name,
 		"engine":           inst.Engine,
+		"type":             inst.Type,
 		"config_overrides": req.ConfigOverrides,
 		"restart":          req.Restart,
 		"password":         inst.Password,
@@ -433,6 +480,15 @@ func (s *Server) instanceReplicate(c *gin.Context) {
 		return
 	}
 
+	// 解析 replica_of：支持实例名或 ip:port
+	pool, _ := s.state.ReadPool()
+	instances, _ := s.state.ReadInstances()
+	resolvedAddr, masterName, err := resolveReplicaOf(pool, instances, req.ReplicaOf)
+	if err != nil {
+		fail(c, http.StatusBadRequest, err.Error())
+		return
+	}
+
 	inst, srv, unlock, err := s.resolveAndLock(c, req.Name, "replicate")
 	if err != nil {
 		return
@@ -442,14 +498,13 @@ func (s *Server) instanceReplicate(c *gin.Context) {
 	client := newAgentClient(srv)
 	if _, err := client.post("/instance/replicate", map[string]string{
 		"name":       req.Name,
-		"replica_of": req.ReplicaOf,
+		"replica_of": resolvedAddr,
 	}); err != nil {
 		fail(c, http.StatusInternalServerError, "agent replicate failed: "+err.Error())
 		return
 	}
 
 	// 更新状态：角色变更 + 维护新旧主库 Replicas + 清理 Envoy 端口
-	pool, _ := s.state.ReadPool()
 	s.state.WithInstances(func(is *apitypes.InstancesState) error {
 		i := is.Instances[req.Name]
 		if i == nil {
@@ -466,13 +521,9 @@ func (s *Server) instanceReplicate(c *gin.Context) {
 			other.Replicas = filtered
 		}
 		// 加入新主库的 Replicas
-		for _, other := range is.Instances {
-			if other.Role == "master" || other.Role == "standalone" {
-				addr := fmt.Sprintf("%s:%d", poolEndpoint(pool, other.Server), other.Port)
-				if addr == req.ReplicaOf {
-					other.Replicas = append(other.Replicas, req.Name)
-					break
-				}
+		if masterName != "" {
+			if master := is.Instances[masterName]; master != nil {
+				master.Replicas = append(master.Replicas, req.Name)
 			}
 		}
 		// 如果原来是 master/standalone 有 Envoy 端口，变 replica 后释放
@@ -480,7 +531,7 @@ func (s *Server) instanceReplicate(c *gin.Context) {
 			i.Envoy = nil
 		}
 		i.Role = "replica"
-		i.ReplicaOf = req.ReplicaOf
+		i.ReplicaOf = masterName // 存实例名
 		return nil
 	})
 
@@ -498,7 +549,6 @@ func (s *Server) instanceReplicate(c *gin.Context) {
 // --- 备份管理 ---
 
 func (s *Server) backupExec(c *gin.Context) {
-	start := time.Now()
 	var req struct {
 		Name string `json:"name" binding:"required"`
 	}
@@ -507,25 +557,40 @@ func (s *Server) backupExec(c *gin.Context) {
 		return
 	}
 
-	inst, srv, unlock, err := s.resolveAndLock(c, req.Name, "backup")
-	if err != nil {
+	if err := s.execBackup(req.Name); err != nil {
+		fail(c, http.StatusInternalServerError, err.Error())
 		return
+	}
+	ok(c, nil)
+}
+
+// execBackup 执行一次备份，供 HTTP handler 和定时调度器共用。
+func (s *Server) execBackup(name string) error {
+	start := time.Now()
+
+	inst, srv, unlock, err := s.resolveAndLockInternal(name, "backup")
+	if err != nil {
+		return err
 	}
 	defer unlock()
 
-	client := newAgentClient(srv)
-	resp, err := client.post("/instance/backup", map[string]string{
-		"name":   req.Name,
+	// 构建请求，传入 retention
+	body := map[string]interface{}{
+		"name":   name,
 		"engine": inst.Engine,
-	})
-	if err != nil {
-		fail(c, http.StatusInternalServerError, "agent backup failed: "+err.Error())
-		return
+	}
+	if inst.Backup != nil && inst.Backup.Retention > 0 {
+		body["retention"] = inst.Backup.Retention
+	}
+
+	client := newAgentClient(srv)
+	if _, err := client.post("/instance/backup", body); err != nil {
+		return fmt.Errorf("agent backup failed: %w", err)
 	}
 
 	// 更新 last_backup
 	s.state.WithInstances(func(is *apitypes.InstancesState) error {
-		if i, ok2 := is.Instances[req.Name]; ok2 {
+		if i, ok2 := is.Instances[name]; ok2 {
 			if i.Backup == nil {
 				i.Backup = &apitypes.BackupConfig{}
 			}
@@ -537,12 +602,9 @@ func (s *Server) backupExec(c *gin.Context) {
 	s.audit.Log(audit.Record{
 		Action: "backup.create", Level: audit.LevelNormal, Result: "success",
 		Duration: time.Since(start).Milliseconds(),
-		Target:   map[string]interface{}{"instance": req.Name, "server": inst.Server},
+		Target:   map[string]interface{}{"instance": name, "server": inst.Server},
 	})
-
-	var result interface{}
-	json.Unmarshal(resp, &result)
-	ok(c, result)
+	return nil
 }
 
 func (s *Server) backupRestore(c *gin.Context) {
@@ -728,6 +790,48 @@ func (s *Server) resolveAndLock(c *gin.Context, name, operation string) (*apityp
 		s.releaseLockGroup(group, sessionID)
 		fail(c, http.StatusBadRequest, "server not found: "+inst.Server)
 		return nil, nil, nil, fmt.Errorf("server not found")
+	}
+
+	unlock := func() { s.releaseLockGroup(group, sessionID) }
+	return inst, srv, unlock, nil
+}
+
+// resolveAndLockInternal 与 resolveAndLock 相同，但不依赖 gin.Context，供内部定时任务使用。
+func (s *Server) resolveAndLockInternal(name, operation string) (*apitypes.Instance, *apitypes.PoolServer, func(), error) {
+	sessionID := fmt.Sprintf("scheduler-%d", time.Now().UnixNano())
+
+	var inst *apitypes.Instance
+	var group []string
+
+	err := s.state.WithInstances(func(instances *apitypes.InstancesState) error {
+		var exists bool
+		inst, exists = instances.Instances[name]
+		if !exists {
+			return fmt.Errorf("instance not found: %s", name)
+		}
+		group = state.InstanceGroup(instances, name)
+		for _, n := range group {
+			if i, ok := instances.Instances[n]; ok {
+				if err := state.TryAcquireLock(i, sessionID, operation, 300); err != nil {
+					return fmt.Errorf("instance %s: %s", n, err.Error())
+				}
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, nil, nil, err
+	}
+
+	pool, err := s.state.ReadPool()
+	if err != nil {
+		s.releaseLockGroup(group, sessionID)
+		return nil, nil, nil, err
+	}
+	srv := pool.Servers[inst.Server]
+	if srv == nil {
+		s.releaseLockGroup(group, sessionID)
+		return nil, nil, nil, fmt.Errorf("server not found: %s", inst.Server)
 	}
 
 	unlock := func() { s.releaseLockGroup(group, sessionID) }

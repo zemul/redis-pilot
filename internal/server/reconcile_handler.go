@@ -28,6 +28,12 @@ func (s *Server) reconcile(c *gin.Context) {
 	ok(c, results)
 }
 
+// statusPatch 记录 reconcile 发现的单个实例状态变更
+type statusPatch struct {
+	name      string
+	newStatus string
+}
+
 // runReconcile 执行状态校验，HTTP handler 和定时任务共用
 func (s *Server) runReconcile() ([]ReconcileResult, error) {
 	instances, err := s.state.ReadInstances()
@@ -46,7 +52,7 @@ func (s *Server) runReconcile() ([]ReconcileResult, error) {
 	}
 
 	var results []ReconcileResult
-	updated := false
+	var patches []statusPatch
 
 	for serverName, instNames := range serverInstances {
 		srv := pool.Servers[serverName]
@@ -108,26 +114,19 @@ func (s *Server) runReconcile() ([]ReconcileResult, error) {
 
 			switch {
 			case inst.Status == actual:
-				// 一致，无需操作
 				result.Action = "none"
 
-			case actual == "running" && (inst.Status == "creating" || inst.Status == "failed"):
-				// 状态漂移：容器已运行但 YAML 记录为 creating/failed
-				inst.Status = "running"
+			case actual == "running" && (inst.Status == "creating" || inst.Status == "failed" || inst.Status == "unexpected_stopped"):
+				patches = append(patches, statusPatch{name: name, newStatus: "running"})
 				result.Action = "updated"
-				updated = true
 
 			case actual == "stopped" && inst.Status == "running":
-				// 异常停止
-				inst.Status = "unexpected_stopped"
+				patches = append(patches, statusPatch{name: name, newStatus: "unexpected_stopped"})
 				result.Action = "alert"
-				updated = true
 
 			case actual == "missing" && inst.Status == "running":
-				// 容器丢失
-				inst.Status = "failed"
+				patches = append(patches, statusPatch{name: name, newStatus: "failed"})
 				result.Action = "alert"
-				updated = true
 
 			default:
 				result.Action = "none"
@@ -137,8 +136,16 @@ func (s *Server) runReconcile() ([]ReconcileResult, error) {
 		}
 	}
 
-	if updated {
-		s.state.WriteInstances(instances)
+	// 在写锁内原子应用状态变更，避免覆盖并发写入
+	if len(patches) > 0 {
+		s.state.WithInstances(func(st *apitypes.InstancesState) error {
+			for _, p := range patches {
+				if inst := st.Instances[p.name]; inst != nil {
+					inst.Status = p.newStatus
+				}
+			}
+			return nil
+		})
 	}
 
 	// 记录有异常的审计日志

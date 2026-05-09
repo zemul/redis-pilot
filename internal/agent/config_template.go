@@ -5,14 +5,45 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"text/template"
 )
+
+func convertMemoryToBytes(mem string) string {
+	mem = strings.TrimSpace(mem)
+	if mem == "" {
+		return "0"
+	}
+	suffixes := []struct {
+		suffix     string
+		multiplier int64
+	}{
+		{"Gi", 1024 * 1024 * 1024},
+		{"Mi", 1024 * 1024},
+		{"Ki", 1024},
+		{"GB", 1000 * 1000 * 1000},
+		{"MB", 1000 * 1000},
+		{"KB", 1000},
+	}
+	for _, s := range suffixes {
+		if strings.HasSuffix(mem, s.suffix) {
+			numStr := strings.TrimSuffix(mem, s.suffix)
+			num, err := strconv.ParseFloat(numStr, 64)
+			if err != nil {
+				return mem
+			}
+			return strconv.FormatInt(int64(num*float64(s.multiplier)), 10)
+		}
+	}
+	return mem
+}
 
 var redisTmpl = template.Must(template.New("redis").Parse(`
 port 6379
 bind 0.0.0.0
-requirepass {{ .Password }}
-timeout 300
+{{ if .Password }}requirepass {{ .Password }}
+{{ end }}timeout 300
 tcp-keepalive 60
 loglevel notice
 databases 16
@@ -41,10 +72,8 @@ replica-serve-stale-data no
 replica-priority 100
 {{ end }}
 
-min-replicas-to-write 1
+min-replicas-to-write {{ .MinReplicasToWrite }}
 min-replicas-max-lag 10
-
-proto 2
 
 rename-command FLUSHDB ""
 rename-command FLUSHALL ""
@@ -60,64 +89,66 @@ maxclients 10000
 var kvrocksTmpl = template.Must(template.New("kvrocks").Parse(`
 bind 0.0.0.0
 port 6666
-requirepass {{ .Password }}
-timeout 300
-tcp-keepalive 60
-loglevel info
-databases 16
+{{ if .Password }}requirepass {{ .Password }}
+{{ end }}timeout 300
+log-level info
 
 dir /data
+
+max-db-size {{ .Memory }}
 
 rocksdb.compression snappy
 rocksdb.block_size 16384
 rocksdb.max_open_files 4096
-rocksdb.write_buffer_size 64MB
+rocksdb.write_buffer_size 64
 rocksdb.max_write_buffer_number 4
-rocksdb.target_file_size_base 64MB
-rocksdb.max_bytes_for_level_base 256MB
+rocksdb.target_file_size_base 128
+rocksdb.max_bytes_for_level_base 268435456
 rocksdb.level0_slowdown_writes_trigger 20
 rocksdb.level0_stop_writes_trigger 40
 rocksdb.enable_pipelined_write yes
-rocksdb.max_sub_compactions 2
+rocksdb.max_subcompactions 2
 
 {{ if .ReplicaOf }}
-replicaof {{ .ReplicaOf }}
-replica-read-only yes
-replica-priority 100
+slaveof {{ .ReplicaOf }}
+slave-read-only yes
+slave-priority 100
 {{ end }}
-
-min-replicas-to-write 1
-min-replicas-max-lag 10
 
 slowlog-log-slower-than 10000
 slowlog-max-len 128
 maxclients 10000
 
-checkpoint-dir /backup
-
 {{ .ConfigOverrides }}
 `))
 
 type RedisConfigParams struct {
-	Password        string
-	Memory          string
-	MaxmemoryPolicy string
-	Appendonly      string
-	ReplicaOf       string
-	ConfigOverrides string
+	Password           string
+	Memory             string
+	MaxmemoryPolicy    string
+	Appendonly         string
+	ReplicaOf          string
+	ConfigOverrides    string
+	MinReplicasToWrite int
 }
 
 type KvrocksConfigParams struct {
-	Password        string
-	ReplicaOf       string
-	ConfigOverrides string
+	Password           string
+	Memory             string
+	ReplicaOf          string
+	ConfigOverrides    string
+	MinReplicasToWrite int
 }
 
 func writeRedisConfig(dataDir string, params RedisConfigParams) error {
+	params.Memory = convertMemoryToBytes(params.Memory)
+	params.ReplicaOf = strings.Replace(params.ReplicaOf, ":", " ", 1)
 	return writeConfig(dataDir, "redis.conf", redisTmpl, params)
 }
 
 func writeKvrocksConfig(dataDir string, params KvrocksConfigParams) error {
+	params.Memory = convertMemoryToBytes(params.Memory)
+	params.ReplicaOf = strings.Replace(params.ReplicaOf, ":", " ", 1)
 	return writeConfig(dataDir, "kvrocks.conf", kvrocksTmpl, params)
 }
 

@@ -2,5 +2,5 @@ port: 8400
 token: ""
 data_dir: /data/redis
 log:
-  dir: /opt/redis-agent/logs
+  dir: /opt/redis-pilot-agent/logs
   stdout: true

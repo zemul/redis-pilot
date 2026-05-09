@@ -31,11 +31,11 @@ func instanceCreate(c *cli.Client, args []string) error {
 	engine := fs.String("engine", "redis", "引擎: redis | kvrocks")
 	typ := fs.String("type", "standalone", "拓扑: standalone | replication")
 	server := fs.String("server", "", "目标服务器 (required)")
-	port := fs.Int("port", 6379, "端口")
+	port := fs.Int("port", 0, "端口 (0=自动分配)")
 	memory := fs.String("memory", "1Gi", "内存")
 	cpus := fs.Int("cpus", 1, "CPU")
 	password := fs.String("password", "", "密码")
-	replicaOf := fs.String("replica-of", "", "主库地址 (ip:port)")
+	replicaOf := fs.String("replica-of", "", "主库实例名或地址 (name 或 ip:port)")
 	overrides := fs.String("config", "", "配置覆盖 (k=v,k=v)")
 	fs.Parse(args)
 
@@ -114,7 +114,7 @@ func instancePromote(c *cli.Client, args []string) error {
 func instanceReplicate(c *cli.Client, args []string) error {
 	fs := flag.NewFlagSet("instance-replicate", flag.ExitOnError)
 	name := fs.String("name", "", "实例名称 (required)")
-	replicaOf := fs.String("replica-of", "", "主库地址 ip:port (required)")
+	replicaOf := fs.String("replica-of", "", "主库实例名或地址 (name 或 ip:port) (required)")
 	fs.Parse(args)
 	if *name == "" || *replicaOf == "" {
 		fs.Usage()

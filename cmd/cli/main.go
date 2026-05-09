@@ -40,6 +40,8 @@ Commands:
   backup-restore            从备份恢复
   backup-list               列出可用备份
 
+  inventory                 资源清单查询
+
   version                   显示版本号
 `
 
@@ -112,6 +114,8 @@ func main() {
 		err = backupRestore(client, cmdArgs)
 	case "backup-list":
 		err = backupList(client, cmdArgs)
+	case "inventory":
+		err = inventory(client, cmdArgs)
 	case "version", "-v", "--version":
 		fmt.Println("redis-tool", version)
 	case "help", "-h", "--help":

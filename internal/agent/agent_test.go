@@ -169,6 +169,7 @@ func TestWriteKvrocksConfig(t *testing.T) {
 	dir := t.TempDir()
 	err := writeKvrocksConfig(dir, KvrocksConfigParams{
 		Password:  "kvpass",
+		Memory:    "4Gi",
 		ReplicaOf: "10.0.0.2 6666",
 	})
 	if err != nil {
@@ -178,6 +179,9 @@ func TestWriteKvrocksConfig(t *testing.T) {
 	content := string(data)
 	if !strings.Contains(content, "requirepass kvpass") {
 		t.Error("expected requirepass")
+	}
+	if !strings.Contains(content, "maxmemory 4Gi") {
+		t.Error("expected maxmemory")
 	}
 	if !strings.Contains(content, "replicaof 10.0.0.2 6666") {
 		t.Error("expected replicaof")

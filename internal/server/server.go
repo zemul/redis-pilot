@@ -15,19 +15,22 @@ import (
 )
 
 type Server struct {
-	cfg   *Config
-	state *state.Manager
-	log   *logger.Logger
-	audit *audit.Logger
+	cfg       *Config
+	state     *state.Manager
+	log       *logger.Logger
+	audit     *audit.Logger
+	scheduler *backupScheduler
 }
 
 func New(cfg *Config) *Server {
-	return &Server{
+	s := &Server{
 		cfg:   cfg,
 		state: state.NewManager(cfg.DataDir),
 		log:   logger.New(cfg.Log.Dir, cfg.Log.Stdout),
 		audit: audit.New(cfg.DataDir),
 	}
+	s.scheduler = newBackupScheduler(s)
+	return s
 }
 
 // StartReconcileLoop 启动定时状态校验，每 5 分钟执行一次
@@ -46,6 +49,11 @@ func (s *Server) StartReconcileLoop() {
 			}
 		}
 	}()
+}
+
+// StartBackupScheduler 启动定时备份调度器
+func (s *Server) StartBackupScheduler() {
+	s.scheduler.Start()
 }
 
 func (s *Server) Router() *gin.Engine {
@@ -81,6 +89,7 @@ func (s *Server) Router() *gin.Engine {
 		backup.GET("/list", s.backupList)
 	}
 
+	r.GET("/inventory", s.inventory)
 	r.POST("/reconcile", s.reconcile)
 
 	envoy := r.Group("/envoy")

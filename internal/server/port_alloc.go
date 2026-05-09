@@ -24,18 +24,16 @@ func allocRedisPort(cfg PortConfig, instances *apitypes.InstancesState, serverNa
 }
 
 // allocEnvoyPorts 为一个实例组（master/standalone）分配 Envoy 端口。
-// 返回 readwrite_port, writeonly_port, mgmt_port。
+// 返回 readwrite_port, writeonly_port。
 func allocEnvoyPorts(cfg PortConfig, instances *apitypes.InstancesState) (*apitypes.EnvoyConfig, error) {
 	usedRW := make(map[int]bool)
 	usedWO := make(map[int]bool)
-	usedMgmt := make(map[int]bool)
 	for _, inst := range instances.Instances {
 		if inst.Envoy == nil {
 			continue
 		}
 		usedRW[inst.Envoy.ReadWritePort] = true
 		usedWO[inst.Envoy.WriteOnlyPort] = true
-		usedMgmt[inst.Envoy.MgmtPort] = true
 	}
 
 	rw, err := nextFree(cfg.EnvoyRW, usedRW)
@@ -46,15 +44,10 @@ func allocEnvoyPorts(cfg PortConfig, instances *apitypes.InstancesState) (*apity
 	if err != nil {
 		return nil, fmt.Errorf("envoy writeonly port: %w", err)
 	}
-	mgmt, err := nextFree(cfg.EnvoyMgmt, usedMgmt)
-	if err != nil {
-		return nil, fmt.Errorf("envoy mgmt port: %w", err)
-	}
 
 	return &apitypes.EnvoyConfig{
 		ReadWritePort: rw,
 		WriteOnlyPort: wo,
-		MgmtPort:      mgmt,
 	}, nil
 }
 

@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -16,10 +17,11 @@ import (
 )
 
 type Agent struct {
-	cfg     *Config
-	log     *logger.Logger
-	mon     *monitor
-	runtime podman.ContainerRuntime
+	cfg       *Config
+	log       *logger.Logger
+	mon       *monitor
+	runtime   podman.ContainerRuntime
+	passwords sync.Map // instanceName → password
 }
 
 func New(cfg *Config) *Agent {
@@ -29,7 +31,46 @@ func New(cfg *Config) *Agent {
 		mon:     newMonitor(),
 		runtime: podman.NewRuntime(),
 	}
+	a.loadPasswords()
 	return a
+}
+
+// loadPasswords scans existing instance config files to recover passwords after restart.
+func (a *Agent) loadPasswords() {
+	entries, err := os.ReadDir(a.cfg.DataDir)
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		for _, conf := range []string{"conf/redis.conf", "conf/kvrocks.conf"} {
+			data, err := os.ReadFile(filepath.Join(a.cfg.DataDir, name, conf))
+			if err != nil {
+				continue
+			}
+			for _, line := range strings.Split(string(data), "\n") {
+				line = strings.TrimSpace(line)
+				if strings.HasPrefix(line, "requirepass ") {
+					pw := strings.TrimPrefix(line, "requirepass ")
+					if pw != "" {
+						a.passwords.Store(name, pw)
+					}
+				}
+			}
+			break
+		}
+	}
+}
+
+// getPassword returns the stored password for an instance, or empty string.
+func (a *Agent) getPassword(instanceName string) string {
+	if v, ok := a.passwords.Load(instanceName); ok {
+		return v.(string)
+	}
+	return ""
 }
 
 func (a *Agent) Router() *gin.Engine {
@@ -100,12 +141,15 @@ func (a *Agent) instanceCreate(c *gin.Context) {
 
 	// 渲染配置文件
 	overrides := configOverridesString(req.ConfigOverrides)
+	minReplicas := minReplicasToWrite(req.Type, req.ReplicaOf)
 	var createErr error
 	if req.Engine == "kvrocks" {
 		createErr = writeKvrocksConfig(dataDir, KvrocksConfigParams{
-			Password:        req.Password,
-			ReplicaOf:       req.ReplicaOf,
-			ConfigOverrides: overrides,
+			Password:           req.Password,
+			Memory:             req.Memory,
+			ReplicaOf:          req.ReplicaOf,
+			ConfigOverrides:    overrides,
+			MinReplicasToWrite: minReplicas,
 		})
 	} else {
 		policy := "allkeys-lru"
@@ -117,12 +161,13 @@ func (a *Agent) instanceCreate(c *gin.Context) {
 			aof = "no"
 		}
 		createErr = writeRedisConfig(dataDir, RedisConfigParams{
-			Password:        req.Password,
-			Memory:          req.Memory,
-			MaxmemoryPolicy: policy,
-			Appendonly:      aof,
-			ReplicaOf:       req.ReplicaOf,
-			ConfigOverrides: overrides,
+			Password:           req.Password,
+			Memory:             req.Memory,
+			MaxmemoryPolicy:    policy,
+			Appendonly:         aof,
+			ReplicaOf:          req.ReplicaOf,
+			ConfigOverrides:    overrides,
+			MinReplicasToWrite: minReplicas,
 		})
 	}
 	if createErr != nil {
@@ -138,6 +183,7 @@ func (a *Agent) instanceCreate(c *gin.Context) {
 		return
 	}
 
+	a.passwords.Store(req.Name, req.Password)
 	a.log.Infof("instance created: %s (container: %s)", req.Name, containerName)
 	ok(c, gin.H{
 		"container_id":   containerID,
@@ -202,6 +248,7 @@ func (a *Agent) instanceConfig(c *gin.Context) {
 	var req struct {
 		Name            string            `json:"name" binding:"required"`
 		Engine          string            `json:"engine" binding:"required"`
+		Type            string            `json:"type"`
 		ConfigOverrides map[string]string `json:"config_overrides" binding:"required"`
 		Restart         bool              `json:"restart"`
 		Password        string            `json:"password"`
@@ -215,16 +262,22 @@ func (a *Agent) instanceConfig(c *gin.Context) {
 	}
 
 	containerName := req.Engine + "-" + req.Name
+	if req.Password != "" {
+		a.passwords.Store(req.Name, req.Password)
+	}
 
 	if req.Restart {
 		// 重写配置文件并重启容器
 		dataDir := filepath.Join(a.cfg.DataDir, req.Name)
 		overrides := configOverridesString(req.ConfigOverrides)
+		minReplicas := minReplicasToWrite(req.Type, req.ReplicaOf)
 		if req.Engine == "kvrocks" {
 			writeKvrocksConfig(dataDir, KvrocksConfigParams{
-				Password:        req.Password,
-				ReplicaOf:       req.ReplicaOf,
-				ConfigOverrides: overrides,
+				Password:           req.Password,
+				Memory:             req.Memory,
+				ReplicaOf:          req.ReplicaOf,
+				ConfigOverrides:    overrides,
+				MinReplicasToWrite: minReplicas,
 			})
 		} else {
 			policy := "allkeys-lru"
@@ -236,12 +289,13 @@ func (a *Agent) instanceConfig(c *gin.Context) {
 				aof = "no"
 			}
 			writeRedisConfig(dataDir, RedisConfigParams{
-				Password:        req.Password,
-				Memory:          req.Memory,
-				MaxmemoryPolicy: policy,
-				Appendonly:      aof,
-				ReplicaOf:       req.ReplicaOf,
-				ConfigOverrides: overrides,
+				Password:           req.Password,
+				Memory:             req.Memory,
+				MaxmemoryPolicy:    policy,
+				Appendonly:         aof,
+				ReplicaOf:          req.ReplicaOf,
+				ConfigOverrides:    overrides,
+				MinReplicasToWrite: minReplicas,
 			})
 		}
 		a.runtime.Stop(containerName)
@@ -249,7 +303,7 @@ func (a *Agent) instanceConfig(c *gin.Context) {
 	} else {
 		// 热更新：通过 CONFIG SET 逐个设置
 		for k, v := range req.ConfigOverrides {
-			if _, err := redisCmd(req.Name, "CONFIG", "SET", k, v); err != nil {
+			if _, err := redisCmd(req.Name, a.getPassword(req.Name), "CONFIG", "SET", k, v); err != nil {
 				fail(c, http.StatusInternalServerError, "CONFIG SET "+k+": "+err.Error())
 				return
 			}
@@ -267,7 +321,7 @@ func (a *Agent) instancePromote(c *gin.Context) {
 		fail(c, http.StatusBadRequest, err.Error())
 		return
 	}
-	if _, err := redisCmd(req.Name, "REPLICAOF", "NO", "ONE"); err != nil {
+	if _, err := redisCmd(req.Name, a.getPassword(req.Name), "REPLICAOF", "NO", "ONE"); err != nil {
 		fail(c, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -288,7 +342,7 @@ func (a *Agent) instanceReplicate(c *gin.Context) {
 		fail(c, http.StatusBadRequest, "replica_of must be ip:port")
 		return
 	}
-	if _, err := redisCmd(req.Name, "REPLICAOF", parts[0], parts[1]); err != nil {
+	if _, err := redisCmd(req.Name, a.getPassword(req.Name), "REPLICAOF", parts[0], parts[1]); err != nil {
 		fail(c, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -310,7 +364,7 @@ func (a *Agent) instanceStatus(c *gin.Context) {
 		fail(c, http.StatusBadRequest, "name is required")
 		return
 	}
-	info, err := redisCmd(name, "INFO")
+	info, err := redisCmd(name, a.getPassword(name), "INFO")
 	if err != nil {
 		fail(c, http.StatusInternalServerError, err.Error())
 		return
@@ -334,7 +388,7 @@ func (a *Agent) instanceBackup(c *gin.Context) {
 
 	if req.Engine == "kvrocks" {
 		// Kvrocks: RocksDB Checkpoint
-		if _, err := redisCmd(req.Name, "ROCKSDB.CHECKPOINT"); err != nil {
+		if _, err := redisCmd(req.Name, a.getPassword(req.Name), "ROCKSDB.CHECKPOINT"); err != nil {
 			fail(c, http.StatusInternalServerError, err.Error())
 			return
 		}
@@ -347,16 +401,17 @@ func (a *Agent) instanceBackup(c *gin.Context) {
 		os.RemoveAll(src)
 	} else {
 		// Redis: 检查是否开启 AOF
-		info, _ := redisCmd(req.Name, "INFO", "persistence")
+		pw := a.getPassword(req.Name)
+		info, _ := redisCmd(req.Name, pw, "INFO", "persistence")
 		hasAOF := strings.Contains(info, "aof_enabled:1")
 
 		// 执行 BGSAVE
-		if _, err := redisCmd(req.Name, "BGSAVE"); err != nil {
+		if _, err := redisCmd(req.Name, pw, "BGSAVE"); err != nil {
 			fail(c, http.StatusInternalServerError, err.Error())
 			return
 		}
 		for i := 0; i < 60; i++ {
-			info, _ := redisCmd(req.Name, "INFO", "persistence")
+			info, _ := redisCmd(req.Name, pw, "INFO", "persistence")
 			if strings.Contains(info, "rdb_bgsave_in_progress:0") {
 				break
 			}
@@ -365,9 +420,9 @@ func (a *Agent) instanceBackup(c *gin.Context) {
 
 		if hasAOF {
 			// AOF 联合备份：BGREWRITEAOF + 同时备份 RDB+AOF
-			redisCmd(req.Name, "BGREWRITEAOF")
+			redisCmd(req.Name, pw, "BGREWRITEAOF")
 			for i := 0; i < 60; i++ {
-				info, _ := redisCmd(req.Name, "INFO", "persistence")
+				info, _ := redisCmd(req.Name, pw, "INFO", "persistence")
 				if strings.Contains(info, "aof_rewrite_in_progress:0") {
 					break
 				}
@@ -475,9 +530,7 @@ func (a *Agent) instanceBackups(c *gin.Context) {
 	}
 	var backups []string
 	for _, e := range entries {
-		if !e.IsDir() {
-			backups = append(backups, e.Name())
-		}
+		backups = append(backups, e.Name())
 	}
 	ok(c, gin.H{"backups": backups})
 }
@@ -496,6 +549,14 @@ func ok(c *gin.Context, data interface{}) {
 
 func fail(c *gin.Context, code int, err string) {
 	c.JSON(code, apitypes.APIResponse{Error: err})
+}
+
+// minReplicasToWrite returns 1 for replication masters, 0 otherwise.
+func minReplicasToWrite(instType, replicaOf string) int {
+	if instType == "replication" && replicaOf == "" {
+		return 1
+	}
+	return 0
 }
 
 func configOverridesString(overrides map[string]string) string {
