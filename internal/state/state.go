@@ -155,6 +155,17 @@ func InstanceGroup(instances *apitypes.InstancesState, name string) []string {
 	if inst == nil {
 		return []string{name}
 	}
+	if inst.Group != "" {
+		group := make([]string, 0)
+		for n, i := range instances.Instances {
+			if i != nil && i.Group == inst.Group {
+				group = append(group, n)
+			}
+		}
+		if len(group) > 0 {
+			return group
+		}
+	}
 	// 找主库
 	master := name
 	if inst.ReplicaOf != "" {

@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"text/template"
 
@@ -37,6 +38,7 @@ static_resources:
           stat_prefix: {{ .StatPrefix }}
           settings:
             op_timeout: 5s
+          read_policy: {{ .ReadPolicy }}
 {{- if .Password }}
           downstream_auth_password:
             inline_string: "{{ .Password }}"
@@ -50,6 +52,19 @@ static_resources:
 {{- range .Clusters }}
   - name: {{ .Name }}
     type: STRICT_DNS
+{{- if .HealthCheckRole }}
+    health_checks:
+    - timeout: 1s
+      interval: 5s
+      unhealthy_threshold: 2
+      healthy_threshold: 1
+      tcp_health_check:
+        send:
+          text: {{ .HealthCheckPayload }}
+        receive:
+        - text: {{ .RoleResponsePrefix }}
+    drain_connections_on_host_removal: true
+{{- end }}
 {{- if .Password }}
     typed_extension_protocol_options:
       envoy.filters.network.redis_proxy:
@@ -77,6 +92,7 @@ type envoyListener struct {
 	StatPrefix string
 	Cluster    string
 	Password   string
+	ReadPolicy string
 }
 
 type envoyEndpoint struct {
@@ -85,9 +101,12 @@ type envoyEndpoint struct {
 }
 
 type envoyCluster struct {
-	Name      string
-	Password  string
-	Endpoints []envoyEndpoint
+	Name               string
+	Password           string
+	HealthCheckRole    string
+	HealthCheckPayload string
+	RoleResponsePrefix string
+	Endpoints          []envoyEndpoint
 }
 
 type envoyData struct {
@@ -131,12 +150,13 @@ func (s *Server) generateEnvoyConfig() (string, error) {
 		return "", err
 	}
 
-	// 按实例组（主库名）聚合
+	// 按稳定实例组聚合
 	groups := s.buildInstanceGroups(instances, pool)
 
 	data := envoyData{}
 	for groupName, g := range groups {
-		clusterName := "redis-" + groupName + "-cluster"
+		rwClusterName := "redis-" + groupName + "-cluster"
+		writeClusterName := "redis-" + groupName + "-write-cluster"
 		statPrefix := "redis_" + strings.ReplaceAll(groupName, "-", "_")
 
 		if g.rwPort > 0 {
@@ -144,8 +164,9 @@ func (s *Server) generateEnvoyConfig() (string, error) {
 				Name:       "redis-" + groupName + "-rw",
 				Port:       g.rwPort,
 				StatPrefix: statPrefix,
-				Cluster:    clusterName,
+				Cluster:    rwClusterName,
 				Password:   g.password,
+				ReadPolicy: g.rwReadPolicy(),
 			})
 		}
 
@@ -154,17 +175,28 @@ func (s *Server) generateEnvoyConfig() (string, error) {
 				Name:       "redis-" + groupName + "-wo",
 				Port:       g.woPort,
 				StatPrefix: statPrefix + "_wo",
-				Cluster:    clusterName,
+				Cluster:    writeClusterName,
 				Password:   g.password,
+				ReadPolicy: "MASTER",
 			})
 		}
 
 		if len(g.endpoints) > 0 {
 			data.Clusters = append(data.Clusters, envoyCluster{
-				Name:      clusterName,
+				Name:      rwClusterName,
 				Password:  g.password,
 				Endpoints: g.endpoints,
 			})
+			if g.woPort > 0 {
+				data.Clusters = append(data.Clusters, envoyCluster{
+					Name:               writeClusterName,
+					Password:           g.password,
+					HealthCheckRole:    "master",
+					HealthCheckPayload: roleHealthCheckPayload(g.password),
+					RoleResponsePrefix: strconv.Quote("*3\r\n$6\r\nmaster\r\n"),
+					Endpoints:          g.endpoints,
+				})
+			}
 		}
 	}
 
@@ -176,13 +208,28 @@ func (s *Server) generateEnvoyConfig() (string, error) {
 }
 
 type instanceGroup struct {
-	rwPort    int // 读写端口
-	woPort    int // 仅写端口
-	password  string
-	endpoints []envoyEndpoint
+	rwPort     int // 读写端口
+	woPort     int // 仅写端口
+	password   string
+	endpoints  []envoyEndpoint
+	hasReplica bool
 }
 
-// buildInstanceGroups 按主库聚合实例组，提取 Envoy 端口和后端地址
+func (g *instanceGroup) rwReadPolicy() string {
+	if g.hasReplica {
+		return "REPLICA"
+	}
+	return "MASTER"
+}
+
+func roleHealthCheckPayload(password string) string {
+	if password == "" {
+		return strconv.Quote("*1\r\n$4\r\nROLE\r\n")
+	}
+	return strconv.Quote(fmt.Sprintf("*2\r\n$4\r\nAUTH\r\n$%d\r\n%s\r\n*1\r\n$4\r\nROLE\r\n", len(password), password))
+}
+
+// buildInstanceGroups 按稳定实例组聚合，提取 Envoy 端口和后端地址
 func (s *Server) buildInstanceGroups(instances *apitypes.InstancesState, pool *apitypes.PoolState) map[string]*instanceGroup {
 	groups := make(map[string]*instanceGroup)
 
@@ -191,9 +238,12 @@ func (s *Server) buildInstanceGroups(instances *apitypes.InstancesState, pool *a
 			continue
 		}
 
-		// 确定组名：主库用自己的名字，从库找主库名
-		groupName := name
-		if inst.Role == "replica" {
+		groupName := inst.Group
+		if groupName == "" {
+			// 兼容旧状态：主库用自己的名字，从库找主库名
+			groupName = name
+		}
+		if inst.Role == "replica" && inst.Group == "" {
 			// 从主库的 Replicas 列表反查
 			for mName, mInst := range instances.Instances {
 				for _, r := range mInst.Replicas {
@@ -233,6 +283,9 @@ func (s *Server) buildInstanceGroups(instances *apitypes.InstancesState, pool *a
 				Address: srv.Endpoint,
 				Port:    inst.Port,
 			})
+		}
+		if inst.Role == "replica" {
+			g.hasReplica = true
 		}
 	}
 

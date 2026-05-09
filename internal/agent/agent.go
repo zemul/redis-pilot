@@ -25,6 +25,9 @@ type Agent struct {
 }
 
 func New(cfg *Config) *Agent {
+	if cfg.SentinelDir == "" {
+		cfg.SentinelDir = "/data/redis-sentinel"
+	}
 	a := &Agent{
 		cfg:     cfg,
 		log:     logger.New(cfg.Log.Dir, cfg.Log.Stdout),
@@ -95,6 +98,13 @@ func (a *Agent) Router() *gin.Engine {
 		inst.POST("/backup", a.instanceBackup)
 		inst.POST("/restore", a.instanceRestore)
 		inst.GET("/backups", a.instanceBackups)
+	}
+
+	sentinel := r.Group("/sentinel")
+	{
+		sentinel.POST("/ensure", a.sentinelEnsure)
+		sentinel.POST("/remove-master", a.sentinelRemoveMaster)
+		sentinel.GET("/status", a.sentinelStatus)
 	}
 
 	return r

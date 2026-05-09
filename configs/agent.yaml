@@ -1,6 +1,7 @@
 port: 8400
 token: ""
 data_dir: /data/redis
+sentinel_dir: /data/redis-sentinel
 log:
   dir: /opt/redis-pilot-agent/logs
   stdout: true

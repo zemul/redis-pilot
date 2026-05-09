@@ -63,10 +63,11 @@ type KvrocksConfig struct {
 
 // Instance 实例完整状态
 type Instance struct {
-	Category        string            `yaml:"category"` // cache | persistent
-	Engine          string            `yaml:"engine"`   // redis | kvrocks
-	Type            string            `yaml:"type"`     // standalone | replication
-	Role            string            `yaml:"role"`     // master | replica | standalone
+	Category        string            `yaml:"category"`           // cache | persistent
+	Group           string            `yaml:"group" json:"group"` // stable logical instance group
+	Engine          string            `yaml:"engine"`             // redis | kvrocks
+	Type            string            `yaml:"type"`               // standalone | replication
+	Role            string            `yaml:"role"`               // master | replica | standalone
 	Server          string            `yaml:"server"`
 	Container       string            `yaml:"container"`
 	Port            int               `yaml:"port"`
@@ -154,6 +155,7 @@ type InstanceSummaryItem struct {
 type CreateInstanceRequest struct {
 	Name            string            `json:"name" binding:"required"`
 	Category        string            `json:"category" binding:"required"` // cache | persistent
+	Group           string            `json:"group,omitempty"`             // stable logical group; required for master/standalone
 	Engine          string            `json:"engine" binding:"required"`   // redis | kvrocks
 	Type            string            `json:"type" binding:"required"`     // standalone | replication
 	Server          string            `json:"server"`                      // 可选，为空时自动调度
@@ -164,4 +166,38 @@ type CreateInstanceRequest struct {
 	ReplicaOf       string            `json:"replica_of,omitempty"`
 	ConfigOverrides map[string]string `json:"config_overrides,omitempty"`
 	KvrocksConfig   *KvrocksConfig    `json:"kvrocks_config,omitempty"`
+}
+
+// SentinelMaster Sentinel 监控的一个实例组主库
+type SentinelMaster struct {
+	Group                 string `json:"group" yaml:"group"`
+	Host                  string `json:"host" yaml:"host"`
+	Port                  int    `json:"port" yaml:"port"`
+	Password              string `json:"password,omitempty" yaml:"password,omitempty"`
+	DownAfterMilliseconds int    `json:"down_after_milliseconds,omitempty" yaml:"down_after_milliseconds,omitempty"`
+	FailoverTimeout       int    `json:"failover_timeout,omitempty" yaml:"failover_timeout,omitempty"`
+	ParallelSyncs         int    `json:"parallel_syncs,omitempty" yaml:"parallel_syncs,omitempty"`
+}
+
+// SentinelEnsureRequest 下发给 Agent 的 Sentinel 期望配置
+type SentinelEnsureRequest struct {
+	Port     int              `json:"port"`
+	Quorum   int              `json:"quorum"`
+	Masters  []SentinelMaster `json:"masters"`
+	Announce string           `json:"announce_ip,omitempty"`
+}
+
+// SentinelRemoveMasterRequest 从 Sentinel 中移除一个监控对象
+type SentinelRemoveMasterRequest struct {
+	Group string `json:"group" binding:"required"`
+	Port  int    `json:"port,omitempty"`
+}
+
+// SentinelStatus Agent 返回的 Sentinel 状态
+type SentinelStatus struct {
+	Running   bool     `json:"running"`
+	Port      int      `json:"port"`
+	Masters   []string `json:"masters"`
+	Config    string   `json:"config"`
+	UpdatedAt string   `json:"updated_at,omitempty"`
 }

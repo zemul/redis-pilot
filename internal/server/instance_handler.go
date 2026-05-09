@@ -130,10 +130,12 @@ func (s *Server) instanceCreate(c *gin.Context) {
 			role = "master"
 		}
 	}
+	req.Group = strings.TrimSpace(req.Group)
 
 	var inst *apitypes.Instance
 	var srv *apitypes.PoolServer
 	var masterName string // 用于维护 Replicas 列表
+	groupName := req.Group
 
 	// 原子操作：检查冲突 → 调度 → 分配端口 → 写入 creating 状态
 	var resolvedAddr string // replica_of 解析后的 ip:port，用于 Agent 调用
@@ -151,6 +153,31 @@ func (s *Server) instanceCreate(c *gin.Context) {
 			resolvedAddr = addr
 			if mName != "" {
 				masterName = mName
+			}
+		}
+		if role == "replica" {
+			if masterName == "" {
+				return fmt.Errorf("replica_of must reference an existing managed master instance")
+			}
+			master := instances.Instances[masterName]
+			if master == nil {
+				return fmt.Errorf("replica_of instance not found: %s", req.ReplicaOf)
+			}
+			groupName = master.Group
+			if groupName == "" {
+				groupName = masterName
+			}
+		} else {
+			if groupName == "" {
+				return fmt.Errorf("group is required for master or standalone instance")
+			}
+			for name, existing := range instances.Instances {
+				if existing == nil || existing.Group != groupName || existing.Status == "failed" {
+					continue
+				}
+				if existing.Role == "master" || existing.Role == "standalone" {
+					return fmt.Errorf("conflict: group already has primary instance %s", name)
+				}
 			}
 		}
 
@@ -186,6 +213,7 @@ func (s *Server) instanceCreate(c *gin.Context) {
 
 		inst = &apitypes.Instance{
 			Category:        req.Category,
+			Group:           groupName,
 			Engine:          req.Engine,
 			Type:            req.Type,
 			Role:            role,
@@ -274,12 +302,13 @@ func (s *Server) instanceCreate(c *gin.Context) {
 		Level:    audit.LevelImportant,
 		Result:   "success",
 		Duration: time.Since(start).Milliseconds(),
-		Target:   map[string]interface{}{"instance": req.Name, "engine": req.Engine, "server": req.Server},
+		Target:   map[string]interface{}{"instance": req.Name, "group": groupName, "engine": req.Engine, "server": req.Server},
 		Params:   map[string]interface{}{"memory": req.Memory, "cpus": req.CPUs, "category": req.Category},
 	})
 
 	s.log.Infof("instance created: %s on %s", req.Name, req.Server)
 	s.refreshEnvoy()
+	s.syncSentinel()
 	ok(c, inst)
 }
 
@@ -367,7 +396,15 @@ func (s *Server) instanceDelete(c *gin.Context) {
 	})
 
 	s.log.Infof("instance deleted: %s", req.Name)
+	if inst.Type == "replication" && inst.Role == "master" {
+		group := inst.Group
+		if group == "" {
+			group = req.Name
+		}
+		s.removeSentinelMaster(group)
+	}
 	s.refreshEnvoy()
+	s.syncSentinel()
 	ok(c, nil)
 }
 
@@ -498,6 +535,7 @@ func (s *Server) instancePromote(c *gin.Context) {
 	})
 
 	s.refreshEnvoy()
+	s.syncSentinel()
 	ok(c, nil)
 }
 
@@ -518,6 +556,10 @@ func (s *Server) instanceReplicate(c *gin.Context) {
 	resolvedAddr, masterName, err := resolveReplicaOf(pool, instances, req.ReplicaOf)
 	if err != nil {
 		fail(c, http.StatusBadRequest, err.Error())
+		return
+	}
+	if masterName == "" {
+		fail(c, http.StatusBadRequest, "replica_of must reference an existing managed master instance")
 		return
 	}
 
@@ -553,9 +595,14 @@ func (s *Server) instanceReplicate(c *gin.Context) {
 			other.Replicas = filtered
 		}
 		// 加入新主库的 Replicas
+		groupName := ""
 		if masterName != "" {
 			if master := is.Instances[masterName]; master != nil {
 				master.Replicas = append(master.Replicas, req.Name)
+				groupName = master.Group
+				if groupName == "" {
+					groupName = masterName
+				}
 			}
 		}
 		// 如果原来是 master/standalone 有 Envoy 端口，变 replica 后释放
@@ -564,6 +611,7 @@ func (s *Server) instanceReplicate(c *gin.Context) {
 		}
 		i.Role = "replica"
 		i.ReplicaOf = masterName // 存实例名
+		i.Group = groupName
 		return nil
 	})
 
@@ -575,6 +623,7 @@ func (s *Server) instanceReplicate(c *gin.Context) {
 	})
 
 	s.refreshEnvoy()
+	s.syncSentinel()
 	ok(c, nil)
 }
 

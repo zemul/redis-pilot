@@ -41,7 +41,7 @@ func TestEnvoyConfig_StandaloneInstance(t *testing.T) {
 	s.state.WriteInstances(&apitypes.InstancesState{
 		Instances: map[string]*apitypes.Instance{
 			"cache-1": {
-				Engine: "redis", Role: "standalone", Server: "srv1", Port: 6379, Status: "running",
+				Engine: "redis", Group: "cache", Role: "standalone", Server: "srv1", Port: 6379, Status: "running",
 				Envoy: &apitypes.EnvoyConfig{ReadWritePort: 16381},
 			},
 		},
@@ -57,7 +57,7 @@ func TestEnvoyConfig_StandaloneInstance(t *testing.T) {
 	if !strings.Contains(config, "address: 10.0.0.1") {
 		t.Error("expected endpoint 10.0.0.1")
 	}
-	if !strings.Contains(config, "redis-cache-1-cluster") {
+	if !strings.Contains(config, "redis-cache-cluster") {
 		t.Error("expected cluster name")
 	}
 }
@@ -73,12 +73,12 @@ func TestEnvoyConfig_ReplicationGroup(t *testing.T) {
 	s.state.WriteInstances(&apitypes.InstancesState{
 		Instances: map[string]*apitypes.Instance{
 			"order-master": {
-				Engine: "redis", Role: "master", Server: "srv1", Port: 6379, Status: "running",
+				Engine: "redis", Group: "order", Role: "master", Server: "srv1", Port: 6379, Status: "running",
 				Replicas: []string{"order-replica"},
 				Envoy:    &apitypes.EnvoyConfig{ReadWritePort: 16379, WriteOnlyPort: 16400},
 			},
 			"order-replica": {
-				Engine: "redis", Role: "replica", Server: "srv2", Port: 6379, Status: "running",
+				Engine: "redis", Group: "order", Role: "replica", Server: "srv2", Port: 6379, Status: "running",
 				ReplicaOf: "10.0.0.1:6379",
 				Envoy:     &apitypes.EnvoyConfig{ReadWritePort: 16379},
 			},

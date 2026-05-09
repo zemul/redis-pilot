@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -52,13 +53,13 @@ Choosing the wrong category has real consequences:
   redis-pilot-cli instance create session-cache --node redis01 --memory 4Gi
 
   # Persistent instance
-  redis-pilot-cli instance create order-master --node redis01 --category persistent --memory 8Gi
+  redis-pilot-cli instance create order-master --node redis01 --group order --category persistent --memory 8Gi
 
   # Kvrocks persistent instance
-  redis-pilot-cli instance create order-master --node redis01 --engine kvrocks --category persistent --memory 8Gi
+  redis-pilot-cli instance create order-master --node redis01 --group order --engine kvrocks --category persistent --memory 8Gi
 
   # With custom config overrides
-  redis-pilot-cli instance create order-master --node redis01 --category persistent --memory 4Gi --config "hz=20,tcp-keepalive=60"`,
+  redis-pilot-cli instance create order-master --node redis01 --group order --category persistent --memory 4Gi --config "hz=20,tcp-keepalive=60"`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		category, _ := cmd.Flags().GetString("category")
@@ -69,12 +70,17 @@ Choosing the wrong category has real consequences:
 		memory, _ := cmd.Flags().GetString("memory")
 		cpus, _ := cmd.Flags().GetInt("cpus")
 		password, _ := cmd.Flags().GetString("password")
+		group, _ := cmd.Flags().GetString("group")
 		replicaOf, _ := cmd.Flags().GetString("replica-of")
 		overrides, _ := cmd.Flags().GetString("config")
+		if replicaOf == "" && strings.TrimSpace(group) == "" {
+			return fmt.Errorf("--group is required when creating a master or standalone instance")
+		}
 
 		req := map[string]interface{}{
 			"name":     args[0],
 			"category": category,
+			"group":    group,
 			"engine":   engine,
 			"type":     typ,
 			"server":   node,
@@ -170,9 +176,9 @@ Typically used during failover or planned switchover.`,
 }
 
 var instanceReplicateCmd = &cobra.Command{
-	Use:   "replicate <name>",
-	Short: "Set replication target",
-	Long:  "Make an instance replicate from a master. The instance will sync data from the specified master.",
+	Use:     "replicate <name>",
+	Short:   "Set replication target",
+	Long:    "Make an instance replicate from a master. The instance will sync data from the specified master.",
 	Example: `  redis-pilot-cli instance replicate order-replica --replica-of order-master`,
 	Args:    cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -199,6 +205,7 @@ func init() {
 	instanceCreateCmd.Flags().String("memory", "1Gi", "Memory")
 	instanceCreateCmd.Flags().Int("cpus", 1, "CPU cores")
 	instanceCreateCmd.Flags().String("password", "", "Password")
+	instanceCreateCmd.Flags().String("group", "", "Stable logical group name for master/standalone")
 	instanceCreateCmd.Flags().String("replica-of", "", "Master instance name or address")
 	instanceCreateCmd.Flags().String("config", "", "Config overrides (k=v,k=v)")
 	instanceCreateCmd.MarkFlagRequired("node")

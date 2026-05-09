@@ -100,6 +100,11 @@ func (s *Server) Router() *gin.Engine {
 		envoy.GET("/config", s.envoyConfig)
 	}
 
+	sentinel := r.Group("/sentinel")
+	{
+		sentinel.POST("/event", s.sentinelEvent)
+	}
+
 	return r
 }
 

@@ -23,6 +23,15 @@ ports:
     start: 26379
     end: 26499
 
+sentinel:
+  enabled: true
+  replicas: 3
+  port: 26379
+  quorum: 2
+  down_after_milliseconds: 5000
+  failover_timeout: 30000
+  parallel_syncs: 1
+
 log:
   dir: /opt/redis-pilot-server/logs   # 为空则不写文件
   stdout: true

@@ -260,9 +260,12 @@ CLI Token 优先级（从高到低）：`--token` 参数 > `REDIS_SERVER_TOKEN` 
 ```
 POST /instance/create
 
+master/standalone 必须显式传 group；replica 不需要传 group，会从 replica_of 指向的 master 继承。
+
 请求体：
 {
   "name": "order-master",
+  "group": "order",
   "port": 6379,
   "memory": "4Gi",
   "cpus": 2,
@@ -412,6 +415,7 @@ servers:
 instances:
   order-master:
     category: persistent              # cache | persistent
+    group: order                      # 稳定实例组名；Sentinel/Envoy/审计均使用该名字
     engine: kvrocks                   # redis | kvrocks
     type: standalone                  # standalone | replication
     role: master                      # master | replica | standalone
@@ -446,6 +450,7 @@ instances:
 
   order-replica:
     category: persistent              # cache | persistent
+    group: order                      # 从库继承主库 group；failover 后不变化
     engine: kvrocks                   # redis | kvrocks
     type: replication
     role: replica
@@ -550,7 +555,7 @@ Redis 协议无 Host Header，**只能通过端口区分不同实例**：
 
 #### 3.4.2 代理模式
 
-**模式 A：单端口视图（推荐默认）**
+**模式 A：单端口业务视图（推荐默认）**
 
 ```
 客户端 → Envoy:16379
@@ -559,18 +564,20 @@ Redis 协议无 Host Header，**只能通过端口区分不同实例**：
 ```
 
 - 用户侧感知为"单点 Redis"，无需关心主从拓扑
-- Envoy `redis_proxy` filter 的 `read_policy` 自动路由
+- Envoy `redis_proxy` filter 的 `read_policy` 负责读命令路由；写命令仍走主库
+- 此端口只面向业务读写命令，管理命令统一走 WriteOnly 端口
 - 适合 90% 的业务场景
 
-**模式 B：显式主从端口**
+**模式 B：读写端口 + 显式主库端口**
 
 ```
-客户端 → Envoy:16379  → 主库 order-master:6379    (read_policy: MASTER)
-客户端 → Envoy:16400  → 从库 order-replica:6379   (read_policy: REPLICA)
+客户端 → Envoy:16379  → 业务读写视图（读走从库，写走主库）
+客户端 → Envoy:16400  → 主库 order-master:6379    (read_policy: MASTER)
 ```
 
-- 需要精确控制读写路由时使用
-- 适合对一致性要求极高的场景
+- 需要强一致读或执行管理命令时使用 WriteOnly 端口
+- WriteOnly 端口背后的写集群必须通过 ROLE 健康检查确保只有 master 健康
+- 适合对一致性要求高、或需要 `INFO` / `CONFIG` / `SLOWLOG` / `CLIENT` 等管理命令的场景
 
 #### 3.4.3 Envoy 配置片段
 
@@ -595,7 +602,7 @@ static_resources:
           read_policy: REPLICA           # 读走从库
 
   clusters:
-  - name: redis-order-cluster    # 读写分离集群（模式A），附录C 为独立写集群配置
+  - name: redis-order-cluster    # 业务读写集群；附录 C 为独立写集群配置
     type: STRICT_DNS
     health_checks:
     - timeout: 1s
@@ -606,7 +613,7 @@ static_resources:
         name: envoy.health_checkers.redis
         typed_config:
           "@type": type.googleapis.com/envoy.extensions.health_checkers.redis.v3.Redis
-          key: healthcheck    # ROLE 健康检查：仅 role=master 的端点接收写请求
+          key: healthcheck    # Redis 存活检查：PING/EXISTS，不判断 master/replica 角色
     drain_connections_on_host_removal: true
     load_assignment:
       cluster_name: redis-order-cluster
@@ -625,7 +632,8 @@ static_resources:
 ```
 
 > **说明**：
-> - `envoy.health_checkers.redis` 通过 PING 检测存活，结合 `read_policy` 确保 ROLE 路由正确
+> - `envoy.health_checkers.redis` 只负责 Redis 存活检查，不能判断 ROLE
+> - 写集群的 master 判定必须使用附录 C 的 TCP `ROLE` 健康检查
 > - `unhealthy_threshold: 2`：连续 2 次健康检查失败后摘除，避免单次网络抖动误判
 > - `drain_connections_on_host_removal: true`：端点移除时优雅排空连接，防止正在执行的命令被中断
 
@@ -906,6 +914,187 @@ server_inventory:
 
 ---
 
+### 3.7 Sentinel 高可用设计
+
+Sentinel 用于 Redis/Kvrocks 主从实例组的自动故障转移。Sentinel 只负责判定主库故障、选举从库并执行主从切换；平台仍负责状态文件同步、补齐拓扑、刷新 Envoy 和审计记录。
+
+#### 3.7.1 部署策略
+
+Sentinel 不要求每台 Agent 都部署。默认策略：
+
+| healthy Agent 数 | Sentinel 数 | quorum | 处理策略 |
+|------------------|-------------|--------|----------|
+| < 3 | 0 | - | 不启用自动故障转移，创建主从时返回 warning |
+| 3-4 | 3 | 2 | 默认部署 3 个 Sentinel |
+| >= 5 | 3 | 2 | 默认部署 3 个 Sentinel；核心业务可配置为 5 个 |
+| >= 5 且 sentinel.replicas=5 | 5 | 3 | 高等级业务使用，容忍更多 Sentinel 节点故障 |
+
+Sentinel 节点选择规则：
+
+1. 只选择 `status=healthy` 的服务器
+2. 优先选择不同 `zone` 标签的服务器
+3. 优先选择 `role=production`，排除 `role=standby`，除非健康节点不足
+4. Sentinel 数固定为奇数（3 或 5），避免偶数投票拓扑
+5. 选中节点记录到 Server 派生配置中，不单独维护第二份状态
+
+#### 3.7.2 Server 与 Agent API
+
+Server 对 Agent 的 Sentinel 管理 API：
+
+```
+POST /sentinel/ensure
+  确保本机 Sentinel 容器存在，并用请求体中的 master 列表重写 sentinel.conf 后重载/重启
+
+POST /sentinel/remove-master
+  从本机 Sentinel 配置中移除指定实例组
+
+GET /sentinel/status
+  返回本机 Sentinel 容器状态、已监控 master 列表、最近一次配置更新时间
+
+POST /sentinel/event
+  Agent 监听到 +switch-master 后上报 Server（事件加速路径，reconcile 仍是兜底）
+```
+
+`/sentinel/ensure` 请求示例：
+
+```json
+{
+  "port": 26379,
+  "quorum": 2,
+  "masters": [
+    {
+      "group": "order",
+      "host": "10.0.1.10",
+      "port": 6379,
+      "password": "******",
+      "down_after_milliseconds": 5000,
+      "failover_timeout": 30000,
+      "parallel_syncs": 1
+    }
+  ]
+}
+```
+
+#### 3.7.3 sentinel.conf 模板
+
+```conf
+port {{ sentinel_port }}
+bind 0.0.0.0
+dir /data
+
+sentinel resolve-hostnames yes
+
+{% if announce_ip %}
+sentinel announce-ip {{ announce_ip }}
+sentinel announce-port {{ sentinel_port }}
+{% endif %}
+
+{% for master in masters %}
+sentinel monitor {{ master.group }} {{ master.host }} {{ master.port }} {{ quorum }}
+{% if master.password %}
+sentinel auth-pass {{ master.group }} {{ master.password }}
+{% endif %}
+sentinel down-after-milliseconds {{ master.group }} {{ master.down_after_milliseconds | default(5000) }}
+sentinel failover-timeout {{ master.group }} {{ master.failover_timeout | default(30000) }}
+sentinel parallel-syncs {{ master.group }} {{ master.parallel_syncs | default(1) }}
+{% endfor %}
+```
+
+如果 Redis/Kvrocks 实例启用了 `requirepass`，必须配置 `sentinel auth-pass`。否则 Sentinel 能检测端口存活，但无法执行 INFO、REPLICAOF、故障转移等命令。
+
+#### 3.7.4 Podman 容器规范
+
+Sentinel 容器推荐使用 host network，避免容器 NAT/端口映射导致 Sentinel 宣告错误地址、无法发现其他 Sentinel 或无法连接从库。
+
+```bash
+podman run -d \
+  --name redis-sentinel \
+  --network host \
+  --restart on-failure:5 \
+  -v /data/redis-sentinel/conf/sentinel.conf:/etc/redis/sentinel.conf:Z \
+  -v /data/redis-sentinel/data:/data:Z \
+  docker.io/redis:7 \
+  redis-sentinel /etc/redis/sentinel.conf
+```
+
+如果不能使用 host network，必须显式配置 `sentinel announce-ip` / `sentinel announce-port`，并确保 Redis 实例的 replica announce 信息与实际可达地址一致。
+
+#### 3.7.5 创建与删除时机
+
+创建主从实例组成功后，Server 执行：
+
+```
+1. 从 pool-state 选择 Sentinel 节点
+2. 从 instances-state 派生所有需要监控的 master 列表
+3. 调用选中 Agent 的 /sentinel/ensure
+4. 如果 healthy Agent < 3，跳过 Sentinel 并在创建结果中返回 warning
+```
+
+删除实例组时，Server 执行：
+
+```
+1. 调用所有 Sentinel 节点的 /sentinel/remove-master
+2. 从 instances-state 删除实例组
+3. 刷新 Envoy 配置
+4. 写入审计日志
+```
+
+Sentinel 配置应由 Server 统一派生并下发；Agent 不应独立决定监控哪些 master。
+Sentinel 的 `group` 必须来自 `instances-state.yaml` 中显式保存的实例组名，而不是当前 master 实例名；master 发生 failover 后，monitor name 仍保持不变。
+
+#### 3.7.6 故障转移同步机制
+
+第一版实现以 Server 定期 reconcile 为权威兜底：
+
+```
+每 5-10 秒：
+  1. Server 查询任一健康 Sentinel：
+     SENTINEL get-master-addr-by-name <group>
+  2. 对比 Sentinel 返回的 master 地址和 instances-state 当前 master
+  3. 如果不一致，调用 handleFailover(group, newMasterAddr)
+```
+
+Agent 监听 `+switch-master` 作为加速路径：
+
+```
+Agent SUBSCRIBE +switch-master
+  → 收到事件后 POST /sentinel/event 到 Server
+  → Server 仍调用同一个 handleFailover(group, newMasterAddr)
+```
+
+`handleFailover` 必须是幂等的：
+
+1. 获取实例组编排锁
+2. 校验新 master 地址属于当前实例组
+3. 更新 `role` / `replica_of` / `replicas` / `status`
+4. 如副本数不足，选择新服务器创建 replica
+5. 重新生成并落盘 Envoy 配置
+6. 写 `topology.failover` 审计日志
+7. 释放编排锁
+
+#### 3.7.7 失败处理
+
+| 场景 | 处理策略 |
+|------|----------|
+| healthy Sentinel 数 < quorum | 标记自动故障转移能力降级，保留现有实例运行，触发告警 |
+| `/sentinel/ensure` 部分节点失败 | 成功节点数 >= quorum 则继续并告警；否则回滚本次 Sentinel 配置并返回 warning |
+| Sentinel 返回的新 master 不在 instances-state | 标记 `failover_conflict`，不自动改拓扑，触发人工介入 |
+| 新主库再次故障 | 不主动抢占 Sentinel，等待下一轮 Sentinel failover；编排锁超时后允许重新同步 |
+| Envoy 配置落盘失败 | 状态更新不得提交为 success，审计记录 failed，并保留旧配置 |
+| 补齐 replica 失败 | failover 视为部分成功，记录 `degraded`，后续 reconcile 重试补齐 |
+
+#### 3.7.8 验证矩阵
+
+| 场景 | 期望 |
+|------|------|
+| Redis 主库容器停止 | Sentinel 提升从库，Envoy 写入口切到新 master，Server 状态最终同步 |
+| Kvrocks 主库容器停止 | 行为同 Redis，需验证 `ROLE` / Sentinel failover / replication 状态兼容 |
+| Redis/Kvrocks 配置 requirepass | Sentinel auth-pass 生效，failover 成功 |
+| Sentinel 节点少于 quorum | 不发生自动故障转移，系统发出降级告警 |
+| Envoy 重启 | 从落盘配置恢复，业务端口不变化 |
+
+---
+
 ## 4. 关键流程
 
 ### 4.1 创建单点实例
@@ -1057,7 +1246,7 @@ Skill: redis-failover
 
 ```
 架构:
-  每台服务器运行 1 个 Sentinel 容器（需 ≥ 3 台服务器，quorum=2）
+  按 §3.7 从 healthy Agent 中选择 3 或 5 台运行 Sentinel（需 ≥ 3 台服务器，quorum=2/3）
   一个 Sentinel 实例可监控多个主库，每个主库用不同名字区分
   Sentinel 监控所有实例组的主库
 
@@ -1065,9 +1254,8 @@ Skill: redis-failover
   Sentinel(3) → quorum(2) → 判定主库客观下线(sdown → odown)
 
   0. redis-create 创建主从实例时自动管理 Sentinel：
-     - 检查 pool-state 中服务器数量
-     - 服务器 ≥ 3：在每台服务器上创建/更新 Sentinel 容器，执行
-       sentinel monitor {instance-group} {master-ip} {port} 2
+     - 检查 pool-state 中 healthy 服务器数量
+     - 服务器 ≥ 3：选择 3 或 5 台 Sentinel 节点，调用 /sentinel/ensure 下发完整 sentinel.conf
      - 服务器 < 3：跳过 Sentinel，返回警告"服务器不足3台，未启用自动故障转移"
      - redis-delete 删除实例组时执行 sentinel remove {instance-group}
 
@@ -1078,10 +1266,42 @@ Skill: redis-failover
   2. Agent 监听 Sentinel 事件（+switch-master）
      → 收到事件后执行后续编排：
        a. 在 instances-state 中标记 failover_in_progress: true（编排锁）
-       b. 在新服务器创建从库补齐拓扑
-       c. 更新 Envoy 路由指向新主库
-       d. 更新 instances-state 状态
-       e. 清除 failover_in_progress 标记
+       b. 根据事件中的 old-master/new-master 修正 instances-state 拓扑
+       c. 在新服务器创建从库补齐拓扑（如当前从库数 < 目标副本数）
+       d. 更新 Envoy 路由并重新生成/落盘 Envoy 配置
+       e. 写入 topology.failover 审计日志
+       f. 清除 failover_in_progress 标记
+
+     instances-state 更新要求：
+       - 旧主库：
+         status: failed 或 unexpected_stopped
+         role: replica 或 master_failed（实现可二选一，但查询输出必须清晰标识已失效）
+         replicas: []
+       - 被 Sentinel 提升的新主库：
+         role: master
+         replica_of: null
+         replicas: [所有已重新挂载到新主库的从库实例名]
+         envoy: 继承原实例组的 readwrite_port / writeonly_port
+       - 新补齐的从库：
+         role: replica
+         replica_of: <新主库实例名>
+         status: running
+       - 其他存活从库：
+         role: replica
+         replica_of: <新主库实例名>
+
+     Envoy 更新要求：
+       - 业务读写端口保持不变，避免业务侧修改连接地址
+       - 后端 endpoints 必须包含新主库和所有健康从库
+       - WriteOnly 写集群继续通过 TCP ROLE health check 只保留当前 master
+       - 生成的 Envoy 配置必须落盘，保证 Envoy/Server 重启后拓扑不回退
+
+     审计要求：
+       - action: topology.failover
+       - level: critical
+       - target 记录实例组、旧主库、新主库、故障服务器、新主库服务器
+       - params 记录 Sentinel 事件、补齐从库名称、Envoy 端口
+       - result 记录 success / failed / conflict
 
   3. 编排锁保护机制：
      - 收到 +switch-master 后，Agent 先在 instances-state 中写入
@@ -1716,7 +1936,7 @@ checkpoint-dir /backup
 
 ## 附录 C：Envoy 写集群 ROLE 健康检查配置
 
-写集群必须确保仅 `role=master` 的端点接收写请求。以下为完整配置示例：
+写集群必须确保仅 `role=master` 的端点接收写请求。Envoy 内置 Redis health checker 只能做 PING/EXISTS 存活检查，不能判断 Redis ROLE；因此写集群使用 TCP health check 发送 Redis RESP 编码的 `ROLE` 命令，并匹配 master 响应。
 
 ```yaml
 # 写集群 — 仅主库接收写请求
@@ -1728,11 +1948,11 @@ clusters:
     interval: 5s
     unhealthy_threshold: 2
     healthy_threshold: 1
-    custom_health_check:
-      name: envoy.health_checkers.redis
-      typed_config:
-        "@type": type.googleapis.com/envoy.extensions.health_checkers.redis.v3.Redis
-        key: healthcheck
+    tcp_health_check:
+      send:
+        text: "*1\r\n$4\r\nROLE\r\n"
+      receive:
+      - text: "*3\r\n$6\r\nmaster\r\n"
   drain_connections_on_host_removal: true
   load_assignment:
     cluster_name: redis-order-write-cluster
@@ -1750,9 +1970,18 @@ clusters:
               port_value: 6379
 ```
 
+> 如果 Redis/Kvrocks 启用了 `requirepass`，ROLE 健康检查必须先发送 AUTH，再发送 ROLE。RESP payload 示例：
+>
+> ```
+> *2\r\n$4\r\nAUTH\r\n$<password_length>\r\n<password>\r\n*1\r\n$4\r\nROLE\r\n
+> ```
+>
+> 健康检查期望响应仍匹配 `*3\r\n$6\r\nmaster\r\n`。如果不带 AUTH，受密码保护的实例会返回 `NOAUTH`，写集群会把所有端点判定为不健康。
+
 > **ROLE 健康检查原理**：
-> - `envoy.health_checkers.redis` 发送 PING 命令检测存活
-> - Envoy 结合 `read_policy` 确保写集群仅路由到 `role=master` 的端点
+> - TCP health check 发送 `ROLE` 命令
+> - master 返回 `*3\r\n$6\r\nmaster\r\n`，健康检查通过
+> - replica 返回 `*5\r\n$5\r\nslave\r\n`，健康检查失败，不接收写请求
 > - 当主库故障切换后，新主库 ROLE 变为 master → 健康检查通过 → 自动接收写请求
 > - 旧主库变为 slave → 健康检查标记为不健康（对写集群）→ 写流量停止
 > - `drain_connections_on_host_removal: true` 确保端点移除时优雅排空连接

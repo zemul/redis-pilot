@@ -282,9 +282,9 @@ func TestInstanceGroup_Standalone(t *testing.T) {
 func TestInstanceGroup_Master(t *testing.T) {
 	state := &apitypes.InstancesState{
 		Instances: map[string]*apitypes.Instance{
-			"redis-1":     {Role: "master", Replicas: []string{"redis-1-r1", "redis-1-r2"}},
-			"redis-1-r1":  {Role: "replica", ReplicaOf: "10.0.0.1:6379"},
-			"redis-1-r2":  {Role: "replica", ReplicaOf: "10.0.0.1:6379"},
+			"redis-1":    {Role: "master", Replicas: []string{"redis-1-r1", "redis-1-r2"}},
+			"redis-1-r1": {Role: "replica", ReplicaOf: "10.0.0.1:6379"},
+			"redis-1-r2": {Role: "replica", ReplicaOf: "10.0.0.1:6379"},
 		},
 	}
 	group := InstanceGroup(state, "redis-1")
@@ -314,6 +314,27 @@ func TestInstanceGroup_Replica(t *testing.T) {
 	sort.Strings(expected)
 	if len(group) != 2 {
 		t.Fatalf("expected 2 members, got %v", group)
+	}
+	for i := range expected {
+		if group[i] != expected[i] {
+			t.Fatalf("expected %v, got %v", expected, group)
+		}
+	}
+}
+
+func TestInstanceGroup_StableGroupField(t *testing.T) {
+	state := &apitypes.InstancesState{
+		Instances: map[string]*apitypes.Instance{
+			"order-master":  {Role: "master", Group: "order"},
+			"order-replica": {Role: "replica", Group: "order", ReplicaOf: "order-master"},
+			"cache-1":       {Role: "standalone", Group: "cache"},
+		},
+	}
+	group := InstanceGroup(state, "order-replica")
+	sort.Strings(group)
+	expected := []string{"order-master", "order-replica"}
+	if len(group) != len(expected) {
+		t.Fatalf("expected %v, got %v", expected, group)
 	}
 	for i := range expected {
 		if group[i] != expected[i] {

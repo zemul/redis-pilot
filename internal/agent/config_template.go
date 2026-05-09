@@ -83,6 +83,8 @@ slowlog-log-slower-than 10000
 slowlog-max-len 128
 maxclients 10000
 
+proto 2
+
 {{ .ConfigOverrides }}
 `))
 

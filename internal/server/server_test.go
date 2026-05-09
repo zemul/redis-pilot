@@ -254,6 +254,7 @@ func TestInstanceCreate_DuplicateName(t *testing.T) {
 	w := doRequest(r, "POST", "/instance/create", apitypes.CreateInstanceRequest{
 		Name:     "redis-1",
 		Category: "cache",
+		Group:    "cache",
 		Engine:   "redis",
 		Type:     "standalone",
 		Server:   "srv1",
@@ -270,6 +271,7 @@ func TestInstanceCreate_ServerNotFound(t *testing.T) {
 	w := doRequest(r, "POST", "/instance/create", apitypes.CreateInstanceRequest{
 		Name:     "redis-1",
 		Category: "cache",
+		Group:    "cache",
 		Engine:   "redis",
 		Type:     "standalone",
 		Server:   "nonexistent",
@@ -309,6 +311,7 @@ func TestInstanceCreate_WithFakeAgent(t *testing.T) {
 	w := doRequest(r, "POST", "/instance/create", apitypes.CreateInstanceRequest{
 		Name:     "redis-1",
 		Category: "cache",
+		Group:    "cache",
 		Engine:   "redis",
 		Type:     "standalone",
 		Server:   "srv1",
@@ -354,7 +357,7 @@ func TestInstanceCreate_RoleMaster(t *testing.T) {
 		},
 	})
 	doRequest(s.Router(), "POST", "/instance/create", apitypes.CreateInstanceRequest{
-		Name: "redis-m", Category: "persistent", Engine: "redis", Type: "replication",
+		Name: "redis-m", Category: "persistent", Group: "redis", Engine: "redis", Type: "replication",
 		Server: "srv1", Port: 6379, Memory: "4Gi", CPUs: 2,
 	})
 	instances, _ := s.state.ReadInstances()
@@ -376,12 +379,19 @@ func TestInstanceCreate_RoleReplica(t *testing.T) {
 		},
 	})
 	doRequest(s.Router(), "POST", "/instance/create", apitypes.CreateInstanceRequest{
+		Name: "redis-m", Category: "persistent", Group: "redis", Engine: "redis", Type: "replication",
+		Server: "srv1", Port: 6379, Memory: "4Gi", CPUs: 2,
+	})
+	doRequest(s.Router(), "POST", "/instance/create", apitypes.CreateInstanceRequest{
 		Name: "redis-r", Category: "persistent", Engine: "redis", Type: "replication",
-		Server: "srv1", Port: 6380, Memory: "4Gi", CPUs: 2, ReplicaOf: "10.0.0.1:6379",
+		Server: "srv1", Port: 6380, Memory: "4Gi", CPUs: 2, ReplicaOf: "redis-m",
 	})
 	instances, _ := s.state.ReadInstances()
 	if instances.Instances["redis-r"].Role != "replica" {
 		t.Fatalf("expected role replica, got %s", instances.Instances["redis-r"].Role)
+	}
+	if instances.Instances["redis-r"].Group != "redis" {
+		t.Fatalf("expected replica to inherit group redis, got %s", instances.Instances["redis-r"].Group)
 	}
 }
 
