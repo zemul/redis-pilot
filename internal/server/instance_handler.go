@@ -280,7 +280,7 @@ func (s *Server) instanceCreate(c *gin.Context) {
 			}
 			return nil
 		})
-		s.audit.Log(audit.Record{Action: "instance.create", Level: audit.LevelImportant, Result: "failed", Detail: err.Error(),
+		s.audit.Log(audit.Record{Operator: operatorFrom(c), Action: "instance.create", Level: audit.LevelImportant, Result: "failed", Detail: err.Error(),
 			Target: map[string]interface{}{"instance": req.Name, "server": req.Server}})
 		fail(c, http.StatusInternalServerError, "agent create failed: "+err.Error())
 		return
@@ -298,6 +298,7 @@ func (s *Server) instanceCreate(c *gin.Context) {
 	s.updatePoolAllocated(pool, req.Server, req.Memory, req.CPUs, req.Name, true)
 
 	s.audit.Log(audit.Record{
+		Operator: operatorFrom(c),
 		Action:   "instance.create",
 		Level:    audit.LevelImportant,
 		Result:   "success",
@@ -390,6 +391,7 @@ func (s *Server) instanceDelete(c *gin.Context) {
 	}
 
 	s.audit.Log(audit.Record{
+		Operator: operatorFrom(c),
 		Action: "instance.delete", Level: audit.LevelCritical, Result: "success",
 		Duration: time.Since(start).Milliseconds(),
 		Target:   map[string]interface{}{"instance": req.Name, "server": inst.Server},
@@ -464,6 +466,7 @@ func (s *Server) instanceConfig(c *gin.Context) {
 	})
 
 	s.audit.Log(audit.Record{
+		Operator: operatorFrom(c),
 		Action: "config.update", Level: audit.LevelImportant, Result: "success",
 		Duration: time.Since(start).Milliseconds(),
 		Target:   map[string]interface{}{"instance": req.Name, "server": inst.Server},
@@ -529,6 +532,7 @@ func (s *Server) instancePromote(c *gin.Context) {
 	})
 
 	s.audit.Log(audit.Record{
+		Operator: operatorFrom(c),
 		Action: "topology.failover", Level: audit.LevelCritical, Result: "success",
 		Duration: time.Since(start).Milliseconds(),
 		Target:   map[string]interface{}{"instance": req.Name, "server": inst.Server},
@@ -616,6 +620,7 @@ func (s *Server) instanceReplicate(c *gin.Context) {
 	})
 
 	s.audit.Log(audit.Record{
+		Operator: operatorFrom(c),
 		Action: "topology.replicate", Level: audit.LevelImportant, Result: "success",
 		Duration: time.Since(start).Milliseconds(),
 		Target:   map[string]interface{}{"instance": req.Name, "server": inst.Server},
@@ -638,7 +643,7 @@ func (s *Server) backupExec(c *gin.Context) {
 		return
 	}
 
-	if err := s.execBackup(req.Name); err != nil {
+	if err := s.execBackup(req.Name, operatorFrom(c)); err != nil {
 		fail(c, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -646,7 +651,7 @@ func (s *Server) backupExec(c *gin.Context) {
 }
 
 // execBackup 执行一次备份，供 HTTP handler 和定时调度器共用。
-func (s *Server) execBackup(name string) error {
+func (s *Server) execBackup(name, operator string) error {
 	start := time.Now()
 
 	inst, srv, unlock, err := s.resolveAndLockInternal(name, "backup")
@@ -681,6 +686,7 @@ func (s *Server) execBackup(name string) error {
 	})
 
 	s.audit.Log(audit.Record{
+		Operator: operator,
 		Action: "backup.create", Level: audit.LevelNormal, Result: "success",
 		Duration: time.Since(start).Milliseconds(),
 		Target:   map[string]interface{}{"instance": name, "server": inst.Server},
@@ -716,6 +722,7 @@ func (s *Server) backupRestore(c *gin.Context) {
 	}
 
 	s.audit.Log(audit.Record{
+		Operator: operatorFrom(c),
 		Action: "backup.restore", Level: audit.LevelCritical, Result: "success",
 		Duration: time.Since(start).Milliseconds(),
 		Target:   map[string]interface{}{"instance": req.Name, "server": inst.Server},
@@ -851,6 +858,7 @@ func (s *Server) instanceSimpleOp(c *gin.Context, newStatus, agentPath, auditAct
 	})
 
 	s.audit.Log(audit.Record{
+		Operator: operatorFrom(c),
 		Action: auditAction, Level: level, Result: "success",
 		Duration: time.Since(start).Milliseconds(),
 		Target:   map[string]interface{}{"instance": req.Name, "server": inst.Server},

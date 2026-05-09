@@ -93,6 +93,8 @@ func (s *Server) Router() *gin.Engine {
 
 	r.GET("/inventory", s.inventory)
 	r.POST("/reconcile", s.reconcile)
+	r.GET("/health-check", s.healthCheck)
+	r.GET("/metrics", s.metricsCollect)
 
 	envoy := r.Group("/envoy")
 	{
@@ -130,6 +132,13 @@ func (s *Server) authMiddleware() gin.HandlerFunc {
 		}
 		c.Next()
 	}
+}
+
+func operatorFrom(c *gin.Context) string {
+	if op := c.GetHeader("X-Operator"); op != "" {
+		return op
+	}
+	return "unknown"
 }
 
 func ok(c *gin.Context, data interface{}) {

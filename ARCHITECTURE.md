@@ -82,7 +82,7 @@
 │                  Server (状态管理层)                           │
 │                                                              │
 │  持有 pool-state.yaml + instances-state.yaml                 │
-│  所有状态读写串行化，实例级操作锁 + 文件锁                      │
+│  所有状态读写串行化，实例级操作锁 + 内存读写锁                    │
 │  暴露与 CLI Tools 一一对应的 HTTP API                         │
 └──────────────────────────┬──────────────────────────────────┘
                            │ HTTP API (Token + HTTPS)
@@ -125,7 +125,7 @@
 | 职责 | 说明 |
 |------|------|
 | 状态文件管理 | 持有 pool-state.yaml + instances-state.yaml，所有读写经过 Server 串行化 |
-| 并发控制 | 文件锁（底层 IO）+ 实例级操作锁（业务层），防止多 GAL 会话并发冲突 |
+| 并发控制 | 内存读写锁（sync.RWMutex）+ 实例级操作锁（业务层），防止多 GAL 会话并发冲突。Server 为单进程部署，所有状态文件读写经过 Server 串行化，无需文件级锁 |
 | API 网关 | 暴露与 CLI Tools 一一对应的 HTTP API，转发操作到各服务器 Agent |
 | 审计日志 | 记录所有管理操作到 audit/audit-YYYYMMDD.jsonl |
 
@@ -1425,7 +1425,7 @@ Skill: redis-backup
 | `redis-status` | "查看 Redis 状态" | 池状态 / 实例状态 / 主从同步状态 |
 | `redis-envoy` | "代理管理" | 查看路由 / 更新配置 / 重载 Envoy |
 | `redis-inventory` | "资源清单" / "端口对应什么" | 从 instances-state + pool-state 派生端口/集群/用途映射表，支持按端口/服务器/引擎查询 |
-| `redis-audit` | "操作记录" / "谁做了什么" | 查询审计日志，支持按时间/实例/操作级别过滤，校验日志完整性 |
+| `redis-audit` | "操作记录" / "谁做了什么" | 查询审计日志，支持按时间/实例/操作级别过滤 |
 | `redis-pool` | "添加服务器" / "移除服务器" | 维护 pool-state.yaml，注册/移除/更新服务器信息，纯本地操作 |
 
 ### 5.2 Skill 与 Tool 映射
@@ -1459,7 +1459,7 @@ redis-envoy      → envoy_route_update, envoy_config_dump
 
 redis-inventory  → state_read, pool_query, audit_log_read(只读)
 
-redis-audit      → audit_log_read, audit_log_verify
+redis-audit      → audit_log_read
 
 redis-pool       → pool_add, pool_remove, pool_update, pool_query  (纯本地，不调用 Agent API)
 ```
@@ -1548,7 +1548,7 @@ podman run -d \
   -v /data/redis/{instance-name}/conf/kvrocks.conf:/etc/kvrocks/kvrocks.conf:Z \
   -v /data/redis/{instance-name}/data:/data:Z \
   -v /data/redis/{instance-name}/backup:/backup:Z \
-  docker.io/apache/kvrocks:2.9 \
+  docker.io/apache/kvrocks:2.15.0 \
   kvrocks --config /etc/kvrocks/kvrocks.conf
 ```
 
@@ -1655,25 +1655,7 @@ podman run -d \
 | **文件权限** | `0644`，仅 Agent 进程可写，运维只读 |
 | **保留策略** | 普通操作保留 90 天；关键操作保留 365 天 |
 | **归档方式** | 超期日志压缩为 `.gz` 归档，归档保留 1 年后自动清理 |
-| **防篡改** | 每日文件末尾追加校验行（当日所有记录的 SHA256 摘要） |
-
-#### 8.4.5 日志校验机制
-
-```json
-{
-  "id": "audit-20260427-checksum",
-  "type": "daily_checksum",
-  "date": "2026-04-27",
-  "record_count": 42,
-  "sha256": "a1b2c3d4...（当日全部记录的哈希）",
-  "generated_at": "2026-04-28T00:00:01+08:00"
-}
-```
-
-- 每日 00:00 自动生成校验行
-- 审计检查时重新计算哈希，与校验行比对，不一致则标记篡改告警
-
-#### 8.4.6 查询方式
+#### 8.4.5 查询方式
 
 | 查询场景 | 方式 | 说明 |
 |----------|------|------|
@@ -1681,7 +1663,6 @@ podman run -d \
 | "order 集群的变更" | `redis-audit --target order` | 按实例组过滤 |
 | "所有关键操作" | `redis-audit --level critical` | 按审计级别过滤 |
 | "某时间段的操作" | `redis-audit --from 2026-04-25 --to 2026-04-27` | 按时间范围 |
-| "校验日志完整性" | `redis-audit --verify` | 验证每日校验和 |
 
 ---
 
@@ -1762,7 +1743,7 @@ redis-diagnose Skill
 
 - [ ] Agent 开发：实例 CRUD + 健康检查
 - [ ] 状态文件设计：pool-state.yaml + instances-state.yaml
-- [ ] 审计日志：操作留痕（JSONL 追加写入 + 每日校验和）
+- [ ] 审计日志：操作留痕（JSONL 追加写入）
 - [ ] Skills：redis-create / redis-delete / redis-status / redis-audit
 - [ ] 验证：单点实例的完整生命周期 + 审计日志可查
 
@@ -1777,9 +1758,9 @@ redis-diagnose Skill
 ### Phase 3：运维增强
 
 - [ ] Agent：备份与恢复
-- [ ] 审计增强：关键操作长保留 + 归档压缩 + 完整性校验
+- [ ] 审计增强：关键操作长保留 + 归档压缩
 - [ ] Skills：redis-backup / redis-migrate / redis-failover
-- [ ] 验证：备份恢复 + 迁移 + 故障切换 + 审计校验通过
+- [ ] 验证：备份恢复 + 迁移 + 故障切换 + 审计可查
 
 ### Phase 4：智能运维
 

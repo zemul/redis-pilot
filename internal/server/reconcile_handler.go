@@ -152,6 +152,7 @@ func (s *Server) runReconcile() ([]ReconcileResult, error) {
 	for _, r := range results {
 		if r.Action == "alert" || r.Action == "updated" {
 			s.audit.Log(audit.Record{
+				Operator: "system",
 				Action: "reconcile",
 				Level:  audit.LevelImportant,
 				Result: r.Action,

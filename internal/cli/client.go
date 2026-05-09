@@ -11,12 +11,13 @@ import (
 )
 
 type Client struct {
-	base  string
-	token string
+	base     string
+	token    string
+	operator string
 }
 
 func NewClient(cfg *Config) *Client {
-	return &Client{base: "http://" + cfg.Server, token: cfg.Token}
+	return &Client{base: "http://" + cfg.Server, token: cfg.Token, operator: cfg.Operator}
 }
 
 func (c *Client) Get(path string) (*apitypes.APIResponse, error) {
@@ -43,6 +44,9 @@ func (c *Client) Post(path string, body interface{}) (*apitypes.APIResponse, err
 func (c *Client) do(req *http.Request) (*apitypes.APIResponse, error) {
 	if c.token != "" {
 		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+	if c.operator != "" {
+		req.Header.Set("X-Operator", c.operator)
 	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {

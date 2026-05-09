@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"sort"
 	"strconv"
@@ -30,7 +31,7 @@ func (s *Server) sentinelEvent(c *gin.Context) {
 	}
 	s.log.Infof("sentinel event received: event=%s group=%s old=%s new=%s", req.Event, req.Group, req.OldMaster, req.NewMaster)
 	if req.Group != "" && req.NewMaster != "" {
-		if err := s.handleSentinelFailover(req.Group, req.NewMaster, "event"); err != nil {
+		if err := s.handleSentinelFailover(req.Group, req.NewMaster, "event", operatorFrom(c)); err != nil {
 			fail(c, 500, err.Error())
 			return
 		}
@@ -80,7 +81,7 @@ func (s *Server) reconcileSentinelOnce() error {
 		}
 		expected := fmt.Sprintf("%s:%d", master.Host, master.Port)
 		if current != "" && current != expected {
-			if err := s.handleSentinelFailover(master.Group, current, "reconcile"); err != nil {
+			if err := s.handleSentinelFailover(master.Group, current, "reconcile", "system"); err != nil {
 				s.log.Errorf("handle sentinel failover group=%s new=%s failed: %v", master.Group, current, err)
 			}
 		}
@@ -169,7 +170,7 @@ func readRESPArrayStrings(r *bufio.Reader) ([]string, error) {
 			continue
 		}
 		buf := make([]byte, n+2)
-		if _, err := r.Read(buf); err != nil {
+		if _, err := io.ReadFull(r, buf); err != nil {
 			return nil, err
 		}
 		values = append(values, string(buf[:n]))
@@ -177,7 +178,7 @@ func readRESPArrayStrings(r *bufio.Reader) ([]string, error) {
 	return values, nil
 }
 
-func (s *Server) handleSentinelFailover(group, newMasterAddr, source string) error {
+func (s *Server) handleSentinelFailover(group, newMasterAddr, source, operator string) error {
 	sessionID := fmt.Sprintf("sentinel-%s-%d", group, time.Now().UnixNano())
 	start := time.Now()
 	var oldMasterName, oldMasterServer, newMasterName, newMasterServer string
@@ -297,6 +298,7 @@ func (s *Server) handleSentinelFailover(group, newMasterAddr, source string) err
 	})
 	if err != nil {
 		s.audit.Log(audit.Record{
+			Operator: operator,
 			Action: "topology.failover", Level: audit.LevelCritical, Result: "failed",
 			Duration: time.Since(start).Milliseconds(),
 			Target:   map[string]interface{}{"instance_group": group, "new_master": newMasterAddr},
@@ -316,6 +318,7 @@ func (s *Server) handleSentinelFailover(group, newMasterAddr, source string) err
 		detail = "sentinel failover synchronized; replica replenishment is still required"
 	}
 	s.audit.Log(audit.Record{
+		Operator: operator,
 		Action: "topology.failover", Level: audit.LevelCritical, Result: result,
 		Duration: time.Since(start).Milliseconds(),
 		Target: map[string]interface{}{
