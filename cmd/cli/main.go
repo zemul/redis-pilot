@@ -38,6 +38,8 @@ var versionCmd = &cobra.Command{
 }
 
 func init() {
+	cobra.EnableCommandSorting = false
+
 	rootCmd.PersistentFlags().String("server", "", "Server address (default: config or 127.0.0.1:8080)")
 	rootCmd.PersistentFlags().String("token", "", "Auth token")
 

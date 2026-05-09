@@ -14,18 +14,26 @@ var poolCmd = &cobra.Command{
 }
 
 var poolQueryCmd = &cobra.Command{
-	Use:   "query",
-	Short: "Query server pool",
+	Use:     "query",
+	Short:   "Query server pool",
+	Long:    "List all servers in the pool with their capacity, allocated resources, and status.",
+	Example: `  redis-pilot-cli pool query`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return checkResp(client.Get("/pool/query"))
 	},
 }
 
 var poolAddCmd = &cobra.Command{
-	Use:   "add",
+	Use:   "add <name>",
 	Short: "Register a server",
+	Long:  "Add a new server to the pool. The server must have the Agent running and reachable.",
+	Example: `  redis-pilot-cli pool add redis01 --endpoint 10.0.0.1 --cpu 16 --memory 64Gi --disk 500Gi
+
+  # With agent token and zone label
+  redis-pilot-cli pool add redis01 --endpoint 10.0.0.1 --cpu 16 --memory 64Gi --disk 500Gi \
+    --agent-token secret123 --zone cn-north-1`,
+	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		name, _ := cmd.Flags().GetString("name")
 		endpoint, _ := cmd.Flags().GetString("endpoint")
 		agentPort, _ := cmd.Flags().GetInt("agent-port")
 		agentToken, _ := cmd.Flags().GetString("agent-token")
@@ -44,7 +52,7 @@ var poolAddCmd = &cobra.Command{
 		}
 
 		return checkResp(client.Post("/pool/add", map[string]interface{}{
-			"name": name,
+			"name": args[0],
 			"server": &apitypes.PoolServer{
 				Endpoint:   endpoint,
 				AgentPort:  agentPort,
@@ -63,19 +71,23 @@ var poolAddCmd = &cobra.Command{
 }
 
 var poolRemoveCmd = &cobra.Command{
-	Use:   "remove",
-	Short: "Remove a server",
+	Use:     "remove <name>",
+	Short:   "Remove a server",
+	Long:    "Remove a server from the pool. The server must have no running instances.",
+	Example: `  redis-pilot-cli pool remove redis01`,
+	Args:    cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		name, _ := cmd.Flags().GetString("name")
-		return checkResp(client.Post("/pool/remove", map[string]string{"name": name}))
+		return checkResp(client.Post("/pool/remove", map[string]string{"name": args[0]}))
 	},
 }
 
 var poolUpdateCmd = &cobra.Command{
-	Use:   "update",
-	Short: "Update server info",
+	Use:     "update <name>",
+	Short:   "Update server info",
+	Long:    "Update server metadata (capacity, labels, agent token) from a JSON file.",
+	Example: `  redis-pilot-cli pool update redis01 --json ./redis01.json`,
+	Args:    cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		name, _ := cmd.Flags().GetString("name")
 		jsonFile, _ := cmd.Flags().GetString("json")
 
 		data, err := os.ReadFile(jsonFile)
@@ -87,7 +99,7 @@ var poolUpdateCmd = &cobra.Command{
 			return err
 		}
 		return checkResp(client.Post("/pool/update", map[string]interface{}{
-			"name":   name,
+			"name":   args[0],
 			"server": &srv,
 		}))
 	},
@@ -96,7 +108,6 @@ var poolUpdateCmd = &cobra.Command{
 func init() {
 	poolCmd.AddCommand(poolQueryCmd, poolAddCmd, poolRemoveCmd, poolUpdateCmd)
 
-	poolAddCmd.Flags().String("name", "", "Server name")
 	poolAddCmd.Flags().String("endpoint", "", "Server IP")
 	poolAddCmd.Flags().Int("agent-port", 8400, "Agent port")
 	poolAddCmd.Flags().String("agent-token", "", "Agent token")
@@ -105,16 +116,10 @@ func init() {
 	poolAddCmd.Flags().String("disk", "", "Disk (e.g. 500Gi)")
 	poolAddCmd.Flags().String("zone", "", "Zone label")
 	poolAddCmd.Flags().String("role", "production", "Role label")
-	poolAddCmd.MarkFlagRequired("name")
 	poolAddCmd.MarkFlagRequired("endpoint")
 	poolAddCmd.MarkFlagRequired("cpu")
 	poolAddCmd.MarkFlagRequired("memory")
 
-	poolRemoveCmd.Flags().String("name", "", "Server name")
-	poolRemoveCmd.MarkFlagRequired("name")
-
-	poolUpdateCmd.Flags().String("name", "", "Server name")
 	poolUpdateCmd.Flags().String("json", "", "Server JSON file path")
-	poolUpdateCmd.MarkFlagRequired("name")
 	poolUpdateCmd.MarkFlagRequired("json")
 }

@@ -2,6 +2,7 @@ package agent
 
 import (
 	"fmt"
+	"net"
 	"runtime"
 	"strings"
 	"sync"
@@ -66,15 +67,19 @@ func (m *monitor) hostResources() map[string]interface{} {
 // runHealthCheck 每 30s 检查实例存活，挂了自动重启
 func (a *Agent) runHealthCheck() {
 	for range time.Tick(30 * time.Second) {
-		containers, err := podmanListContainers()
+		containers, err := podmanListContainersWithPort()
 		if err != nil {
 			continue
 		}
-		for _, name := range containers {
-			instName := trimPrefix(name)
-			if _, err := redisCmd(instName, a.getPassword(instName), "PING"); err != nil {
-				a.log.Errorf("instance %s unhealthy, restarting", name)
-				podmanRestart(name)
+		for _, c := range containers {
+			if c.Port == "" {
+				continue
+			}
+			instName := trimPrefix(c.Name)
+			pw := a.getPassword(instName)
+			if err := tcpPing("127.0.0.1:"+c.Port, pw); err != nil {
+				a.log.Errorf("instance %s unhealthy, restarting", c.Name)
+				podmanRestart(c.Name)
 			}
 		}
 	}
@@ -151,6 +156,46 @@ func (a *Agent) collectHostMetrics(containers []string) {
 	a.mon.host.UpdatedAt = time.Now()
 }
 
+type containerInfo struct {
+	Name string
+	Port string // host port mapped to the container
+}
+
+func podmanListContainersWithPort() ([]containerInfo, error) {
+	out, err := runShell("podman", "ps", "--format", "{{.Names}}\t{{.Ports}}")
+	if err != nil {
+		return nil, err
+	}
+	if out == "" {
+		return nil, nil
+	}
+	var result []containerInfo
+	for _, line := range strings.Split(out, "\n") {
+		parts := strings.SplitN(line, "\t", 2)
+		if len(parts) == 0 || parts[0] == "" {
+			continue
+		}
+		port := extractHostPort(parts[1])
+		result = append(result, containerInfo{Name: parts[0], Port: port})
+	}
+	return result, nil
+}
+
+// extractHostPort parses "0.0.0.0:6379->6379/tcp" and returns "6379" (the host port).
+func extractHostPort(ports string) string {
+	// format: "0.0.0.0:6379->6379/tcp" or "0.0.0.0:6380->6666/tcp"
+	idx := strings.Index(ports, "->")
+	if idx < 0 {
+		return ""
+	}
+	left := ports[:idx]
+	colon := strings.LastIndex(left, ":")
+	if colon < 0 {
+		return ""
+	}
+	return left[colon+1:]
+}
+
 func podmanListContainers() ([]string, error) {
 	out, err := runShell("podman", "ps", "--format", "{{.Names}}")
 	if err != nil {
@@ -164,6 +209,34 @@ func podmanListContainers() ([]string, error) {
 
 func podmanRestart(name string) {
 	runShell("podman", "restart", name)
+}
+
+// tcpPing connects to addr and sends a Redis PING command via RESP protocol.
+func tcpPing(addr, password string) error {
+	conn, err := net.DialTimeout("tcp", addr, 3*time.Second)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	conn.SetDeadline(time.Now().Add(3 * time.Second))
+
+	if password != "" {
+		fmt.Fprintf(conn, "*2\r\n$4\r\nAUTH\r\n$%d\r\n%s\r\n", len(password), password)
+		buf := make([]byte, 128)
+		conn.Read(buf)
+	}
+
+	fmt.Fprintf(conn, "*1\r\n$4\r\nPING\r\n")
+	buf := make([]byte, 64)
+	n, err := conn.Read(buf)
+	if err != nil {
+		return err
+	}
+	resp := string(buf[:n])
+	if !strings.Contains(resp, "PONG") && !strings.HasPrefix(resp, "+") {
+		return fmt.Errorf("unexpected: %s", resp)
+	}
+	return nil
 }
 
 func trimPrefix(name string) string {
