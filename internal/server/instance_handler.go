@@ -669,6 +669,68 @@ func (s *Server) backupList(c *gin.Context) {
 	ok(c, result)
 }
 
+func (s *Server) backupGetSchedule(c *gin.Context) {
+	name := c.Query("name")
+	if name == "" {
+		fail(c, http.StatusBadRequest, "name is required")
+		return
+	}
+	instances, err := s.state.ReadInstances()
+	if err != nil {
+		fail(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+	inst, ok2 := instances.Instances[name]
+	if !ok2 {
+		fail(c, http.StatusNotFound, "instance not found")
+		return
+	}
+	if inst.Backup == nil {
+		ok(c, map[string]interface{}{"name": name, "schedule": "", "retention": 0})
+		return
+	}
+	ok(c, map[string]interface{}{
+		"name":      name,
+		"schedule":  inst.Backup.Schedule,
+		"retention": inst.Backup.Retention,
+	})
+}
+
+func (s *Server) backupSetSchedule(c *gin.Context) {
+	var req struct {
+		Name      string `json:"name" binding:"required"`
+		Schedule  string `json:"schedule"`
+		Retention int    `json:"retention"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		fail(c, http.StatusBadRequest, err.Error())
+		return
+	}
+	err := s.state.WithInstances(func(instances *apitypes.InstancesState) error {
+		inst, ok2 := instances.Instances[req.Name]
+		if !ok2 {
+			return fmt.Errorf("instance not found")
+		}
+		if inst.Backup == nil {
+			inst.Backup = &apitypes.BackupConfig{}
+		}
+		inst.Backup.Schedule = req.Schedule
+		if req.Retention > 0 {
+			inst.Backup.Retention = req.Retention
+		}
+		return nil
+	})
+	if err != nil {
+		if err.Error() == "instance not found" {
+			fail(c, http.StatusNotFound, err.Error())
+		} else {
+			fail(c, http.StatusInternalServerError, err.Error())
+		}
+		return
+	}
+	ok(c, nil)
+}
+
 // --- 辅助方法 ---
 
 // instanceSimpleOp 处理 start/stop 这类只需要转发给 Agent 的操作

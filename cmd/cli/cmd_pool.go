@@ -10,12 +10,12 @@ import (
 
 var poolCmd = &cobra.Command{
 	Use:   "pool",
-	Short: "资源池管理",
+	Short: "Server pool management",
 }
 
 var poolQueryCmd = &cobra.Command{
 	Use:   "query",
-	Short: "查询资源池",
+	Short: "Query server pool",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return checkResp(client.Get("/pool/query"))
 	},
@@ -23,7 +23,7 @@ var poolQueryCmd = &cobra.Command{
 
 var poolAddCmd = &cobra.Command{
 	Use:   "add",
-	Short: "注册服务器",
+	Short: "Register a server",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		name, _ := cmd.Flags().GetString("name")
 		endpoint, _ := cmd.Flags().GetString("endpoint")
@@ -64,7 +64,7 @@ var poolAddCmd = &cobra.Command{
 
 var poolRemoveCmd = &cobra.Command{
 	Use:   "remove",
-	Short: "移除服务器",
+	Short: "Remove a server",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		name, _ := cmd.Flags().GetString("name")
 		return checkResp(client.Post("/pool/remove", map[string]string{"name": name}))
@@ -73,7 +73,7 @@ var poolRemoveCmd = &cobra.Command{
 
 var poolUpdateCmd = &cobra.Command{
 	Use:   "update",
-	Short: "更新服务器信息",
+	Short: "Update server info",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		name, _ := cmd.Flags().GetString("name")
 		jsonFile, _ := cmd.Flags().GetString("json")
@@ -96,25 +96,25 @@ var poolUpdateCmd = &cobra.Command{
 func init() {
 	poolCmd.AddCommand(poolQueryCmd, poolAddCmd, poolRemoveCmd, poolUpdateCmd)
 
-	poolAddCmd.Flags().String("name", "", "服务器名称")
-	poolAddCmd.Flags().String("endpoint", "", "服务器 IP")
-	poolAddCmd.Flags().Int("agent-port", 8400, "Agent 端口")
-	poolAddCmd.Flags().String("agent-token", "", "Agent Token")
-	poolAddCmd.Flags().Int("cpu", 0, "CPU 核数")
-	poolAddCmd.Flags().String("memory", "", "内存 (e.g. 64Gi)")
-	poolAddCmd.Flags().String("disk", "", "磁盘 (e.g. 500Gi)")
-	poolAddCmd.Flags().String("zone", "", "可用区标签")
-	poolAddCmd.Flags().String("role", "production", "角色标签")
+	poolAddCmd.Flags().String("name", "", "Server name")
+	poolAddCmd.Flags().String("endpoint", "", "Server IP")
+	poolAddCmd.Flags().Int("agent-port", 8400, "Agent port")
+	poolAddCmd.Flags().String("agent-token", "", "Agent token")
+	poolAddCmd.Flags().Int("cpu", 0, "CPU cores")
+	poolAddCmd.Flags().String("memory", "", "Memory (e.g. 64Gi)")
+	poolAddCmd.Flags().String("disk", "", "Disk (e.g. 500Gi)")
+	poolAddCmd.Flags().String("zone", "", "Zone label")
+	poolAddCmd.Flags().String("role", "production", "Role label")
 	poolAddCmd.MarkFlagRequired("name")
 	poolAddCmd.MarkFlagRequired("endpoint")
 	poolAddCmd.MarkFlagRequired("cpu")
 	poolAddCmd.MarkFlagRequired("memory")
 
-	poolRemoveCmd.Flags().String("name", "", "服务器名称")
+	poolRemoveCmd.Flags().String("name", "", "Server name")
 	poolRemoveCmd.MarkFlagRequired("name")
 
-	poolUpdateCmd.Flags().String("name", "", "服务器名称")
-	poolUpdateCmd.Flags().String("json", "", "服务器 JSON 文件路径")
+	poolUpdateCmd.Flags().String("name", "", "Server name")
+	poolUpdateCmd.Flags().String("json", "", "Server JSON file path")
 	poolUpdateCmd.MarkFlagRequired("name")
 	poolUpdateCmd.MarkFlagRequired("json")
 }

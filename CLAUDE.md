@@ -38,7 +38,7 @@ redis-manager/
 - `server.yaml`：Server 监听端口、CLI 鉴权 Token（空则不鉴权）
 - `pool-state.yaml`：服务器资源池，含各 Agent endpoint 和 Token（空则不鉴权）
 - `instances-state.yaml`：所有实例的完整状态
-- `~/.redis-tool/config.yaml`：CLI 配置，Server 地址默认 127.0.0.1:8080
+- `~/.redis-pilot-cli/config.yaml`：CLI 配置，Server 地址默认 127.0.0.1:8080
 
 ## 认证
 - CLI → Server：Bearer Token，Token 为空则跳过鉴权

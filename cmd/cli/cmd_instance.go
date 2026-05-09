@@ -8,12 +8,12 @@ import (
 
 var instanceCmd = &cobra.Command{
 	Use:   "instance",
-	Short: "实例管理",
+	Short: "Instance management",
 }
 
 var instanceListCmd = &cobra.Command{
 	Use:   "list",
-	Short: "列出所有实例",
+	Short: "List all instances",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return checkResp(client.Get("/instance/list"))
 	},
@@ -21,7 +21,7 @@ var instanceListCmd = &cobra.Command{
 
 var instanceStatusCmd = &cobra.Command{
 	Use:   "status",
-	Short: "查看实例状态",
+	Short: "Show instance status",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		name, _ := cmd.Flags().GetString("name")
 		return checkResp(client.Get("/instance/status?name=" + name))
@@ -30,7 +30,7 @@ var instanceStatusCmd = &cobra.Command{
 
 var instanceCreateCmd = &cobra.Command{
 	Use:   "create",
-	Short: "创建实例",
+	Short: "Create an instance",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		name, _ := cmd.Flags().GetString("name")
 		category, _ := cmd.Flags().GetString("category")
@@ -67,7 +67,7 @@ var instanceCreateCmd = &cobra.Command{
 
 var instanceDeleteCmd = &cobra.Command{
 	Use:   "delete",
-	Short: "删除实例",
+	Short: "Delete an instance",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		name, _ := cmd.Flags().GetString("name")
 		cleanData, _ := cmd.Flags().GetBool("clean-data")
@@ -80,7 +80,7 @@ var instanceDeleteCmd = &cobra.Command{
 
 var instanceStartCmd = &cobra.Command{
 	Use:   "start",
-	Short: "启动实例",
+	Short: "Start an instance",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		name, _ := cmd.Flags().GetString("name")
 		return checkResp(client.Post("/instance/start", map[string]string{"name": name}))
@@ -89,7 +89,7 @@ var instanceStartCmd = &cobra.Command{
 
 var instanceStopCmd = &cobra.Command{
 	Use:   "stop",
-	Short: "停止实例",
+	Short: "Stop an instance",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		name, _ := cmd.Flags().GetString("name")
 		return checkResp(client.Post("/instance/stop", map[string]string{"name": name}))
@@ -98,7 +98,7 @@ var instanceStopCmd = &cobra.Command{
 
 var instanceConfigCmd = &cobra.Command{
 	Use:   "config",
-	Short: "更新实例配置",
+	Short: "Update instance config",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		name, _ := cmd.Flags().GetString("name")
 		overrides, _ := cmd.Flags().GetString("set")
@@ -113,7 +113,7 @@ var instanceConfigCmd = &cobra.Command{
 
 var instancePromoteCmd = &cobra.Command{
 	Use:   "promote",
-	Short: "从库提升为主库",
+	Short: "Promote replica to master",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		name, _ := cmd.Flags().GetString("name")
 		return checkResp(client.Post("/instance/promote", map[string]string{"name": name}))
@@ -122,7 +122,7 @@ var instancePromoteCmd = &cobra.Command{
 
 var instanceReplicateCmd = &cobra.Command{
 	Use:   "replicate",
-	Short: "设置复制目标",
+	Short: "Set replication target",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		name, _ := cmd.Flags().GetString("name")
 		replicaOf, _ := cmd.Flags().GetString("replica-of")
@@ -140,44 +140,44 @@ func init() {
 		instanceConfigCmd, instancePromoteCmd, instanceReplicateCmd,
 	)
 
-	instanceStatusCmd.Flags().String("name", "", "实例名称")
+	instanceStatusCmd.Flags().String("name", "", "Instance name")
 	instanceStatusCmd.MarkFlagRequired("name")
 
-	instanceCreateCmd.Flags().String("name", "", "实例名称")
-	instanceCreateCmd.Flags().String("category", "cache", "类型: cache | persistent")
-	instanceCreateCmd.Flags().String("engine", "redis", "引擎: redis | kvrocks")
-	instanceCreateCmd.Flags().String("type", "standalone", "拓扑: standalone | replication")
-	instanceCreateCmd.Flags().String("server", "", "目标服务器")
-	instanceCreateCmd.Flags().Int("port", 0, "端口 (0=自动分配)")
-	instanceCreateCmd.Flags().String("memory", "1Gi", "内存")
-	instanceCreateCmd.Flags().Int("cpus", 1, "CPU")
-	instanceCreateCmd.Flags().String("password", "", "密码")
-	instanceCreateCmd.Flags().String("replica-of", "", "主库实例名或地址")
-	instanceCreateCmd.Flags().String("config", "", "配置覆盖 (k=v,k=v)")
+	instanceCreateCmd.Flags().String("name", "", "Instance name")
+	instanceCreateCmd.Flags().String("category", "cache", "Category: cache | persistent")
+	instanceCreateCmd.Flags().String("engine", "redis", "Engine: redis | kvrocks")
+	instanceCreateCmd.Flags().String("type", "standalone", "Topology: standalone | replication")
+	instanceCreateCmd.Flags().String("server", "", "Target server")
+	instanceCreateCmd.Flags().Int("port", 0, "Port (0=auto)")
+	instanceCreateCmd.Flags().String("memory", "1Gi", "Memory")
+	instanceCreateCmd.Flags().Int("cpus", 1, "CPU cores")
+	instanceCreateCmd.Flags().String("password", "", "Password")
+	instanceCreateCmd.Flags().String("replica-of", "", "Master instance name or address")
+	instanceCreateCmd.Flags().String("config", "", "Config overrides (k=v,k=v)")
 	instanceCreateCmd.MarkFlagRequired("name")
 	instanceCreateCmd.MarkFlagRequired("server")
 
-	instanceDeleteCmd.Flags().String("name", "", "实例名称")
-	instanceDeleteCmd.Flags().Bool("clean-data", false, "同时清理数据目录")
+	instanceDeleteCmd.Flags().String("name", "", "Instance name")
+	instanceDeleteCmd.Flags().Bool("clean-data", false, "Also remove data directory")
 	instanceDeleteCmd.MarkFlagRequired("name")
 
-	instanceStartCmd.Flags().String("name", "", "实例名称")
+	instanceStartCmd.Flags().String("name", "", "Instance name")
 	instanceStartCmd.MarkFlagRequired("name")
 
-	instanceStopCmd.Flags().String("name", "", "实例名称")
+	instanceStopCmd.Flags().String("name", "", "Instance name")
 	instanceStopCmd.MarkFlagRequired("name")
 
-	instanceConfigCmd.Flags().String("name", "", "实例名称")
-	instanceConfigCmd.Flags().String("set", "", "配置项 (k=v,k=v)")
-	instanceConfigCmd.Flags().Bool("restart", false, "是否重启生效")
+	instanceConfigCmd.Flags().String("name", "", "Instance name")
+	instanceConfigCmd.Flags().String("set", "", "Config entries (k=v,k=v)")
+	instanceConfigCmd.Flags().Bool("restart", false, "Restart to apply")
 	instanceConfigCmd.MarkFlagRequired("name")
 	instanceConfigCmd.MarkFlagRequired("set")
 
-	instancePromoteCmd.Flags().String("name", "", "实例名称")
+	instancePromoteCmd.Flags().String("name", "", "Instance name")
 	instancePromoteCmd.MarkFlagRequired("name")
 
-	instanceReplicateCmd.Flags().String("name", "", "实例名称")
-	instanceReplicateCmd.Flags().String("replica-of", "", "主库实例名或地址")
+	instanceReplicateCmd.Flags().String("name", "", "Instance name")
+	instanceReplicateCmd.Flags().String("replica-of", "", "Master instance name or address")
 	instanceReplicateCmd.MarkFlagRequired("name")
 	instanceReplicateCmd.MarkFlagRequired("replica-of")
 }

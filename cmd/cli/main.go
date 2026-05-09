@@ -16,7 +16,7 @@ var client *cli.Client
 
 var rootCmd = &cobra.Command{
 	Use:   "redis-pilot-cli",
-	Short: "Redis 多实例管理 CLI",
+	Short: "Redis multi-instance management CLI",
 	PersistentPreRun: func(cmd *cobra.Command, args []string) {
 		cfg := cli.LoadConfig()
 		if s, _ := cmd.Flags().GetString("server"); s != "" {
@@ -31,15 +31,15 @@ var rootCmd = &cobra.Command{
 
 var versionCmd = &cobra.Command{
 	Use:   "version",
-	Short: "显示版本号",
+	Short: "Show version",
 	Run: func(cmd *cobra.Command, args []string) {
 		fmt.Println("redis-pilot-cli", version)
 	},
 }
 
 func init() {
-	rootCmd.PersistentFlags().String("server", "", "Server 地址 (default: config file or 127.0.0.1:8080)")
-	rootCmd.PersistentFlags().String("token", "", "鉴权 Token")
+	rootCmd.PersistentFlags().String("server", "", "Server address (default: config or 127.0.0.1:8080)")
+	rootCmd.PersistentFlags().String("token", "", "Auth token")
 
 	rootCmd.AddCommand(versionCmd)
 	rootCmd.AddCommand(poolCmd)

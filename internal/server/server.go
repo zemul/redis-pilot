@@ -87,6 +87,8 @@ func (s *Server) Router() *gin.Engine {
 		backup.POST("/exec", s.backupExec)
 		backup.POST("/restore", s.backupRestore)
 		backup.GET("/list", s.backupList)
+		backup.GET("/schedule", s.backupGetSchedule)
+		backup.POST("/schedule", s.backupSetSchedule)
 	}
 
 	r.GET("/inventory", s.inventory)

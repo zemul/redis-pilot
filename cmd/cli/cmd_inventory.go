@@ -8,7 +8,7 @@ import (
 
 var inventoryCmd = &cobra.Command{
 	Use:   "inventory",
-	Short: "资源清单查询",
+	Short: "Query resource inventory",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		view, _ := cmd.Flags().GetString("view")
 		port, _ := cmd.Flags().GetString("port")
@@ -30,8 +30,8 @@ var inventoryCmd = &cobra.Command{
 }
 
 func init() {
-	inventoryCmd.Flags().String("port", "", "按 Envoy 端口查询")
-	inventoryCmd.Flags().String("server", "", "按服务器名查询")
-	inventoryCmd.Flags().String("engine", "", "按引擎过滤 (redis|kvrocks)")
-	inventoryCmd.Flags().String("view", "summary", "视图: summary | port | server")
+	inventoryCmd.Flags().String("port", "", "Filter by Envoy port")
+	inventoryCmd.Flags().String("server", "", "Filter by server name")
+	inventoryCmd.Flags().String("engine", "", "Filter by engine (redis|kvrocks)")
+	inventoryCmd.Flags().String("view", "summary", "View: summary | port | server")
 }

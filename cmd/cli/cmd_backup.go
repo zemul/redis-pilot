@@ -4,12 +4,12 @@ import "github.com/spf13/cobra"
 
 var backupCmd = &cobra.Command{
 	Use:   "backup",
-	Short: "备份管理",
+	Short: "Backup management",
 }
 
 var backupExecCmd = &cobra.Command{
 	Use:   "exec",
-	Short: "执行备份",
+	Short: "Execute a backup",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		name, _ := cmd.Flags().GetString("name")
 		return checkResp(client.Post("/backup/exec", map[string]string{"name": name}))
@@ -18,7 +18,7 @@ var backupExecCmd = &cobra.Command{
 
 var backupRestoreCmd = &cobra.Command{
 	Use:   "restore",
-	Short: "从备份恢复",
+	Short: "Restore from backup",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		name, _ := cmd.Flags().GetString("name")
 		backupTs, _ := cmd.Flags().GetString("backup-ts")
@@ -31,24 +31,57 @@ var backupRestoreCmd = &cobra.Command{
 
 var backupListCmd = &cobra.Command{
 	Use:   "list",
-	Short: "列出可用备份",
+	Short: "List available backups",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		name, _ := cmd.Flags().GetString("name")
 		return checkResp(client.Get("/backup/list?name=" + name))
 	},
 }
 
-func init() {
-	backupCmd.AddCommand(backupExecCmd, backupRestoreCmd, backupListCmd)
+var backupGetScheduleCmd = &cobra.Command{
+	Use:   "get-schedule",
+	Short: "Get backup schedule for an instance",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		name, _ := cmd.Flags().GetString("name")
+		return checkResp(client.Get("/backup/schedule?name=" + name))
+	},
+}
 
-	backupExecCmd.Flags().String("name", "", "实例名称")
+var backupSetScheduleCmd = &cobra.Command{
+	Use:   "set-schedule",
+	Short: "Set backup schedule for an instance",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		name, _ := cmd.Flags().GetString("name")
+		cron, _ := cmd.Flags().GetString("cron")
+		retention, _ := cmd.Flags().GetInt("retention")
+		return checkResp(client.Post("/backup/schedule", map[string]interface{}{
+			"name":      name,
+			"schedule":  cron,
+			"retention": retention,
+		}))
+	},
+}
+
+func init() {
+	backupCmd.AddCommand(backupExecCmd, backupRestoreCmd, backupListCmd, backupGetScheduleCmd, backupSetScheduleCmd)
+
+	backupExecCmd.Flags().String("name", "", "Instance name")
 	backupExecCmd.MarkFlagRequired("name")
 
-	backupRestoreCmd.Flags().String("name", "", "实例名称")
-	backupRestoreCmd.Flags().String("backup-ts", "", "备份时间戳")
+	backupRestoreCmd.Flags().String("name", "", "Instance name")
+	backupRestoreCmd.Flags().String("backup-ts", "", "Backup timestamp")
 	backupRestoreCmd.MarkFlagRequired("name")
 	backupRestoreCmd.MarkFlagRequired("backup-ts")
 
-	backupListCmd.Flags().String("name", "", "实例名称")
+	backupListCmd.Flags().String("name", "", "Instance name")
 	backupListCmd.MarkFlagRequired("name")
+
+	backupGetScheduleCmd.Flags().String("name", "", "Instance name")
+	backupGetScheduleCmd.MarkFlagRequired("name")
+
+	backupSetScheduleCmd.Flags().String("name", "", "Instance name")
+	backupSetScheduleCmd.Flags().String("cron", "", "Cron expression (empty to disable)")
+	backupSetScheduleCmd.Flags().Int("retention", 0, "Number of backups to retain (0 = keep current)")
+	backupSetScheduleCmd.MarkFlagRequired("name")
 }
+

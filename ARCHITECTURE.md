@@ -68,12 +68,13 @@
 ┌─────────────────────────────────────────────────────────────┐
 │                    CLI (原子操作层)                            │
 │                                                              │
-│  redis-tool pool-query / pool-add / pool-remove / pool-update│
-│  redis-tool instance-create / delete / start / stop         │
-│  redis-tool instance-config / promote / replicate           │
-│  redis-tool backup-exec / restore / cleanup                 │
-│  redis-tool health-check / metrics-collect                  │
-│  redis-tool envoy-route-update                              │
+│  redis-pilot-cli pool-query / pool-add / pool-remove / pool-update│
+│  redis-pilot-cli instance-create / delete / start / stop         │
+│  redis-pilot-cli instance-config / promote / replicate           │
+│  redis-pilot-cli backup-exec / restore / cleanup                 │
+│  redis-pilot-cli backup set-schedule / get-schedule              │
+│  redis-pilot-cli health-check / metrics-collect                  │
+│  redis-pilot-cli envoy-route-update                              │
 └──────────────────────────┬──────────────────────────────────┘
                            │ HTTP API (Token + HTTPS)
                            ▼
@@ -192,7 +193,7 @@ servers:
 CLI 配置：
 
 ```yaml
-# ~/.redis-tool/config.yaml
+# ~/.redis-pilot-cli/config.yaml
 server: 127.0.0.1:8080   # 默认连接本机 Server
 token: ""                # 为空则不鉴权
 ```
@@ -673,6 +674,31 @@ Kvrocks 基于 RocksDB 存储，数据天然持久化到磁盘，无需 RDB/AOF�
   - 使用 RocksDB Checkpoint 创建一致性快照（不阻塞读写）
   - 从库执行 `ROCKSDB.CHECKPOINT` 生成快照目录，打包复制到 backup 目录
   - 无从库的单点实例，在主库执行 Checkpoint
+
+**定时备份配置：**
+
+备份调度由 Agent 内置 cron 驱动，配置写在 instances-state.yaml 的实例 `backup` 字段：
+
+```yaml
+backup:
+  schedule: "0 2 * * *"   # cron 表达式，空字符串表示不启用自动备份
+  retention: 7             # 保留份数
+```
+
+通过 CLI 配置：
+
+```bash
+# 设置定时备份
+redis-pilot-cli backup set-schedule <instance> --cron "0 2 * * *" --retention 7
+
+# 查看当前配置
+redis-pilot-cli backup get-schedule <instance>
+
+# 禁用自动备份
+redis-pilot-cli backup set-schedule <instance> --cron ""
+```
+
+Agent 启动时读取所有本机实例的 `backup.schedule`，注册内部 cron。实例配置变更时，Agent 重新加载调度。
 
 **备份轮转：**
 
