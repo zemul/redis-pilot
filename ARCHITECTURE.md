@@ -1155,6 +1155,7 @@ Skill: redis-migrate
   │       replica=server-b:6379)
   │
   ├─7. 更新状态
+  
   │   state_update(...)
   │
   └─8. 通知: "迁移完成，主库已从 server-a 切换到 server-c"

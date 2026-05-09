@@ -48,6 +48,36 @@ func resolveReplicaOf(pool *apitypes.PoolState, instances *apitypes.InstancesSta
 	return fmt.Sprintf("%s:%d", endpoint, inst.Port), replicaOf, nil
 }
 
+// defaultPersistence 根据 engine/category/overrides 生成默认持久化配置记录。
+// Kvrocks 返回 nil（RocksDB 原生持久化，无需 RDB/AOF）。
+func defaultPersistence(engine, category string, overrides map[string]string) *apitypes.Persistence {
+	if engine == "kvrocks" {
+		return nil
+	}
+	p := &apitypes.Persistence{
+		RDB:          true,
+		RDBFrequency: "3600 1 300 100 60 10000",
+		AOF:          category != "cache",
+		AOFPolicy:    "everysec",
+	}
+	// 用 config_overrides 中的显式值修正记录
+	if v, ok := overrides["appendfsync"]; ok {
+		p.AOFPolicy = v
+	}
+	if v, ok := overrides["appendonly"]; ok {
+		p.AOF = v == "yes"
+	}
+	if v, ok := overrides["save"]; ok {
+		if v == "" {
+			p.RDB = false
+			p.RDBFrequency = ""
+		} else {
+			p.RDBFrequency = v
+		}
+	}
+	return p
+}
+
 func (s *Server) instanceList(c *gin.Context) {
 	state, err := s.state.ReadInstances()
 	if err != nil {
@@ -168,6 +198,8 @@ func (s *Server) instanceCreate(c *gin.Context) {
 			ConfigPath:      dataDir + "/conf",
 			DataPath:        dataDir + "/data",
 			BackupPath:      dataDir + "/backup",
+			Persistence:     defaultPersistence(req.Engine, req.Category, req.ConfigOverrides),
+			KvrocksConfig:   req.KvrocksConfig,
 			ConfigOverrides: req.ConfigOverrides,
 			ReplicaOf:       masterName, // 存实例名而非 ip:port
 			Envoy:           envoyConf,

@@ -156,11 +156,12 @@ type CreateInstanceRequest struct {
 	Category        string            `json:"category" binding:"required"` // cache | persistent
 	Engine          string            `json:"engine" binding:"required"`   // redis | kvrocks
 	Type            string            `json:"type" binding:"required"`     // standalone | replication
-	Server          string            `json:"server"`                    // 可选，为空时自动调度
+	Server          string            `json:"server"`                      // 可选，为空时自动调度
 	Port            int               `json:"port"`
 	Memory          string            `json:"memory" binding:"required"`
 	CPUs            int               `json:"cpus"`
 	Password        string            `json:"password"`
 	ReplicaOf       string            `json:"replica_of,omitempty"`
 	ConfigOverrides map[string]string `json:"config_overrides,omitempty"`
+	KvrocksConfig   *KvrocksConfig    `json:"kvrocks_config,omitempty"`
 }

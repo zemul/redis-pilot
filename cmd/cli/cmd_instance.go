@@ -35,21 +35,36 @@ var instanceStatusCmd = &cobra.Command{
 var instanceCreateCmd = &cobra.Command{
 	Use:   "create <name>",
 	Short: "Create an instance",
-	Long:  "Create a new Redis or Kvrocks instance on the specified server.",
-	Example: `  # Standalone Redis instance
-  redis-pilot-cli instance create order-master --server redis01 --memory 4Gi
+	Long: `Create a new Redis or Kvrocks instance on the specified server.
+
+--category controls the eviction and persistence defaults:
+  cache       maxmemory-policy=allkeys-lru, AOF disabled
+              Memory-full behavior: evict old keys automatically.
+              Use for session cache, rate limiting, etc.
+  persistent  maxmemory-policy=noeviction, AOF enabled
+              Memory-full behavior: reject writes with an error (no data loss).
+              Use for queues, primary data stores, etc.
+
+Choosing the wrong category has real consequences:
+  - cache on a persistent store → data silently evicted when memory is full
+  - persistent on a cache → writes fail under memory pressure + AOF overhead`,
+	Example: `  # Cache instance (default)
+  redis-pilot-cli instance create session-cache --node redis01 --memory 4Gi
+
+  # Persistent instance
+  redis-pilot-cli instance create order-master --node redis01 --category persistent --memory 8Gi
 
   # Kvrocks persistent instance
-  redis-pilot-cli instance create order-master --server redis01 --engine kvrocks --category persistent --memory 8Gi
+  redis-pilot-cli instance create order-master --node redis01 --engine kvrocks --category persistent --memory 8Gi
 
-  # With custom config
-  redis-pilot-cli instance create order-master --server redis01 --memory 4Gi --config "maxmemory-policy=allkeys-lru,hz=20"`,
+  # With custom config overrides
+  redis-pilot-cli instance create order-master --node redis01 --category persistent --memory 4Gi --config "hz=20,tcp-keepalive=60"`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		category, _ := cmd.Flags().GetString("category")
 		engine, _ := cmd.Flags().GetString("engine")
 		typ, _ := cmd.Flags().GetString("type")
-		server, _ := cmd.Flags().GetString("server")
+		node, _ := cmd.Flags().GetString("node")
 		port, _ := cmd.Flags().GetInt("port")
 		memory, _ := cmd.Flags().GetString("memory")
 		cpus, _ := cmd.Flags().GetInt("cpus")
@@ -62,7 +77,7 @@ var instanceCreateCmd = &cobra.Command{
 			"category": category,
 			"engine":   engine,
 			"type":     typ,
-			"server":   server,
+			"server":   node,
 			"port":     port,
 			"memory":   memory,
 			"cpus":     cpus,
@@ -179,14 +194,14 @@ func init() {
 	instanceCreateCmd.Flags().String("category", "cache", "Category: cache | persistent")
 	instanceCreateCmd.Flags().String("engine", "redis", "Engine: redis | kvrocks")
 	instanceCreateCmd.Flags().String("type", "standalone", "Topology: standalone | replication")
-	instanceCreateCmd.Flags().String("server", "", "Target server")
+	instanceCreateCmd.Flags().String("node", "", "Target node name (from pool)")
 	instanceCreateCmd.Flags().Int("port", 0, "Port (0=auto)")
 	instanceCreateCmd.Flags().String("memory", "1Gi", "Memory")
 	instanceCreateCmd.Flags().Int("cpus", 1, "CPU cores")
 	instanceCreateCmd.Flags().String("password", "", "Password")
 	instanceCreateCmd.Flags().String("replica-of", "", "Master instance name or address")
 	instanceCreateCmd.Flags().String("config", "", "Config overrides (k=v,k=v)")
-	instanceCreateCmd.MarkFlagRequired("server")
+	instanceCreateCmd.MarkFlagRequired("node")
 
 	instanceDeleteCmd.Flags().Bool("clean-data", false, "Also remove data directory")
 
