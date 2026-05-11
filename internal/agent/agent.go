@@ -430,7 +430,10 @@ func (a *Agent) instanceBackup(c *gin.Context) {
 
 		if hasAOF {
 			// AOF 联合备份：BGREWRITEAOF + 同时备份 RDB+AOF
-			redisCmd(req.Name, pw, "BGREWRITEAOF")
+			if _, err := redisCmd(req.Name, pw, "BGREWRITEAOF"); err != nil {
+				fail(c, http.StatusInternalServerError, "BGREWRITEAOF failed: "+err.Error())
+				return
+			}
 			for i := 0; i < 60; i++ {
 				info, _ := redisCmd(req.Name, pw, "INFO", "persistence")
 				if strings.Contains(info, "aof_rewrite_in_progress:0") {
@@ -441,14 +444,23 @@ func (a *Agent) instanceBackup(c *gin.Context) {
 			// 创建目录备份集
 			dstDir := filepath.Join(backupDir, ts)
 			os.MkdirAll(dstDir, 0755)
-			copyFile(filepath.Join(a.cfg.DataDir, req.Name, "data", "dump.rdb"), filepath.Join(dstDir, "dump.rdb"))
+			if err := copyFile(filepath.Join(a.cfg.DataDir, req.Name, "data", "dump.rdb"), filepath.Join(dstDir, "dump.rdb")); err != nil {
+				fail(c, http.StatusInternalServerError, "backup dump.rdb failed: "+err.Error())
+				return
+			}
 			// AOF 文件可能在 appendonlydir/ 或直接是 appendonly.aof
 			aofDir := filepath.Join(a.cfg.DataDir, req.Name, "data", "appendonlydir")
 			if _, err := os.Stat(aofDir); err == nil {
-				runShell("cp", "-r", aofDir, filepath.Join(dstDir, "appendonlydir"))
+				if _, err := runShell("cp", "-r", aofDir, filepath.Join(dstDir, "appendonlydir")); err != nil {
+					fail(c, http.StatusInternalServerError, "backup AOF dir failed: "+err.Error())
+					return
+				}
 			} else {
 				aofFile := filepath.Join(a.cfg.DataDir, req.Name, "data", "appendonly.aof")
-				copyFile(aofFile, filepath.Join(dstDir, "appendonly.aof"))
+				if err := copyFile(aofFile, filepath.Join(dstDir, "appendonly.aof")); err != nil {
+					fail(c, http.StatusInternalServerError, "backup AOF file failed: "+err.Error())
+					return
+				}
 			}
 		} else {
 			// 仅 RDB 备份
@@ -484,7 +496,10 @@ func (a *Agent) instanceRestore(c *gin.Context) {
 	dataDir := filepath.Join(a.cfg.DataDir, req.Name, "data")
 	containerName := req.Engine + "-" + req.Name
 
-	a.runtime.Stop(containerName)
+	if err := a.runtime.Stop(containerName); err != nil {
+		fail(c, http.StatusInternalServerError, "stop container failed: "+err.Error())
+		return
+	}
 
 	if req.Engine == "kvrocks" {
 		src := filepath.Join(backupDir, req.BackupTs+".checkpoint.tar.gz")
@@ -498,31 +513,39 @@ func (a *Agent) instanceRestore(c *gin.Context) {
 		// 优先 AOF 恢复
 		jointDir := filepath.Join(backupDir, req.BackupTs)
 		if info, err := os.Stat(jointDir); err == nil && info.IsDir() {
-			// RDB+AOF 联合备份恢复
-			copyFile(filepath.Join(jointDir, "dump.rdb"), filepath.Join(dataDir, "dump.rdb"))
-			// 恢复 AOF
+			if err := copyFile(filepath.Join(jointDir, "dump.rdb"), filepath.Join(dataDir, "dump.rdb")); err != nil {
+				fail(c, http.StatusInternalServerError, "restore dump.rdb failed: "+err.Error())
+				return
+			}
 			aofSrcDir := filepath.Join(jointDir, "appendonlydir")
 			aofDstDir := filepath.Join(dataDir, "appendonlydir")
 			if _, err := os.Stat(aofSrcDir); err == nil {
 				os.RemoveAll(aofDstDir)
-				runShell("cp", "-r", aofSrcDir, aofDstDir)
+				if _, err := runShell("cp", "-r", aofSrcDir, aofDstDir); err != nil {
+					fail(c, http.StatusInternalServerError, "restore AOF dir failed: "+err.Error())
+					return
+				}
 			} else {
-				copyFile(filepath.Join(jointDir, "appendonly.aof"), filepath.Join(dataDir, "appendonly.aof"))
+				if err := copyFile(filepath.Join(jointDir, "appendonly.aof"), filepath.Join(dataDir, "appendonly.aof")); err != nil {
+					fail(c, http.StatusInternalServerError, "restore AOF file failed: "+err.Error())
+					return
+				}
 			}
 		} else {
-			// 仅 RDB 恢复
 			src := filepath.Join(backupDir, req.BackupTs+".rdb")
 			if err := copyFile(src, filepath.Join(dataDir, "dump.rdb")); err != nil {
 				fail(c, http.StatusInternalServerError, err.Error())
 				return
 			}
-			// 清空旧 AOF 避免不一致
 			os.RemoveAll(filepath.Join(dataDir, "appendonlydir"))
 			os.Remove(filepath.Join(dataDir, "appendonly.aof"))
 		}
 	}
 
-	a.runtime.Start(containerName)
+	if err := a.runtime.Start(containerName); err != nil {
+		fail(c, http.StatusInternalServerError, "start container failed: "+err.Error())
+		return
+	}
 	ok(c, nil)
 }
 

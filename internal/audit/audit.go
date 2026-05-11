@@ -167,6 +167,102 @@ func (l *Logger) GenerateDailyChecksum(date string) error {
 	return err
 }
 
+// QueryFilter 审计日志查询过滤条件
+type QueryFilter struct {
+	From     string // YYYYMMDD
+	To       string // YYYYMMDD
+	Group    string // 实例组名
+	Instance string // 实例名
+	Level    string // normal | important | critical
+	Action   string // 操作类型
+	Limit    int
+}
+
+// Query 按条件查询审计日志
+func (l *Logger) Query(f QueryFilter) ([]Record, error) {
+	if f.Limit <= 0 {
+		f.Limit = 200
+	}
+	dates, err := l.dateRange(f.From, f.To)
+	if err != nil {
+		return nil, err
+	}
+
+	var results []Record
+	for _, date := range dates {
+		path := filepath.Join(l.dir, "audit-"+date+".jsonl")
+		data, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		for _, line := range splitLines(data) {
+			var r Record
+			if json.Unmarshal(line, &r) != nil {
+				continue
+			}
+			if r.ID == "" || (f.Level != "" && string(r.Level) != f.Level) {
+				continue
+			}
+			if f.Action != "" && r.Action != f.Action {
+				continue
+			}
+			if f.Group != "" && !matchGroup(r.Target, f.Group) {
+				continue
+			}
+			if f.Instance != "" && !matchInstance(r.Target, f.Instance) {
+				continue
+			}
+			results = append(results, r)
+			if len(results) >= f.Limit {
+				return results, nil
+			}
+		}
+	}
+	return results, nil
+}
+
+func (l *Logger) dateRange(from, to string) ([]string, error) {
+	if from == "" {
+		from = time.Now().Format("20060102")
+	}
+	if to == "" {
+		to = from
+	}
+	start, err := time.Parse("20060102", from)
+	if err != nil {
+		return nil, fmt.Errorf("invalid from date: %s", from)
+	}
+	end, err := time.Parse("20060102", to)
+	if err != nil {
+		return nil, fmt.Errorf("invalid to date: %s", to)
+	}
+	var dates []string
+	for d := start; !d.After(end); d = d.AddDate(0, 0, 1) {
+		dates = append(dates, d.Format("20060102"))
+	}
+	return dates, nil
+}
+
+func matchGroup(target map[string]interface{}, group string) bool {
+	if target == nil {
+		return false
+	}
+	if g, ok := target["group"].(string); ok && g == group {
+		return true
+	}
+	return false
+}
+
+func matchInstance(target map[string]interface{}, instance string) bool {
+	if target == nil {
+		return false
+	}
+	if i, ok := target["instance"].(string); ok && i == instance {
+		return true
+	}
+	return false
+}
+
 func (l *Logger) getFile(date string) (*os.File, error) {
 	if l.curDate == date && l.curFile != nil {
 		return l.curFile, nil
