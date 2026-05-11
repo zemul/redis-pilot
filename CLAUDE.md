@@ -53,3 +53,6 @@ redis-manager/
 
 ## 参考文档
 - 详细设计：ARCHITECTURE.md
+
+## 说明
+如果有些文档描述不完整，或者不合理，修改以后需要更新文档`ARCHITECTURE.md`

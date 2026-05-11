@@ -225,7 +225,6 @@ func (s *Server) instanceCreate(c *gin.Context) {
 			DataPath:        dataDir + "/data",
 			BackupPath:      dataDir + "/backup",
 			Persistence:     defaultPersistence(req.Engine, req.Category, req.ConfigOverrides),
-			KvrocksConfig:   req.KvrocksConfig,
 			ConfigOverrides: req.ConfigOverrides,
 			ReplicaOf:       masterName, // 存实例名而非 ip:port
 			Envoy:           envoyConf,

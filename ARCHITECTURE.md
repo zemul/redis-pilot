@@ -429,13 +429,12 @@ instances:
     data_path: /data/redis/order-master/data
     backup_path: /data/redis/order-master/backup
     persistence: null                 # Kvrocks 实例无需 RDB/AOF，RocksDB 原生持久化
-    kvrocks_config:
-      rocksdb.compression: lz4
-      rocksdb.write_buffer_size: 256MB
-      rocksdb.max_write_buffer_number: 4
     config_overrides:
+      rocksdb.compression: lz4
+      rocksdb.write_buffer_size: "256"
+      rocksdb.max_write_buffer_number: "4"
       maxmemory-policy: noeviction    # 持久化实例不禁用数据
-      timeout: 300
+      timeout: "300"
     replica_of: null
     replicas: [order-replica]        # 挂载的从库列表
     envoy:
@@ -464,13 +463,12 @@ instances:
     data_path: /data/redis/order-replica/data
     backup_path: /data/redis/order-replica/backup
     persistence: null                 # Kvrocks 实例无需 RDB/AOF，RocksDB 原生持久化
-    kvrocks_config:
-      rocksdb.compression: lz4
-      rocksdb.write_buffer_size: 256MB
-      rocksdb.max_write_buffer_number: 4
     config_overrides:
+      rocksdb.compression: lz4
+      rocksdb.write_buffer_size: "256"
+      rocksdb.max_write_buffer_number: "4"
       maxmemory-policy: noeviction    # 持久化实例不禁用数据
-      timeout: 300
+      timeout: "300"
     replica_of: order-master         # 引用主库实例名
     replicas: []
     envoy:
@@ -1160,12 +1158,12 @@ Skill: redis-create
   │       port: 6379,
   │       memory: "4Gi",
   │       persistence: null,
-  │       kvrocks_config: {
-  │         compression: "lz4",
-  │         write_buffer_size: "256MB",
-  │         max_write_buffer_number: 4
-  │       },
-  │       maxmemory-policy: "noeviction"
+  │       config_overrides: {
+  │         "rocksdb.compression": "lz4",
+  │         "rocksdb.write_buffer_size": "256",
+  │         "rocksdb.max_write_buffer_number": "4",
+  │         "maxmemory-policy": "noeviction"
+  │       }
   │   })
   │
   ├─5. health_check(server-a, 6379)
@@ -1178,12 +1176,12 @@ Skill: redis-create
   │       memory: "4Gi",
   │       replica_of: "10.0.1.10:6379",
   │       persistence: null,
-  │       kvrocks_config: {
-  │         compression: "lz4",
-  │         write_buffer_size: "256MB",
-  │         max_write_buffer_number: 4
-  │       },
-  │       maxmemory-policy: "noeviction"
+  │       config_overrides: {
+  │         "rocksdb.compression": "lz4",
+  │         "rocksdb.write_buffer_size": "256",
+  │         "rocksdb.max_write_buffer_number": "4",
+  │         "maxmemory-policy": "noeviction"
+  │       }
   │   })
   │
   ├─7. health_check(server-b, 6379)

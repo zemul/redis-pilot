@@ -55,10 +55,10 @@ Choosing the wrong category has real consequences:
   # Persistent instance on specific node
   redis-pilot-cli instance create order-master --node redis01 --group order --category persistent --memory 8Gi
 
-  # Kvrocks persistent instance
-  redis-pilot-cli instance create order-master --group order --engine kvrocks --category persistent --memory 8Gi
+  # Kvrocks with custom RocksDB tuning
+  redis-pilot-cli instance create order-master --group order --engine kvrocks --category persistent --memory 8Gi --config "rocksdb.compression=lz4,rocksdb.write_buffer_size=256"
 
-  # With custom config overrides
+  # Redis with custom config overrides
   redis-pilot-cli instance create order-master --group order --category persistent --memory 4Gi --config "hz=20,tcp-keepalive=60"`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {

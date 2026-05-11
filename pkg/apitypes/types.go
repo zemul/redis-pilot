@@ -54,13 +54,6 @@ type Persistence struct {
 	AOFPolicy    string `yaml:"aof_policy,omitempty" json:"aof_policy,omitempty"` // everysec | always | no
 }
 
-// KvrocksConfig Kvrocks RocksDB 调优参数
-type KvrocksConfig struct {
-	Compression          string `yaml:"rocksdb.compression,omitempty" json:"compression,omitempty"`
-	WriteBufferSize      string `yaml:"rocksdb.write_buffer_size,omitempty" json:"write_buffer_size,omitempty"`
-	MaxWriteBufferNumber int    `yaml:"rocksdb.max_write_buffer_number,omitempty" json:"max_write_buffer_number,omitempty"`
-}
-
 // Instance 实例完整状态
 type Instance struct {
 	Category        string            `yaml:"category"`           // cache | persistent
@@ -78,7 +71,6 @@ type Instance struct {
 	DataPath        string            `yaml:"data_path"`
 	BackupPath      string            `yaml:"backup_path"`
 	Persistence     *Persistence      `yaml:"persistence,omitempty"`
-	KvrocksConfig   *KvrocksConfig    `yaml:"kvrocks_config,omitempty"`
 	ConfigOverrides map[string]string `yaml:"config_overrides,omitempty"`
 	ReplicaOf       string            `yaml:"replica_of,omitempty"`
 	Replicas        []string          `yaml:"replicas,omitempty"`
@@ -165,7 +157,6 @@ type CreateInstanceRequest struct {
 	Password        string            `json:"password"`
 	ReplicaOf       string            `json:"replica_of,omitempty"`
 	ConfigOverrides map[string]string `json:"config_overrides,omitempty"`
-	KvrocksConfig   *KvrocksConfig    `json:"kvrocks_config,omitempty"`
 }
 
 // SentinelMaster Sentinel 监控的一个实例组主库
