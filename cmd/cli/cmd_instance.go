@@ -49,24 +49,23 @@ var instanceCreateCmd = &cobra.Command{
 Choosing the wrong category has real consequences:
   - cache on a persistent store → data silently evicted when memory is full
   - persistent on a cache → writes fail under memory pressure + AOF overhead`,
-	Example: `  # Cache instance (default)
-  redis-pilot-cli instance create session-cache --node redis01 --memory 4Gi
+	Example: `  # Cache instance (auto-schedule node)
+  redis-pilot-cli instance create session-cache --group session --memory 4Gi
 
-  # Persistent instance
+  # Persistent instance on specific node
   redis-pilot-cli instance create order-master --node redis01 --group order --category persistent --memory 8Gi
 
   # Kvrocks persistent instance
-  redis-pilot-cli instance create order-master --node redis01 --group order --engine kvrocks --category persistent --memory 8Gi
+  redis-pilot-cli instance create order-master --group order --engine kvrocks --category persistent --memory 8Gi
 
   # With custom config overrides
-  redis-pilot-cli instance create order-master --node redis01 --group order --category persistent --memory 4Gi --config "hz=20,tcp-keepalive=60"`,
+  redis-pilot-cli instance create order-master --group order --category persistent --memory 4Gi --config "hz=20,tcp-keepalive=60"`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		category, _ := cmd.Flags().GetString("category")
 		engine, _ := cmd.Flags().GetString("engine")
 		typ, _ := cmd.Flags().GetString("type")
 		node, _ := cmd.Flags().GetString("node")
-		port, _ := cmd.Flags().GetInt("port")
 		memory, _ := cmd.Flags().GetString("memory")
 		cpus, _ := cmd.Flags().GetInt("cpus")
 		password, _ := cmd.Flags().GetString("password")
@@ -84,7 +83,6 @@ Choosing the wrong category has real consequences:
 			"engine":   engine,
 			"type":     typ,
 			"server":   node,
-			"port":     port,
 			"memory":   memory,
 			"cpus":     cpus,
 			"password": password,
@@ -201,14 +199,13 @@ func init() {
 	instanceCreateCmd.Flags().String("engine", "redis", "Engine: redis | kvrocks")
 	instanceCreateCmd.Flags().String("type", "standalone", "Topology: standalone | replication")
 	instanceCreateCmd.Flags().String("node", "", "Target node name (from pool)")
-	instanceCreateCmd.Flags().Int("port", 0, "Port (0=auto)")
 	instanceCreateCmd.Flags().String("memory", "1Gi", "Memory")
 	instanceCreateCmd.Flags().Int("cpus", 1, "CPU cores")
 	instanceCreateCmd.Flags().String("password", "", "Password")
 	instanceCreateCmd.Flags().String("group", "", "Stable logical group name for master/standalone")
 	instanceCreateCmd.Flags().String("replica-of", "", "Master instance name or address")
 	instanceCreateCmd.Flags().String("config", "", "Config overrides (k=v,k=v)")
-	instanceCreateCmd.MarkFlagRequired("node")
+
 
 	instanceDeleteCmd.Flags().Bool("clean-data", false, "Also remove data directory")
 

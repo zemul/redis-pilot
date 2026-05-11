@@ -16,7 +16,7 @@ type Config struct {
 func LoadConfig() *Config {
 	cfg := &Config{Server: "127.0.0.1:8080"}
 	home, _ := os.UserHomeDir()
-	data, err := os.ReadFile(filepath.Join(home, ".redis-pilot", "config.yaml"))
+	data, err := os.ReadFile(filepath.Join(home, ".redis-pilot-cli", "config.yaml"))
 	if err == nil {
 		yaml.Unmarshal(data, cfg)
 	}

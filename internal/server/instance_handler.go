@@ -194,13 +194,11 @@ func (s *Server) instanceCreate(c *gin.Context) {
 			return fmt.Errorf("server not found: %s", req.Server)
 		}
 
-		if req.Port == 0 {
-			p, err := allocRedisPort(s.cfg.Ports, instances, req.Server)
-			if err != nil {
-				return err
-			}
-			req.Port = p
+		port, err := allocRedisPort(s.cfg.Ports, instances, req.Server)
+		if err != nil {
+			return err
 		}
+		req.Port = port
 
 		var envoyConf *apitypes.EnvoyConfig
 		if role == "master" || role == "standalone" {
@@ -264,19 +262,10 @@ func (s *Server) instanceCreate(c *gin.Context) {
 			"engine":     req.Engine,
 			"clean_data": true,
 		})
-		// 清理实例记录和主库 Replicas
+		// 标记实例为 failed，保留记录供排查
 		s.state.WithInstances(func(instances *apitypes.InstancesState) error {
-			delete(instances.Instances, req.Name)
-			if masterName != "" {
-				if m := instances.Instances[masterName]; m != nil {
-					filtered := m.Replicas[:0]
-					for _, r := range m.Replicas {
-						if r != req.Name {
-							filtered = append(filtered, r)
-						}
-					}
-					m.Replicas = filtered
-				}
+			if i := instances.Instances[req.Name]; i != nil {
+				i.Status = "failed"
 			}
 			return nil
 		})

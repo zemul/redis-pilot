@@ -172,7 +172,7 @@ func podmanListContainersWithPort() ([]containerInfo, error) {
 	var result []containerInfo
 	for _, line := range strings.Split(out, "\n") {
 		parts := strings.SplitN(line, "\t", 2)
-		if len(parts) == 0 || parts[0] == "" {
+		if len(parts) < 2 || parts[0] == "" {
 			continue
 		}
 		port := extractHostPort(parts[1])
