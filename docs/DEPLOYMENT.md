@@ -75,7 +75,7 @@ data_dir: /opt/redis-server/state
 
 # Envoy 配置输出（不需要代理层可留空）
 envoy_dir: /opt/redis-server/envoy
-envoy_reload_cmd: "podman kill --signal HUP envoy"
+envoy_reload_cmd: "podman restart envoy"
 
 # 端口分配范围
 ports:

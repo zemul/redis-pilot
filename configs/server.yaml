@@ -5,8 +5,7 @@ data_dir: /opt/redis-pilot-server/state
 # Envoy 配置输出目录，为空则不生成
 envoy_dir: /opt/envoy/conf
 # 写完配置后执行的重载命令，为空则跳过
-# 示例: podman kill --signal HUP envoy
-envoy_reload_cmd: "podman kill --signal HUP envoy"
+envoy_reload_cmd: "podman restart envoy"
 
 # 端口分配范围
 ports:

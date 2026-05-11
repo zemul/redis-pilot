@@ -1,12 +1,12 @@
 package server
 
 import (
+	"encoding/hex"
 	"fmt"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"text/template"
 
@@ -38,7 +38,7 @@ static_resources:
           stat_prefix: {{ .StatPrefix }}
           settings:
             op_timeout: 5s
-          read_policy: {{ .ReadPolicy }}
+            read_policy: {{ .ReadPolicy }}
 {{- if .Password }}
           downstream_auth_password:
             inline_string: "{{ .Password }}"
@@ -63,7 +63,6 @@ static_resources:
           text: {{ .HealthCheckPayload }}
         receive:
         - text: {{ .RoleResponsePrefix }}
-    drain_connections_on_host_removal: true
 {{- end }}
 {{- if .Password }}
     typed_extension_protocol_options:
@@ -193,7 +192,7 @@ func (s *Server) generateEnvoyConfig() (string, error) {
 					Password:           g.password,
 					HealthCheckRole:    "master",
 					HealthCheckPayload: roleHealthCheckPayload(g.password),
-					RoleResponsePrefix: strconv.Quote("*3\r\n$6\r\nmaster\r\n"),
+					RoleResponsePrefix: "\"" + hex.EncodeToString([]byte("*3\r\n$6\r\nmaster\r\n")) + "\"",
 					Endpoints:          g.endpoints,
 				})
 			}
@@ -223,10 +222,13 @@ func (g *instanceGroup) rwReadPolicy() string {
 }
 
 func roleHealthCheckPayload(password string) string {
+	var raw string
 	if password == "" {
-		return strconv.Quote("*1\r\n$4\r\nROLE\r\n")
+		raw = "*1\r\n$4\r\nROLE\r\n"
+	} else {
+		raw = fmt.Sprintf("*2\r\n$4\r\nAUTH\r\n$%d\r\n%s\r\n*1\r\n$4\r\nROLE\r\n", len(password), password)
 	}
-	return strconv.Quote(fmt.Sprintf("*2\r\n$4\r\nAUTH\r\n$%d\r\n%s\r\n*1\r\n$4\r\nROLE\r\n", len(password), password))
+	return "\"" + hex.EncodeToString([]byte(raw)) + "\""
 }
 
 // buildInstanceGroups 按稳定实例组聚合，提取 Envoy 端口和后端地址
