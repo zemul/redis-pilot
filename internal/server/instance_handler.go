@@ -283,9 +283,6 @@ func (s *Server) instanceCreate(c *gin.Context) {
 		return nil
 	})
 
-	// 更新 pool-state: allocated + instances 列表
-	s.updatePoolAllocated(pool, req.Server, req.Memory, req.CPUs, req.Name, true)
-
 	s.audit.Log(audit.Record{
 		Operator: operatorFrom(c),
 		Action:   "instance.create",
@@ -366,9 +363,6 @@ func (s *Server) instanceDelete(c *gin.Context) {
 		fail(c, http.StatusInternalServerError, "agent delete failed: "+err.Error())
 		return
 	}
-
-	// 释放资源
-	s.updatePoolAllocated(pool, inst.Server, inst.Memory, inst.CPUs, req.Name, false)
 
 	// 原子删除实例记录
 	if err := s.state.WithInstances(func(is *apitypes.InstancesState) error {
@@ -988,34 +982,6 @@ func (s *Server) releaseLockGroup(group []string, sessionID string) {
 		}
 		return nil
 	})
-}
-
-// updatePoolAllocated 更新 pool-state 的资源分配
-func (s *Server) updatePoolAllocated(pool *apitypes.PoolState, serverName, memory string, cpus int, instanceName string, add bool) {
-	srv := pool.Servers[serverName]
-	if srv == nil {
-		return
-	}
-	if add {
-		srv.Allocated.CPUCores += cpus
-		srv.Allocated.Memory = addMemory(srv.Allocated.Memory, memory)
-		srv.Instances = append(srv.Instances, instanceName)
-	} else {
-		srv.Allocated.CPUCores -= cpus
-		if srv.Allocated.CPUCores < 0 {
-			srv.Allocated.CPUCores = 0
-		}
-		srv.Allocated.Memory = subMemory(srv.Allocated.Memory, memory)
-		// 从 instances 列表中移除
-		filtered := srv.Instances[:0]
-		for _, n := range srv.Instances {
-			if n != instanceName {
-				filtered = append(filtered, n)
-			}
-		}
-		srv.Instances = filtered
-	}
-	s.state.WritePool(pool)
 }
 
 func toMap(m map[string]string) map[string]interface{} {

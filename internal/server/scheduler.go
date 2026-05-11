@@ -64,9 +64,10 @@ func selectServer(pool *apitypes.PoolState, instances *apitypes.InstancesState, 
 		if srv.Status != "healthy" && srv.Status != "" {
 			continue
 		}
-		// 过滤资源不足
-		remainMem := parseMemoryGi(srv.Capacity.Memory) - parseMemoryGi(srv.Allocated.Memory)
-		remainCPU := srv.Capacity.CPUCores - srv.Allocated.CPUCores
+		// 从 instances-state 计算已分配资源
+		allocMem, allocCPU := computeAllocated(instances, name)
+		remainMem := parseMemoryGi(srv.Capacity.Memory) - allocMem
+		remainCPU := srv.Capacity.CPUCores - allocCPU
 		if reqMem > 0 && remainMem < reqMem {
 			continue
 		}
@@ -114,4 +115,15 @@ func poolEndpoint(pool *apitypes.PoolState, serverName string) string {
 		return srv.Endpoint
 	}
 	return ""
+}
+
+func computeAllocated(instances *apitypes.InstancesState, serverName string) (memGi int, cpus int) {
+	for _, inst := range instances.Instances {
+		if inst == nil || inst.Server != serverName || inst.Status == "failed" {
+			continue
+		}
+		memGi += parseMemoryGi(inst.Memory)
+		cpus += inst.CPUs
+	}
+	return
 }
