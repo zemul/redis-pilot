@@ -310,7 +310,7 @@ redis-tool instance-status test-cache
 ├── logs/
 │   └── server.log
 └── envoy/
-    └── envoy-redis.yaml      # 自动生成的 Envoy 配置
+    └── envoy.yaml            # 自动生成的 Envoy 配置
 ```
 
 ### 数据节点

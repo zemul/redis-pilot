@@ -160,7 +160,7 @@ func TestEnvoyRouteUpdate_WritesFile(t *testing.T) {
 	}
 
 	// 验证文件写入
-	data, err := os.ReadFile(filepath.Join(s.cfg.EnvoyDir, "envoy-redis.yaml"))
+	data, err := os.ReadFile(filepath.Join(s.cfg.EnvoyDir, "envoy.yaml"))
 	if err != nil {
 		t.Fatalf("envoy config file not written: %v", err)
 	}

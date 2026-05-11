@@ -298,7 +298,7 @@ func (s *Server) writeEnvoyConfig(config string) error {
 	if err := os.MkdirAll(s.cfg.EnvoyDir, 0755); err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(s.cfg.EnvoyDir, "envoy-redis.yaml"), []byte(config), 0644)
+	return os.WriteFile(filepath.Join(s.cfg.EnvoyDir, "envoy.yaml"), []byte(config), 0644)
 }
 
 // refreshEnvoy 拓扑变更后自动刷新 Envoy 配置（静默失败，不影响主操作）
@@ -315,7 +315,7 @@ func (s *Server) refreshEnvoy() {
 		s.log.Errorf("envoy config write failed: %v", err)
 		return
 	}
-	s.log.Infof("envoy config updated: %s", fmt.Sprintf("%s/envoy-redis.yaml", s.cfg.EnvoyDir))
+	s.log.Infof("envoy config updated: %s", fmt.Sprintf("%s/envoy.yaml", s.cfg.EnvoyDir))
 	s.reloadEnvoy()
 }
 
