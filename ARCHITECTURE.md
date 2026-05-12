@@ -107,7 +107,7 @@
    ┌──────────────┐
    │ Envoy Proxy  │  统一代理层
    │ :16379       │  ← 订单主库（读写分离）
-   │ :16380       │  ← 订单主库（仅写）
+   │ :16380       │  ← 订单从库（只读）
    │ :16381       │  ← 用户主库
    └──────────────┘
 ```
@@ -439,7 +439,7 @@ instances:
     replicas: [order-replica]        # 挂载的从库列表
     envoy:
       readwrite_port: 16379          # Envoy 读写端口
-      writeonly_port: 16380          # Envoy 仅写端口
+      readonly_port: 16380           # Envoy 只读端口（后端为从库）
     backup:
       schedule: "0 */6 * * *"        # 每 6 小时
       retention: 7                   # 保留 7 份
@@ -548,39 +548,37 @@ Redis 协议无 Host Header，**只能通过端口区分不同实例**：
 
 | 端口范围 | 用途 | 说明 |
 |----------|------|------|
-| 16379-16399 | 业务读写端口 | 每个实例组分配一个，Envoy 自动读写分离 |
-| 16400-16419 | 业务仅写端口 | 需要显式写主库时使用，也可用于管理命令（INFO/CONFIG/SLOWLOG 等） |
+| 16379-16499 | 业务读写端口（RW） | 每个实例组分配一个，后端为主库，支持读写 |
+| 16500-16619 | 业务只读端口（RO） | 主从实例组分配，后端为从库，仅支持读操作 |
 
 #### 3.4.2 代理模式
 
-**模式 A：单端口业务视图（推荐默认）**
+**双端口模型（主从实例组）**
 
 ```
-客户端 → Envoy:16379
-         ├─ 写命令 → 主库 order-master:6379
-         └─ 读命令 → 从库 order-replica:6379  (read_policy: REPLICA)
+客户端 → Envoy:16379 (RW)  → 主库 order-master:6379   （读写均可）
+客户端 → Envoy:16500 (RO)  → 从库 order-replica:6379  （只读，减轻主库压力）
 ```
 
-- 用户侧感知为"单点 Redis"，无需关心主从拓扑
-- Envoy `redis_proxy` filter 的 `read_policy` 负责读命令路由；写命令仍走主库
-- 此端口只面向业务读写命令，管理命令统一走 WriteOnly 端口
-- 适合 90% 的业务场景
+- RW 端口：后端 cluster 只包含主库 endpoint，所有命令（读+写）都走主库
+- RO 端口：后端 cluster 只包含从库 endpoint，用于读多写少场景分流读请求
+- 从库不可用时 RO 端口不可达，业务应回退到 RW 端口
+- 类似 AWS ElastiCache 的 Primary Endpoint + Reader Endpoint 模型
 
-**模式 B：读写端口 + 显式主库端口**
+**单端口模型（单点实例）**
 
 ```
-客户端 → Envoy:16379  → 业务读写视图（读走从库，写走主库）
-客户端 → Envoy:16400  → 主库 order-master:6379    (read_policy: MASTER)
+客户端 → Envoy:16379 (RW)  → 主库 cache-1:6379
 ```
 
-- 需要强一致读或执行管理命令时使用 WriteOnly 端口
-- WriteOnly 端口背后的写集群必须通过 ROLE 健康检查确保只有 master 健康
-- 适合对一致性要求高、或需要 `INFO` / `CONFIG` / `SLOWLOG` / `CLIENT` 等管理命令的场景
+- 单点实例只分配 RW 端口，无 RO 端口
+
+> **设计说明**：Envoy `redis_proxy` 的 `read_policy: REPLICA` 仅对 Redis Cluster 协议有效（通过 `CLUSTER SLOTS` 发现拓扑）。本系统只管理 standalone 主从，不使用 Redis Cluster 协议，因此无法在单端口内实现自动读写分离，采用双端口模型由业务侧显式选择。
 
 #### 3.4.3 Envoy 配置片段
 
 ```yaml
-# Envoy Redis Proxy 配置示例
+# Envoy Redis Proxy 配置示例（由 Server 自动生成）
 static_resources:
   listeners:
   - name: redis-order-rw
@@ -594,25 +592,34 @@ static_resources:
         typed_config:
           "@type": type.googleapis.com/envoy.extensions.filters.network.redis_proxy.v3.RedisProxy
           stat_prefix: redis_order
-          cluster: redis-order-cluster    # 单端口读写分离集群（模式A），写集群配置见附录C
           settings:
             op_timeout: 5s
-          read_policy: REPLICA           # 读走从库
+            read_policy: MASTER
+          prefix_routes:
+            catch_all_route:
+              cluster: redis-order-cluster
+
+  - name: redis-order-ro
+    address:
+      socket_address:
+        address: 0.0.0.0
+        port_value: 16500
+    filter_chains:
+    - filters:
+      - name: envoy.filters.network.redis_proxy
+        typed_config:
+          "@type": type.googleapis.com/envoy.extensions.filters.network.redis_proxy.v3.RedisProxy
+          stat_prefix: redis_order_ro
+          settings:
+            op_timeout: 5s
+            read_policy: MASTER
+          prefix_routes:
+            catch_all_route:
+              cluster: redis-order-ro-cluster
 
   clusters:
-  - name: redis-order-cluster    # 业务读写集群；附录 C 为独立写集群配置
+  - name: redis-order-cluster        # RW cluster：仅主库
     type: STRICT_DNS
-    health_checks:
-    - timeout: 1s
-      interval: 5s
-      unhealthy_threshold: 2
-      healthy_threshold: 1
-      custom_health_check:
-        name: envoy.health_checkers.redis
-        typed_config:
-          "@type": type.googleapis.com/envoy.extensions.health_checkers.redis.v3.Redis
-          key: healthcheck    # Redis 存活检查：PING/EXISTS，不判断 master/replica 角色
-    drain_connections_on_host_removal: true
     load_assignment:
       cluster_name: redis-order-cluster
       endpoints:
@@ -620,24 +627,30 @@ static_resources:
         - endpoint:
             address:
               socket_address:
-                address: 10.0.1.10      # 主库
+                address: 10.0.1.10    # 主库
                 port_value: 6379
+
+  - name: redis-order-ro-cluster     # RO cluster：仅从库
+    type: STRICT_DNS
+    load_assignment:
+      cluster_name: redis-order-ro-cluster
+      endpoints:
+      - lb_endpoints:
         - endpoint:
             address:
               socket_address:
-                address: 10.0.1.11      # 从库
+                address: 10.0.1.11    # 从库
                 port_value: 6379
 ```
 
 > **说明**：
-> - `envoy.health_checkers.redis` 只负责 Redis 存活检查，不能判断 ROLE
-> - 写集群的 master 判定必须使用附录 C 的 TCP `ROLE` 健康检查
-> - `unhealthy_threshold: 2`：连续 2 次健康检查失败后摘除，避免单次网络抖动误判
-> - `drain_connections_on_host_removal: true`：端点移除时优雅排空连接，防止正在执行的命令被中断
+> - RW cluster 只包含主库 endpoint，保证写入不会发到从库
+> - RO cluster 只包含从库 endpoint，从库不可用时该端口不可达
+> - 配置由 Server 根据 instances-state 自动生成，拓扑变更后自动刷新
 
 #### 3.4.4 管理命令
 
-管理命令（`INFO`、`CONFIG GET/SET`、`SLOWLOG GET`、`CLIENT LIST` 等）应通过仅写端口（WriteOnly）执行，该端口使用 `read_policy: MASTER` 直连主库。
+管理命令（`INFO`、`CONFIG GET/SET`、`SLOWLOG GET`、`CLIENT LIST` 等）应通过 RW 端口执行，该端口直连主库。RO 端口后端为从库，不支持写入和管理命令。
 
 ---
 
@@ -822,7 +835,7 @@ port_inventory:
     backend_servers: ["server-a:6379(master)", "server-b:6379(replica)"]
 
   - envoy_port: 16380
-    mode: writeonly
+    mode: readonly
     instance_group: order
     engine: kvrocks
     category: persistent
@@ -1145,7 +1158,7 @@ Skill: redis-create
   │   → 选择 server-b（剩余 28Gi，zone: az-2）→ 从库（不同 zone）
   │
   ├─2. port_allocate()
-  │   → 主库端口 6379，Envoy 端口 16379 (读写) + 16380 (仅写)
+  │   → 主库端口 6379，Envoy 端口 16379 (读写) + 16380 (只读)
   │   → 从库端口 6379
   │
   ├─3. state_update(instances-state, "order-master", status=creating)
@@ -1197,7 +1210,7 @@ Skill: redis-create
   │
   └─10. 返回: "订单 Redis 主从已创建
               读写地址: env-proxy:16379
-              仅写地址: env-proxy:16380"
+              只读地址: env-proxy:16380"
 ```
 
 ### 4.3 故障转移
@@ -1279,7 +1292,7 @@ Skill: redis-failover
          role: master
          replica_of: null
          replicas: [所有已重新挂载到新主库的从库实例名]
-         envoy: 继承原实例组的 readwrite_port / writeonly_port
+         envoy: 继承原实例组的 readwrite_port / readonly_port
        - 新补齐的从库：
          role: replica
          replica_of: <新主库实例名>
@@ -1291,7 +1304,7 @@ Skill: redis-failover
      Envoy 更新要求：
        - 业务读写端口保持不变，避免业务侧修改连接地址
        - 后端 endpoints 必须包含新主库和所有健康从库
-       - WriteOnly 写集群继续通过 TCP ROLE health check 只保留当前 master
+       - RO 只读集群后端更新为当前所有健康从库
        - 生成的 Envoy 配置必须落盘，保证 Envoy/Server 重启后拓扑不回退
 
      审计要求：
@@ -1723,7 +1736,7 @@ redis-diagnose Skill
 
 - 写操作：经 Envoy 写集群路由到主库，强一致
 - 读操作：经 Envoy 读集群路由到从库，存在复制延迟（通常 < 1ms）
-- 对一致性要求极高的读操作，应直连主库或使用仅写端口（§3.4.4）
+- 对一致性要求极高的读操作，应使用 RW 端口直连主库（§3.4.4）
 
 ### 10.4 拓扑约束
 

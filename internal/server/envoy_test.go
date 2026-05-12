@@ -75,7 +75,7 @@ func TestEnvoyConfig_ReplicationGroup(t *testing.T) {
 			"order-master": {
 				Engine: "redis", Group: "order", Role: "master", Server: "srv1", Port: 6379, Status: "running",
 				Replicas: []string{"order-replica"},
-				Envoy:    &apitypes.EnvoyConfig{ReadWritePort: 16379, WriteOnlyPort: 16400},
+				Envoy:    &apitypes.EnvoyConfig{ReadWritePort: 16379, ReadOnlyPort: 16400},
 			},
 			"order-replica": {
 				Engine: "redis", Group: "order", Role: "replica", Server: "srv2", Port: 6379, Status: "running",
@@ -89,26 +89,23 @@ func TestEnvoyConfig_ReplicationGroup(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// 应有读写 listener 和仅写 listener
+	// 应有读写 listener 和只读 listener
 	if !strings.Contains(config, "port_value: 16379") {
 		t.Error("expected rw listener port 16379")
 	}
 	if !strings.Contains(config, "port_value: 16400") {
 		t.Error("expected wo listener port 16400")
 	}
-	// cluster 应包含主从两个 endpoint
+	// cluster 应包含主从 endpoint（分布在不同 cluster）
 	if !strings.Contains(config, "address: 10.0.0.1") {
 		t.Error("expected master endpoint")
 	}
 	if !strings.Contains(config, "address: 10.0.0.2") {
-		t.Error("expected replica endpoint")
+		t.Error("expected replica endpoint in write cluster")
 	}
-	// 读写分离策略
-	if !strings.Contains(config, "read_policy: REPLICA") {
-		t.Error("expected REPLICA read policy")
-	}
-	if !strings.Contains(config, "read_policy: MASTER") {
-		t.Error("expected MASTER read policy for write-only")
+	// RW 和 WO 都使用 MASTER 策略
+	if strings.Count(config, "read_policy: MASTER") < 2 {
+		t.Error("expected MASTER read policy for both listeners")
 	}
 }
 

@@ -21,7 +21,7 @@ type PortRange struct {
 type PortConfig struct {
 	Redis   PortRange `yaml:"redis"`           // Redis 实例端口范围
 	EnvoyRW PortRange `yaml:"envoy_readwrite"` // Envoy 读写端口范围
-	EnvoyWO PortRange `yaml:"envoy_writeonly"` // Envoy 仅写端口范围
+	EnvoyWO PortRange `yaml:"envoy_writeonly"` // Envoy 只读端口范围（yaml key 保持兼容）
 }
 
 type SentinelConfig struct {

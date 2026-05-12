@@ -1,7 +1,6 @@
 package server
 
 import (
-	"encoding/hex"
 	"fmt"
 	"net/http"
 	"os"
@@ -155,7 +154,7 @@ func (s *Server) generateEnvoyConfig() (string, error) {
 	data := envoyData{}
 	for groupName, g := range groups {
 		rwClusterName := "redis-" + groupName + "-cluster"
-		writeClusterName := "redis-" + groupName + "-write-cluster"
+		roClusterName := "redis-" + groupName + "-ro-cluster"
 		statPrefix := "redis_" + strings.ReplaceAll(groupName, "-", "_")
 
 		if g.rwPort > 0 {
@@ -165,37 +164,34 @@ func (s *Server) generateEnvoyConfig() (string, error) {
 				StatPrefix: statPrefix,
 				Cluster:    rwClusterName,
 				Password:   g.password,
-				ReadPolicy: g.rwReadPolicy(),
+				ReadPolicy: "MASTER",
 			})
 		}
 
-		if g.woPort > 0 {
+		if g.roPort > 0 && len(g.replicaEndpoints) > 0 {
 			data.Listeners = append(data.Listeners, envoyListener{
-				Name:       "redis-" + groupName + "-wo",
-				Port:       g.woPort,
-				StatPrefix: statPrefix + "_wo",
-				Cluster:    writeClusterName,
+				Name:       "redis-" + groupName + "-ro",
+				Port:       g.roPort,
+				StatPrefix: statPrefix + "_ro",
+				Cluster:    roClusterName,
 				Password:   g.password,
 				ReadPolicy: "MASTER",
 			})
 		}
 
-		if len(g.endpoints) > 0 {
+		if len(g.masterEndpoints) > 0 {
 			data.Clusters = append(data.Clusters, envoyCluster{
 				Name:      rwClusterName,
 				Password:  g.password,
-				Endpoints: g.endpoints,
+				Endpoints: g.masterEndpoints,
 			})
-			if g.woPort > 0 {
-				data.Clusters = append(data.Clusters, envoyCluster{
-					Name:               writeClusterName,
-					Password:           g.password,
-					HealthCheckRole:    "master",
-					HealthCheckPayload: roleHealthCheckPayload(g.password),
-					RoleResponsePrefix: "\"" + hex.EncodeToString([]byte("*3\r\n$6\r\nmaster\r\n")) + "\"",
-					Endpoints:          g.endpoints,
-				})
-			}
+		}
+		if g.roPort > 0 && len(g.replicaEndpoints) > 0 {
+			data.Clusters = append(data.Clusters, envoyCluster{
+				Name:      roClusterName,
+				Password:  g.password,
+				Endpoints: g.replicaEndpoints,
+			})
 		}
 	}
 
@@ -207,28 +203,11 @@ func (s *Server) generateEnvoyConfig() (string, error) {
 }
 
 type instanceGroup struct {
-	rwPort     int // 读写端口
-	woPort     int // 仅写端口
-	password   string
-	endpoints  []envoyEndpoint
-	hasReplica bool
-}
-
-func (g *instanceGroup) rwReadPolicy() string {
-	if g.hasReplica {
-		return "REPLICA"
-	}
-	return "MASTER"
-}
-
-func roleHealthCheckPayload(password string) string {
-	var raw string
-	if password == "" {
-		raw = "*1\r\n$4\r\nROLE\r\n"
-	} else {
-		raw = fmt.Sprintf("*2\r\n$4\r\nAUTH\r\n$%d\r\n%s\r\n*1\r\n$4\r\nROLE\r\n", len(password), password)
-	}
-	return "\"" + hex.EncodeToString([]byte(raw)) + "\""
+	rwPort           int
+	roPort           int
+	password         string
+	masterEndpoints  []envoyEndpoint
+	replicaEndpoints []envoyEndpoint
 }
 
 // buildInstanceGroups 按稳定实例组聚合，提取 Envoy 端口和后端地址
@@ -272,22 +251,21 @@ func (s *Server) buildInstanceGroups(instances *apitypes.InstancesState, pool *a
 			if inst.Envoy.ReadWritePort > 0 {
 				g.rwPort = inst.Envoy.ReadWritePort
 			}
-			if inst.Envoy.WriteOnlyPort > 0 {
-				g.woPort = inst.Envoy.WriteOnlyPort
+			if inst.Envoy.ReadOnlyPort > 0 {
+				g.roPort = inst.Envoy.ReadOnlyPort
 			}
 			g.password = inst.Password
 		}
 
-		// 后端地址：主库和从库都加入 endpoints
+		// 后端地址：按角色分配
 		srv := pool.Servers[inst.Server]
 		if srv != nil {
-			g.endpoints = append(g.endpoints, envoyEndpoint{
-				Address: srv.Endpoint,
-				Port:    inst.Port,
-			})
-		}
-		if inst.Role == "replica" {
-			g.hasReplica = true
+			ep := envoyEndpoint{Address: srv.Endpoint, Port: inst.Port}
+			if inst.Role == "master" || inst.Role == "standalone" {
+				g.masterEndpoints = append(g.masterEndpoints, ep)
+			} else if inst.Role == "replica" {
+				g.replicaEndpoints = append(g.replicaEndpoints, ep)
+			}
 		}
 	}
 

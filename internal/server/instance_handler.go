@@ -123,12 +123,10 @@ func (s *Server) instanceCreate(c *gin.Context) {
 
 	dataDir := "/data/redis/" + req.Name
 	role := "standalone"
-	if req.Type == "replication" {
-		if req.ReplicaOf != "" {
-			role = "replica"
-		} else {
-			role = "master"
-		}
+	if req.ReplicaOf != "" {
+		role = "replica"
+	} else if req.Type == "replication" {
+		role = "master"
 	}
 	req.Group = strings.TrimSpace(req.Group)
 
@@ -233,10 +231,14 @@ func (s *Server) instanceCreate(c *gin.Context) {
 		}
 		instances.Instances[req.Name] = inst
 
-		// 维护主库的 Replicas 列表
+		// 维护主库的 Replicas 列表，standalone 自动升级为 master/replication
 		if role == "replica" && masterName != "" {
 			if master := instances.Instances[masterName]; master != nil {
 				master.Replicas = append(master.Replicas, req.Name)
+				if master.Role == "standalone" {
+					master.Role = "master"
+					master.Type = "replication"
+				}
 			}
 		}
 
@@ -365,6 +367,17 @@ func (s *Server) instanceDelete(c *gin.Context) {
 
 	// 原子删除实例记录
 	if err := s.state.WithInstances(func(is *apitypes.InstancesState) error {
+		// 从主库的 Replicas 列表中移除
+		if inst.Role == "replica" {
+			for _, other := range is.Instances {
+				for i, r := range other.Replicas {
+					if r == req.Name {
+						other.Replicas = append(other.Replicas[:i], other.Replicas[i+1:]...)
+						break
+					}
+				}
+			}
+		}
 		delete(is.Instances, req.Name)
 		return nil
 	}); err != nil {
@@ -585,6 +598,10 @@ func (s *Server) instanceReplicate(c *gin.Context) {
 		if masterName != "" {
 			if master := is.Instances[masterName]; master != nil {
 				master.Replicas = append(master.Replicas, req.Name)
+				if master.Role == "standalone" {
+					master.Role = "master"
+					master.Type = "replication"
+				}
 				groupName = master.Group
 				if groupName == "" {
 					groupName = masterName
@@ -782,7 +799,7 @@ func (s *Server) backupSetSchedule(c *gin.Context) {
 			return fmt.Errorf("instance not found")
 		}
 		if inst.Backup == nil {
-			inst.Backup = &apitypes.BackupConfig{}
+			inst.Backup = &apitypes.BackupConfig{Retention: 7}
 		}
 		inst.Backup.Schedule = req.Schedule
 		if req.Retention > 0 {

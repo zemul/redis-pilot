@@ -53,7 +53,7 @@ func (s *Server) buildPortView(instances *apitypes.InstancesState, portFilter, e
 		}
 		if inst.Envoy.ReadWritePort > 0 {
 			if filterPort > 0 && inst.Envoy.ReadWritePort != filterPort {
-				goto checkWriteOnly
+				goto checkReadOnly
 			}
 			items = append(items, apitypes.PortInventoryItem{
 				EnvoyPort:      inst.Envoy.ReadWritePort,
@@ -68,14 +68,14 @@ func (s *Server) buildPortView(instances *apitypes.InstancesState, portFilter, e
 				continue
 			}
 		}
-	checkWriteOnly:
-		if inst.Envoy.WriteOnlyPort > 0 {
-			if filterPort > 0 && inst.Envoy.WriteOnlyPort != filterPort {
+	checkReadOnly:
+		if inst.Envoy.ReadOnlyPort > 0 {
+			if filterPort > 0 && inst.Envoy.ReadOnlyPort != filterPort {
 				continue
 			}
 			items = append(items, apitypes.PortInventoryItem{
-				EnvoyPort:      inst.Envoy.WriteOnlyPort,
-				Mode:           "writeonly",
+				EnvoyPort:      inst.Envoy.ReadOnlyPort,
+				Mode:           "readonly",
 				InstanceName:   name,
 				Engine:         inst.Engine,
 				Category:       inst.Category,
@@ -154,11 +154,11 @@ func (s *Server) buildSummaryView(instances *apitypes.InstancesState, pool *apit
 			if inst.Envoy.ReadWritePort > 0 {
 				envoyPorts = strconv.Itoa(inst.Envoy.ReadWritePort)
 			}
-			if inst.Envoy.WriteOnlyPort > 0 {
+			if inst.Envoy.ReadOnlyPort > 0 {
 				if envoyPorts != "" {
 					envoyPorts += "/"
 				}
-				envoyPorts += strconv.Itoa(inst.Envoy.WriteOnlyPort)
+				envoyPorts += strconv.Itoa(inst.Envoy.ReadOnlyPort)
 			}
 		}
 		summary.Instances = append(summary.Instances, apitypes.InstanceSummaryItem{

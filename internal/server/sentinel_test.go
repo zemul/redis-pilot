@@ -67,7 +67,7 @@ func TestSentinelEventEndpoint(t *testing.T) {
 		"order-master": {
 			Type: "replication", Group: "order", Role: "master", Status: "running", Server: "srv-a", Port: 6379,
 			Replicas: []string{"order-replica"},
-			Envoy:    &apitypes.EnvoyConfig{ReadWritePort: 16379, WriteOnlyPort: 16500},
+			Envoy:    &apitypes.EnvoyConfig{ReadWritePort: 16379, ReadOnlyPort: 16500},
 		},
 		"order-replica": {
 			Type: "replication", Group: "order", Role: "replica", Status: "running", Server: "srv-b", Port: 6379,
@@ -96,7 +96,7 @@ func TestHandleSentinelFailover_UpdatesState(t *testing.T) {
 		"order-master": {
 			Type: "replication", Group: "order", Role: "master", Status: "running", Server: "srv-a", Port: 6379,
 			Replicas: []string{"order-replica", "order-replica-2"},
-			Envoy:    &apitypes.EnvoyConfig{ReadWritePort: 16379, WriteOnlyPort: 16500},
+			Envoy:    &apitypes.EnvoyConfig{ReadWritePort: 16379, ReadOnlyPort: 16500},
 		},
 		"order-replica": {
 			Type: "replication", Group: "order", Role: "replica", Status: "running", Server: "srv-b", Port: 6379,
@@ -107,7 +107,7 @@ func TestHandleSentinelFailover_UpdatesState(t *testing.T) {
 			ReplicaOf: "order-master",
 		},
 	}})
-	if err := s.handleSentinelFailover("order", "10.0.1.11:6379", "test"); err != nil {
+	if err := s.handleSentinelFailover("order", "10.0.1.11:6379", "test", "sentinel"); err != nil {
 		t.Fatal(err)
 	}
 	state, err := s.state.ReadInstances()
@@ -123,7 +123,7 @@ func TestHandleSentinelFailover_UpdatesState(t *testing.T) {
 	if newMaster.Role != "master" || newMaster.ReplicaOf != "" {
 		t.Fatalf("new master not promoted in state: %#v", newMaster)
 	}
-	if newMaster.Envoy == nil || newMaster.Envoy.ReadWritePort != 16379 || newMaster.Envoy.WriteOnlyPort != 16500 {
+	if newMaster.Envoy == nil || newMaster.Envoy.ReadWritePort != 16379 || newMaster.Envoy.ReadOnlyPort != 16500 {
 		t.Fatalf("new master did not inherit envoy config: %#v", newMaster.Envoy)
 	}
 	if len(newMaster.Replicas) != 1 || newMaster.Replicas[0] != "order-replica-2" {

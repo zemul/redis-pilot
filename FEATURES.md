@@ -132,7 +132,7 @@
 1. 按主库名聚合实例组（主库 + 所有从库）
 2. 为每个实例组创建两个 Listener:
    - **读写端口** (`ReadWritePort`): `read_policy: REPLICA`（读走从库，写走主库）
-   - **仅写端口** (`WriteOnlyPort`): `read_policy: MASTER`（所有请求走主库）
+   - **只读端口** (`ReadOnlyPort`): 后端为从库，用于读请求分流
 3. 创建 Cluster，包含主库和所有从库的 endpoint
 4. 配置 Redis 健康检查（5s 间隔，2 次失败标记不健康）
 
@@ -436,7 +436,7 @@ instances:
     status: running
     envoy:
       readwrite_port: 8000
-      writeonly_port: 8001
+      readonly_port: 8001
     backup:
       schedule: "0 2 * * *"
       retention: 7
@@ -602,7 +602,7 @@ server.StartReconcileLoop()
 **分配策略**:
 1. 为每个实例组分配两个 Envoy 端口:
    - 读写端口 (ReadWritePort): 从 `envoy_rw` 范围分配
-   - 仅写端口 (WriteOnlyPort): 从 `envoy_wo` 范围分配
+   - 只读端口 (ReadOnlyPort): 从 `envoy_wo` 范围分配
 2. 扫描所有已有实例的 Envoy 端口
 3. 从配置范围中取第一个未占用的端口
 

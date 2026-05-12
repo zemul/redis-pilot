@@ -28,7 +28,7 @@ type PoolState struct {
 // EnvoyConfig 实例的 Envoy 端口配置
 type EnvoyConfig struct {
 	ReadWritePort int `yaml:"readwrite_port,omitempty"`
-	WriteOnlyPort int `yaml:"writeonly_port,omitempty"`
+	ReadOnlyPort  int `yaml:"readonly_port,omitempty"`
 }
 
 // BackupConfig 备份配置
@@ -96,7 +96,7 @@ type APIResponse struct {
 // PortInventoryItem 端口-实例映射（视图 A）
 type PortInventoryItem struct {
 	EnvoyPort      int      `json:"envoy_port"`
-	Mode           string   `json:"mode"` // readwrite | writeonly
+	Mode           string   `json:"mode"` // readwrite | readonly
 	InstanceName   string   `json:"instance_name"`
 	Engine         string   `json:"engine"`
 	Category       string   `json:"category"`
