@@ -165,6 +165,12 @@ func (s *Server) instanceCreate(c *gin.Context) {
 			if groupName == "" {
 				groupName = masterName
 			}
+			// standalone 升为 master 时补分配 ReadOnly 端口
+			if master.Envoy != nil && master.Envoy.ReadOnlyPort == 0 {
+				if ec, err := allocEnvoyPorts(s.cfg.Ports, instances, true); err == nil {
+					master.Envoy.ReadOnlyPort = ec.ReadOnlyPort
+				}
+			}
 		} else {
 			if groupName == "" {
 				return fmt.Errorf("group is required for master or standalone instance")
@@ -180,7 +186,7 @@ func (s *Server) instanceCreate(c *gin.Context) {
 		}
 
 		if req.Server == "" {
-			selected, err := selectServer(pool, instances, req.Memory, req.CPUs, resolvedAddr)
+			selected, err := selectServer(pool, instances, req.Memory, req.CPUs, req.Disk, resolvedAddr)
 			if err != nil {
 				return fmt.Errorf("schedule: %s", err.Error())
 			}
@@ -200,7 +206,7 @@ func (s *Server) instanceCreate(c *gin.Context) {
 
 		var envoyConf *apitypes.EnvoyConfig
 		if role == "master" || role == "standalone" {
-			ec, err := allocEnvoyPorts(s.cfg.Ports, instances)
+			ec, err := allocEnvoyPorts(s.cfg.Ports, instances, role == "master")
 			if err != nil {
 				return err
 			}
@@ -218,6 +224,7 @@ func (s *Server) instanceCreate(c *gin.Context) {
 			Port:            req.Port,
 			Memory:          req.Memory,
 			CPUs:            req.CPUs,
+			Disk:            req.Disk,
 			Password:        req.Password,
 			ConfigPath:      dataDir + "/conf",
 			DataPath:        dataDir + "/data",
@@ -518,7 +525,7 @@ func (s *Server) instancePromote(c *gin.Context) {
 		i.ReplicaOf = ""
 		// 分配 Envoy 端口
 		if i.Envoy == nil {
-			ec, err := allocEnvoyPorts(s.cfg.Ports, is)
+			ec, err := allocEnvoyPorts(s.cfg.Ports, is, true)
 			if err == nil {
 				i.Envoy = ec
 			}
@@ -601,6 +608,12 @@ func (s *Server) instanceReplicate(c *gin.Context) {
 				if master.Role == "standalone" {
 					master.Role = "master"
 					master.Type = "replication"
+				}
+				// standalone 升为 master 时补分配 ReadOnly 端口
+				if master.Envoy != nil && master.Envoy.ReadOnlyPort == 0 {
+					if ec, err := allocEnvoyPorts(s.cfg.Ports, is, true); err == nil {
+						master.Envoy.ReadOnlyPort = ec.ReadOnlyPort
+					}
 				}
 				groupName = master.Group
 				if groupName == "" {
@@ -1014,6 +1027,10 @@ func parseMemoryGi(s string) int {
 	if strings.HasSuffix(s, "Gi") {
 		n, _ := strconv.Atoi(strings.TrimSuffix(s, "Gi"))
 		return n
+	}
+	if strings.HasSuffix(s, "Mi") {
+		n, _ := strconv.Atoi(strings.TrimSuffix(s, "Mi"))
+		return (n + 1023) / 1024
 	}
 	return 0
 }

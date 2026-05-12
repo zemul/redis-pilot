@@ -67,6 +67,7 @@ Choosing the wrong category has real consequences:
 		typ, _ := cmd.Flags().GetString("type")
 		node, _ := cmd.Flags().GetString("node")
 		memory, _ := cmd.Flags().GetString("memory")
+		disk, _ := cmd.Flags().GetString("disk")
 		cpus, _ := cmd.Flags().GetInt("cpus")
 		password, _ := cmd.Flags().GetString("password")
 		group, _ := cmd.Flags().GetString("group")
@@ -84,6 +85,7 @@ Choosing the wrong category has real consequences:
 			"type":     typ,
 			"server":   node,
 			"memory":   memory,
+			"disk":     disk,
 			"cpus":     cpus,
 			"password": password,
 		}
@@ -200,6 +202,7 @@ func init() {
 	instanceCreateCmd.Flags().String("type", "standalone", "Topology: standalone | replication")
 	instanceCreateCmd.Flags().String("node", "", "Target node name (from pool)")
 	instanceCreateCmd.Flags().String("memory", "1Gi", "Memory")
+	instanceCreateCmd.Flags().String("disk", "", "Disk quota for capacity planning (e.g. 20Gi)")
 	instanceCreateCmd.Flags().Int("cpus", 1, "CPU cores")
 	instanceCreateCmd.Flags().String("password", "", "Password")
 	instanceCreateCmd.Flags().String("group", "", "Stable logical group name for master/standalone")

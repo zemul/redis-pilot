@@ -12,12 +12,13 @@ import (
 //  1. 过滤：排除 status != healthy
 //  2. 过滤：排除剩余资源不足的
 //  3. 排序：主从不同服务器 > 不同可用区 > 剩余资源最多
-func selectServer(pool *apitypes.PoolState, instances *apitypes.InstancesState, reqMemory string, reqCPUs int, replicaOf string) (string, error) {
+func selectServer(pool *apitypes.PoolState, instances *apitypes.InstancesState, reqMemory string, reqCPUs int, reqDisk string, replicaOf string) (string, error) {
 	if len(pool.Servers) == 0 {
 		return "", fmt.Errorf("no servers in pool")
 	}
 
 	reqMem := parseMemoryGi(reqMemory)
+	reqDiskGi := parseMemoryGi(reqDisk)
 
 	// 找到主库所在的服务器和可用区（用于从库调度）
 	var masterServer, masterZone string
@@ -65,13 +66,17 @@ func selectServer(pool *apitypes.PoolState, instances *apitypes.InstancesState, 
 			continue
 		}
 		// 从 instances-state 计算已分配资源
-		allocMem, allocCPU := computeAllocated(instances, name)
+		allocMem, allocCPU, allocDisk := computeAllocated(instances, name)
 		remainMem := parseMemoryGi(srv.Capacity.Memory) - allocMem
 		remainCPU := srv.Capacity.CPUCores - allocCPU
+		remainDisk := parseMemoryGi(srv.Capacity.Disk) - allocDisk
 		if reqMem > 0 && remainMem < reqMem {
 			continue
 		}
 		if reqCPUs > 0 && remainCPU < reqCPUs {
+			continue
+		}
+		if reqDiskGi > 0 && remainDisk < reqDiskGi {
 			continue
 		}
 
@@ -117,13 +122,14 @@ func poolEndpoint(pool *apitypes.PoolState, serverName string) string {
 	return ""
 }
 
-func computeAllocated(instances *apitypes.InstancesState, serverName string) (memGi int, cpus int) {
+func computeAllocated(instances *apitypes.InstancesState, serverName string) (memGi int, cpus int, diskGi int) {
 	for _, inst := range instances.Instances {
 		if inst == nil || inst.Server != serverName || inst.Status == "failed" {
 			continue
 		}
 		memGi += parseMemoryGi(inst.Memory)
 		cpus += inst.CPUs
+		diskGi += parseMemoryGi(inst.Disk)
 	}
 	return
 }

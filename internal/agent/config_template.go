@@ -88,7 +88,7 @@ maxclients 10000
 
 var kvrocksTmpl = template.Must(template.New("kvrocks").Parse(`
 bind 0.0.0.0
-port 6666
+port 6379
 {{ if .Password }}requirepass {{ .Password }}
 {{ end }}timeout 300
 log-level info

@@ -1,6 +1,7 @@
 package server
 
 import (
+	"fmt"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
@@ -13,6 +14,15 @@ func (s *Server) poolQuery(c *gin.Context) {
 	if err != nil {
 		fail(c, http.StatusInternalServerError, err.Error())
 		return
+	}
+	instances, _ := s.state.ReadInstances()
+	if instances != nil {
+		for name, srv := range state.Servers {
+			memGi, cpus, diskGi := computeAllocated(instances, name)
+			srv.Allocated.Memory = fmt.Sprintf("%dGi", memGi)
+			srv.Allocated.CPUCores = cpus
+			srv.Allocated.Disk = fmt.Sprintf("%dGi", diskGi)
+		}
 	}
 	ok(c, state)
 }

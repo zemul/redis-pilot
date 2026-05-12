@@ -66,6 +66,7 @@ type Instance struct {
 	Port            int               `yaml:"port"`
 	Memory          string            `yaml:"memory"`
 	CPUs            int               `yaml:"cpus"`
+	Disk            string            `yaml:"disk,omitempty"`
 	Password        string            `yaml:"password"`
 	ConfigPath      string            `yaml:"config_path"`
 	DataPath        string            `yaml:"data_path"`
@@ -154,6 +155,7 @@ type CreateInstanceRequest struct {
 	Port            int               `json:"port"`
 	Memory          string            `json:"memory" binding:"required"`
 	CPUs            int               `json:"cpus"`
+	Disk            string            `json:"disk,omitempty"`
 	Password        string            `json:"password"`
 	ReplicaOf       string            `json:"replica_of,omitempty"`
 	ConfigOverrides map[string]string `json:"config_overrides,omitempty"`
