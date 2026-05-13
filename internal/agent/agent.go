@@ -102,7 +102,7 @@ func (a *Agent) Router() *gin.Engine {
 
 	sentinel := r.Group("/sentinel")
 	{
-		sentinel.POST("/ensure", a.sentinelEnsure)
+		sentinel.POST("/sync", a.sentinelSync)
 		sentinel.POST("/remove-master", a.sentinelRemoveMaster)
 		sentinel.GET("/status", a.sentinelStatus)
 	}

@@ -931,30 +931,43 @@ Sentinel 用于 Redis/Kvrocks 主从实例组的自动故障转移。Sentinel �
 
 #### 3.7.1 部署策略
 
-Sentinel 不要求每台 Agent 都部署。默认策略：
+Sentinel 是 Redis 高可用控制面，不要求每台 Agent 都部署，但必须由运维提前规划并在 Server 配置中显式声明。Server 不根据当前 healthy Agent 自动选择 Sentinel 节点，避免控制面随资源池健康状态漂移。
 
-| healthy Agent 数 | Sentinel 数 | quorum | 处理策略 |
-|------------------|-------------|--------|----------|
-| < 3 | 0 | - | 不启用自动故障转移，创建主从时返回 warning |
-| 3-4 | 3 | 2 | 默认部署 3 个 Sentinel |
-| >= 5 | 3 | 2 | 默认部署 3 个 Sentinel；核心业务可配置为 5 个 |
-| >= 5 且 sentinel.replicas=5 | 5 | 3 | 高等级业务使用，容忍更多 Sentinel 节点故障 |
+| 声明的 Sentinel 节点 | Sentinel 数 | quorum | 处理策略 |
+|----------------------|-------------|--------|----------|
+| `sentinel.nodes` 未配置 | 0 | - | 不启用自动故障转移，创建主从时返回 warning |
+| 3 个显式节点 | 3 | 2 | 标准生产部署 |
+| 5 个显式节点 | 5 | 3 | 高等级业务使用，容忍更多 Sentinel 节点故障 |
+| 其他数量的显式节点 | - | - | 配置非法，不启用自动故障转移 |
 
-Sentinel 节点选择规则：
+Sentinel 节点规划规则：
 
-1. 只选择 `status=healthy` 的服务器
-2. 优先选择不同 `zone` 标签的服务器
-3. 优先选择 `role=production`，排除 `role=standby`，除非健康节点不足
-4. Sentinel 数固定为奇数（3 或 5），避免偶数投票拓扑
-5. 选中节点记录到 Server 派生配置中，不单独维护第二份状态
+1. 节点名必须来自 `pool-state.yaml` 的 `servers` key
+2. Sentinel 数固定为奇数（3 或 5），避免偶数投票拓扑
+3. 节点应跨 `zone` / 机架 / 故障域部署
+4. 避免选择临时节点、维护节点、低规格节点或 `role=standby` 节点
+5. 节点列表写入 `server.yaml` 的 `sentinel.nodes`，作为 Server 下发和 reconcile 的唯一依据
+
+示例：
+
+```yaml
+sentinel:
+  enabled: true
+  nodes:
+    - redis-a
+    - redis-b
+    - redis-c
+  port: 26379
+  quorum: 2
+```
 
 #### 3.7.2 Server 与 Agent API
 
 Server 对 Agent 的 Sentinel 管理 API：
 
 ```
-POST /sentinel/ensure
-  确保本机 Sentinel 容器存在，并用请求体中的 master 列表重写 sentinel.conf 后重载/重启
+POST /sentinel/sync
+  要求本机已提前部署并运行 redis-sentinel 容器；用请求体中的 master 列表重写 sentinel.conf
 
 POST /sentinel/remove-master
   从本机 Sentinel 配置中移除指定实例组
@@ -966,7 +979,7 @@ POST /sentinel/event
   Agent 监听到 +switch-master 后上报 Server（事件加速路径，reconcile 仍是兜底）
 ```
 
-`/sentinel/ensure` 请求示例：
+`/sentinel/sync` 请求示例：
 
 ```json
 {
@@ -1035,10 +1048,10 @@ podman run -d \
 创建主从实例组成功后，Server 执行：
 
 ```
-1. 从 pool-state 选择 Sentinel 节点
+1. 从 server.yaml 的 sentinel.nodes 读取已规划 Sentinel 节点
 2. 从 instances-state 派生所有需要监控的 master 列表
-3. 调用选中 Agent 的 /sentinel/ensure
-4. 如果 healthy Agent < 3，跳过 Sentinel 并在创建结果中返回 warning
+3. 调用选中 Agent 的 /sentinel/sync
+4. 如果 sentinel.nodes 未配置或数量不是 3/5，跳过 Sentinel 并在创建结果中返回 warning
 ```
 
 删除实例组时，Server 执行：
@@ -1088,7 +1101,7 @@ Agent SUBSCRIBE +switch-master
 | 场景 | 处理策略 |
 |------|----------|
 | healthy Sentinel 数 < quorum | 标记自动故障转移能力降级，保留现有实例运行，触发告警 |
-| `/sentinel/ensure` 部分节点失败 | 成功节点数 >= quorum 则继续并告警；否则回滚本次 Sentinel 配置并返回 warning |
+| `/sentinel/sync` 部分节点失败 | 成功节点数 >= quorum 则继续并告警；否则回滚本次 Sentinel 配置并返回 warning |
 | Sentinel 返回的新 master 不在 instances-state | 标记 `failover_conflict`，不自动改拓扑，触发人工介入 |
 | 新主库再次故障 | 不主动抢占 Sentinel，等待下一轮 Sentinel failover；编排锁超时后允许重新同步 |
 | Envoy 配置落盘失败 | 状态更新不得提交为 success，审计记录 failed，并保留旧配置 |
@@ -1257,17 +1270,17 @@ Skill: redis-failover
 
 ```
 架构:
-  按 §3.7 从 healthy Agent 中选择 3 或 5 台运行 Sentinel（需 ≥ 3 台服务器，quorum=2/3）
+  按 §3.7 提前规划并声明 3 或 5 台 Sentinel 节点（quorum=2/3）
   一个 Sentinel 实例可监控多个主库，每个主库用不同名字区分
   Sentinel 监控所有实例组的主库
 
 检测流程:
   Sentinel(3) → quorum(2) → 判定主库客观下线(sdown → odown)
 
-  0. redis-create 创建主从实例时自动管理 Sentinel：
-     - 检查 pool-state 中 healthy 服务器数量
-     - 服务器 ≥ 3：选择 3 或 5 台 Sentinel 节点，调用 /sentinel/ensure 下发完整 sentinel.conf
-     - 服务器 < 3：跳过 Sentinel，返回警告"服务器不足3台，未启用自动故障转移"
+  0. redis-create 创建主从实例时同步 Sentinel 监控配置：
+     - 检查 server.yaml 中是否声明 sentinel.nodes
+     - 已声明 3 或 5 台 Sentinel 节点：调用 /sentinel/sync 下发完整 sentinel.conf
+     - 未声明或数量不是 3/5：跳过 Sentinel，返回警告"未正确配置 Sentinel 节点，未启用自动故障转移"
      - redis-delete 删除实例组时执行 sentinel remove {instance-group}
 
   1. Sentinel 检测主库不可用

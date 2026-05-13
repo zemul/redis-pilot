@@ -25,13 +25,14 @@ type PortConfig struct {
 }
 
 type SentinelConfig struct {
-	Enabled               bool `yaml:"enabled"`
-	Replicas              int  `yaml:"replicas"` // 3 or 5
-	Port                  int  `yaml:"port"`
-	Quorum                int  `yaml:"quorum"`
-	DownAfterMilliseconds int  `yaml:"down_after_milliseconds"`
-	FailoverTimeout       int  `yaml:"failover_timeout"`
-	ParallelSyncs         int  `yaml:"parallel_syncs"`
+	Enabled               bool     `yaml:"enabled"`
+	Nodes                 []string `yaml:"nodes"`
+	Replicas              int      `yaml:"replicas"` // 3 or 5
+	Port                  int      `yaml:"port"`
+	Quorum                int      `yaml:"quorum"`
+	DownAfterMilliseconds int      `yaml:"down_after_milliseconds"`
+	FailoverTimeout       int      `yaml:"failover_timeout"`
+	ParallelSyncs         int      `yaml:"parallel_syncs"`
 }
 
 type Config struct {
@@ -56,6 +57,7 @@ func LoadConfig(path string) (*Config, error) {
 		},
 		Sentinel: SentinelConfig{
 			Enabled:               true,
+			Nodes:                 nil,
 			Replicas:              3,
 			Port:                  26379,
 			Quorum:                2,

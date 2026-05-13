@@ -36,8 +36,8 @@ sentinel failover-timeout {{ .Group }} {{ .FailoverTimeout }}
 sentinel parallel-syncs {{ .Group }} {{ .ParallelSyncs }}
 {{ end }}`))
 
-func (a *Agent) sentinelEnsure(c *gin.Context) {
-	var req apitypes.SentinelEnsureRequest
+func (a *Agent) sentinelSync(c *gin.Context) {
+	var req apitypes.SentinelSyncRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		fail(c, http.StatusBadRequest, err.Error())
 		return
@@ -50,12 +50,23 @@ func (a *Agent) sentinelEnsure(c *gin.Context) {
 	}
 	normalizeSentinelMasters(req.Masters)
 
+	existingMasters := a.sentinelMastersFromConfig()
+	running, err := a.sentinelContainerRunning()
+	if err != nil {
+		fail(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if !running {
+		fail(c, http.StatusConflict, "redis-sentinel container is not running; deploy sentinel before syncing masters")
+		return
+	}
+
 	confPath, err := a.writeSentinelConfig(req)
 	if err != nil {
 		fail(c, http.StatusInternalServerError, err.Error())
 		return
 	}
-	if err := a.recreateSentinelContainer(req.Port); err != nil {
+	if err := a.applySentinelRuntimeConfig(req, existingMasters); err != nil {
 		fail(c, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -76,7 +87,7 @@ func normalizeSentinelMasters(masters []apitypes.SentinelMaster) {
 	}
 }
 
-func (a *Agent) writeSentinelConfig(req apitypes.SentinelEnsureRequest) (string, error) {
+func (a *Agent) writeSentinelConfig(req apitypes.SentinelSyncRequest) (string, error) {
 	confDir := filepath.Join(a.cfg.SentinelDir, "conf")
 	dataDir := filepath.Join(a.cfg.SentinelDir, "data")
 	if err := os.MkdirAll(confDir, 0755); err != nil {
@@ -96,18 +107,57 @@ func (a *Agent) writeSentinelConfig(req apitypes.SentinelEnsureRequest) (string,
 	return path, nil
 }
 
-func (a *Agent) recreateSentinelContainer(port int) error {
-	_, _ = a.runtime.Run("rm", "-f", "redis-sentinel")
-	_, err := a.runtime.Run("run", "-d",
-		"--name", "redis-sentinel",
-		"--network", "host",
-		"--restart", "on-failure:5",
-		"-v", fmt.Sprintf("%s/conf/sentinel.conf:/etc/redis/sentinel.conf:Z", a.cfg.SentinelDir),
-		"-v", fmt.Sprintf("%s/data:/data:Z", a.cfg.SentinelDir),
-		"docker.io/redis:7",
-		"redis-sentinel", "/etc/redis/sentinel.conf",
-	)
-	return err
+func (a *Agent) sentinelContainerRunning() (bool, error) {
+	containers, err := a.runtime.ListAll()
+	if err != nil {
+		return false, err
+	}
+	for _, container := range containers {
+		if container.Name == "redis-sentinel" {
+			return container.Running, nil
+		}
+	}
+	return false, nil
+}
+
+func (a *Agent) applySentinelRuntimeConfig(req apitypes.SentinelSyncRequest, existing []string) error {
+	desired := map[string]apitypes.SentinelMaster{}
+	for _, master := range req.Masters {
+		desired[master.Group] = master
+	}
+	for _, group := range existing {
+		if _, ok := desired[group]; !ok {
+			if _, err := a.sentinelCLI(req.Port, "SENTINEL", "REMOVE", group); err != nil {
+				return err
+			}
+		}
+	}
+	for _, master := range req.Masters {
+		_, _ = a.sentinelCLI(req.Port, "SENTINEL", "REMOVE", master.Group)
+		if _, err := a.sentinelCLI(req.Port, "SENTINEL", "MONITOR", master.Group, master.Host, fmt.Sprintf("%d", master.Port), fmt.Sprintf("%d", req.Quorum)); err != nil {
+			return err
+		}
+		if master.Password != "" {
+			if _, err := a.sentinelCLI(req.Port, "SENTINEL", "SET", master.Group, "auth-pass", master.Password); err != nil {
+				return err
+			}
+		}
+		if _, err := a.sentinelCLI(req.Port, "SENTINEL", "SET", master.Group, "down-after-milliseconds", fmt.Sprintf("%d", master.DownAfterMilliseconds)); err != nil {
+			return err
+		}
+		if _, err := a.sentinelCLI(req.Port, "SENTINEL", "SET", master.Group, "failover-timeout", fmt.Sprintf("%d", master.FailoverTimeout)); err != nil {
+			return err
+		}
+		if _, err := a.sentinelCLI(req.Port, "SENTINEL", "SET", master.Group, "parallel-syncs", fmt.Sprintf("%d", master.ParallelSyncs)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (a *Agent) sentinelCLI(port int, args ...string) (string, error) {
+	cliArgs := append([]string{"exec", "redis-sentinel", "redis-cli", "-p", fmt.Sprintf("%d", port)}, args...)
+	return a.runtime.Run(cliArgs...)
 }
 
 func (a *Agent) sentinelRemoveMaster(c *gin.Context) {
@@ -119,7 +169,7 @@ func (a *Agent) sentinelRemoveMaster(c *gin.Context) {
 	if req.Port == 0 {
 		req.Port = defaultSentinelPort
 	}
-	if _, err := a.runtime.Run("exec", "redis-sentinel", "redis-cli", "-p", fmt.Sprintf("%d", req.Port), "SENTINEL", "REMOVE", req.Group); err != nil {
+	if _, err := a.sentinelCLI(req.Port, "SENTINEL", "REMOVE", req.Group); err != nil {
 		fail(c, http.StatusInternalServerError, err.Error())
 		return
 	}

@@ -24,6 +24,9 @@ ports:
 
 sentinel:
   enabled: true
+  # Sentinel 是 HA 控制面，生产环境必须提前规划并显式声明节点。
+  # 节点名必须来自 pool-state.yaml 的 servers key，建议 3 或 5 个，跨可用区部署。
+  nodes: []
   replicas: 3
   port: 26379
   quorum: 2

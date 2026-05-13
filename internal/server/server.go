@@ -112,6 +112,8 @@ func (s *Server) Router() *gin.Engine {
 	sentinel := r.Group("/sentinel")
 	{
 		sentinel.POST("/event", s.sentinelEvent)
+		sentinel.GET("/status", s.sentinelStatus)
+		sentinel.POST("/sync", s.sentinelSync)
 	}
 
 	return r

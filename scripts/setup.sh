@@ -49,13 +49,14 @@ EOF
 
 echo "=== Server ($DEPLOY_SERVER) ==="
 ssh "$DEPLOY_SERVER" "mkdir -p /opt/redis-pilot-server/{state,audit,logs} /opt/envoy/conf"
-scp "$PROJECT_DIR/configs/server.yaml" "$DEPLOY_SERVER:/opt/redis-pilot-server/server.yaml"
+scp "$PROJECT_DIR/configs/server.yaml" "$DEPLOY_SERVER:/opt/redis-pilot-server/server.yaml.example"
+ssh "$DEPLOY_SERVER" "test -f /opt/redis-pilot-server/server.yaml || cp /opt/redis-pilot-server/server.yaml.example /opt/redis-pilot-server/server.yaml"
 scp "$TMP/redis-pilot-server.service" "$DEPLOY_SERVER:/etc/systemd/system/redis-pilot-server.service"
 ssh "$DEPLOY_SERVER" "systemctl daemon-reload && systemctl enable redis-pilot-server"
 
 for h in $DEPLOY_AGENTS; do
     echo "=== Agent ($h) ==="
-    ssh "$h" "mkdir -p /opt/redis-pilot-agent/logs /data/redis"
+    ssh "$h" "mkdir -p /opt/redis-pilot-agent/logs /data/redis /data/redis-sentinel/conf /data/redis-sentinel/data"
     scp "$PROJECT_DIR/configs/agent.yaml" "$h:/opt/redis-pilot-agent/agent.yaml"
     scp "$TMP/redis-pilot-agent.service" "$h:/etc/systemd/system/redis-pilot-agent.service"
     ssh "$h" "systemctl daemon-reload && systemctl enable redis-pilot-agent"
@@ -63,3 +64,4 @@ done
 
 echo ""
 echo "初始化完成，运行 make deploy 推送二进制并启动服务。"
+echo "注意：server.yaml 需要手动配置 sentinel.nodes；Sentinel 容器需提前部署，setup.sh 不会自动创建。"

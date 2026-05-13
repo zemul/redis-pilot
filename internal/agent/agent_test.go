@@ -270,10 +270,11 @@ func TestCleanupBackups_SkipCheckpoint(t *testing.T) {
 
 // ---------- Sentinel 管理测试 ----------
 
-func TestSentinelEnsure_WritesConfigAndRunsContainer(t *testing.T) {
+func TestSentinelSync_WritesConfigForRunningContainer(t *testing.T) {
 	a, fake := newTestAgentWithFake(t)
+	fake.containers = []podman.ContainerStatus{{Name: "redis-sentinel", Running: true}}
 	r := a.Router()
-	w := doAgentRequest(r, "POST", "/sentinel/ensure", map[string]interface{}{
+	w := doAgentRequest(r, "POST", "/sentinel/sync", map[string]interface{}{
 		"port":   26379,
 		"quorum": 2,
 		"masters": []map[string]interface{}{
@@ -306,14 +307,26 @@ func TestSentinelEnsure_WritesConfigAndRunsContainer(t *testing.T) {
 			t.Errorf("expected %q in sentinel.conf", want)
 		}
 	}
-	if !fake.hasCalled("Run:run -d --name redis-sentinel --network host") {
-		t.Fatalf("expected sentinel container run, calls=%v", fake.calls)
+	if fake.hasCalled("Run:run") || fake.hasCalled("Run:rm -f redis-sentinel") {
+		t.Fatalf("sentinel sync must not create or recreate containers, calls=%v", fake.calls)
+	}
+}
+
+func TestSentinelSync_RequiresRunningContainer(t *testing.T) {
+	a, _ := newTestAgentWithFake(t)
+	w := doAgentRequest(a.Router(), "POST", "/sentinel/sync", map[string]interface{}{
+		"port":    26379,
+		"quorum":  2,
+		"masters": []map[string]interface{}{},
+	})
+	if w.Code != http.StatusConflict {
+		t.Fatalf("expected 409 when sentinel is not running, got %d: %s", w.Code, w.Body.String())
 	}
 }
 
 func TestSentinelRemoveMaster_RemovesConfigLines(t *testing.T) {
 	a, fake := newTestAgentWithFake(t)
-	if _, err := a.writeSentinelConfig(apitypes.SentinelEnsureRequest{
+	if _, err := a.writeSentinelConfig(apitypes.SentinelSyncRequest{
 		Port:   26379,
 		Quorum: 2,
 		Masters: []apitypes.SentinelMaster{
@@ -344,7 +357,7 @@ func TestSentinelRemoveMaster_RemovesConfigLines(t *testing.T) {
 func TestSentinelStatus(t *testing.T) {
 	a, fake := newTestAgentWithFake(t)
 	fake.containers = []podman.ContainerStatus{{Name: "redis-sentinel", Running: true}}
-	if _, err := a.writeSentinelConfig(apitypes.SentinelEnsureRequest{
+	if _, err := a.writeSentinelConfig(apitypes.SentinelSyncRequest{
 		Port:   26379,
 		Quorum: 2,
 		Masters: []apitypes.SentinelMaster{

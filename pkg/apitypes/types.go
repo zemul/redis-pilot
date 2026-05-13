@@ -172,8 +172,8 @@ type SentinelMaster struct {
 	ParallelSyncs         int    `json:"parallel_syncs,omitempty" yaml:"parallel_syncs,omitempty"`
 }
 
-// SentinelEnsureRequest 下发给 Agent 的 Sentinel 期望配置
-type SentinelEnsureRequest struct {
+// SentinelSyncRequest 下发给 Agent 的 Sentinel 监控配置
+type SentinelSyncRequest struct {
 	Port     int              `json:"port"`
 	Quorum   int              `json:"quorum"`
 	Masters  []SentinelMaster `json:"masters"`

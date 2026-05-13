@@ -2,10 +2,12 @@ package server
 
 import (
 	"bufio"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net"
+	"net/http"
 	"sort"
 	"strconv"
 	"strings"
@@ -35,6 +37,58 @@ func (s *Server) sentinelEvent(c *gin.Context) {
 			fail(c, 500, err.Error())
 			return
 		}
+	}
+	ok(c, nil)
+}
+
+type sentinelNodeStatus struct {
+	Name   string                   `json:"name"`
+	Status *apitypes.SentinelStatus `json:"status,omitempty"`
+	Error  string                   `json:"error,omitempty"`
+}
+
+type sentinelClusterStatus struct {
+	Enabled bool                 `json:"enabled"`
+	Port    int                  `json:"port"`
+	Quorum  int                  `json:"quorum"`
+	Nodes   []sentinelNodeStatus `json:"nodes"`
+}
+
+func (s *Server) sentinelStatus(c *gin.Context) {
+	pool, err := s.state.ReadPool()
+	if err != nil {
+		fail(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	result := sentinelClusterStatus{
+		Enabled: s.cfg.Sentinel.Enabled,
+		Port:    s.sentinelPort(),
+		Quorum:  s.sentinelQuorum(),
+	}
+	for _, name := range s.selectSentinelNodes(pool) {
+		node := sentinelNodeStatus{Name: name}
+		srv := pool.Servers[name]
+		if srv == nil {
+			node.Error = "server not found in pool-state"
+			result.Nodes = append(result.Nodes, node)
+			continue
+		}
+		status, err := s.queryAgentSentinelStatus(srv)
+		if err != nil {
+			node.Error = err.Error()
+		} else {
+			node.Status = status
+		}
+		result.Nodes = append(result.Nodes, node)
+	}
+	ok(c, result)
+}
+
+func (s *Server) sentinelSync(c *gin.Context) {
+	if err := s.syncSentinelMasters(); err != nil {
+		fail(c, http.StatusInternalServerError, err.Error())
+		return
 	}
 	ok(c, nil)
 }
@@ -70,8 +124,15 @@ func (s *Server) reconcileSentinelOnce() error {
 		return err
 	}
 	nodes := s.selectSentinelNodes(pool)
+	if len(nodes) == 0 {
+		s.log.Infof("sentinel reconcile skipped: no sentinel.nodes configured")
+		return nil
+	}
+	if !validSentinelNodeCount(len(nodes)) {
+		return fmt.Errorf("invalid configured sentinel node count: got=%d want=3 or 5", len(nodes))
+	}
 	if len(nodes) < s.sentinelQuorum() {
-		return fmt.Errorf("not enough sentinel nodes: have=%d quorum=%d", len(nodes), s.sentinelQuorum())
+		return fmt.Errorf("not enough configured sentinel nodes: have=%d quorum=%d", len(nodes), s.sentinelQuorum())
 	}
 	for _, master := range s.buildSentinelMasters(pool, instances) {
 		current, err := s.querySentinelMaster(pool, nodes, master.Group)
@@ -111,6 +172,29 @@ func (s *Server) querySentinelMaster(pool *apitypes.PoolState, nodes []string, g
 	return "", firstErr
 }
 
+func (s *Server) queryAgentSentinelStatus(srv *apitypes.PoolServer) (*apitypes.SentinelStatus, error) {
+	data, err := newAgentClient(srv).get("/sentinel/status")
+	if err != nil {
+		return nil, err
+	}
+	var resp apitypes.APIResponse
+	if err := json.Unmarshal(data, &resp); err != nil {
+		return nil, err
+	}
+	if !resp.Success {
+		return nil, errors.New(resp.Error)
+	}
+	encoded, err := json.Marshal(resp.Data)
+	if err != nil {
+		return nil, err
+	}
+	var status apitypes.SentinelStatus
+	if err := json.Unmarshal(encoded, &status); err != nil {
+		return nil, err
+	}
+	return &status, nil
+}
+
 func sentinelGetMasterAddr(addr, group string) (string, error) {
 	conn, err := net.DialTimeout("tcp", addr, 2*time.Second)
 	if err != nil {
@@ -118,7 +202,8 @@ func sentinelGetMasterAddr(addr, group string) (string, error) {
 	}
 	defer conn.Close()
 	_ = conn.SetDeadline(time.Now().Add(3 * time.Second))
-	if _, err := fmt.Fprintf(conn, "*3\r\n$8\r\nSENTINEL\r\n$27\r\nget-master-addr-by-name\r\n$%d\r\n%s\r\n", len(group), group); err != nil {
+	cmd := "get-master-addr-by-name"
+	if _, err := fmt.Fprintf(conn, "*3\r\n$8\r\nSENTINEL\r\n$%d\r\n%s\r\n$%d\r\n%s\r\n", len(cmd), cmd, len(group), group); err != nil {
 		return "", err
 	}
 	reader := bufio.NewReader(conn)
@@ -299,7 +384,7 @@ func (s *Server) handleSentinelFailover(group, newMasterAddr, source, operator s
 	if err != nil {
 		s.audit.Log(audit.Record{
 			Operator: operator,
-			Action: "topology.failover", Level: audit.LevelCritical, Result: "failed",
+			Action:   "topology.failover", Level: audit.LevelCritical, Result: "failed",
 			Duration: time.Since(start).Milliseconds(),
 			Target:   map[string]interface{}{"instance_group": group, "new_master": newMasterAddr},
 			Params:   map[string]interface{}{"source": source},
@@ -319,7 +404,7 @@ func (s *Server) handleSentinelFailover(group, newMasterAddr, source, operator s
 	}
 	s.audit.Log(audit.Record{
 		Operator: operator,
-		Action: "topology.failover", Level: audit.LevelCritical, Result: result,
+		Action:   "topology.failover", Level: audit.LevelCritical, Result: result,
 		Duration: time.Since(start).Milliseconds(),
 		Target: map[string]interface{}{
 			"instance_group":     group,
@@ -364,12 +449,12 @@ func instanceNamesByGroup(instances *apitypes.InstancesState, group string) []st
 }
 
 func (s *Server) syncSentinel() {
-	if err := s.ensureSentinel(); err != nil {
+	if err := s.syncSentinelMasters(); err != nil {
 		s.log.Errorf("sentinel sync failed: %v", err)
 	}
 }
 
-func (s *Server) ensureSentinel() error {
+func (s *Server) syncSentinelMasters() error {
 	if !s.cfg.Sentinel.Enabled {
 		return nil
 	}
@@ -383,13 +468,12 @@ func (s *Server) ensureSentinel() error {
 	}
 
 	nodes := s.selectSentinelNodes(pool)
-	if len(nodes) < 3 {
-		s.log.Infof("sentinel disabled: need at least 3 healthy agents, got %d", len(nodes))
-		return nil
+	if !validSentinelNodeCount(len(nodes)) {
+		return fmt.Errorf("sentinel disabled: configure exactly 3 or 5 sentinel.nodes, got %d", len(nodes))
 	}
 
 	masters := s.buildSentinelMasters(pool, instances)
-	req := apitypes.SentinelEnsureRequest{
+	req := apitypes.SentinelSyncRequest{
 		Port:    s.sentinelPort(),
 		Quorum:  s.sentinelQuorum(),
 		Masters: masters,
@@ -402,8 +486,8 @@ func (s *Server) ensureSentinel() error {
 		if srv == nil {
 			continue
 		}
-		if _, err := newAgentClient(srv).post("/sentinel/ensure", req); err != nil {
-			s.log.Errorf("sentinel ensure failed on %s: %v", name, err)
+		if _, err := newAgentClient(srv).post("/sentinel/sync", req); err != nil {
+			s.log.Errorf("sentinel sync failed on %s: %v", name, err)
 			if firstErr == nil {
 				firstErr = err
 			}
@@ -467,62 +551,34 @@ func (s *Server) buildSentinelMasters(pool *apitypes.PoolState, instances *apity
 }
 
 func (s *Server) selectSentinelNodes(pool *apitypes.PoolState) []string {
-	target := s.sentinelReplicas()
-	type candidate struct {
-		name       string
-		zone       string
-		production bool
-	}
-	var candidates []candidate
-	for name, srv := range pool.Servers {
-		if srv == nil || (srv.Status != "" && srv.Status != "healthy") {
-			continue
-		}
-		c := candidate{name: name}
-		if srv.Labels != nil {
-			c.zone = srv.Labels["zone"]
-			c.production = srv.Labels["role"] == "production"
-		}
-		candidates = append(candidates, c)
-	}
-	sort.Slice(candidates, func(i, j int) bool {
-		if candidates[i].production != candidates[j].production {
-			return candidates[i].production
-		}
-		return candidates[i].name < candidates[j].name
-	})
-
 	var selected []string
-	usedZone := map[string]bool{}
-	for _, c := range candidates {
-		if len(selected) >= target {
-			break
-		}
-		if c.zone != "" && usedZone[c.zone] {
+	seen := map[string]bool{}
+	for _, name := range s.cfg.Sentinel.Nodes {
+		if name == "" || seen[name] {
 			continue
 		}
-		selected = append(selected, c.name)
-		if c.zone != "" {
-			usedZone[c.zone] = true
-		}
-	}
-	for _, c := range candidates {
-		if len(selected) >= target {
-			break
-		}
-		if containsString(selected, c.name) {
+		if pool.Servers[name] == nil {
+			s.log.Errorf("configured sentinel node %s not found in pool-state", name)
 			continue
 		}
-		selected = append(selected, c.name)
+		selected = append(selected, name)
+		seen[name] = true
 	}
 	return selected
 }
 
 func (s *Server) sentinelReplicas() int {
+	if len(s.cfg.Sentinel.Nodes) > 0 {
+		return len(s.cfg.Sentinel.Nodes)
+	}
 	if s.cfg.Sentinel.Replicas == 5 {
 		return 5
 	}
 	return 3
+}
+
+func validSentinelNodeCount(count int) bool {
+	return count == 3 || count == 5
 }
 
 func (s *Server) sentinelQuorum() int {

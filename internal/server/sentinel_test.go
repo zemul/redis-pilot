@@ -6,8 +6,13 @@ import (
 	"gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/pkg/apitypes"
 )
 
-func TestSelectSentinelNodes_ZoneSpread(t *testing.T) {
-	s := &Server{cfg: &Config{Sentinel: SentinelConfig{Enabled: true, Replicas: 3, Quorum: 2}}}
+func TestSelectSentinelNodes_ConfiguredOnly(t *testing.T) {
+	s := newTestServer(t, "")
+	s.cfg.Sentinel = SentinelConfig{
+		Enabled: true,
+		Nodes:   []string{"srv-c", "srv-a", "srv-c", "missing"},
+		Quorum:  2,
+	}
 	pool := &apitypes.PoolState{Servers: map[string]*apitypes.PoolServer{
 		"srv-a": {Status: "healthy", Labels: map[string]string{"zone": "az-1", "role": "production"}},
 		"srv-b": {Status: "healthy", Labels: map[string]string{"zone": "az-1", "role": "production"}},
@@ -15,11 +20,14 @@ func TestSelectSentinelNodes_ZoneSpread(t *testing.T) {
 		"srv-d": {Status: "healthy", Labels: map[string]string{"zone": "az-3", "role": "standby"}},
 	}}
 	got := s.selectSentinelNodes(pool)
-	if len(got) != 3 {
-		t.Fatalf("expected 3 sentinel nodes, got %v", got)
+	want := []string{"srv-c", "srv-a"}
+	if len(got) != len(want) {
+		t.Fatalf("expected configured sentinel nodes %v, got %v", want, got)
 	}
-	if !containsString(got, "srv-a") || !containsString(got, "srv-c") || !containsString(got, "srv-d") {
-		t.Fatalf("expected one node per zone before duplicate zone, got %v", got)
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("expected configured sentinel nodes %v, got %v", want, got)
+		}
 	}
 }
 
