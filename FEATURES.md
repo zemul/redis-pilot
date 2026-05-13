@@ -131,9 +131,9 @@
 **Envoy 配置生成逻辑**:
 1. 按主库名聚合实例组（主库 + 所有从库）
 2. 为每个实例组创建两个 Listener:
-   - **读写端口** (`ReadWritePort`): `read_policy: REPLICA`（读走从库，写走主库）
+   - **读写端口** (`ReadWritePort`): 后端仅包含主库，读写都走主库
    - **只读端口** (`ReadOnlyPort`): 后端为从库，用于读请求分流
-3. 创建 Cluster，包含主库和所有从库的 endpoint
+3. 创建 RW/RO Cluster，RW 指向主库，RO 指向所有从库
 4. 配置 Redis 健康检查（5s 间隔，2 次失败标记不健康）
 
 **自动刷新机制**:
@@ -302,11 +302,10 @@ type metrics struct {
 ### 3.1 资源池命令
 
 ```bash
-redis-tool pool-query
+redis-pilot-cli pool query
   # 查询所有服务器及资源分配
 
-redis-tool pool-add \
-  --name server-1 \
+redis-pilot-cli pool add server-1 \
   --endpoint 192.168.1.10 \
   --agent-port 8400 \
   --agent-token xxx \
@@ -317,70 +316,84 @@ redis-tool pool-add \
   --role production
   # 注册服务器
 
-redis-tool pool-remove --name server-1
+redis-pilot-cli pool remove server-1
   # 移除服务器
 
-redis-tool pool-update --name server-1 --json server.json
+redis-pilot-cli pool update server-1 --json server.json
   # 更新服务器信息
 ```
 
 ### 3.2 实例命令
 
 ```bash
-redis-tool instance-list
+redis-pilot-cli instance list
   # 列出所有实例
 
-redis-tool instance-status --name redis-1
+redis-pilot-cli instance status redis-1
   # 查看实例状态
 
-redis-tool instance-create \
-  --name redis-1 \
+redis-pilot-cli instance create redis-1 \
+  --group redis-1 \
   --category cache \
   --engine redis \
   --type standalone \
-  --server server-1 \
-  --port 6379 \
+  --node server-1 \
   --memory 4Gi \
   --cpus 2 \
   --password mypass \
   --config "maxmemory-policy=allkeys-lru"
   # 创建实例
 
-redis-tool instance-delete --name redis-1 --clean-data
+redis-pilot-cli instance delete redis-1 --clean-data
   # 删除实例
 
-redis-tool instance-start --name redis-1
-redis-tool instance-stop --name redis-1
+redis-pilot-cli instance start redis-1
+redis-pilot-cli instance stop redis-1
   # 启动/停止实例
 
-redis-tool instance-config \
-  --name redis-1 \
+redis-pilot-cli instance config redis-1 \
   --set "timeout=300,tcp-keepalive=60" \
   --restart
   # 更新配置
 
-redis-tool instance-promote --name replica-1
+redis-pilot-cli instance promote replica-1
   # 从库提升为主库
 
-redis-tool instance-replicate \
-  --name replica-1 \
-  --replica-of 192.168.1.10:6379
+redis-pilot-cli instance replicate replica-1 --replica-of redis-1
   # 设置复制关系
 ```
 
 ### 3.3 备份命令
 
 ```bash
-redis-tool backup-exec --name redis-1
+redis-pilot-cli backup exec redis-1
   # 执行备份
 
-redis-tool backup-list --name redis-1
+redis-pilot-cli backup list redis-1
   # 列出可用备份
 
-redis-tool backup-restore \
-  --name redis-1 \
+redis-pilot-cli backup restore redis-1 \
   --backup-ts 2024-01-15T10:30:00
   # 从备份恢复
+
+redis-pilot-cli backup set-schedule redis-1 --cron "0 2 * * *" --retention 7
+  # 设置定时备份
+```
+
+### 3.4 Envoy / Sentinel 命令
+
+```bash
+redis-pilot-cli envoy config
+  # 查看生成的 Envoy 配置
+
+redis-pilot-cli envoy route-update
+  # 写入 Envoy 配置并执行 reload 命令
+
+redis-pilot-cli sentinel status
+  # 查看已声明 Sentinel 节点状态
+
+redis-pilot-cli sentinel sync
+  # 将当前主从组 master 同步到已部署的 Sentinel
 ```
 
 ---
@@ -682,4 +695,3 @@ server.StartReconcileLoop()
 | **操作锁** | ✅ | 防止并发冲突、实例组级别锁定 |
 | **审计日志** | ✅ | 完整操作记录、分级记录 |
 | **CLI 工具** | ✅ | 完整命令集、JSON 输出 |
-

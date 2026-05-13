@@ -15,9 +15,9 @@
 ## 架构
 
 ```
-用户 → GAL Skills → CLI (redis-tool) → Server → Agent → Podman
-                                                          ↓
-                                                     Envoy Proxy
+用户 → GAL Skills → CLI (redis-pilot-cli) → Server → Agent → Podman
+                                                                  ↓
+                                                             Envoy Proxy
 ```
 
 | 组件 | 端口 | 职责 |
@@ -33,39 +33,40 @@
 ```bash
 make all
 # 产出: bin/redis-server  bin/redis-agent  bin/redis-cli
+# redis-cli 部署时通常安装为 /usr/local/bin/redis-pilot-cli
 ```
 
 ### 启动 Server
 
 ```bash
-mkdir -p /opt/redis-server/{state,audit,logs}
-cp configs/server.yaml /opt/redis-server/
-bin/redis-server --config /opt/redis-server/server.yaml
+mkdir -p /opt/redis-pilot-server/{state,audit,logs}
+cp configs/server.yaml /opt/redis-pilot-server/server.yaml
+bin/redis-server --config /opt/redis-pilot-server/server.yaml
 ```
 
 ### 启动 Agent（每台数据节点）
 
 ```bash
-mkdir -p /opt/redis-agent/logs /data/redis
-cp configs/agent.yaml /opt/redis-agent/
-bin/redis-agent --config /opt/redis-agent/agent.yaml
+mkdir -p /opt/redis-pilot-agent/logs /data/redis
+cp configs/agent.yaml /opt/redis-pilot-agent/agent.yaml
+bin/redis-agent --config /opt/redis-pilot-agent/agent.yaml
 ```
 
 ### 注册服务器 & 创建实例
 
 ```bash
 # 注册服务器到资源池
-redis-tool pool-add server-a 10.0.1.10 8400
+redis-pilot-cli pool add server-a --endpoint 10.0.1.10 --cpu 16 --memory 64Gi
 
 # 创建单点缓存实例
-redis-tool instance-create my-cache --engine redis --memory 2Gi
+redis-pilot-cli instance create my-cache --group cache --engine redis --memory 2Gi
 
 # 创建主从持久化实例
-redis-tool instance-create my-order --engine kvrocks --memory 4Gi --type replication
+redis-pilot-cli instance create my-order --group order --engine kvrocks --memory 4Gi --type replication
 
 # 查看状态
-redis-tool instance-list
-redis-tool instance-status my-cache
+redis-pilot-cli instance list
+redis-pilot-cli instance status my-cache
 ```
 
 ## 项目结构
@@ -94,7 +95,7 @@ redis-tool instance-status my-cache
 ```yaml
 port: 8080
 token: ""                    # Bearer Token，空则不鉴权
-data_dir: /opt/redis-server/state
+data_dir: /opt/redis-pilot-server/state
 envoy_dir: ""                # Envoy 配置输出目录
 envoy_reload_cmd: ""         # 配置变更后的重载命令
 ports:
@@ -103,7 +104,7 @@ ports:
   envoy_writeonly: { start: 16500, end: 16619 }
   envoy_mgmt:     { start: 26379, end: 26499 }
 log:
-  dir: /opt/redis-server/logs
+  dir: /opt/redis-pilot-server/logs
   stdout: true
 ```
 
@@ -114,7 +115,7 @@ port: 8400
 token: ""
 data_dir: /data/redis
 log:
-  dir: /opt/redis-agent/logs
+  dir: /opt/redis-pilot-agent/logs
   stdout: true
 ```
 
@@ -129,24 +130,33 @@ token: ""
 
 ```bash
 # 资源池
-redis-tool pool-query
-redis-tool pool-add <name> <endpoint> <port>
-redis-tool pool-remove <name>
-redis-tool pool-update <name> --labels zone=az-1
+redis-pilot-cli pool query
+redis-pilot-cli pool add <name> --endpoint <ip> --cpu <cores> --memory <size>
+redis-pilot-cli pool remove <name>
+redis-pilot-cli pool update <name> --json <server.json>
 
 # 实例
-redis-tool instance-list
-redis-tool instance-create <name> [--engine redis|kvrocks] [--memory 2Gi] [--type standalone|replication]
-redis-tool instance-delete <name>
-redis-tool instance-start/stop <name>
-redis-tool instance-config <name> --maxmemory-policy allkeys-lru
-redis-tool instance-promote <name>
-redis-tool instance-replicate <replica> <master>
+redis-pilot-cli instance list
+redis-pilot-cli instance status <name>
+redis-pilot-cli instance create <name> --group <group> [--engine redis|kvrocks] [--memory 2Gi] [--type standalone|replication]
+redis-pilot-cli instance delete <name> [--clean-data]
+redis-pilot-cli instance start <name>
+redis-pilot-cli instance stop <name>
+redis-pilot-cli instance config <name> --set key=value[,key=value] [--restart]
+redis-pilot-cli instance promote <name>
+redis-pilot-cli instance replicate <replica> --replica-of <master>
 
 # 备份
-redis-tool backup-exec <instance>
-redis-tool backup-list <instance>
-redis-tool backup-restore <instance> <backup_id>
+redis-pilot-cli backup exec <instance>
+redis-pilot-cli backup list <instance>
+redis-pilot-cli backup restore <instance> --backup-ts <timestamp>
+redis-pilot-cli backup set-schedule <instance> --cron "0 2 * * *" --retention 7
+
+# Envoy / Sentinel
+redis-pilot-cli envoy config
+redis-pilot-cli envoy route-update
+redis-pilot-cli sentinel status
+redis-pilot-cli sentinel sync
 ```
 
 ## 文档
