@@ -202,8 +202,8 @@ curl http://localhost:8400/host/health
 cp bin/redis-cli /usr/local/bin/redis-tool
 chmod +x /usr/local/bin/redis-tool
 
-mkdir -p ~/.redis-tool
-cat > ~/.redis-tool/config.yaml << 'EOF'
+mkdir -p ~/.redis-pilot-cli
+cat > ~/.redis-pilot-cli/config.yaml << 'EOF'
 server: 10.0.1.1:8080
 token: "your-secret-token"
 EOF
@@ -268,7 +268,7 @@ redis-tool instance-status test-cache
 
 | 链路 | 配置位置 | 字段 |
 |------|---------|------|
-| CLI → Server | `~/.redis-tool/config.yaml` | `token` |
+| CLI → Server | `~/.redis-pilot-cli/config.yaml` | `token` |
 | Server → Agent | `pool-state.yaml` 中每台服务器的 `agent_token` | `agent_token` |
 
 生产环境建议两层都启用 Token。

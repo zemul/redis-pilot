@@ -22,6 +22,8 @@ ExecStart=/opt/redis-pilot-server/redis-pilot-server --config /opt/redis-pilot-s
 Restart=on-failure
 RestartSec=5
 LimitNOFILE=65536
+KillMode=process
+Delegate=yes
 
 [Install]
 WantedBy=multi-user.target
@@ -38,6 +40,8 @@ ExecStart=/opt/redis-pilot-agent/redis-pilot-agent --config /opt/redis-pilot-age
 Restart=on-failure
 RestartSec=5
 LimitNOFILE=65536
+KillMode=process
+Delegate=yes
 
 [Install]
 WantedBy=multi-user.target

@@ -118,7 +118,7 @@ log:
   stdout: true
 ```
 
-### CLI (`~/.redis-tool/config.yaml`)
+### CLI (`~/.redis-pilot-cli/config.yaml`)
 
 ```yaml
 server: 127.0.0.1:8080

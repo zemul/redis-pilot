@@ -99,6 +99,21 @@ func TestAuthMiddleware_MissingToken(t *testing.T) {
 	}
 }
 
+func TestDashboard_NoAuthRequired(t *testing.T) {
+	s := newTestServer(t, "secret")
+	r := s.Router()
+	w := doRequest(r, "GET", "/dashboard", nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	if ct := w.Header().Get("Content-Type"); ct != "text/html; charset=utf-8" {
+		t.Fatalf("expected html content type, got %q", ct)
+	}
+	if !bytes.Contains(w.Body.Bytes(), []byte("Redis Pilot")) {
+		t.Fatalf("dashboard html should contain title, got body: %s", w.Body.String())
+	}
+}
+
 // ---------- Pool Handlers ----------
 
 func TestPoolQuery_Empty(t *testing.T) {

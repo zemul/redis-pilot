@@ -59,7 +59,13 @@ func (s *Server) StartBackupScheduler() {
 func (s *Server) Router() *gin.Engine {
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
-	r.Use(s.requestLogger(), s.authMiddleware())
+	r.Use(s.requestLogger())
+
+	r.GET("/", s.dashboardIndex)
+	r.GET("/dashboard", s.dashboardIndex)
+	r.GET("/dashboard/*filepath", s.dashboardAsset)
+
+	r.Use(s.authMiddleware())
 
 	pool := r.Group("/pool")
 	{

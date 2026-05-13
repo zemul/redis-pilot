@@ -5,13 +5,20 @@ GOFLAGS := -trimpath
 
 BINS := server agent cli
 OUT  := bin
+DASHBOARD_DIR := web/dashboard
 
 DEPLOY_SERVER := redis01
 DEPLOY_AGENTS := redis01 redis02 redis03
 
-.PHONY: all clean $(BINS) build-linux deploy deploy-server deploy-agent deploy-cli setup
+.PHONY: all clean dashboard $(BINS) build-linux deploy deploy-server deploy-agent deploy-cli setup
 
 all: $(BINS)
+
+server: dashboard
+
+dashboard:
+	cd $(DASHBOARD_DIR) && npm install
+	cd $(DASHBOARD_DIR) && npm run build
 
 $(BINS):
 	go build $(GOFLAGS) -ldflags '$(LDFLAGS)' -o $(OUT)/redis-$@ ./cmd/$@
