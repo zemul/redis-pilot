@@ -24,7 +24,7 @@ func resolveReplicaOf(pool *apitypes.PoolState, instances *apitypes.InstancesSta
 	if strings.Contains(replicaOf, ":") {
 		// ip:port 格式，反查实例名
 		for name, inst := range instances.Instances {
-			if inst.Role == "master" || inst.Role == "standalone" {
+			if inst.Role == "master" {
 				a := fmt.Sprintf("%s:%d", poolEndpoint(pool, inst.Server), inst.Port)
 				if a == replicaOf {
 					return replicaOf, name, nil
@@ -38,8 +38,8 @@ func resolveReplicaOf(pool *apitypes.PoolState, instances *apitypes.InstancesSta
 	if !exists {
 		return "", "", fmt.Errorf("replica_of instance not found: %s", replicaOf)
 	}
-	if inst.Role != "master" && inst.Role != "standalone" {
-		return "", "", fmt.Errorf("replica_of target must be master or standalone, got %s", inst.Role)
+	if inst.Role != "master" {
+		return "", "", fmt.Errorf("replica_of target must be master, got %s", inst.Role)
 	}
 	endpoint := poolEndpoint(pool, inst.Server)
 	if endpoint == "" {
@@ -122,17 +122,15 @@ func (s *Server) instanceCreate(c *gin.Context) {
 	}
 
 	dataDir := "/data/redis/" + req.Name
-	role := "standalone"
+	role := "master"
 	if req.ReplicaOf != "" {
 		role = "replica"
-	} else if req.Type == "replication" {
-		role = "master"
 	}
 	req.Group = strings.TrimSpace(req.Group)
 
 	var inst *apitypes.Instance
 	var srv *apitypes.PoolServer
-	var masterName string // 用于维护 Replicas 列表
+	var masterName string
 	groupName := req.Group
 
 	// 原子操作：检查冲突 → 调度 → 分配端口 → 写入 creating 状态
@@ -162,26 +160,24 @@ func (s *Server) instanceCreate(c *gin.Context) {
 				return fmt.Errorf("replica_of instance not found: %s", req.ReplicaOf)
 			}
 			groupName = master.Group
-			if groupName == "" {
-				groupName = masterName
+			group := instances.Groups[groupName]
+			if groupName == "" || group == nil {
+				return fmt.Errorf("replica_of target has no group: %s", masterName)
 			}
-			// standalone 升为 master 时补分配 ReadOnly 端口
-			if master.Envoy != nil && master.Envoy.ReadOnlyPort == 0 {
+			if group.Type == "standalone" {
+				group.Type = "replication"
+			}
+			if group.Envoy != nil && group.Envoy.AutoPort == 0 {
 				if ec, err := allocEnvoyPorts(s.cfg.Ports, instances, true); err == nil {
-					master.Envoy.ReadOnlyPort = ec.ReadOnlyPort
+					group.Envoy.AutoPort = ec.AutoPort
 				}
 			}
 		} else {
 			if groupName == "" {
 				return fmt.Errorf("group is required for master or standalone instance")
 			}
-			for name, existing := range instances.Instances {
-				if existing == nil || existing.Group != groupName || existing.Status == "failed" {
-					continue
-				}
-				if existing.Role == "master" || existing.Role == "standalone" {
-					return fmt.Errorf("conflict: group already has primary instance %s", name)
-				}
+			if _, exists := instances.Groups[groupName]; exists {
+				return fmt.Errorf("conflict: group already exists: %s", groupName)
 			}
 		}
 
@@ -204,20 +200,26 @@ func (s *Server) instanceCreate(c *gin.Context) {
 		}
 		req.Port = port
 
-		var envoyConf *apitypes.EnvoyConfig
-		if role == "master" || role == "standalone" {
-			ec, err := allocEnvoyPorts(s.cfg.Ports, instances, role == "master")
+		if role == "master" {
+			ec, err := allocEnvoyPorts(s.cfg.Ports, instances, req.Type == "replication")
 			if err != nil {
 				return err
 			}
-			envoyConf = ec
+			now := time.Now().Format(time.RFC3339)
+			instances.Groups[groupName] = &apitypes.InstanceGroupState{
+				Type:           req.Type,
+				Engine:         req.Engine,
+				Category:       req.Category,
+				CurrentMaster:  req.Name,
+				TopologyStatus: "degraded",
+				Envoy:          ec,
+				CreatedAt:      now,
+				UpdatedAt:      now,
+			}
 		}
 
 		inst = &apitypes.Instance{
-			Category:        req.Category,
 			Group:           groupName,
-			Engine:          req.Engine,
-			Type:            req.Type,
 			Role:            role,
 			Server:          req.Server,
 			Container:       req.Engine + "-" + req.Name,
@@ -232,22 +234,11 @@ func (s *Server) instanceCreate(c *gin.Context) {
 			Persistence:     defaultPersistence(req.Engine, req.Category, req.ConfigOverrides),
 			ConfigOverrides: req.ConfigOverrides,
 			ReplicaOf:       masterName, // 存实例名而非 ip:port
-			Envoy:           envoyConf,
 			Status:          "creating",
 			CreatedAt:       time.Now().Format(time.RFC3339),
 		}
 		instances.Instances[req.Name] = inst
-
-		// 维护主库的 Replicas 列表，standalone 自动升级为 master/replication
-		if role == "replica" && masterName != "" {
-			if master := instances.Instances[masterName]; master != nil {
-				master.Replicas = append(master.Replicas, req.Name)
-				if master.Role == "standalone" {
-					master.Role = "master"
-					master.Type = "replication"
-				}
-			}
-		}
+		state.RecalculateGroupTopology(instances, groupName)
 
 		return nil
 	})
@@ -274,6 +265,7 @@ func (s *Server) instanceCreate(c *gin.Context) {
 		s.state.WithInstances(func(instances *apitypes.InstancesState) error {
 			if i := instances.Instances[req.Name]; i != nil {
 				i.Status = "failed"
+				state.RecalculateGroupTopology(instances, i.Group)
 			}
 			return nil
 		})
@@ -287,9 +279,11 @@ func (s *Server) instanceCreate(c *gin.Context) {
 	s.state.WithInstances(func(instances *apitypes.InstancesState) error {
 		if i := instances.Instances[req.Name]; i != nil {
 			i.Status = "running"
+			state.RecalculateGroupTopology(instances, i.Group)
 		}
 		return nil
 	})
+	s.addPoolAllocation(req.Server, req.Memory, req.CPUs, req.Disk)
 
 	s.audit.Log(audit.Record{
 		Operator: operatorFrom(c),
@@ -324,6 +318,7 @@ func (s *Server) instanceDelete(c *gin.Context) {
 		sessionID = fmt.Sprintf("auto-%d", time.Now().UnixNano())
 	}
 	var inst apitypes.Instance // 拷贝一份，避免后续引用过期
+	var groupState apitypes.InstanceGroupState
 	var group []string
 	err := s.state.WithInstances(func(is *apitypes.InstancesState) error {
 		i, exists := is.Instances[req.Name]
@@ -331,7 +326,15 @@ func (s *Server) instanceDelete(c *gin.Context) {
 			return fmt.Errorf("not found: %s", req.Name)
 		}
 		inst = *i
+		if g := is.Groups[i.Group]; g != nil {
+			groupState = *g
+		} else {
+			return fmt.Errorf("group not found: %s", i.Group)
+		}
 		group = state.InstanceGroup(is, req.Name)
+		if i.Role == "master" && len(group) > 1 {
+			return fmt.Errorf("cannot delete current master %s while group %s has replicas; failover first or delete the group", req.Name, i.Group)
+		}
 		for _, n := range group {
 			if gi, ok2 := is.Instances[n]; ok2 {
 				if err := state.TryAcquireLock(gi, sessionID, "delete", 300); err != nil {
@@ -365,7 +368,7 @@ func (s *Server) instanceDelete(c *gin.Context) {
 	client := newAgentClient(srv)
 	if _, err := client.post("/instance/delete", map[string]interface{}{
 		"name":       req.Name,
-		"engine":     inst.Engine,
+		"engine":     groupState.Engine,
 		"clean_data": req.CleanData,
 	}); err != nil {
 		fail(c, http.StatusInternalServerError, "agent delete failed: "+err.Error())
@@ -374,37 +377,39 @@ func (s *Server) instanceDelete(c *gin.Context) {
 
 	// 原子删除实例记录
 	if err := s.state.WithInstances(func(is *apitypes.InstancesState) error {
-		// 从主库的 Replicas 列表中移除
-		if inst.Role == "replica" {
+		groupName := inst.Group
+		delete(is.Instances, req.Name)
+		if len(state.InstanceGroup(is, req.Name)) == 1 && is.Instances[req.Name] == nil {
+			hasAny := false
 			for _, other := range is.Instances {
-				for i, r := range other.Replicas {
-					if r == req.Name {
-						other.Replicas = append(other.Replicas[:i], other.Replicas[i+1:]...)
-						break
-					}
+				if other != nil && other.Group == groupName {
+					hasAny = true
+					break
 				}
 			}
+			if !hasAny {
+				delete(is.Groups, groupName)
+				return nil
+			}
 		}
-		delete(is.Instances, req.Name)
+		state.RecalculateGroupTopology(is, groupName)
 		return nil
 	}); err != nil {
 		fail(c, http.StatusInternalServerError, err.Error())
 		return
 	}
+	s.addPoolAllocation(inst.Server, "-"+inst.Memory, -inst.CPUs, "-"+inst.Disk)
 
 	s.audit.Log(audit.Record{
 		Operator: operatorFrom(c),
-		Action: "instance.delete", Level: audit.LevelCritical, Result: "success",
+		Action:   "instance.delete", Level: audit.LevelCritical, Result: "success",
 		Duration: time.Since(start).Milliseconds(),
 		Target:   map[string]interface{}{"instance": req.Name, "server": inst.Server},
 	})
 
 	s.log.Infof("instance deleted: %s", req.Name)
-	if inst.Type == "replication" && inst.Role == "master" {
+	if groupState.Type == "replication" && inst.Role == "master" {
 		group := inst.Group
-		if group == "" {
-			group = req.Name
-		}
 		s.removeSentinelMaster(group)
 	}
 	s.refreshEnvoy()
@@ -438,16 +443,21 @@ func (s *Server) instanceConfig(c *gin.Context) {
 	}
 	defer unlock()
 
+	groupState, err := s.groupForInstance(req.Name)
+	if err != nil {
+		fail(c, http.StatusInternalServerError, err.Error())
+		return
+	}
 	client := newAgentClient(srv)
 	if _, err := client.post("/instance/config", map[string]interface{}{
 		"name":             req.Name,
-		"engine":           inst.Engine,
-		"type":             inst.Type,
+		"engine":           groupState.Engine,
+		"type":             groupState.Type,
 		"config_overrides": req.ConfigOverrides,
 		"restart":          req.Restart,
 		"password":         inst.Password,
 		"memory":           inst.Memory,
-		"category":         inst.Category,
+		"category":         groupState.Category,
 		"replica_of":       inst.ReplicaOf,
 	}); err != nil {
 		fail(c, http.StatusInternalServerError, "agent config failed: "+err.Error())
@@ -469,7 +479,7 @@ func (s *Server) instanceConfig(c *gin.Context) {
 
 	s.audit.Log(audit.Record{
 		Operator: operatorFrom(c),
-		Action: "config.update", Level: audit.LevelImportant, Result: "success",
+		Action:   "config.update", Level: audit.LevelImportant, Result: "success",
 		Duration: time.Since(start).Milliseconds(),
 		Target:   map[string]interface{}{"instance": req.Name, "server": inst.Server},
 		Params:   toMap(req.ConfigOverrides),
@@ -505,37 +515,30 @@ func (s *Server) instancePromote(c *gin.Context) {
 		return
 	}
 
-	// 更新状态：角色变更 + 从旧主库 Replicas 移除 + 分配 Envoy 端口
+	// 更新状态：角色变更 + group current_master 切换。
 	s.state.WithInstances(func(is *apitypes.InstancesState) error {
 		i := is.Instances[req.Name]
 		if i == nil {
 			return nil
 		}
-		// 从旧主库的 Replicas 列表移除
-		for _, other := range is.Instances {
-			filtered := other.Replicas[:0]
-			for _, r := range other.Replicas {
-				if r != req.Name {
-					filtered = append(filtered, r)
-				}
+		group := is.Groups[i.Group]
+		if group != nil {
+			if oldMaster := is.Instances[group.CurrentMaster]; oldMaster != nil && oldMaster != i {
+				oldMaster.Role = "replica"
+				oldMaster.ReplicaOf = req.Name
 			}
-			other.Replicas = filtered
+			group.CurrentMaster = req.Name
+			group.Type = "replication"
 		}
 		i.Role = "master"
 		i.ReplicaOf = ""
-		// 分配 Envoy 端口
-		if i.Envoy == nil {
-			ec, err := allocEnvoyPorts(s.cfg.Ports, is, true)
-			if err == nil {
-				i.Envoy = ec
-			}
-		}
+		state.RecalculateGroupTopology(is, i.Group)
 		return nil
 	})
 
 	s.audit.Log(audit.Record{
 		Operator: operatorFrom(c),
-		Action: "topology.failover", Level: audit.LevelCritical, Result: "success",
+		Action:   "topology.failover", Level: audit.LevelCritical, Result: "success",
 		Duration: time.Since(start).Milliseconds(),
 		Target:   map[string]interface{}{"instance": req.Name, "server": inst.Server},
 	})
@@ -584,56 +587,41 @@ func (s *Server) instanceReplicate(c *gin.Context) {
 		return
 	}
 
-	// 更新状态：角色变更 + 维护新旧主库 Replicas + 清理 Envoy 端口
+	// 更新状态：角色变更 + 归入目标 group。
 	s.state.WithInstances(func(is *apitypes.InstancesState) error {
 		i := is.Instances[req.Name]
 		if i == nil {
 			return nil
 		}
-		// 从旧主库的 Replicas 移除
-		for _, other := range is.Instances {
-			filtered := other.Replicas[:0]
-			for _, r := range other.Replicas {
-				if r != req.Name {
-					filtered = append(filtered, r)
-				}
-			}
-			other.Replicas = filtered
-		}
-		// 加入新主库的 Replicas
 		groupName := ""
 		if masterName != "" {
 			if master := is.Instances[masterName]; master != nil {
-				master.Replicas = append(master.Replicas, req.Name)
-				if master.Role == "standalone" {
-					master.Role = "master"
-					master.Type = "replication"
-				}
-				// standalone 升为 master 时补分配 ReadOnly 端口
-				if master.Envoy != nil && master.Envoy.ReadOnlyPort == 0 {
-					if ec, err := allocEnvoyPorts(s.cfg.Ports, is, true); err == nil {
-						master.Envoy.ReadOnlyPort = ec.ReadOnlyPort
-					}
-				}
 				groupName = master.Group
-				if groupName == "" {
-					groupName = masterName
+				group := is.Groups[groupName]
+				if group != nil {
+					group.Type = "replication"
+					if group.Envoy != nil && group.Envoy.AutoPort == 0 {
+						if ec, err := allocEnvoyPorts(s.cfg.Ports, is, true); err == nil {
+							group.Envoy.AutoPort = ec.AutoPort
+						}
+					}
 				}
 			}
 		}
-		// 如果原来是 master/standalone 有 Envoy 端口，变 replica 后释放
-		if i.Role == "master" || i.Role == "standalone" {
-			i.Envoy = nil
-		}
+		oldGroup := i.Group
 		i.Role = "replica"
 		i.ReplicaOf = masterName // 存实例名
 		i.Group = groupName
+		if oldGroup != "" && oldGroup != groupName {
+			state.RecalculateGroupTopology(is, oldGroup)
+		}
+		state.RecalculateGroupTopology(is, groupName)
 		return nil
 	})
 
 	s.audit.Log(audit.Record{
 		Operator: operatorFrom(c),
-		Action: "topology.replicate", Level: audit.LevelImportant, Result: "success",
+		Action:   "topology.replicate", Level: audit.LevelImportant, Result: "success",
 		Duration: time.Since(start).Milliseconds(),
 		Target:   map[string]interface{}{"instance": req.Name, "server": inst.Server},
 		Params:   map[string]interface{}{"replica_of": req.ReplicaOf},
@@ -672,10 +660,14 @@ func (s *Server) execBackup(name, operator string) error {
 	}
 	defer unlock()
 
+	groupState, err := s.groupForInstance(name)
+	if err != nil {
+		return err
+	}
 	// 构建请求，传入 retention
 	body := map[string]interface{}{
 		"name":   name,
-		"engine": inst.Engine,
+		"engine": groupState.Engine,
 	}
 	if inst.Backup != nil && inst.Backup.Retention > 0 {
 		body["retention"] = inst.Backup.Retention
@@ -699,7 +691,7 @@ func (s *Server) execBackup(name, operator string) error {
 
 	s.audit.Log(audit.Record{
 		Operator: operator,
-		Action: "backup.create", Level: audit.LevelNormal, Result: "success",
+		Action:   "backup.create", Level: audit.LevelNormal, Result: "success",
 		Duration: time.Since(start).Milliseconds(),
 		Target:   map[string]interface{}{"instance": name, "server": inst.Server},
 	})
@@ -723,10 +715,15 @@ func (s *Server) backupRestore(c *gin.Context) {
 	}
 	defer unlock()
 
+	groupState, err := s.groupForInstance(req.Name)
+	if err != nil {
+		fail(c, http.StatusInternalServerError, err.Error())
+		return
+	}
 	client := newAgentClient(srv)
 	if _, err := client.post("/instance/restore", map[string]string{
 		"name":      req.Name,
-		"engine":    inst.Engine,
+		"engine":    groupState.Engine,
 		"backup_ts": req.BackupTs,
 	}); err != nil {
 		fail(c, http.StatusInternalServerError, "agent restore failed: "+err.Error())
@@ -735,7 +732,7 @@ func (s *Server) backupRestore(c *gin.Context) {
 
 	s.audit.Log(audit.Record{
 		Operator: operatorFrom(c),
-		Action: "backup.restore", Level: audit.LevelCritical, Result: "success",
+		Action:   "backup.restore", Level: audit.LevelCritical, Result: "success",
 		Duration: time.Since(start).Milliseconds(),
 		Target:   map[string]interface{}{"instance": req.Name, "server": inst.Server},
 		Params:   map[string]interface{}{"backup_ts": req.BackupTs},
@@ -850,10 +847,15 @@ func (s *Server) instanceSimpleOp(c *gin.Context, newStatus, agentPath, auditAct
 	}
 	defer unlock()
 
+	groupState, err := s.groupForInstance(req.Name)
+	if err != nil {
+		fail(c, http.StatusInternalServerError, err.Error())
+		return
+	}
 	client := newAgentClient(srv)
 	if _, err := client.post(agentPath, map[string]string{
 		"name":   req.Name,
-		"engine": inst.Engine,
+		"engine": groupState.Engine,
 	}); err != nil {
 		fail(c, http.StatusInternalServerError, err.Error())
 		return
@@ -864,6 +866,7 @@ func (s *Server) instanceSimpleOp(c *gin.Context, newStatus, agentPath, auditAct
 		if i, ok2 := is.Instances[req.Name]; ok2 {
 			if status, ok3 := statusMap[newStatus]; ok3 {
 				i.Status = status
+				state.RecalculateGroupTopology(is, i.Group)
 			}
 		}
 		return nil
@@ -871,7 +874,7 @@ func (s *Server) instanceSimpleOp(c *gin.Context, newStatus, agentPath, auditAct
 
 	s.audit.Log(audit.Record{
 		Operator: operatorFrom(c),
-		Action: auditAction, Level: level, Result: "success",
+		Action:   auditAction, Level: level, Result: "success",
 		Duration: time.Since(start).Milliseconds(),
 		Target:   map[string]interface{}{"instance": req.Name, "server": inst.Server},
 	})
@@ -957,6 +960,59 @@ func (s *Server) resolveAndLock(c *gin.Context, name, operation string) (*apityp
 
 	unlock := func() { s.releaseLockGroup(group, sessionID) }
 	return inst, srv, unlock, nil
+}
+
+func (s *Server) groupForInstance(name string) (*apitypes.InstanceGroupState, error) {
+	instances, err := s.state.ReadInstances()
+	if err != nil {
+		return nil, err
+	}
+	inst := instances.Instances[name]
+	if inst == nil {
+		return nil, fmt.Errorf("instance not found: %s", name)
+	}
+	group := instances.Groups[inst.Group]
+	if group == nil {
+		return nil, fmt.Errorf("group not found: %s", inst.Group)
+	}
+	return group, nil
+}
+
+func (s *Server) addPoolAllocation(serverName, memory string, cpus int, disk string) {
+	_ = s.state.WithPool(func(pool *apitypes.PoolState) error {
+		srv := pool.Servers[serverName]
+		if srv == nil {
+			return nil
+		}
+		srv.Allocated.CPUCores += cpus
+		if srv.Allocated.CPUCores < 0 {
+			srv.Allocated.CPUCores = 0
+		}
+		srv.Allocated.Memory = formatGi(maxInt(0, parseMemoryGi(srv.Allocated.Memory)+parseMemoryDeltaGi(memory)))
+		srv.Allocated.Disk = formatGi(maxInt(0, parseMemoryGi(srv.Allocated.Disk)+parseMemoryDeltaGi(disk)))
+		return nil
+	})
+}
+
+func parseMemoryDeltaGi(value string) int {
+	if strings.HasPrefix(value, "-") {
+		return -parseMemoryGi(strings.TrimPrefix(value, "-"))
+	}
+	return parseMemoryGi(value)
+}
+
+func formatGi(value int) string {
+	if value == 0 {
+		return ""
+	}
+	return fmt.Sprintf("%dGi", value)
+}
+
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }
 
 // resolveAndLockInternal 与 resolveAndLock 相同，但不依赖 gin.Context，供内部定时任务使用。

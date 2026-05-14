@@ -108,9 +108,15 @@ func TestReadInstances_FileNotExist(t *testing.T) {
 
 func TestReadInstances_ValidYAML(t *testing.T) {
 	dir := t.TempDir()
-	yaml := `instances:
-  redis-1:
+	yaml := `groups:
+  redis:
+    type: standalone
     engine: redis
+    category: cache
+    current_master: redis-1
+instances:
+  redis-1:
+    group: redis
     role: master
     port: 6379
     status: running
@@ -127,7 +133,7 @@ func TestReadInstances_ValidYAML(t *testing.T) {
 	if !ok {
 		t.Fatal("expected redis-1")
 	}
-	if inst.Engine != "redis" || inst.Role != "master" || inst.Port != 6379 || inst.Status != "running" {
+	if is.Groups["redis"].Engine != "redis" || inst.Role != "master" || inst.Port != 6379 || inst.Status != "running" {
 		t.Fatalf("fields mismatch: %+v", inst)
 	}
 }
@@ -135,26 +141,31 @@ func TestReadInstances_ValidYAML(t *testing.T) {
 func TestWriteInstances_ThenRead(t *testing.T) {
 	m := NewManager(t.TempDir())
 	want := &apitypes.InstancesState{
+		Groups: map[string]*apitypes.InstanceGroupState{
+			"redis": {
+				Type:          "replication",
+				Engine:        "redis",
+				Category:      "cache",
+				CurrentMaster: "redis-1",
+			},
+		},
 		Instances: map[string]*apitypes.Instance{
 			"redis-1": {
-				Engine:   "redis",
-				Category: "cache",
-				Type:     "replication",
 				Role:     "master",
+				Group:    "redis",
 				Server:   "srv1",
 				Port:     6379,
 				Memory:   "4Gi",
 				CPUs:     2,
 				Password: "secret",
 				Status:   "running",
-				Replicas: []string{"redis-1-rep"},
 			},
 			"redis-1-rep": {
-				Engine:    "redis",
 				Role:      "replica",
+				Group:     "redis",
 				Server:    "srv2",
 				Port:      6380,
-				ReplicaOf: "10.0.0.1:6379",
+				ReplicaOf: "redis-1",
 				Status:    "running",
 			},
 		},
@@ -170,11 +181,11 @@ func TestWriteInstances_ThenRead(t *testing.T) {
 		t.Fatalf("expected 2 instances, got %d", len(got.Instances))
 	}
 	master := got.Instances["redis-1"]
-	if master.Role != "master" || len(master.Replicas) != 1 {
+	if master.Role != "master" || got.Groups["redis"].CurrentMaster != "redis-1" {
 		t.Fatalf("master mismatch: %+v", master)
 	}
 	replica := got.Instances["redis-1-rep"]
-	if replica.Role != "replica" || replica.ReplicaOf != "10.0.0.1:6379" {
+	if replica.Role != "replica" || replica.ReplicaOf != "redis-1" {
 		t.Fatalf("replica mismatch: %+v", replica)
 	}
 }
@@ -270,7 +281,7 @@ func TestReleaseLock_ByOther(t *testing.T) {
 func TestInstanceGroup_Standalone(t *testing.T) {
 	state := &apitypes.InstancesState{
 		Instances: map[string]*apitypes.Instance{
-			"redis-1": {Role: "standalone"},
+			"redis-1": {Role: "master"},
 		},
 	}
 	group := InstanceGroup(state, "redis-1")
@@ -282,9 +293,9 @@ func TestInstanceGroup_Standalone(t *testing.T) {
 func TestInstanceGroup_Master(t *testing.T) {
 	state := &apitypes.InstancesState{
 		Instances: map[string]*apitypes.Instance{
-			"redis-1":    {Role: "master", Replicas: []string{"redis-1-r1", "redis-1-r2"}},
-			"redis-1-r1": {Role: "replica", ReplicaOf: "10.0.0.1:6379"},
-			"redis-1-r2": {Role: "replica", ReplicaOf: "10.0.0.1:6379"},
+			"redis-1":    {Role: "master", Group: "redis"},
+			"redis-1-r1": {Role: "replica", Group: "redis", ReplicaOf: "redis-1"},
+			"redis-1-r2": {Role: "replica", Group: "redis", ReplicaOf: "redis-1"},
 		},
 	}
 	group := InstanceGroup(state, "redis-1")
@@ -304,8 +315,8 @@ func TestInstanceGroup_Master(t *testing.T) {
 func TestInstanceGroup_Replica(t *testing.T) {
 	state := &apitypes.InstancesState{
 		Instances: map[string]*apitypes.Instance{
-			"redis-1":    {Role: "master", Replicas: []string{"redis-1-r1"}},
-			"redis-1-r1": {Role: "replica", ReplicaOf: "10.0.0.1:6379"},
+			"redis-1":    {Role: "master", Group: "redis"},
+			"redis-1-r1": {Role: "replica", Group: "redis", ReplicaOf: "redis-1"},
 		},
 	}
 	group := InstanceGroup(state, "redis-1-r1")
@@ -327,7 +338,7 @@ func TestInstanceGroup_StableGroupField(t *testing.T) {
 		Instances: map[string]*apitypes.Instance{
 			"order-master":  {Role: "master", Group: "order"},
 			"order-replica": {Role: "replica", Group: "order", ReplicaOf: "order-master"},
-			"cache-1":       {Role: "standalone", Group: "cache"},
+			"cache-1":       {Role: "master", Group: "cache"},
 		},
 	}
 	group := InstanceGroup(state, "order-replica")
@@ -350,5 +361,51 @@ func TestInstanceGroup_NotExist(t *testing.T) {
 	group := InstanceGroup(state, "nonexistent")
 	if len(group) != 1 || group[0] != "nonexistent" {
 		t.Fatalf("expected [nonexistent], got %v", group)
+	}
+}
+
+func TestRecalculateGroupTopology_StandaloneHealthyWithMasterOnly(t *testing.T) {
+	state := &apitypes.InstancesState{
+		Groups: map[string]*apitypes.InstanceGroupState{
+			"cache": {Type: "standalone", CurrentMaster: "cache-1"},
+		},
+		Instances: map[string]*apitypes.Instance{
+			"cache-1": {Group: "cache", Role: "master", Status: "running"},
+		},
+	}
+	RecalculateGroupTopology(state, "cache")
+	if state.Groups["cache"].TopologyStatus != "healthy" {
+		t.Fatalf("expected standalone healthy, got %s", state.Groups["cache"].TopologyStatus)
+	}
+}
+
+func TestRecalculateGroupTopology_ReplicationDegradedWithoutReplica(t *testing.T) {
+	state := &apitypes.InstancesState{
+		Groups: map[string]*apitypes.InstanceGroupState{
+			"order": {Type: "replication", CurrentMaster: "order-master"},
+		},
+		Instances: map[string]*apitypes.Instance{
+			"order-master": {Group: "order", Role: "master", Status: "running"},
+		},
+	}
+	RecalculateGroupTopology(state, "order")
+	if state.Groups["order"].TopologyStatus != "degraded" {
+		t.Fatalf("expected replication degraded without replica, got %s", state.Groups["order"].TopologyStatus)
+	}
+}
+
+func TestRecalculateGroupTopology_ReplicationHealthyWithReplica(t *testing.T) {
+	state := &apitypes.InstancesState{
+		Groups: map[string]*apitypes.InstanceGroupState{
+			"order": {Type: "replication", CurrentMaster: "order-master"},
+		},
+		Instances: map[string]*apitypes.Instance{
+			"order-master":  {Group: "order", Role: "master", Status: "running"},
+			"order-replica": {Group: "order", Role: "replica", Status: "running", ReplicaOf: "order-master"},
+		},
+	}
+	RecalculateGroupTopology(state, "order")
+	if state.Groups["order"].TopologyStatus != "healthy" {
+		t.Fatalf("expected replication healthy with replica, got %s", state.Groups["order"].TopologyStatus)
 	}
 }

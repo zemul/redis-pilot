@@ -408,17 +408,28 @@ servers:
 
 #### 3.3.1 实例状态文件
 
-全局维护 `instances-state.yaml`，记录每个实例的完整信息：
+全局维护 `instances-state.yaml`，其中 `groups` 是拓扑与入口的权威状态，`instances` 只记录单容器运行状态：
 
 ```yaml
 # instances-state.yaml
+groups:
+  order:
+    type: replication                 # standalone | replication
+    engine: kvrocks                   # redis | kvrocks
+    category: persistent              # cache | persistent
+    current_master: order-master      # 当前主库实例名
+    topology_status: healthy          # standalone: 主库运行即 healthy；replication: 主库和至少 1 个从库运行才 healthy
+    failover_conflict: false
+    envoy:
+      master_port: 16500              # Envoy 强一致主库端口，所有命令走主库
+      auto_port: 16379                # Envoy 自动读写分离端口，读命令走从库
+    created_at: "2026-04-23T10:00:00Z"
+    updated_at: "2026-04-23T10:05:00Z"
+
 instances:
   order-master:
-    category: persistent              # cache | persistent
     group: order                      # 稳定实例组名；Sentinel/Envoy/审计均使用该名字
-    engine: kvrocks                   # redis | kvrocks
-    type: standalone                  # standalone | replication
-    role: master                      # master | replica | standalone
+    role: master                      # master | replica
     server: server-a
     container: redis-order-master
     port: 6379
@@ -436,10 +447,6 @@ instances:
       maxmemory-policy: noeviction    # 持久化实例不禁用数据
       timeout: "300"
     replica_of: null
-    replicas: [order-replica]        # 挂载的从库列表
-    envoy:
-      readwrite_port: 16379          # Envoy 读写端口
-      readonly_port: 16380           # Envoy 只读端口（后端为从库）
     backup:
       schedule: "0 */6 * * *"        # 每 6 小时
       retention: 7                   # 保留 7 份
@@ -448,10 +455,7 @@ instances:
     created_at: "2026-04-23T10:00:00Z"
 
   order-replica:
-    category: persistent              # cache | persistent
     group: order                      # 从库继承主库 group；failover 后不变化
-    engine: kvrocks                   # redis | kvrocks
-    type: replication
     role: replica
     server: server-b
     container: redis-order-replica
@@ -470,9 +474,6 @@ instances:
       maxmemory-policy: noeviction    # 持久化实例不禁用数据
       timeout: "300"
     replica_of: order-master         # 引用主库实例名
-    replicas: []
-    envoy:
-      readwrite_port: 16379          # 与主库同端口，Envoy 自动路由到从库读
     backup:
       schedule: "0 */6 * * *"
       retention: 7
@@ -646,7 +647,9 @@ static_resources:
 > **说明**：
 > - RW cluster 只包含主库 endpoint，保证写入不会发到从库
 > - RO cluster 只包含从库 endpoint，从库不可用时该端口不可达
-> - 配置由 Server 根据 instances-state 自动生成，拓扑变更后自动刷新
+> - Envoy 进程/容器属于预部署代理层，平台不负责创建 Envoy
+> - 配置由 Server 根据 instances-state 自动生成，拓扑变更后自动写入 `envoy_dir` 并执行 `envoy_reload_cmd`
+> - `envoy_dir` 为空时仅提供配置预览，不落盘、不重载；`envoy_reload_cmd` 只有在 Envoy 已部署并确认命令可用后才应配置
 
 #### 3.4.4 管理命令
 
@@ -696,7 +699,7 @@ Kvrocks 基于 RocksDB 存储，数据天然持久化到磁盘，无需 RDB/AOF�
 
 **定时备份配置：**
 
-备份调度由 Agent 内置 cron 驱动，配置写在 instances-state.yaml 的实例 `backup` 字段：
+备份调度由 Server 内置 cron 驱动，配置写在 instances-state.yaml 的实例 `backup` 字段。Server 负责注册定时任务并在触发时调用目标实例所在 Agent 执行备份；Agent 不独立维护调度状态。
 
 ```yaml
 backup:
@@ -717,7 +720,7 @@ redis-pilot-cli backup get-schedule <instance>
 redis-pilot-cli backup set-schedule <instance> --cron ""
 ```
 
-Agent 启动时读取所有本机实例的 `backup.schedule`，注册内部 cron。实例配置变更时，Agent 重新加载调度。
+Server 启动时读取所有实例的 `backup.schedule`，注册内部 cron，并每 60 秒与 instances-state 同步一次。实例备份配置变更后，Server 调度器在下一轮同步中增删对应任务。
 
 **备份轮转：**
 
@@ -830,27 +833,27 @@ port_inventory:
     instance_group: order
     engine: kvrocks
     category: persistent
-    role: master→replica
-    purpose: "订单持久化存储"
-    backend_servers: ["server-a:6379(master)", "server-b:6379(replica)"]
+    role: group
+    purpose: "订单持久化存储读写入口"
+    backend_servers: ["server-a:6379(master)"]
 
   - envoy_port: 16380
     mode: readonly
     instance_group: order
     engine: kvrocks
     category: persistent
-    role: master only
-    purpose: "订单写入（显式写主库）"
-    backend_servers: ["server-a:6379(master)"]
+    role: group
+    purpose: "订单只读入口"
+    backend_servers: ["server-b:6379(replica)"]
 
   - envoy_port: 16381
     mode: readwrite
     instance_group: cache-1
     engine: redis
     category: cache
-    role: standalone
+    role: group
     purpose: "用户会话缓存"
-    backend_servers: ["server-c:6379(standalone)"]
+    backend_servers: ["server-c:6379(master)"]
 ```
 
 **视图 B：服务器-实例分布表**（面向容量规划）
@@ -927,7 +930,7 @@ server_inventory:
 
 ### 3.7 Sentinel 高可用设计
 
-Sentinel 用于 Redis/Kvrocks 主从实例组的自动故障转移。Sentinel 只负责判定主库故障、选举从库并执行主从切换；平台仍负责状态文件同步、补齐拓扑、刷新 Envoy 和审计记录。
+Sentinel 用于 Redis/Kvrocks 主从实例组的自动故障转移。Sentinel 只负责判定主库故障、选举从库并执行主从切换；平台仍负责状态文件同步、刷新 Envoy 和记录审计。
 
 #### 3.7.1 部署策略
 
@@ -1090,11 +1093,10 @@ Agent SUBSCRIBE +switch-master
 
 1. 获取实例组编排锁
 2. 校验新 master 地址属于当前实例组
-3. 更新 `role` / `replica_of` / `replicas` / `status`
-4. 如副本数不足，选择新服务器创建 replica
-5. 重新生成并落盘 Envoy 配置
-6. 写 `topology.failover` 审计日志
-7. 释放编排锁
+3. 更新 `groups[group].current_master/topology_status`，并更新实例 `role` / `replica_of` / `status`
+4. 重新生成并落盘 Envoy 配置
+5. 写 `topology.failover` 审计日志
+6. 释放编排锁
 
 #### 3.7.7 失败处理
 
@@ -1105,7 +1107,6 @@ Agent SUBSCRIBE +switch-master
 | Sentinel 返回的新 master 不在 instances-state | 标记 `failover_conflict`，不自动改拓扑，触发人工介入 |
 | 新主库再次故障 | 不主动抢占 Sentinel，等待下一轮 Sentinel failover；编排锁超时后允许重新同步 |
 | Envoy 配置落盘失败 | 状态更新不得提交为 success，审计记录 failed，并保留旧配置 |
-| 补齐 replica 失败 | failover 视为部分成功，记录 `degraded`，后续 reconcile 重试补齐 |
 
 #### 3.7.8 验证矩阵
 
@@ -1243,25 +1244,17 @@ Skill: redis-failover
   │   agent_exec(server-b, "instance/promote", { name: "order-replica" })
   │   → Agent: 执行 REPLICAOF NO ONE
   │
-  ├─3. 选择新服务器创建从库
-  │   pool_query() → server-c（资源充足，不同服务器）
-  │   agent_exec(server-c, "instance/create", {
-  │       name: "order-replica-new",
-  │       replica_of: "10.0.1.11:6379",   // 新主库
-  │       ...
-  │   })
-  │
-  ├─4. 更新 Envoy 路由
+  ├─3. 更新 Envoy 路由
   │   envoy_route_update(update, order,
   │       master=server-b:6379,
-  │       replica=server-c:6379)
+  │       replicas=healthy_replicas)
   │
-  ├─5. 更新状态
+  ├─4. 更新状态
+  │   state_update(instances-state, order, current_master=order-replica)
   │   state_update(instances-state, order-master, status=failed, server=server-a)
   │   state_update(instances-state, order-replica, role=master, server=server-b)
-  │   state_update(instances-state, order-replica-new, role=replica, server=server-c)
   │
-  └─6. 通知: "故障转移完成，主库已切换到 server-b"
+  └─5. 通知: "故障转移完成，主库已切换到 server-b"
 ```
 
 #### 4.3.2 Sentinel 自动检测（推荐）
@@ -1291,25 +1284,22 @@ Skill: redis-failover
      → 收到事件后执行后续编排：
        a. 在 instances-state 中标记 failover_in_progress: true（编排锁）
        b. 根据事件中的 old-master/new-master 修正 instances-state 拓扑
-       c. 在新服务器创建从库补齐拓扑（如当前从库数 < 目标副本数）
-       d. 更新 Envoy 路由并重新生成/落盘 Envoy 配置
-       e. 写入 topology.failover 审计日志
-       f. 清除 failover_in_progress 标记
+       c. 更新 Envoy 路由并重新生成/落盘 Envoy 配置
+       d. 写入 topology.failover 审计日志
+       e. 清除 failover_in_progress 标记
 
      instances-state 更新要求：
+       - 实例组：
+         current_master: <新主库实例名>
+         topology_status: healthy 或 degraded
+         envoy: 保持原实例组 master_port / auto_port 不变
        - 旧主库：
          status: failed 或 unexpected_stopped
-         role: replica 或 master_failed（实现可二选一，但查询输出必须清晰标识已失效）
-         replicas: []
+         role: replica
+         replica_of: <新主库实例名>
        - 被 Sentinel 提升的新主库：
          role: master
          replica_of: null
-         replicas: [所有已重新挂载到新主库的从库实例名]
-         envoy: 继承原实例组的 readwrite_port / readonly_port
-       - 新补齐的从库：
-         role: replica
-         replica_of: <新主库实例名>
-         status: running
        - 其他存活从库：
          role: replica
          replica_of: <新主库实例名>
@@ -1324,7 +1314,7 @@ Skill: redis-failover
        - action: topology.failover
        - level: critical
        - target 记录实例组、旧主库、新主库、故障服务器、新主库服务器
-       - params 记录 Sentinel 事件、补齐从库名称、Envoy 端口
+       - params 记录 Sentinel 事件和 Envoy 端口
        - result 记录 success / failed / conflict
 
   3. 编排锁保护机制：
@@ -1360,7 +1350,7 @@ Skill: redis-failover
 
 > **编排锁为什么重要？**
 > - Sentinel 的 failover-timeout（30s）内可能重试 failover，导致 Agent 收到多个 +switch-master 事件
-> - 没有锁保护时，多个编排流程并发执行会造成 Envoy 路由混乱、重复创建从库、状态文件冲突
+> - 没有锁保护时，多个编排流程并发执行会造成 Envoy 路由混乱、状态文件冲突和重复告警
 > - 编排锁确保同一实例组同一时刻只有一个故障转移编排流程在执行
 
 ### 4.4 实例迁移
@@ -1732,11 +1722,10 @@ redis-diagnose Skill
 
 ## 10. 约束与限制
 
-### 10.1 RESP2 协议约束
+### 10.1 Envoy Redis Proxy 协议约束
 
-- 所有 Redis 实例强制使用 RESP2（`proto 2`），确保 Envoy `redis_proxy` 兼容
-- Envoy `redis_proxy` 的 `read_policy`（REPLICA/MASTER）路由功能依赖 RESP2 协议
-- RESP3 的 `HELLO 3` 命令将被拒绝，客户端不得尝试升级协议
+- Envoy `redis_proxy` 当前按 RESP2 工作，业务客户端经 Envoy 访问时不得尝试 `HELLO 3` 升级协议
+- Redis/Kvrocks 实例配置不强制写入 `proto 2`；协议约束发生在业务客户端与 Envoy 之间
 - 若未来 Envoy 支持 RESP3，需评估后全局切换
 
 ### 10.2 MULTI/EXEC 事务限制
@@ -1859,9 +1848,6 @@ replica-priority 100
 # 防脑裂
 min-replicas-to-write 1
 min-replicas-max-lag 10
-
-# 协议
-proto 2                        # 强制 RESP2，兼容 Envoy redis_proxy
 
 # 安全
 rename-command FLUSHDB ""

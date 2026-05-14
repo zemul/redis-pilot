@@ -41,17 +41,23 @@ func TestBuildSentinelMasters(t *testing.T) {
 		"srv-a": {Endpoint: "10.0.1.10"},
 		"srv-b": {Endpoint: "10.0.1.11"},
 	}}
-	instances := &apitypes.InstancesState{Instances: map[string]*apitypes.Instance{
-		"order-master": {
-			Type: "replication", Group: "order", Role: "master", Status: "running", Server: "srv-a", Port: 6379, Password: "secret",
+	instances := &apitypes.InstancesState{
+		Groups: map[string]*apitypes.InstanceGroupState{
+			"order": {Type: "replication", Engine: "redis", Category: "cache", CurrentMaster: "order-master"},
+			"cache": {Type: "standalone", Engine: "redis", Category: "cache", CurrentMaster: "cache-1"},
 		},
-		"order-replica": {
-			Type: "replication", Group: "order", Role: "replica", Status: "running", Server: "srv-b", Port: 6379,
+		Instances: map[string]*apitypes.Instance{
+			"order-master": {
+				Group: "order", Role: "master", Status: "running", Server: "srv-a", Port: 6379, Password: "secret",
+			},
+			"order-replica": {
+				Group: "order", Role: "replica", Status: "running", Server: "srv-b", Port: 6379,
+			},
+			"cache-1": {
+				Group: "cache", Role: "master", Status: "running", Server: "srv-a", Port: 6380,
+			},
 		},
-		"cache-1": {
-			Type: "standalone", Role: "standalone", Status: "running", Server: "srv-a", Port: 6380,
-		},
-	}}
+	}
 	masters := s.buildSentinelMasters(pool, instances)
 	if len(masters) != 1 {
 		t.Fatalf("expected one monitored master, got %#v", masters)
@@ -71,17 +77,26 @@ func TestSentinelEventEndpoint(t *testing.T) {
 		"srv-a": {Endpoint: "10.0.1.10"},
 		"srv-b": {Endpoint: "10.0.1.11"},
 	}})
-	s.state.WriteInstances(&apitypes.InstancesState{Instances: map[string]*apitypes.Instance{
-		"order-master": {
-			Type: "replication", Group: "order", Role: "master", Status: "running", Server: "srv-a", Port: 6379,
-			Replicas: []string{"order-replica"},
-			Envoy:    &apitypes.EnvoyConfig{ReadWritePort: 16379, ReadOnlyPort: 16500},
+	s.state.WriteInstances(&apitypes.InstancesState{
+		Groups: map[string]*apitypes.InstanceGroupState{
+			"order": {
+				Type:          "replication",
+				Engine:        "redis",
+				Category:      "cache",
+				CurrentMaster: "order-master",
+				Envoy:         &apitypes.EnvoyConfig{AutoPort: 16379, MasterPort: 16500},
+			},
 		},
-		"order-replica": {
-			Type: "replication", Group: "order", Role: "replica", Status: "running", Server: "srv-b", Port: 6379,
-			ReplicaOf: "order-master",
+		Instances: map[string]*apitypes.Instance{
+			"order-master": {
+				Group: "order", Role: "master", Status: "running", Server: "srv-a", Port: 6379,
+			},
+			"order-replica": {
+				Group: "order", Role: "replica", Status: "running", Server: "srv-b", Port: 6379,
+				ReplicaOf: "order-master",
+			},
 		},
-	}})
+	})
 	w := doRequest(s.Router(), "POST", "/sentinel/event", map[string]interface{}{
 		"event":      "+switch-master",
 		"group":      "order",
@@ -100,21 +115,30 @@ func TestHandleSentinelFailover_UpdatesState(t *testing.T) {
 		"srv-b": {Endpoint: "10.0.1.11"},
 		"srv-c": {Endpoint: "10.0.1.12"},
 	}})
-	s.state.WriteInstances(&apitypes.InstancesState{Instances: map[string]*apitypes.Instance{
-		"order-master": {
-			Type: "replication", Group: "order", Role: "master", Status: "running", Server: "srv-a", Port: 6379,
-			Replicas: []string{"order-replica", "order-replica-2"},
-			Envoy:    &apitypes.EnvoyConfig{ReadWritePort: 16379, ReadOnlyPort: 16500},
+	s.state.WriteInstances(&apitypes.InstancesState{
+		Groups: map[string]*apitypes.InstanceGroupState{
+			"order": {
+				Type:          "replication",
+				Engine:        "redis",
+				Category:      "cache",
+				CurrentMaster: "order-master",
+				Envoy:         &apitypes.EnvoyConfig{AutoPort: 16379, MasterPort: 16500},
+			},
 		},
-		"order-replica": {
-			Type: "replication", Group: "order", Role: "replica", Status: "running", Server: "srv-b", Port: 6379,
-			ReplicaOf: "order-master",
+		Instances: map[string]*apitypes.Instance{
+			"order-master": {
+				Group: "order", Role: "master", Status: "running", Server: "srv-a", Port: 6379,
+			},
+			"order-replica": {
+				Group: "order", Role: "replica", Status: "running", Server: "srv-b", Port: 6379,
+				ReplicaOf: "order-master",
+			},
+			"order-replica-2": {
+				Group: "order", Role: "replica", Status: "running", Server: "srv-c", Port: 6379,
+				ReplicaOf: "order-master",
+			},
 		},
-		"order-replica-2": {
-			Type: "replication", Group: "order", Role: "replica", Status: "running", Server: "srv-c", Port: 6379,
-			ReplicaOf: "order-master",
-		},
-	}})
+	})
 	if err := s.handleSentinelFailover("order", "10.0.1.11:6379", "test", "sentinel"); err != nil {
 		t.Fatal(err)
 	}
@@ -131,11 +155,12 @@ func TestHandleSentinelFailover_UpdatesState(t *testing.T) {
 	if newMaster.Role != "master" || newMaster.ReplicaOf != "" {
 		t.Fatalf("new master not promoted in state: %#v", newMaster)
 	}
-	if newMaster.Envoy == nil || newMaster.Envoy.ReadWritePort != 16379 || newMaster.Envoy.ReadOnlyPort != 16500 {
-		t.Fatalf("new master did not inherit envoy config: %#v", newMaster.Envoy)
+	group := state.Groups["order"]
+	if group.CurrentMaster != "order-replica" {
+		t.Fatalf("group current master not updated: %#v", group)
 	}
-	if len(newMaster.Replicas) != 1 || newMaster.Replicas[0] != "order-replica-2" {
-		t.Fatalf("unexpected new master replicas: %#v", newMaster.Replicas)
+	if group.Envoy == nil || group.Envoy.AutoPort != 16379 || group.Envoy.MasterPort != 16500 {
+		t.Fatalf("group envoy config changed unexpectedly: %#v", group.Envoy)
 	}
 	if otherReplica.ReplicaOf != "order-replica" {
 		t.Fatalf("other replica should point at new master: %#v", otherReplica)

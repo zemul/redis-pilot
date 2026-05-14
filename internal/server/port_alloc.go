@@ -23,31 +23,31 @@ func allocRedisPort(cfg PortConfig, instances *apitypes.InstancesState, serverNa
 	return 0, fmt.Errorf("no available redis port on server %s (range %d-%d)", serverName, cfg.Redis.Start, cfg.Redis.End)
 }
 
-// allocEnvoyPorts 为一个实例组（master/standalone）分配 Envoy 端口。
-// withReadOnly=true 时同时分配只读端口（用于主从拓扑）。
-func allocEnvoyPorts(cfg PortConfig, instances *apitypes.InstancesState, withReadOnly bool) (*apitypes.EnvoyConfig, error) {
-	usedRW := make(map[int]bool)
-	usedRO := make(map[int]bool)
-	for _, inst := range instances.Instances {
-		if inst.Envoy == nil {
+// allocEnvoyPorts 为一个实例组分配 Envoy 端口。
+// withAuto=true 时额外分配自动读写分离端口（用于主从拓扑）。
+func allocEnvoyPorts(cfg PortConfig, instances *apitypes.InstancesState, withAuto bool) (*apitypes.EnvoyConfig, error) {
+	usedAuto := make(map[int]bool)
+	usedMaster := make(map[int]bool)
+	for _, group := range instances.Groups {
+		if group.Envoy == nil {
 			continue
 		}
-		usedRW[inst.Envoy.ReadWritePort] = true
-		usedRO[inst.Envoy.ReadOnlyPort] = true
+		usedAuto[group.Envoy.AutoPort] = true
+		usedMaster[group.Envoy.MasterPort] = true
 	}
 
-	rw, err := nextFree(cfg.EnvoyRW, usedRW)
+	master, err := nextFree(cfg.EnvoyMaster, usedMaster)
 	if err != nil {
-		return nil, fmt.Errorf("envoy readwrite port: %w", err)
+		return nil, fmt.Errorf("envoy master port: %w", err)
 	}
 
-	ec := &apitypes.EnvoyConfig{ReadWritePort: rw}
-	if withReadOnly {
-		ro, err := nextFree(cfg.EnvoyWO, usedRO)
+	ec := &apitypes.EnvoyConfig{MasterPort: master}
+	if withAuto {
+		auto, err := nextFree(cfg.EnvoyAuto, usedAuto)
 		if err != nil {
-			return nil, fmt.Errorf("envoy readonly port: %w", err)
+			return nil, fmt.Errorf("envoy auto port: %w", err)
 		}
-		ec.ReadOnlyPort = ro
+		ec.AutoPort = auto
 	}
 	return ec, nil
 }

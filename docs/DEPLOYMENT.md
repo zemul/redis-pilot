@@ -73,8 +73,10 @@ port: 8080
 token: "your-secret-token"       # 空字符串则不鉴权
 data_dir: /opt/redis-server/state
 
-# Envoy 配置输出（不需要代理层可留空）
+# Envoy 属于预部署代理层；不需要代理层可留空
+# 非空时 Server 只负责写入 envoy.yaml，不创建 Envoy 容器
 envoy_dir: /opt/redis-server/envoy
+# 仅在 Envoy 已提前部署且该命令可用时配置；否则留空
 envoy_reload_cmd: "podman restart envoy"
 
 # 端口分配范围
@@ -82,15 +84,12 @@ ports:
   redis:
     start: 6379
     end: 6499
-  envoy_readwrite:
+  envoy_auto:
     start: 16379
     end: 16499
-  envoy_writeonly:
+  envoy_master:
     start: 16500
     end: 16619
-  envoy_mgmt:
-    start: 26379
-    end: 26499
 
 log:
   dir: /opt/redis-server/logs
@@ -403,7 +402,7 @@ tail -f /opt/redis-server/logs/server.log | grep reconcile
 ## 12. 生产建议
 
 1. **启用认证** — Server 和 Agent 都配置非空 Token
-2. **网络隔离** — Agent 端口 (8400) 和 Redis 端口 (6379) 仅对控制节点开放，业务通过 Envoy 访问
+2. **网络隔离** — Agent 端口 (8400) 和 Redis 端口 (6379) 仅对控制节点/预部署 Envoy 开放，业务通过 Envoy 访问
 3. **状态文件备份** — 定期备份 `/opt/redis-server/state/` 目录
 4. **审计日志归档** — 配置日志轮转，关键操作保留 365 天
 5. **资源预留** — 数据节点预留 10-20% 内存给系统和 Agent

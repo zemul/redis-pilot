@@ -130,10 +130,10 @@
 
 **Envoy 配置生成逻辑**:
 1. 按主库名聚合实例组（主库 + 所有从库）
-2. 为每个实例组创建两个 Listener:
-   - **读写端口** (`ReadWritePort`): 后端仅包含主库，读写都走主库
-   - **只读端口** (`ReadOnlyPort`): 后端为从库，用于读请求分流
-3. 创建 RW/RO Cluster，RW 指向主库，RO 指向所有从库
+2. 为每个实例组创建业务 Listener:
+   - **MASTER 端口** (`MasterPort`): 后端仅包含主库，所有命令都走主库
+   - **AUTO 端口** (`AutoPort`): 默认走主库，读命令通过 `read_command_policy` 走从库
+3. 创建 master/replica Cluster，master 指向当前主库，replica 指向所有从库
 4. 配置 Redis 健康检查（5s 间隔，2 次失败标记不健康）
 
 **自动刷新机制**:
@@ -448,8 +448,8 @@ instances:
       timeout: "300"
     status: running
     envoy:
-      readwrite_port: 8000
-      readonly_port: 8001
+      master_port: 8000
+      auto_port: 8001
     backup:
       schedule: "0 2 * * *"
       retention: 7
@@ -613,9 +613,9 @@ server.StartReconcileLoop()
 ### 8.2 Envoy 端口分配
 
 **分配策略**:
-1. 为每个实例组分配两个 Envoy 端口:
-   - 读写端口 (ReadWritePort): 从 `envoy_rw` 范围分配
-   - 只读端口 (ReadOnlyPort): 从 `envoy_wo` 范围分配
+1. 为每个实例组分配 Envoy 端口:
+   - MASTER 端口 (MasterPort): 从 `envoy_master` 范围分配
+   - AUTO 端口 (AutoPort): 从 `envoy_auto` 范围分配，仅主从拓扑需要
 2. 扫描所有已有实例的 Envoy 端口
 3. 从配置范围中取第一个未占用的端口
 

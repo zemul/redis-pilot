@@ -39,10 +39,18 @@ func TestEnvoyConfig_StandaloneInstance(t *testing.T) {
 		},
 	})
 	s.state.WriteInstances(&apitypes.InstancesState{
+		Groups: map[string]*apitypes.InstanceGroupState{
+			"cache": {
+				Type:          "standalone",
+				Engine:        "redis",
+				Category:      "cache",
+				CurrentMaster: "cache-1",
+				Envoy:         &apitypes.EnvoyConfig{MasterPort: 16500},
+			},
+		},
 		Instances: map[string]*apitypes.Instance{
 			"cache-1": {
-				Engine: "redis", Group: "cache", Role: "standalone", Server: "srv1", Port: 6379, Status: "running",
-				Envoy: &apitypes.EnvoyConfig{ReadWritePort: 16381},
+				Group: "cache", Role: "master", Server: "srv1", Port: 6379, Status: "running",
 			},
 		},
 	})
@@ -51,13 +59,13 @@ func TestEnvoyConfig_StandaloneInstance(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(config, "port_value: 16381") {
-		t.Error("expected listener port 16381")
+	if !strings.Contains(config, "port_value: 16500") {
+		t.Error("expected master listener port 16500")
 	}
 	if !strings.Contains(config, "address: 10.0.0.1") {
 		t.Error("expected endpoint 10.0.0.1")
 	}
-	if !strings.Contains(config, "redis-cache-cluster") {
+	if !strings.Contains(config, "redis-cache-master-cluster") {
 		t.Error("expected cluster name")
 	}
 }
@@ -71,16 +79,22 @@ func TestEnvoyConfig_ReplicationGroup(t *testing.T) {
 		},
 	})
 	s.state.WriteInstances(&apitypes.InstancesState{
+		Groups: map[string]*apitypes.InstanceGroupState{
+			"order": {
+				Type:          "replication",
+				Engine:        "redis",
+				Category:      "cache",
+				CurrentMaster: "order-master",
+				Envoy:         &apitypes.EnvoyConfig{AutoPort: 16379, MasterPort: 16500},
+			},
+		},
 		Instances: map[string]*apitypes.Instance{
 			"order-master": {
-				Engine: "redis", Group: "order", Role: "master", Server: "srv1", Port: 6379, Status: "running",
-				Replicas: []string{"order-replica"},
-				Envoy:    &apitypes.EnvoyConfig{ReadWritePort: 16379, ReadOnlyPort: 16400},
+				Group: "order", Role: "master", Server: "srv1", Port: 6379, Status: "running",
 			},
 			"order-replica": {
-				Engine: "redis", Group: "order", Role: "replica", Server: "srv2", Port: 6379, Status: "running",
-				ReplicaOf: "10.0.0.1:6379",
-				Envoy:     &apitypes.EnvoyConfig{ReadWritePort: 16379},
+				Group: "order", Role: "replica", Server: "srv2", Port: 6379, Status: "running",
+				ReplicaOf: "order-master",
 			},
 		},
 	})
@@ -89,23 +103,25 @@ func TestEnvoyConfig_ReplicationGroup(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// 应有读写 listener 和只读 listener
+	// 应有 AUTO listener 和 MASTER listener
 	if !strings.Contains(config, "port_value: 16379") {
-		t.Error("expected rw listener port 16379")
+		t.Error("expected auto listener port 16379")
 	}
-	if !strings.Contains(config, "port_value: 16400") {
-		t.Error("expected wo listener port 16400")
+	if !strings.Contains(config, "port_value: 16500") {
+		t.Error("expected master listener port 16500")
 	}
 	// cluster 应包含主从 endpoint（分布在不同 cluster）
 	if !strings.Contains(config, "address: 10.0.0.1") {
 		t.Error("expected master endpoint")
 	}
 	if !strings.Contains(config, "address: 10.0.0.2") {
-		t.Error("expected replica endpoint in write cluster")
+		t.Error("expected replica endpoint")
 	}
-	// RW 和 WO 都使用 MASTER 策略
-	if strings.Count(config, "read_policy: MASTER") < 2 {
-		t.Error("expected MASTER read policy for both listeners")
+	if !strings.Contains(config, "read_command_policy:") {
+		t.Error("expected auto listener read_command_policy")
+	}
+	if !strings.Contains(config, "cluster: redis-order-replica-cluster") {
+		t.Error("expected read commands to use replica cluster")
 	}
 }
 
@@ -117,10 +133,18 @@ func TestEnvoyConfig_SkipNonRunning(t *testing.T) {
 		},
 	})
 	s.state.WriteInstances(&apitypes.InstancesState{
+		Groups: map[string]*apitypes.InstanceGroupState{
+			"stopped": {
+				Type:          "standalone",
+				Engine:        "redis",
+				Category:      "cache",
+				CurrentMaster: "stopped-1",
+				Envoy:         &apitypes.EnvoyConfig{MasterPort: 16500},
+			},
+		},
 		Instances: map[string]*apitypes.Instance{
 			"stopped-1": {
-				Engine: "redis", Role: "standalone", Server: "srv1", Port: 6379, Status: "stopped",
-				Envoy: &apitypes.EnvoyConfig{ReadWritePort: 16381},
+				Group: "stopped", Role: "master", Server: "srv1", Port: 6379, Status: "stopped",
 			},
 		},
 	})
@@ -142,10 +166,18 @@ func TestEnvoyRouteUpdate_WritesFile(t *testing.T) {
 		},
 	})
 	s.state.WriteInstances(&apitypes.InstancesState{
+		Groups: map[string]*apitypes.InstanceGroupState{
+			"cache": {
+				Type:          "standalone",
+				Engine:        "redis",
+				Category:      "cache",
+				CurrentMaster: "cache-1",
+				Envoy:         &apitypes.EnvoyConfig{MasterPort: 16500},
+			},
+		},
 		Instances: map[string]*apitypes.Instance{
 			"cache-1": {
-				Engine: "redis", Role: "standalone", Server: "srv1", Port: 6379, Status: "running",
-				Envoy: &apitypes.EnvoyConfig{ReadWritePort: 16381},
+				Group: "cache", Role: "master", Server: "srv1", Port: 6379, Status: "running",
 			},
 		},
 	})
@@ -161,7 +193,7 @@ func TestEnvoyRouteUpdate_WritesFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("envoy config file not written: %v", err)
 	}
-	if !strings.Contains(string(data), "port_value: 16381") {
+	if !strings.Contains(string(data), "port_value: 16500") {
 		t.Error("expected listener in written file")
 	}
 }
@@ -174,10 +206,17 @@ func TestEnvoyConfig_NoEnvoyField(t *testing.T) {
 		},
 	})
 	s.state.WriteInstances(&apitypes.InstancesState{
+		Groups: map[string]*apitypes.InstanceGroupState{
+			"no-envoy": {
+				Type:          "standalone",
+				Engine:        "redis",
+				Category:      "cache",
+				CurrentMaster: "no-envoy",
+			},
+		},
 		Instances: map[string]*apitypes.Instance{
 			"no-envoy": {
-				Engine: "redis", Role: "standalone", Server: "srv1", Port: 6379, Status: "running",
-				// Envoy 字段为 nil
+				Group: "no-envoy", Role: "master", Server: "srv1", Port: 6379, Status: "running",
 			},
 		},
 	})

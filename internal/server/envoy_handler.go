@@ -45,6 +45,10 @@ static_resources:
           prefix_routes:
             catch_all_route:
               cluster: {{ .Cluster }}
+{{- if .ReadCluster }}
+              read_command_policy:
+                cluster: {{ .ReadCluster }}
+{{- end }}
 {{- end }}
 
   clusters:
@@ -85,12 +89,13 @@ static_resources:
 `))
 
 type envoyListener struct {
-	Name       string
-	Port       int
-	StatPrefix string
-	Cluster    string
-	Password   string
-	ReadPolicy string
+	Name        string
+	Port        int
+	StatPrefix  string
+	Cluster     string
+	ReadCluster string
+	Password    string
+	ReadPolicy  string
 }
 
 type envoyEndpoint struct {
@@ -153,42 +158,43 @@ func (s *Server) generateEnvoyConfig() (string, error) {
 
 	data := envoyData{}
 	for groupName, g := range groups {
-		rwClusterName := "redis-" + groupName + "-cluster"
-		roClusterName := "redis-" + groupName + "-ro-cluster"
+		masterClusterName := "redis-" + groupName + "-master-cluster"
+		replicaClusterName := "redis-" + groupName + "-replica-cluster"
 		statPrefix := "redis_" + strings.ReplaceAll(groupName, "-", "_")
 
-		if g.rwPort > 0 {
+		if g.masterPort > 0 && len(g.masterEndpoints) > 0 {
 			data.Listeners = append(data.Listeners, envoyListener{
-				Name:       "redis-" + groupName + "-rw",
-				Port:       g.rwPort,
-				StatPrefix: statPrefix,
-				Cluster:    rwClusterName,
+				Name:       "redis-" + groupName + "-master",
+				Port:       g.masterPort,
+				StatPrefix: statPrefix + "_master",
+				Cluster:    masterClusterName,
 				Password:   g.password,
 				ReadPolicy: "MASTER",
 			})
 		}
 
-		if g.roPort > 0 && len(g.replicaEndpoints) > 0 {
+		if g.autoPort > 0 && len(g.masterEndpoints) > 0 && len(g.replicaEndpoints) > 0 {
 			data.Listeners = append(data.Listeners, envoyListener{
-				Name:       "redis-" + groupName + "-ro",
-				Port:       g.roPort,
-				StatPrefix: statPrefix + "_ro",
-				Cluster:    roClusterName,
-				Password:   g.password,
-				ReadPolicy: "MASTER",
+				Name:        "redis-" + groupName + "-auto",
+				Port:        g.autoPort,
+				StatPrefix:  statPrefix + "_auto",
+				Cluster:     masterClusterName,
+				ReadCluster: replicaClusterName,
+				Password:    g.password,
+				ReadPolicy:  "MASTER",
 			})
 		}
 
 		if len(g.masterEndpoints) > 0 {
 			data.Clusters = append(data.Clusters, envoyCluster{
-				Name:      rwClusterName,
+				Name:      masterClusterName,
 				Password:  g.password,
 				Endpoints: g.masterEndpoints,
 			})
 		}
-		if g.roPort > 0 && len(g.replicaEndpoints) > 0 {
+		if g.autoPort > 0 && len(g.replicaEndpoints) > 0 {
 			data.Clusters = append(data.Clusters, envoyCluster{
-				Name:      roClusterName,
+				Name:      replicaClusterName,
 				Password:  g.password,
 				Endpoints: g.replicaEndpoints,
 			})
@@ -203,8 +209,8 @@ func (s *Server) generateEnvoyConfig() (string, error) {
 }
 
 type instanceGroup struct {
-	rwPort           int
-	roPort           int
+	autoPort         int
+	masterPort       int
 	password         string
 	masterEndpoints  []envoyEndpoint
 	replicaEndpoints []envoyEndpoint
@@ -214,59 +220,32 @@ type instanceGroup struct {
 func (s *Server) buildInstanceGroups(instances *apitypes.InstancesState, pool *apitypes.PoolState) map[string]*instanceGroup {
 	groups := make(map[string]*instanceGroup)
 
-	for name, inst := range instances.Instances {
-		if inst.Status != "running" {
+	for groupName, group := range instances.Groups {
+		if group == nil || group.Envoy == nil {
 			continue
 		}
-
-		groupName := inst.Group
-		if groupName == "" {
-			// 兼容旧状态：主库用自己的名字，从库找主库名
-			groupName = name
+		g := &instanceGroup{
+			autoPort:   group.Envoy.AutoPort,
+			masterPort: group.Envoy.MasterPort,
+			password:   "",
 		}
-		if inst.Role == "replica" && inst.Group == "" {
-			// 从主库的 Replicas 列表反查
-			for mName, mInst := range instances.Instances {
-				for _, r := range mInst.Replicas {
-					if r == name {
-						groupName = mName
-						break
-					}
-				}
-			}
-		}
-
-		g, ok := groups[groupName]
-		if !ok {
-			// 只有配置了 Envoy 的实例组才创建
-			if inst.Envoy == nil && inst.Role != "replica" {
+		for name, inst := range instances.Instances {
+			if inst == nil || inst.Group != groupName || inst.Status != "running" {
 				continue
 			}
-			g = &instanceGroup{}
-			groups[groupName] = g
-		}
-
-		// 端口取主库/standalone 的 Envoy 配置（从库没有 Envoy 字段）
-		if inst.Envoy != nil && (inst.Role == "master" || inst.Role == "standalone") {
-			if inst.Envoy.ReadWritePort > 0 {
-				g.rwPort = inst.Envoy.ReadWritePort
+			srv := pool.Servers[inst.Server]
+			if srv == nil {
+				continue
 			}
-			if inst.Envoy.ReadOnlyPort > 0 {
-				g.roPort = inst.Envoy.ReadOnlyPort
-			}
-			g.password = inst.Password
-		}
-
-		// 后端地址：按角色分配
-		srv := pool.Servers[inst.Server]
-		if srv != nil {
 			ep := envoyEndpoint{Address: srv.Endpoint, Port: inst.Port}
-			if inst.Role == "master" || inst.Role == "standalone" {
+			if inst.Role == "master" && group.CurrentMaster == name {
 				g.masterEndpoints = append(g.masterEndpoints, ep)
+				g.password = inst.Password
 			} else if inst.Role == "replica" {
 				g.replicaEndpoints = append(g.replicaEndpoints, ep)
 			}
 		}
+		groups[groupName] = g
 	}
 
 	return groups

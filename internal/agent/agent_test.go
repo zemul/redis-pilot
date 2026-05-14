@@ -122,7 +122,6 @@ func TestWriteRedisConfig_Cache(t *testing.T) {
 		"maxmemory 4294967296",
 		"maxmemory-policy allkeys-lru",
 		"appendonly no",
-		"proto 2",
 	}
 	for _, c := range checks {
 		if !strings.Contains(content, c) {

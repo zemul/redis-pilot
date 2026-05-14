@@ -267,33 +267,16 @@ func (s *Server) handleSentinelFailover(group, newMasterAddr, source, operator s
 	sessionID := fmt.Sprintf("sentinel-%s-%d", group, time.Now().UnixNano())
 	start := time.Now()
 	var oldMasterName, oldMasterServer, newMasterName, newMasterServer string
-	var envoy *apitypes.EnvoyConfig
 	var oldMasterFound bool
-	var replicaCount int
 
 	err := s.state.WithInstances(func(instances *apitypes.InstancesState) error {
+		groupState := instances.Groups[group]
+		if groupState == nil || groupState.Type != "replication" {
+			return fmt.Errorf("replication group not found: %s", group)
+		}
 		groupNames := instanceNamesByGroup(instances, group)
-		if len(groupNames) == 0 {
-			groupNames = state.InstanceGroup(instances, group)
-		}
-		var oldMaster *apitypes.Instance
-		for _, name := range groupNames {
-			inst := instances.Instances[name]
-			if inst != nil && inst.Role == "master" && inst.Type == "replication" {
-				oldMasterName = name
-				oldMaster = inst
-				break
-			}
-		}
-		if oldMaster == nil {
-			for name, inst := range instances.Instances {
-				if inst != nil && inst.Group == "" && name == group && inst.Role == "master" && inst.Type == "replication" {
-					oldMasterName = name
-					oldMaster = inst
-					break
-				}
-			}
-		}
+		oldMasterName = groupState.CurrentMaster
+		oldMaster := instances.Instances[oldMasterName]
 		if oldMaster == nil {
 			return fmt.Errorf("old master not found for group %s", group)
 		}
@@ -325,44 +308,20 @@ func (s *Server) handleSentinelFailover(group, newMasterAddr, source, operator s
 		if newMaster == nil {
 			return fmt.Errorf("new master instance missing: %s", newMasterName)
 		}
-		if newMaster.Group != "" && newMaster.Group != group {
+		if newMaster.Group != group {
 			return fmt.Errorf("new master %s belongs to group %s, not %s", newMasterName, newMaster.Group, group)
-		}
-		newMaster.Group = group
-		oldMaster.Group = group
-
-		if oldMaster.Role == "master" && oldMaster.Envoy != nil {
-			envoy = oldMaster.Envoy
-			oldMaster.Envoy = nil
-		}
-		if newMaster.Envoy == nil && envoy != nil {
-			newMaster.Envoy = envoy
 		}
 		oldMasterServer = oldMaster.Server
 		newMasterServer = newMaster.Server
 
-		for _, inst := range instances.Instances {
-			if inst == nil {
-				continue
-			}
-			filtered := inst.Replicas[:0]
-			for _, replica := range inst.Replicas {
-				if replica != newMasterName {
-					filtered = append(filtered, replica)
-				}
-			}
-			inst.Replicas = filtered
-		}
-
 		oldMaster.Role = "replica"
 		oldMaster.Status = "failed"
 		oldMaster.ReplicaOf = newMasterName
-		oldMaster.Replicas = nil
 
 		newMaster.Role = "master"
 		newMaster.Status = "running"
 		newMaster.ReplicaOf = ""
-		newMaster.Replicas = nil
+		groupState.CurrentMaster = newMasterName
 
 		for name, inst := range instances.Instances {
 			if inst == nil || name == newMasterName {
@@ -373,12 +332,10 @@ func (s *Server) handleSentinelFailover(group, newMasterAddr, source, operator s
 				if inst.Status == "running" {
 					inst.Role = "replica"
 					inst.ReplicaOf = newMasterName
-					newMaster.Replicas = append(newMaster.Replicas, name)
-					replicaCount++
 				}
 			}
 		}
-		sort.Strings(newMaster.Replicas)
+		state.RecalculateGroupTopology(instances, group)
 		return nil
 	})
 	if err != nil {
@@ -398,21 +355,16 @@ func (s *Server) handleSentinelFailover(group, newMasterAddr, source, operator s
 
 	result := "success"
 	detail := "sentinel failover synchronized"
-	if replicaCount == 0 {
-		result = "degraded"
-		detail = "sentinel failover synchronized; replica replenishment is still required"
-	}
 	s.audit.Log(audit.Record{
 		Operator: operator,
 		Action:   "topology.failover", Level: audit.LevelCritical, Result: result,
 		Duration: time.Since(start).Milliseconds(),
 		Target: map[string]interface{}{
-			"instance_group":     group,
-			"old_master_server":  oldMasterServer,
-			"new_master":         newMasterName,
-			"new_master_addr":    newMasterAddr,
-			"new_master_server":  newMasterServer,
-			"remaining_replicas": replicaCount,
+			"instance_group":    group,
+			"old_master_server": oldMasterServer,
+			"new_master":        newMasterName,
+			"new_master_addr":   newMasterAddr,
+			"new_master_server": newMasterServer,
 		},
 		Params: map[string]interface{}{"source": source},
 		Detail: detail,
@@ -524,20 +476,20 @@ func (s *Server) removeSentinelMaster(group string) {
 
 func (s *Server) buildSentinelMasters(pool *apitypes.PoolState, instances *apitypes.InstancesState) []apitypes.SentinelMaster {
 	var masters []apitypes.SentinelMaster
-	for name, inst := range instances.Instances {
-		if inst == nil || inst.Type != "replication" || inst.Role != "master" || inst.Status != "running" {
+	for groupName, group := range instances.Groups {
+		if group == nil || group.Type != "replication" {
 			continue
 		}
-		group := inst.Group
-		if group == "" {
-			group = name
+		inst := instances.Instances[group.CurrentMaster]
+		if inst == nil || inst.Role != "master" || inst.Status != "running" {
+			continue
 		}
 		endpoint := poolEndpoint(pool, inst.Server)
 		if endpoint == "" {
 			continue
 		}
 		masters = append(masters, apitypes.SentinelMaster{
-			Group:                 group,
+			Group:                 groupName,
 			Host:                  endpoint,
 			Port:                  inst.Port,
 			Password:              inst.Password,

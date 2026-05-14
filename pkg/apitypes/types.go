@@ -25,10 +25,10 @@ type PoolState struct {
 	Servers map[string]*PoolServer `yaml:"servers"`
 }
 
-// EnvoyConfig 实例的 Envoy 端口配置
+// EnvoyConfig 实例组的 Envoy 端口配置
 type EnvoyConfig struct {
-	ReadWritePort int `yaml:"readwrite_port,omitempty"`
-	ReadOnlyPort  int `yaml:"readonly_port,omitempty"`
+	AutoPort   int `yaml:"auto_port,omitempty" json:"auto_port,omitempty"`
+	MasterPort int `yaml:"master_port,omitempty" json:"master_port,omitempty"`
 }
 
 // BackupConfig 备份配置
@@ -54,13 +54,23 @@ type Persistence struct {
 	AOFPolicy    string `yaml:"aof_policy,omitempty" json:"aof_policy,omitempty"` // everysec | always | no
 }
 
-// Instance 实例完整状态
+// InstanceGroupState 实例组权威状态。
+type InstanceGroupState struct {
+	Type             string       `yaml:"type" json:"type"` // standalone | replication
+	Engine           string       `yaml:"engine" json:"engine"`
+	Category         string       `yaml:"category" json:"category"`
+	CurrentMaster    string       `yaml:"current_master" json:"current_master"`
+	TopologyStatus   string       `yaml:"topology_status" json:"topology_status"` // healthy | degraded
+	FailoverConflict bool         `yaml:"failover_conflict" json:"failover_conflict"`
+	Envoy            *EnvoyConfig `yaml:"envoy,omitempty" json:"envoy,omitempty"`
+	CreatedAt        string       `yaml:"created_at" json:"created_at"`
+	UpdatedAt        string       `yaml:"updated_at" json:"updated_at"`
+}
+
+// Instance 单容器运行状态
 type Instance struct {
-	Category        string            `yaml:"category"`           // cache | persistent
 	Group           string            `yaml:"group" json:"group"` // stable logical instance group
-	Engine          string            `yaml:"engine"`             // redis | kvrocks
-	Type            string            `yaml:"type"`               // standalone | replication
-	Role            string            `yaml:"role"`               // master | replica | standalone
+	Role            string            `yaml:"role"`               // master | replica
 	Server          string            `yaml:"server"`
 	Container       string            `yaml:"container"`
 	Port            int               `yaml:"port"`
@@ -74,8 +84,6 @@ type Instance struct {
 	Persistence     *Persistence      `yaml:"persistence,omitempty"`
 	ConfigOverrides map[string]string `yaml:"config_overrides,omitempty"`
 	ReplicaOf       string            `yaml:"replica_of,omitempty"`
-	Replicas        []string          `yaml:"replicas,omitempty"`
-	Envoy           *EnvoyConfig      `yaml:"envoy,omitempty"`
 	Backup          *BackupConfig     `yaml:"backup,omitempty"`
 	Status          string            `yaml:"status"` // creating | running | stopped | failed
 	Lock            *Lock             `yaml:"lock,omitempty"`
@@ -84,7 +92,8 @@ type Instance struct {
 
 // InstancesState instances-state.yaml 根结构
 type InstancesState struct {
-	Instances map[string]*Instance `yaml:"instances"`
+	Groups    map[string]*InstanceGroupState `yaml:"groups" json:"groups"`
+	Instances map[string]*Instance           `yaml:"instances" json:"instances"`
 }
 
 // APIResponse 通用 API 响应
@@ -97,7 +106,7 @@ type APIResponse struct {
 // PortInventoryItem 端口-实例映射（视图 A）
 type PortInventoryItem struct {
 	EnvoyPort      int      `json:"envoy_port"`
-	Mode           string   `json:"mode"` // readwrite | readonly
+	Mode           string   `json:"mode"` // auto | master
 	InstanceName   string   `json:"instance_name"`
 	Engine         string   `json:"engine"`
 	Category       string   `json:"category"`

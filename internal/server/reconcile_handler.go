@@ -95,7 +95,9 @@ func (s *Server) runReconcile() ([]ReconcileResult, error) {
 			inst := instances.Instances[name]
 			containerName := inst.Container
 			if containerName == "" {
-				containerName = inst.Engine + "-" + name
+				if group := instances.Groups[inst.Group]; group != nil {
+					containerName = group.Engine + "-" + name
+				}
 			}
 
 			actual := "missing"
@@ -153,11 +155,11 @@ func (s *Server) runReconcile() ([]ReconcileResult, error) {
 		if r.Action == "alert" || r.Action == "updated" {
 			s.audit.Log(audit.Record{
 				Operator: "system",
-				Action: "reconcile",
-				Level:  audit.LevelImportant,
-				Result: r.Action,
-				Target: map[string]interface{}{"instance": r.Instance, "server": r.Server},
-				Params: map[string]interface{}{"desired": r.Desired, "actual": r.Actual},
+				Action:   "reconcile",
+				Level:    audit.LevelImportant,
+				Result:   r.Action,
+				Target:   map[string]interface{}{"instance": r.Instance, "server": r.Server},
+				Params:   map[string]interface{}{"desired": r.Desired, "actual": r.Actual},
 			})
 		}
 	}

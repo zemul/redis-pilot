@@ -548,8 +548,8 @@ function InstanceGroupRows({ group, expanded, onToggle }) {
 function EnvoyPorts({ item }) {
   const envoy = getField(item, 'envoy', 'Envoy', {}) || {};
   const ports = [
-    envoy.readwrite_port || envoy.ReadWritePort ? `读写 ${envoy.readwrite_port || envoy.ReadWritePort}` : '',
-    envoy.readonly_port || envoy.ReadOnlyPort ? `只读 ${envoy.readonly_port || envoy.ReadOnlyPort}` : ''
+    envoy.master_port || envoy.MasterPort ? `MASTER ${envoy.master_port || envoy.MasterPort}` : '',
+    envoy.auto_port || envoy.AutoPort ? `AUTO ${envoy.auto_port || envoy.AutoPort}` : ''
   ].filter(Boolean).join(' / ');
   return (
     <>

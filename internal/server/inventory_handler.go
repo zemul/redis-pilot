@@ -44,43 +44,44 @@ func (s *Server) buildPortView(instances *apitypes.InstancesState, portFilter, e
 		filterPort, _ = strconv.Atoi(portFilter)
 	}
 
-	for name, inst := range instances.Instances {
-		if engineFilter != "" && inst.Engine != engineFilter {
+	for groupName, group := range instances.Groups {
+		if group == nil || group.Envoy == nil {
 			continue
 		}
-		if inst.Envoy == nil {
+		if engineFilter != "" && group.Engine != engineFilter {
 			continue
 		}
-		if inst.Envoy.ReadWritePort > 0 {
-			if filterPort > 0 && inst.Envoy.ReadWritePort != filterPort {
-				goto checkReadOnly
+		backends := backendServersForGroup(instances, groupName)
+		if group.Envoy.MasterPort > 0 {
+			if filterPort > 0 && group.Envoy.MasterPort != filterPort {
+				goto checkAuto
 			}
 			items = append(items, apitypes.PortInventoryItem{
-				EnvoyPort:      inst.Envoy.ReadWritePort,
-				Mode:           "readwrite",
-				InstanceName:   name,
-				Engine:         inst.Engine,
-				Category:       inst.Category,
-				Role:           inst.Role,
-				BackendServers: []string{fmt.Sprintf("%s:%d(%s)", inst.Server, inst.Port, inst.Role)},
+				EnvoyPort:      group.Envoy.MasterPort,
+				Mode:           "master",
+				InstanceName:   groupName,
+				Engine:         group.Engine,
+				Category:       group.Category,
+				Role:           "group",
+				BackendServers: backends,
 			})
 			if filterPort > 0 {
 				continue
 			}
 		}
-	checkReadOnly:
-		if inst.Envoy.ReadOnlyPort > 0 {
-			if filterPort > 0 && inst.Envoy.ReadOnlyPort != filterPort {
+	checkAuto:
+		if group.Envoy.AutoPort > 0 {
+			if filterPort > 0 && group.Envoy.AutoPort != filterPort {
 				continue
 			}
 			items = append(items, apitypes.PortInventoryItem{
-				EnvoyPort:      inst.Envoy.ReadOnlyPort,
-				Mode:           "readonly",
-				InstanceName:   name,
-				Engine:         inst.Engine,
-				Category:       inst.Category,
-				Role:           inst.Role,
-				BackendServers: []string{fmt.Sprintf("%s:%d(%s)", inst.Server, inst.Port, inst.Role)},
+				EnvoyPort:      group.Envoy.AutoPort,
+				Mode:           "auto",
+				InstanceName:   groupName,
+				Engine:         group.Engine,
+				Category:       group.Category,
+				Role:           "group",
+				BackendServers: backends,
 			})
 		}
 	}
@@ -94,7 +95,11 @@ func (s *Server) buildServerView(instances *apitypes.InstancesState, pool *apity
 		if serverFilter != "" && inst.Server != serverFilter {
 			continue
 		}
-		if engineFilter != "" && inst.Engine != engineFilter {
+		group := instances.Groups[inst.Group]
+		if group == nil {
+			continue
+		}
+		if engineFilter != "" && group.Engine != engineFilter {
 			continue
 		}
 		item, exists := result[inst.Server]
@@ -108,7 +113,7 @@ func (s *Server) buildServerView(instances *apitypes.InstancesState, pool *apity
 				totalCPU = ps.Capacity.CPUCores
 			}
 			item = &apitypes.ServerInventoryItem{
-				IP:       ip,
+				IP:          ip,
 				TotalMemory: totalMem,
 				TotalCPU:    totalCPU,
 			}
@@ -116,7 +121,7 @@ func (s *Server) buildServerView(instances *apitypes.InstancesState, pool *apity
 		}
 		item.Instances = append(item.Instances, apitypes.ServerInstanceSummary{
 			Name:          name,
-			Engine:        inst.Engine,
+			Engine:        group.Engine,
 			ContainerPort: inst.Port,
 			Memory:        inst.Memory,
 			CPUs:          inst.CPUs,
@@ -146,25 +151,29 @@ func (s *Server) buildSummaryView(instances *apitypes.InstancesState, pool *apit
 	totalCPU := 0
 
 	for name, inst := range instances.Instances {
-		if engineFilter != "" && inst.Engine != engineFilter {
+		group := instances.Groups[inst.Group]
+		if group == nil {
+			continue
+		}
+		if engineFilter != "" && group.Engine != engineFilter {
 			continue
 		}
 		envoyPorts := ""
-		if inst.Envoy != nil {
-			if inst.Envoy.ReadWritePort > 0 {
-				envoyPorts = strconv.Itoa(inst.Envoy.ReadWritePort)
+		if group.Envoy != nil {
+			if group.Envoy.MasterPort > 0 {
+				envoyPorts = "master:" + strconv.Itoa(group.Envoy.MasterPort)
 			}
-			if inst.Envoy.ReadOnlyPort > 0 {
+			if group.Envoy.AutoPort > 0 {
 				if envoyPorts != "" {
 					envoyPorts += "/"
 				}
-				envoyPorts += strconv.Itoa(inst.Envoy.ReadOnlyPort)
+				envoyPorts += "auto:" + strconv.Itoa(group.Envoy.AutoPort)
 			}
 		}
 		summary.Instances = append(summary.Instances, apitypes.InstanceSummaryItem{
 			Name:       name,
-			Engine:     inst.Engine,
-			Category:   inst.Category,
+			Engine:     group.Engine,
+			Category:   group.Category,
 			EnvoyPorts: envoyPorts,
 			Server:     inst.Server,
 			Status:     inst.Status,
@@ -177,4 +186,15 @@ func (s *Server) buildSummaryView(instances *apitypes.InstancesState, pool *apit
 	summary.TotalServers = len(servers)
 	summary.AllocatedCPU = totalCPU
 	return summary
+}
+
+func backendServersForGroup(instances *apitypes.InstancesState, groupName string) []string {
+	var backends []string
+	for _, inst := range instances.Instances {
+		if inst == nil || inst.Group != groupName {
+			continue
+		}
+		backends = append(backends, fmt.Sprintf("%s:%d(%s)", inst.Server, inst.Port, inst.Role))
+	}
+	return backends
 }

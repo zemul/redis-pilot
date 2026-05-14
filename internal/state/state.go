@@ -58,6 +58,30 @@ func (m *Manager) WritePool(state *apitypes.PoolState) error {
 	return writeYAML(m.poolStatePath(), state)
 }
 
+func (m *Manager) WithPool(fn func(*apitypes.PoolState) error) error {
+	m.poolMu.Lock()
+	defer m.poolMu.Unlock()
+
+	var st apitypes.PoolState
+	data, err := os.ReadFile(m.poolStatePath())
+	if os.IsNotExist(err) {
+		st.Servers = make(map[string]*apitypes.PoolServer)
+	} else if err != nil {
+		return err
+	} else {
+		if err := yaml.Unmarshal(data, &st); err != nil {
+			return err
+		}
+		if st.Servers == nil {
+			st.Servers = make(map[string]*apitypes.PoolServer)
+		}
+	}
+	if err := fn(&st); err != nil {
+		return err
+	}
+	return writeYAML(m.poolStatePath(), &st)
+}
+
 func (m *Manager) ReadInstances() (*apitypes.InstancesState, error) {
 	m.instMu.RLock()
 	defer m.instMu.RUnlock()
@@ -65,7 +89,7 @@ func (m *Manager) ReadInstances() (*apitypes.InstancesState, error) {
 	var state apitypes.InstancesState
 	data, err := os.ReadFile(m.instancesStatePath())
 	if os.IsNotExist(err) {
-		state.Instances = make(map[string]*apitypes.Instance)
+		ensureInstancesState(&state)
 		return &state, nil
 	}
 	if err != nil {
@@ -74,15 +98,14 @@ func (m *Manager) ReadInstances() (*apitypes.InstancesState, error) {
 	if err := yaml.Unmarshal(data, &state); err != nil {
 		return nil, err
 	}
-	if state.Instances == nil {
-		state.Instances = make(map[string]*apitypes.Instance)
-	}
+	ensureInstancesState(&state)
 	return &state, nil
 }
 
 func (m *Manager) WriteInstances(state *apitypes.InstancesState) error {
 	m.instMu.Lock()
 	defer m.instMu.Unlock()
+	ensureInstancesState(state)
 	return writeYAML(m.instancesStatePath(), state)
 }
 
@@ -95,16 +118,14 @@ func (m *Manager) WithInstances(fn func(*apitypes.InstancesState) error) error {
 	var st apitypes.InstancesState
 	data, err := os.ReadFile(m.instancesStatePath())
 	if os.IsNotExist(err) {
-		st.Instances = make(map[string]*apitypes.Instance)
+		ensureInstancesState(&st)
 	} else if err != nil {
 		return err
 	} else {
 		if err := yaml.Unmarshal(data, &st); err != nil {
 			return err
 		}
-		if st.Instances == nil {
-			st.Instances = make(map[string]*apitypes.Instance)
-		}
+		ensureInstancesState(&st)
 	}
 
 	if err := fn(&st); err != nil {
@@ -149,6 +170,15 @@ func ReleaseLock(inst *apitypes.Instance, heldBy string) {
 	}
 }
 
+func ensureInstancesState(st *apitypes.InstancesState) {
+	if st.Groups == nil {
+		st.Groups = make(map[string]*apitypes.InstanceGroupState)
+	}
+	if st.Instances == nil {
+		st.Instances = make(map[string]*apitypes.Instance)
+	}
+}
+
 // InstanceGroup 返回实例所属组的所有实例名（主库+所有从库）。
 func InstanceGroup(instances *apitypes.InstancesState, name string) []string {
 	inst := instances.Instances[name]
@@ -166,28 +196,34 @@ func InstanceGroup(instances *apitypes.InstancesState, name string) []string {
 			return group
 		}
 	}
-	// 找主库
-	master := name
-	if inst.ReplicaOf != "" {
-		for n, i := range instances.Instances {
-			for _, r := range i.Replicas {
-				if r == name {
-					master = n
-					break
-				}
-			}
+	return []string{name}
+}
+
+// RecalculateGroupTopology 根据实例实际状态刷新组拓扑派生字段。
+func RecalculateGroupTopology(instances *apitypes.InstancesState, groupName string) {
+	group := instances.Groups[groupName]
+	if group == nil {
+		return
+	}
+	hasRunningMaster := false
+	hasRunningReplica := false
+	for name, inst := range instances.Instances {
+		if inst == nil || inst.Group != groupName {
+			continue
+		}
+		if name == group.CurrentMaster && inst.Role == "master" && inst.Status == "running" {
+			hasRunningMaster = true
+		}
+		if inst.Role == "replica" && inst.Status == "running" {
+			hasRunningReplica = true
 		}
 	}
-	// 主库 + 所有从库
-	group := []string{master}
-	if m := instances.Instances[master]; m != nil {
-		for _, r := range m.Replicas {
-			if r != master {
-				group = append(group, r)
-			}
-		}
+	if hasRunningMaster && (group.Type != "replication" || hasRunningReplica) {
+		group.TopologyStatus = "healthy"
+	} else {
+		group.TopologyStatus = "degraded"
 	}
-	return group
+	group.UpdatedAt = time.Now().Format(time.RFC3339)
 }
 
 func writeYAML(path string, v interface{}) error {

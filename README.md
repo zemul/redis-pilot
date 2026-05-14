@@ -100,9 +100,8 @@ envoy_dir: ""                # Envoy 配置输出目录
 envoy_reload_cmd: ""         # 配置变更后的重载命令
 ports:
   redis:          { start: 6379,  end: 6499  }
-  envoy_readwrite: { start: 16379, end: 16499 }
-  envoy_writeonly: { start: 16500, end: 16619 }
-  envoy_mgmt:     { start: 26379, end: 26499 }
+  envoy_auto:     { start: 16379, end: 16499 }
+  envoy_master:   { start: 16500, end: 16619 }
 log:
   dir: /opt/redis-pilot-server/logs
   stdout: true

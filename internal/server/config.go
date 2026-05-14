@@ -19,9 +19,9 @@ type PortRange struct {
 
 // PortConfig 端口分配策略配置
 type PortConfig struct {
-	Redis   PortRange `yaml:"redis"`           // Redis 实例端口范围
-	EnvoyRW PortRange `yaml:"envoy_readwrite"` // Envoy 读写端口范围
-	EnvoyWO PortRange `yaml:"envoy_writeonly"` // Envoy 只读端口范围（yaml key 保持兼容）
+	Redis       PortRange `yaml:"redis"`        // Redis 实例端口范围
+	EnvoyAuto   PortRange `yaml:"envoy_auto"`   // Envoy 自动读写分离端口范围
+	EnvoyMaster PortRange `yaml:"envoy_master"` // Envoy 强一致主库端口范围
 }
 
 type SentinelConfig struct {
@@ -51,9 +51,9 @@ func LoadConfig(path string) (*Config, error) {
 		Port:    8080,
 		DataDir: "/opt/redis-server/state",
 		Ports: PortConfig{
-			Redis:   PortRange{Start: 6379, End: 6499},
-			EnvoyRW: PortRange{Start: 16379, End: 16499},
-			EnvoyWO: PortRange{Start: 16500, End: 16619},
+			Redis:       PortRange{Start: 6379, End: 6499},
+			EnvoyAuto:   PortRange{Start: 16379, End: 16499},
+			EnvoyMaster: PortRange{Start: 16500, End: 16619},
 		},
 		Sentinel: SentinelConfig{
 			Enabled:               true,

@@ -261,8 +261,11 @@ func TestInstanceCreate_DuplicateName(t *testing.T) {
 
 	// 先写入一个已有实例
 	s.state.WriteInstances(&apitypes.InstancesState{
+		Groups: map[string]*apitypes.InstanceGroupState{
+			"redis-1": testGroup("redis-1"),
+		},
 		Instances: map[string]*apitypes.Instance{
-			"redis-1": {Engine: "redis", Status: "running"},
+			"redis-1": {Group: "redis-1", Status: "running"},
 		},
 	})
 
@@ -347,8 +350,11 @@ func TestInstanceCreate_WithFakeAgent(t *testing.T) {
 	if inst.Status != "running" {
 		t.Fatalf("expected running, got %s", inst.Status)
 	}
-	if inst.Role != "standalone" {
-		t.Fatalf("expected role standalone, got %s", inst.Role)
+	if inst.Role != "master" {
+		t.Fatalf("expected role master, got %s", inst.Role)
+	}
+	if instances.Groups["cache"].Type != "standalone" {
+		t.Fatalf("expected group type standalone, got %s", instances.Groups["cache"].Type)
 	}
 
 	// 验证 pool allocated 更新
@@ -441,8 +447,11 @@ func TestInstanceDelete_WithFakeAgent(t *testing.T) {
 		},
 	})
 	s.state.WriteInstances(&apitypes.InstancesState{
+		Groups: map[string]*apitypes.InstanceGroupState{
+			"redis-1": testGroup("redis-1"),
+		},
 		Instances: map[string]*apitypes.Instance{
-			"redis-1": {Engine: "redis", Server: "srv1", Memory: "4Gi", CPUs: 2, Status: "running"},
+			"redis-1": {Group: "redis-1", Server: "srv1", Memory: "4Gi", CPUs: 2, Status: "running", Role: "master"},
 		},
 	})
 
@@ -495,8 +504,11 @@ func TestReconcile_AllConsistent(t *testing.T) {
 		},
 	})
 	s.state.WriteInstances(&apitypes.InstancesState{
+		Groups: map[string]*apitypes.InstanceGroupState{
+			"redis-1": testGroup("redis-1"),
+		},
 		Instances: map[string]*apitypes.Instance{
-			"redis-1": {Engine: "redis", Server: "srv1", Container: "redis-redis-1", Status: "running"},
+			"redis-1": {Group: "redis-1", Server: "srv1", Container: "redis-redis-1", Status: "running"},
 		},
 	})
 
@@ -526,8 +538,11 @@ func TestReconcile_CreatingButRunning(t *testing.T) {
 		},
 	})
 	s.state.WriteInstances(&apitypes.InstancesState{
+		Groups: map[string]*apitypes.InstanceGroupState{
+			"redis-1": testGroup("redis-1"),
+		},
 		Instances: map[string]*apitypes.Instance{
-			"redis-1": {Engine: "redis", Server: "srv1", Container: "redis-redis-1", Status: "creating"},
+			"redis-1": {Group: "redis-1", Server: "srv1", Container: "redis-redis-1", Status: "creating"},
 		},
 	})
 
@@ -553,8 +568,11 @@ func TestReconcile_RunningButStopped(t *testing.T) {
 		},
 	})
 	s.state.WriteInstances(&apitypes.InstancesState{
+		Groups: map[string]*apitypes.InstanceGroupState{
+			"redis-1": testGroup("redis-1"),
+		},
 		Instances: map[string]*apitypes.Instance{
-			"redis-1": {Engine: "redis", Server: "srv1", Container: "redis-redis-1", Status: "running"},
+			"redis-1": {Group: "redis-1", Server: "srv1", Container: "redis-redis-1", Status: "running"},
 		},
 	})
 
@@ -579,8 +597,11 @@ func TestReconcile_RunningButMissing(t *testing.T) {
 		},
 	})
 	s.state.WriteInstances(&apitypes.InstancesState{
+		Groups: map[string]*apitypes.InstanceGroupState{
+			"redis-1": testGroup("redis-1"),
+		},
 		Instances: map[string]*apitypes.Instance{
-			"redis-1": {Engine: "redis", Server: "srv1", Container: "redis-redis-1", Status: "running"},
+			"redis-1": {Group: "redis-1", Server: "srv1", Container: "redis-redis-1", Status: "running"},
 		},
 	})
 
@@ -606,8 +627,11 @@ func TestReconcile_FailedButRunning(t *testing.T) {
 		},
 	})
 	s.state.WriteInstances(&apitypes.InstancesState{
+		Groups: map[string]*apitypes.InstanceGroupState{
+			"redis-1": testGroup("redis-1"),
+		},
 		Instances: map[string]*apitypes.Instance{
-			"redis-1": {Engine: "redis", Server: "srv1", Container: "redis-redis-1", Status: "failed"},
+			"redis-1": {Group: "redis-1", Server: "srv1", Container: "redis-redis-1", Status: "failed"},
 		},
 	})
 

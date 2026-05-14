@@ -25,20 +25,6 @@ func selectServer(pool *apitypes.PoolState, instances *apitypes.InstancesState, 
 	if replicaOf != "" {
 		for _, inst := range instances.Instances {
 			if inst.Role == "master" {
-				for _, r := range inst.Replicas {
-					_ = r // 遍历找主库
-				}
-				// 通过 replicaOf 地址匹配主库
-				masterServer = inst.Server
-				if srv := pool.Servers[inst.Server]; srv != nil {
-					masterZone = srv.Labels["zone"]
-				}
-			}
-		}
-		// 更精确：通过端口和地址匹配
-		for name, inst := range instances.Instances {
-			_ = name
-			if inst.Role == "master" || inst.Role == "standalone" {
 				addr := fmt.Sprintf("%s:%d", poolEndpoint(pool, inst.Server), inst.Port)
 				if addr == replicaOf {
 					masterServer = inst.Server
@@ -52,11 +38,11 @@ func selectServer(pool *apitypes.PoolState, instances *apitypes.InstancesState, 
 	}
 
 	type candidate struct {
-		name          string
-		remainingMem  int
-		remainingCPU  int
-		sameMaster    bool // 和主库在同一台服务器
-		sameZone      bool // 和主库在同一个可用区
+		name         string
+		remainingMem int
+		remainingCPU int
+		sameMaster   bool // 和主库在同一台服务器
+		sameZone     bool // 和主库在同一个可用区
 	}
 
 	var candidates []candidate
@@ -67,6 +53,15 @@ func selectServer(pool *apitypes.PoolState, instances *apitypes.InstancesState, 
 		}
 		// 从 instances-state 计算已分配资源
 		allocMem, allocCPU, allocDisk := computeAllocated(instances, name)
+		if poolMem := parseMemoryGi(srv.Allocated.Memory); poolMem > allocMem {
+			allocMem = poolMem
+		}
+		if srv.Allocated.CPUCores > allocCPU {
+			allocCPU = srv.Allocated.CPUCores
+		}
+		if poolDisk := parseMemoryGi(srv.Allocated.Disk); poolDisk > allocDisk {
+			allocDisk = poolDisk
+		}
 		remainMem := parseMemoryGi(srv.Capacity.Memory) - allocMem
 		remainCPU := srv.Capacity.CPUCores - allocCPU
 		remainDisk := parseMemoryGi(srv.Capacity.Disk) - allocDisk

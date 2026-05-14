@@ -12,15 +12,12 @@ ports:
   redis:
     start: 6379
     end: 6499
-  envoy_readwrite:
+  envoy_auto:
     start: 16379
     end: 16499
-  envoy_writeonly:
+  envoy_master:
     start: 16500
     end: 16619
-  envoy_mgmt:
-    start: 26379
-    end: 26499
 
 sentinel:
   enabled: true
