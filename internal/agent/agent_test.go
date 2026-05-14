@@ -62,10 +62,9 @@ func newTestAgentWithFake(t *testing.T) (*Agent, *fakeRuntime) {
 	t.Helper()
 	dir := t.TempDir()
 	cfg := &Config{
-		Port:        8400,
-		DataDir:     dir,
-		SentinelDir: filepath.Join(dir, "sentinel"),
-		Log:         LogConfig{Dir: dir + "/log", Stdout: false},
+		Port:    8400,
+		DataDir: dir,
+		Log:     LogConfig{Dir: dir + "/log", Stdout: false},
 	}
 	a := New(cfg)
 	fake := &fakeRuntime{}
@@ -264,122 +263,6 @@ func TestCleanupBackups_SkipCheckpoint(t *testing.T) {
 	}
 	if fileCount != 1 {
 		t.Fatalf("expected 1 backup file, got %d", fileCount)
-	}
-}
-
-// ---------- Sentinel 管理测试 ----------
-
-func TestSentinelSync_WritesConfigForRunningContainer(t *testing.T) {
-	a, fake := newTestAgentWithFake(t)
-	fake.containers = []podman.ContainerStatus{{Name: "redis-sentinel", Running: true}}
-	r := a.Router()
-	w := doAgentRequest(r, "POST", "/sentinel/sync", map[string]interface{}{
-		"port":   26379,
-		"quorum": 2,
-		"masters": []map[string]interface{}{
-			{
-				"group":                   "order-master",
-				"host":                    "10.0.1.10",
-				"port":                    6379,
-				"password":                "secret",
-				"down_after_milliseconds": 5000,
-				"failover_timeout":        30000,
-				"parallel_syncs":          1,
-			},
-		},
-	})
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
-	}
-	data, err := os.ReadFile(filepath.Join(a.cfg.SentinelDir, "conf", "sentinel.conf"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	content := string(data)
-	for _, want := range []string{
-		"port 26379",
-		"sentinel monitor order-master 10.0.1.10 6379 2",
-		"sentinel auth-pass order-master secret",
-		"sentinel down-after-milliseconds order-master 5000",
-	} {
-		if !strings.Contains(content, want) {
-			t.Errorf("expected %q in sentinel.conf", want)
-		}
-	}
-	if fake.hasCalled("Run:run") || fake.hasCalled("Run:rm -f redis-sentinel") {
-		t.Fatalf("sentinel sync must not create or recreate containers, calls=%v", fake.calls)
-	}
-}
-
-func TestSentinelSync_RequiresRunningContainer(t *testing.T) {
-	a, _ := newTestAgentWithFake(t)
-	w := doAgentRequest(a.Router(), "POST", "/sentinel/sync", map[string]interface{}{
-		"port":    26379,
-		"quorum":  2,
-		"masters": []map[string]interface{}{},
-	})
-	if w.Code != http.StatusConflict {
-		t.Fatalf("expected 409 when sentinel is not running, got %d: %s", w.Code, w.Body.String())
-	}
-}
-
-func TestSentinelRemoveMaster_RemovesConfigLines(t *testing.T) {
-	a, fake := newTestAgentWithFake(t)
-	if _, err := a.writeSentinelConfig(apitypes.SentinelSyncRequest{
-		Port:   26379,
-		Quorum: 2,
-		Masters: []apitypes.SentinelMaster{
-			{Group: "order-master", Host: "10.0.1.10", Port: 6379, Password: "secret", DownAfterMilliseconds: 5000, FailoverTimeout: 30000, ParallelSyncs: 1},
-			{Group: "user-master", Host: "10.0.1.11", Port: 6379, DownAfterMilliseconds: 5000, FailoverTimeout: 30000, ParallelSyncs: 1},
-		},
-	}); err != nil {
-		t.Fatal(err)
-	}
-	r := a.Router()
-	w := doAgentRequest(r, "POST", "/sentinel/remove-master", map[string]interface{}{"group": "order-master"})
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
-	}
-	data, _ := os.ReadFile(filepath.Join(a.cfg.SentinelDir, "conf", "sentinel.conf"))
-	content := string(data)
-	if strings.Contains(content, "order-master") {
-		t.Fatalf("order-master should be removed from config:\n%s", content)
-	}
-	if !strings.Contains(content, "user-master") {
-		t.Fatalf("user-master should remain in config:\n%s", content)
-	}
-	if !fake.hasCalled("Run:exec redis-sentinel redis-cli -p 26379 SENTINEL REMOVE order-master") {
-		t.Fatalf("expected SENTINEL REMOVE call, calls=%v", fake.calls)
-	}
-}
-
-func TestSentinelStatus(t *testing.T) {
-	a, fake := newTestAgentWithFake(t)
-	fake.containers = []podman.ContainerStatus{{Name: "redis-sentinel", Running: true}}
-	if _, err := a.writeSentinelConfig(apitypes.SentinelSyncRequest{
-		Port:   26379,
-		Quorum: 2,
-		Masters: []apitypes.SentinelMaster{
-			{Group: "order-master", Host: "10.0.1.10", Port: 6379, DownAfterMilliseconds: 5000, FailoverTimeout: 30000, ParallelSyncs: 1},
-		},
-	}); err != nil {
-		t.Fatal(err)
-	}
-	w := doAgentRequest(a.Router(), "GET", "/sentinel/status", nil)
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
-	}
-	resp := parseAgentResponse(t, w)
-	data, _ := json.Marshal(resp.Data)
-	var status apitypes.SentinelStatus
-	if err := json.Unmarshal(data, &status); err != nil {
-		t.Fatal(err)
-	}
-	if !status.Running {
-		t.Fatal("expected running sentinel")
-	}
-	if len(status.Masters) != 1 || status.Masters[0] != "order-master" {
-		t.Fatalf("unexpected masters: %#v", status.Masters)
 	}
 }
 

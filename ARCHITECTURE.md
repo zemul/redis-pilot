@@ -964,25 +964,41 @@ sentinel:
   quorum: 2
 ```
 
-#### 3.7.2 Server 与 Agent API
+#### 3.7.2 Server 与 Sentinel 交互
 
-Server 对 Agent 的 Sentinel 管理 API：
+Server 直接通过 Redis/Sentinel 协议连接 `sentinel.nodes` 的 `port` 下发监控配置，不依赖 Agent 操作 Sentinel 容器。Sentinel 由运维独立部署，并负责把动态配置 rewrite 到自身可写、持久化的 `sentinel.conf`。
 
 ```
-POST /sentinel/sync
-  要求本机已提前部署并运行 redis-sentinel 容器；用请求体中的 master 列表重写 sentinel.conf
+SENTINEL MONITOR <group> <master-ip> <master-port> <quorum>
+  添加实例组主库监控
 
-POST /sentinel/remove-master
-  从本机 Sentinel 配置中移除指定实例组
+SENTINEL SET <group> down-after-milliseconds <ms>
+SENTINEL SET <group> failover-timeout <ms>
+SENTINEL SET <group> parallel-syncs <n>
+  设置故障检测和切换参数
 
+SENTINEL REMOVE <group>
+  移除指定实例组监控
+
+SENTINEL MASTERS
+SENTINEL get-master-addr-by-name <group>
+  查询 Sentinel 当前监控状态和主库地址
+```
+
+Server API：
+
+```
 GET /sentinel/status
-  返回本机 Sentinel 容器状态、已监控 master 列表、最近一次配置更新时间
+  Server 直连各 Sentinel 节点，返回已监控 master 列表和连通状态
+
+POST /sentinel/sync
+  Server 从 instances-state 派生完整 master 列表，并直接同步到各 Sentinel 节点
 
 POST /sentinel/event
   Agent 监听到 +switch-master 后上报 Server（事件加速路径，reconcile 仍是兜底）
 ```
 
-`/sentinel/sync` 请求示例：
+Server 下发的逻辑配置示例：
 
 ```json
 {
@@ -1053,14 +1069,14 @@ podman run -d \
 ```
 1. 从 server.yaml 的 sentinel.nodes 读取已规划 Sentinel 节点
 2. 从 instances-state 派生所有需要监控的 master 列表
-3. 调用选中 Agent 的 /sentinel/sync
+3. 直接连接各 Sentinel 节点 26379，执行 SENTINEL REMOVE / MONITOR / SET
 4. 如果 sentinel.nodes 未配置或数量不是 3/5，跳过 Sentinel 并在创建结果中返回 warning
 ```
 
 删除实例组时，Server 执行：
 
 ```
-1. 调用所有 Sentinel 节点的 /sentinel/remove-master
+1. 直连所有 Sentinel 节点执行 SENTINEL REMOVE <group>
 2. 从 instances-state 删除实例组
 3. 刷新 Envoy 配置
 4. 写入审计日志
@@ -1103,7 +1119,7 @@ Agent SUBSCRIBE +switch-master
 | 场景 | 处理策略 |
 |------|----------|
 | healthy Sentinel 数 < quorum | 标记自动故障转移能力降级，保留现有实例运行，触发告警 |
-| `/sentinel/sync` 部分节点失败 | 成功节点数 >= quorum 则继续并告警；否则回滚本次 Sentinel 配置并返回 warning |
+| 直连 Sentinel 同步部分节点失败 | 成功节点数 >= quorum 则继续并告警；否则返回 warning 并等待 reconcile 重试 |
 | Sentinel 返回的新 master 不在 instances-state | 标记 `failover_conflict`，不自动改拓扑，触发人工介入 |
 | 新主库再次故障 | 不主动抢占 Sentinel，等待下一轮 Sentinel failover；编排锁超时后允许重新同步 |
 | Envoy 配置落盘失败 | 状态更新不得提交为 success，审计记录 failed，并保留旧配置 |
@@ -1272,7 +1288,7 @@ Skill: redis-failover
 
   0. redis-create 创建主从实例时同步 Sentinel 监控配置：
      - 检查 server.yaml 中是否声明 sentinel.nodes
-     - 已声明 3 或 5 台 Sentinel 节点：调用 /sentinel/sync 下发完整 sentinel.conf
+     - 已声明 3 或 5 台 Sentinel 节点：Server 直连 26379 下发 SENTINEL MONITOR/SET
      - 未声明或数量不是 3/5：跳过 Sentinel，返回警告"未正确配置 Sentinel 节点，未启用自动故障转移"
      - redis-delete 删除实例组时执行 sentinel remove {instance-group}
 

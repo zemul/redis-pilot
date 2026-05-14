@@ -2,7 +2,6 @@ package server
 
 import (
 	"bufio"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -69,12 +68,12 @@ func (s *Server) sentinelStatus(c *gin.Context) {
 	for _, name := range s.selectSentinelNodes(pool) {
 		node := sentinelNodeStatus{Name: name}
 		srv := pool.Servers[name]
-		if srv == nil {
+		if srv == nil || srv.Endpoint == "" {
 			node.Error = "server not found in pool-state"
 			result.Nodes = append(result.Nodes, node)
 			continue
 		}
-		status, err := s.queryAgentSentinelStatus(srv)
+		status, err := s.querySentinelStatus(srv)
 		if err != nil {
 			node.Error = err.Error()
 		} else {
@@ -172,95 +171,143 @@ func (s *Server) querySentinelMaster(pool *apitypes.PoolState, nodes []string, g
 	return "", firstErr
 }
 
-func (s *Server) queryAgentSentinelStatus(srv *apitypes.PoolServer) (*apitypes.SentinelStatus, error) {
-	data, err := newAgentClient(srv).get("/sentinel/status")
+func (s *Server) querySentinelStatus(srv *apitypes.PoolServer) (*apitypes.SentinelStatus, error) {
+	addr := fmt.Sprintf("%s:%d", srv.Endpoint, s.sentinelPort())
+	reply, err := sentinelCommand(addr, "SENTINEL", "MASTERS")
 	if err != nil {
 		return nil, err
 	}
-	var resp apitypes.APIResponse
-	if err := json.Unmarshal(data, &resp); err != nil {
-		return nil, err
-	}
-	if !resp.Success {
-		return nil, errors.New(resp.Error)
-	}
-	encoded, err := json.Marshal(resp.Data)
-	if err != nil {
-		return nil, err
-	}
-	var status apitypes.SentinelStatus
-	if err := json.Unmarshal(encoded, &status); err != nil {
-		return nil, err
-	}
-	return &status, nil
+	return &apitypes.SentinelStatus{
+		Running: true,
+		Port:    s.sentinelPort(),
+		Masters: sentinelMasterNames(reply),
+	}, nil
 }
 
 func sentinelGetMasterAddr(addr, group string) (string, error) {
-	conn, err := net.DialTimeout("tcp", addr, 2*time.Second)
+	reply, err := sentinelCommand(addr, "SENTINEL", "get-master-addr-by-name", group)
 	if err != nil {
 		return "", err
 	}
-	defer conn.Close()
-	_ = conn.SetDeadline(time.Now().Add(3 * time.Second))
-	cmd := "get-master-addr-by-name"
-	if _, err := fmt.Fprintf(conn, "*3\r\n$8\r\nSENTINEL\r\n$%d\r\n%s\r\n$%d\r\n%s\r\n", len(cmd), cmd, len(group), group); err != nil {
-		return "", err
-	}
-	reader := bufio.NewReader(conn)
-	values, err := readRESPArrayStrings(reader)
-	if err != nil {
-		return "", err
+	values, ok := reply.([]interface{})
+	if !ok {
+		return "", fmt.Errorf("expected array, got %T", reply)
 	}
 	if len(values) < 2 {
 		return "", fmt.Errorf("sentinel returned %d values", len(values))
 	}
-	return values[0] + ":" + values[1], nil
+	host, ok := values[0].(string)
+	if !ok {
+		return "", fmt.Errorf("sentinel returned non-string host: %T", values[0])
+	}
+	port, ok := values[1].(string)
+	if !ok {
+		return "", fmt.Errorf("sentinel returned non-string port: %T", values[1])
+	}
+	return host + ":" + port, nil
 }
 
-func readRESPArrayStrings(r *bufio.Reader) ([]string, error) {
+func sentinelCommand(addr string, args ...string) (interface{}, error) {
+	conn, err := net.DialTimeout("tcp", addr, 2*time.Second)
+	if err != nil {
+		return nil, err
+	}
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(3 * time.Second))
+	if err := writeRESPCommand(conn, args...); err != nil {
+		return nil, err
+	}
+	return readRESP(bufio.NewReader(conn))
+}
+
+func writeRESPCommand(w io.Writer, args ...string) error {
+	if _, err := fmt.Fprintf(w, "*%d\r\n", len(args)); err != nil {
+		return err
+	}
+	for _, arg := range args {
+		if _, err := fmt.Fprintf(w, "$%d\r\n%s\r\n", len(arg), arg); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func readRESP(r *bufio.Reader) (interface{}, error) {
 	line, err := r.ReadString('\n')
 	if err != nil {
 		return nil, err
 	}
 	line = strings.TrimSpace(line)
-	if strings.HasPrefix(line, "-") {
+	if line == "" {
+		return nil, errors.New("empty RESP line")
+	}
+	switch line[0] {
+	case '+':
+		return strings.TrimPrefix(line, "+"), nil
+	case '-':
 		return nil, fmt.Errorf("sentinel error: %s", strings.TrimPrefix(line, "-"))
-	}
-	if !strings.HasPrefix(line, "*") {
-		return nil, fmt.Errorf("expected array, got %q", line)
-	}
-	count, err := strconv.Atoi(strings.TrimPrefix(line, "*"))
-	if err != nil {
-		return nil, err
-	}
-	if count < 0 {
-		return nil, nil
-	}
-	values := make([]string, 0, count)
-	for i := 0; i < count; i++ {
-		header, err := r.ReadString('\n')
-		if err != nil {
-			return nil, err
-		}
-		header = strings.TrimSpace(header)
-		if !strings.HasPrefix(header, "$") {
-			return nil, fmt.Errorf("expected bulk string, got %q", header)
-		}
-		n, err := strconv.Atoi(strings.TrimPrefix(header, "$"))
+	case ':':
+		return strconv.Atoi(strings.TrimPrefix(line, ":"))
+	case '$':
+		n, err := strconv.Atoi(strings.TrimPrefix(line, "$"))
 		if err != nil {
 			return nil, err
 		}
 		if n < 0 {
-			values = append(values, "")
-			continue
+			return "", nil
 		}
 		buf := make([]byte, n+2)
 		if _, err := io.ReadFull(r, buf); err != nil {
 			return nil, err
 		}
-		values = append(values, string(buf[:n]))
+		return string(buf[:n]), nil
+	case '*':
+		count, err := strconv.Atoi(strings.TrimPrefix(line, "*"))
+		if err != nil {
+			return nil, err
+		}
+		if count < 0 {
+			return []interface{}(nil), nil
+		}
+		values := make([]interface{}, 0, count)
+		for i := 0; i < count; i++ {
+			value, err := readRESP(r)
+			if err != nil {
+				return nil, err
+			}
+			values = append(values, value)
+		}
+		return values, nil
+	default:
+		return nil, fmt.Errorf("unknown RESP type %q", line)
 	}
-	return values, nil
+}
+
+func sentinelMasterNames(reply interface{}) []string {
+	masters, ok := reply.([]interface{})
+	if !ok {
+		return nil
+	}
+	names := make([]string, 0, len(masters))
+	for _, rawMaster := range masters {
+		fields, ok := rawMaster.([]interface{})
+		if !ok {
+			continue
+		}
+		for i := 0; i+1 < len(fields); i += 2 {
+			key, _ := fields[i].(string)
+			if key != "name" {
+				continue
+			}
+			name, ok := fields[i+1].(string)
+			if ok {
+				names = append(names, name)
+			}
+			break
+		}
+	}
+	sort.Strings(names)
+	return names
 }
 
 func (s *Server) handleSentinelFailover(group, newMasterAddr, source, operator string) error {
@@ -425,20 +472,16 @@ func (s *Server) syncSentinelMasters() error {
 	}
 
 	masters := s.buildSentinelMasters(pool, instances)
-	req := apitypes.SentinelSyncRequest{
-		Port:    s.sentinelPort(),
-		Quorum:  s.sentinelQuorum(),
-		Masters: masters,
-	}
 
 	var firstErr error
 	success := 0
 	for _, name := range nodes {
 		srv := pool.Servers[name]
-		if srv == nil {
+		if srv == nil || srv.Endpoint == "" {
 			continue
 		}
-		if _, err := newAgentClient(srv).post("/sentinel/sync", req); err != nil {
+		addr := fmt.Sprintf("%s:%d", srv.Endpoint, s.sentinelPort())
+		if err := syncSentinelNode(addr, masters, s.sentinelQuorum()); err != nil {
 			s.log.Errorf("sentinel sync failed on %s: %v", name, err)
 			if firstErr == nil {
 				firstErr = err
@@ -447,8 +490,8 @@ func (s *Server) syncSentinelMasters() error {
 		}
 		success++
 	}
-	if success < req.Quorum {
-		return fmt.Errorf("sentinel quorum not reached: success=%d quorum=%d: %w", success, req.Quorum, firstErr)
+	if success < s.sentinelQuorum() {
+		return fmt.Errorf("sentinel quorum not reached: success=%d quorum=%d: %w", success, s.sentinelQuorum(), firstErr)
 	}
 	return nil
 }
@@ -462,16 +505,55 @@ func (s *Server) removeSentinelMaster(group string) {
 		s.log.Errorf("sentinel remove read pool: %v", err)
 		return
 	}
-	req := apitypes.SentinelRemoveMasterRequest{Group: group, Port: s.sentinelPort()}
 	for _, name := range s.selectSentinelNodes(pool) {
 		srv := pool.Servers[name]
-		if srv == nil {
+		if srv == nil || srv.Endpoint == "" {
 			continue
 		}
-		if _, err := newAgentClient(srv).post("/sentinel/remove-master", req); err != nil {
+		addr := fmt.Sprintf("%s:%d", srv.Endpoint, s.sentinelPort())
+		if _, err := sentinelCommand(addr, "SENTINEL", "REMOVE", group); err != nil {
 			s.log.Errorf("sentinel remove %s on %s failed: %v", group, name, err)
 		}
 	}
+}
+
+func syncSentinelNode(addr string, desired []apitypes.SentinelMaster, quorum int) error {
+	reply, err := sentinelCommand(addr, "SENTINEL", "MASTERS")
+	if err != nil {
+		return err
+	}
+	desiredByGroup := map[string]apitypes.SentinelMaster{}
+	for _, master := range desired {
+		desiredByGroup[master.Group] = master
+	}
+	for _, group := range sentinelMasterNames(reply) {
+		if _, ok := desiredByGroup[group]; !ok {
+			if _, err := sentinelCommand(addr, "SENTINEL", "REMOVE", group); err != nil {
+				return err
+			}
+		}
+	}
+	for _, master := range desired {
+		_, _ = sentinelCommand(addr, "SENTINEL", "REMOVE", master.Group)
+		if _, err := sentinelCommand(addr, "SENTINEL", "MONITOR", master.Group, master.Host, fmt.Sprintf("%d", master.Port), fmt.Sprintf("%d", quorum)); err != nil {
+			return err
+		}
+		if master.Password != "" {
+			if _, err := sentinelCommand(addr, "SENTINEL", "SET", master.Group, "auth-pass", master.Password); err != nil {
+				return err
+			}
+		}
+		if _, err := sentinelCommand(addr, "SENTINEL", "SET", master.Group, "down-after-milliseconds", fmt.Sprintf("%d", master.DownAfterMilliseconds)); err != nil {
+			return err
+		}
+		if _, err := sentinelCommand(addr, "SENTINEL", "SET", master.Group, "failover-timeout", fmt.Sprintf("%d", master.FailoverTimeout)); err != nil {
+			return err
+		}
+		if _, err := sentinelCommand(addr, "SENTINEL", "SET", master.Group, "parallel-syncs", fmt.Sprintf("%d", master.ParallelSyncs)); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *Server) buildSentinelMasters(pool *apitypes.PoolState, instances *apitypes.InstancesState) []apitypes.SentinelMaster {

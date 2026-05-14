@@ -1,6 +1,8 @@
 package server
 
 import (
+	"bufio"
+	"strings"
 	"testing"
 
 	"gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/pkg/apitypes"
@@ -68,6 +70,26 @@ func TestBuildSentinelMasters(t *testing.T) {
 	}
 	if m.DownAfterMilliseconds != 6000 || m.FailoverTimeout != 40000 || m.ParallelSyncs != 2 {
 		t.Fatalf("sentinel timing config not propagated: %#v", m)
+	}
+}
+
+func TestReadRESPNestedArrayAndSentinelMasterNames(t *testing.T) {
+	resp := "*2\r\n" +
+		"*4\r\n$4\r\nname\r\n$5\r\norder\r\n$2\r\nip\r\n$9\r\n10.0.1.10\r\n" +
+		"*4\r\n$4\r\nname\r\n$5\r\ncache\r\n$2\r\nip\r\n$9\r\n10.0.1.11\r\n"
+	reply, err := readRESP(bufio.NewReader(strings.NewReader(resp)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	names := sentinelMasterNames(reply)
+	want := []string{"cache", "order"}
+	if len(names) != len(want) {
+		t.Fatalf("expected names %v, got %v", want, names)
+	}
+	for i := range want {
+		if names[i] != want[i] {
+			t.Fatalf("expected names %v, got %v", want, names)
+		}
 	}
 }
 

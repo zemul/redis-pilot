@@ -181,25 +181,9 @@ type SentinelMaster struct {
 	ParallelSyncs         int    `json:"parallel_syncs,omitempty" yaml:"parallel_syncs,omitempty"`
 }
 
-// SentinelSyncRequest 下发给 Agent 的 Sentinel 监控配置
-type SentinelSyncRequest struct {
-	Port     int              `json:"port"`
-	Quorum   int              `json:"quorum"`
-	Masters  []SentinelMaster `json:"masters"`
-	Announce string           `json:"announce_ip,omitempty"`
-}
-
-// SentinelRemoveMasterRequest 从 Sentinel 中移除一个监控对象
-type SentinelRemoveMasterRequest struct {
-	Group string `json:"group" binding:"required"`
-	Port  int    `json:"port,omitempty"`
-}
-
-// SentinelStatus Agent 返回的 Sentinel 状态
+// SentinelStatus Server 直连 Sentinel 返回的状态
 type SentinelStatus struct {
-	Running   bool     `json:"running"`
-	Port      int      `json:"port"`
-	Masters   []string `json:"masters"`
-	Config    string   `json:"config"`
-	UpdatedAt string   `json:"updated_at,omitempty"`
+	Running bool     `json:"running"`
+	Port    int      `json:"port"`
+	Masters []string `json:"masters"`
 }
