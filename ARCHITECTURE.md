@@ -530,7 +530,7 @@ instances:
 
 **定期校验（Reconciliation）**：
 
-- **触发条件**：Skill 手动触发 / 定时任务（每 5 分钟）
+- **触发条件**：Skill 手动触发 / 定时任务（每 30 秒）
 - **权威源**：以 Agent 实时上报为事实源（actual），YAML 为期望状态（desired）
 - **差异处理**：
   - actual=running + desired=running → 无需操作
@@ -1525,7 +1525,7 @@ redis-pool       → pool_add, pool_remove, pool_update, pool_query  (纯本地�
 
 Agent 配置与日志：
 /opt/redis-agent/
-  ├── agent.yaml           # Agent 自身配置
+  ├── agent.yaml           # Agent 自身配置（含 announce_ip: 本机宿主 IP，用于 replica-announce）
   ├── logs/
   │   └── agent.log
   └── templates/

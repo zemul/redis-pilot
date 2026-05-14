@@ -133,16 +133,28 @@ func (s *Server) reconcileSentinelOnce() error {
 	if len(nodes) < s.sentinelQuorum() {
 		return fmt.Errorf("not enough configured sentinel nodes: have=%d quorum=%d", len(nodes), s.sentinelQuorum())
 	}
-	for _, master := range s.buildSentinelMasters(pool, instances) {
-		current, err := s.querySentinelMaster(pool, nodes, master.Group)
-		if err != nil {
-			s.log.Errorf("query sentinel master %s failed: %v", master.Group, err)
+	// 遍历所有 replication group，不依赖 master 是否 running
+	for groupName, group := range instances.Groups {
+		if group == nil || group.Type != "replication" || group.CurrentMaster == "" {
 			continue
 		}
-		expected := fmt.Sprintf("%s:%d", master.Host, master.Port)
+		inst := instances.Instances[group.CurrentMaster]
+		if inst == nil {
+			continue
+		}
+		endpoint := poolEndpoint(pool, inst.Server)
+		if endpoint == "" {
+			continue
+		}
+		expected := fmt.Sprintf("%s:%d", endpoint, inst.Port)
+		current, err := s.querySentinelMaster(pool, nodes, groupName)
+		if err != nil {
+			s.log.Errorf("query sentinel master %s failed: %v", groupName, err)
+			continue
+		}
 		if current != "" && current != expected {
-			if err := s.handleSentinelFailover(master.Group, current, "reconcile", "system"); err != nil {
-				s.log.Errorf("handle sentinel failover group=%s new=%s failed: %v", master.Group, current, err)
+			if err := s.handleSentinelFailover(groupName, current, "reconcile", "system"); err != nil {
+				s.log.Errorf("handle sentinel failover group=%s new=%s failed: %v", groupName, current, err)
 			}
 		}
 	}
