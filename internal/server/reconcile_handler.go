@@ -7,6 +7,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/internal/audit"
+	"gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/internal/state"
 	"gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/pkg/apitypes"
 )
 
@@ -141,10 +142,15 @@ func (s *Server) runReconcile() ([]ReconcileResult, error) {
 	// 在写锁内原子应用状态变更，避免覆盖并发写入
 	if len(patches) > 0 {
 		s.state.WithInstances(func(st *apitypes.InstancesState) error {
+			affectedGroups := map[string]struct{}{}
 			for _, p := range patches {
 				if inst := st.Instances[p.name]; inst != nil {
 					inst.Status = p.newStatus
+					affectedGroups[inst.Group] = struct{}{}
 				}
+			}
+			for g := range affectedGroups {
+				state.RecalculateGroupTopology(st, g)
 			}
 			return nil
 		})

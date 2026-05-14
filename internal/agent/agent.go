@@ -150,6 +150,8 @@ func (a *Agent) instanceCreate(c *gin.Context) {
 			ReplicaOf:          req.ReplicaOf,
 			ConfigOverrides:    overrides,
 			MinReplicasToWrite: minReplicas,
+			AnnounceIP:         a.cfg.AnnounceIP,
+			AnnouncePort:       req.Port,
 		})
 	} else {
 		policy := "allkeys-lru"
@@ -168,6 +170,8 @@ func (a *Agent) instanceCreate(c *gin.Context) {
 			ReplicaOf:          req.ReplicaOf,
 			ConfigOverrides:    overrides,
 			MinReplicasToWrite: minReplicas,
+			AnnounceIP:         a.cfg.AnnounceIP,
+			AnnouncePort:       req.Port,
 		})
 	}
 	if createErr != nil {
@@ -255,6 +259,7 @@ func (a *Agent) instanceConfig(c *gin.Context) {
 		Memory          string            `json:"memory"`
 		Category        string            `json:"category"`
 		ReplicaOf       string            `json:"replica_of"`
+		Port            int               `json:"port"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		fail(c, http.StatusBadRequest, err.Error())
@@ -278,6 +283,8 @@ func (a *Agent) instanceConfig(c *gin.Context) {
 				ReplicaOf:          req.ReplicaOf,
 				ConfigOverrides:    overrides,
 				MinReplicasToWrite: minReplicas,
+				AnnounceIP:         a.cfg.AnnounceIP,
+				AnnouncePort:       req.Port,
 			})
 		} else {
 			policy := "allkeys-lru"
@@ -296,6 +303,8 @@ func (a *Agent) instanceConfig(c *gin.Context) {
 				ReplicaOf:          req.ReplicaOf,
 				ConfigOverrides:    overrides,
 				MinReplicasToWrite: minReplicas,
+				AnnounceIP:         a.cfg.AnnounceIP,
+				AnnouncePort:       req.Port,
 			})
 		}
 		a.runtime.Stop(containerName)

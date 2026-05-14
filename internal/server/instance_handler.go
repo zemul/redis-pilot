@@ -459,6 +459,7 @@ func (s *Server) instanceConfig(c *gin.Context) {
 		"memory":           inst.Memory,
 		"category":         groupState.Category,
 		"replica_of":       inst.ReplicaOf,
+		"port":             inst.Port,
 	}); err != nil {
 		fail(c, http.StatusInternalServerError, "agent config failed: "+err.Error())
 		return

@@ -42,10 +42,10 @@ func New(cfg *Config) *Server {
 	return s
 }
 
-// StartReconcileLoop 启动定时状态校验，每 5 分钟执行一次
+// StartReconcileLoop 启动定时状态校验，每 30 秒执行一次
 func (s *Server) StartReconcileLoop() {
 	go func() {
-		for range time.Tick(5 * time.Minute) {
+		for range time.Tick(30 * time.Second) {
 			results, err := s.runReconcile()
 			if err != nil {
 				s.log.Errorf("reconcile failed: %v", err)

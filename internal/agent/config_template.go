@@ -71,7 +71,10 @@ replica-read-only yes
 replica-serve-stale-data no
 replica-priority 100
 {{ end }}
-
+{{ if .AnnounceIP }}
+replica-announce-ip {{ .AnnounceIP }}
+replica-announce-port {{ .AnnouncePort }}
+{{ end }}
 min-replicas-to-write {{ .MinReplicasToWrite }}
 min-replicas-max-lag 10
 
@@ -114,7 +117,10 @@ slaveof {{ .ReplicaOf }}
 slave-read-only yes
 slave-priority 100
 {{ end }}
-
+{{ if .AnnounceIP }}
+replica-announce-ip {{ .AnnounceIP }}
+replica-announce-port {{ .AnnouncePort }}
+{{ end }}
 slowlog-log-slower-than 10000
 slowlog-max-len 128
 maxclients 10000
@@ -130,6 +136,8 @@ type RedisConfigParams struct {
 	ReplicaOf          string
 	ConfigOverrides    string
 	MinReplicasToWrite int
+	AnnounceIP         string
+	AnnouncePort       int
 }
 
 type KvrocksConfigParams struct {
@@ -138,6 +146,8 @@ type KvrocksConfigParams struct {
 	ReplicaOf          string
 	ConfigOverrides    string
 	MinReplicasToWrite int
+	AnnounceIP         string
+	AnnouncePort       int
 }
 
 func writeRedisConfig(dataDir string, params RedisConfigParams) error {
