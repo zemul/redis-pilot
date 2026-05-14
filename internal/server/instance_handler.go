@@ -283,7 +283,7 @@ func (s *Server) instanceCreate(c *gin.Context) {
 		}
 		return nil
 	})
-	s.addPoolAllocation(req.Server, req.Memory, req.CPUs, req.Disk)
+
 
 	s.audit.Log(audit.Record{
 		Operator: operatorFrom(c),
@@ -398,7 +398,7 @@ func (s *Server) instanceDelete(c *gin.Context) {
 		fail(c, http.StatusInternalServerError, err.Error())
 		return
 	}
-	s.addPoolAllocation(inst.Server, "-"+inst.Memory, -inst.CPUs, "-"+inst.Disk)
+
 
 	s.audit.Log(audit.Record{
 		Operator: operatorFrom(c),
@@ -978,42 +978,6 @@ func (s *Server) groupForInstance(name string) (*apitypes.InstanceGroupState, er
 	return group, nil
 }
 
-func (s *Server) addPoolAllocation(serverName, memory string, cpus int, disk string) {
-	_ = s.state.WithPool(func(pool *apitypes.PoolState) error {
-		srv := pool.Servers[serverName]
-		if srv == nil {
-			return nil
-		}
-		srv.Allocated.CPUCores += cpus
-		if srv.Allocated.CPUCores < 0 {
-			srv.Allocated.CPUCores = 0
-		}
-		srv.Allocated.Memory = formatGi(maxInt(0, parseMemoryGi(srv.Allocated.Memory)+parseMemoryDeltaGi(memory)))
-		srv.Allocated.Disk = formatGi(maxInt(0, parseMemoryGi(srv.Allocated.Disk)+parseMemoryDeltaGi(disk)))
-		return nil
-	})
-}
-
-func parseMemoryDeltaGi(value string) int {
-	if strings.HasPrefix(value, "-") {
-		return -parseMemoryGi(strings.TrimPrefix(value, "-"))
-	}
-	return parseMemoryGi(value)
-}
-
-func formatGi(value int) string {
-	if value == 0 {
-		return ""
-	}
-	return fmt.Sprintf("%dGi", value)
-}
-
-func maxInt(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
-}
 
 // resolveAndLockInternal 与 resolveAndLock 相同，但不依赖 gin.Context，供内部定时任务使用。
 func (s *Server) resolveAndLockInternal(name, operation string) (*apitypes.Instance, *apitypes.PoolServer, func(), error) {
@@ -1091,14 +1055,3 @@ func parseMemoryGi(s string) int {
 	return 0
 }
 
-func addMemory(current, delta string) string {
-	return strconv.Itoa(parseMemoryGi(current)+parseMemoryGi(delta)) + "Gi"
-}
-
-func subMemory(current, delta string) string {
-	v := parseMemoryGi(current) - parseMemoryGi(delta)
-	if v < 0 {
-		v = 0
-	}
-	return strconv.Itoa(v) + "Gi"
-}

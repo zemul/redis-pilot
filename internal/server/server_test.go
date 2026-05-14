@@ -356,13 +356,6 @@ func TestInstanceCreate_WithFakeAgent(t *testing.T) {
 	if instances.Groups["cache"].Type != "standalone" {
 		t.Fatalf("expected group type standalone, got %s", instances.Groups["cache"].Type)
 	}
-
-	// 验证 pool allocated 更新
-	pool, _ := s.state.ReadPool()
-	srv := pool.Servers["srv1"]
-	if srv.Allocated.CPUCores != 2 {
-		t.Fatalf("expected allocated cpus 2, got %d", srv.Allocated.CPUCores)
-	}
 }
 
 func TestInstanceCreate_RoleMaster(t *testing.T) {
@@ -464,13 +457,6 @@ func TestInstanceDelete_WithFakeAgent(t *testing.T) {
 	instances, _ := s.state.ReadInstances()
 	if _, exists := instances.Instances["redis-1"]; exists {
 		t.Fatal("redis-1 should be deleted")
-	}
-
-	// 验证 pool allocated 释放
-	pool, _ := s.state.ReadPool()
-	srv := pool.Servers["srv1"]
-	if srv.Allocated.CPUCores != 0 {
-		t.Fatalf("expected allocated cpus 0, got %d", srv.Allocated.CPUCores)
 	}
 }
 

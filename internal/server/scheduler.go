@@ -51,17 +51,7 @@ func selectServer(pool *apitypes.PoolState, instances *apitypes.InstancesState, 
 		if srv.Status != "healthy" && srv.Status != "" {
 			continue
 		}
-		// 从 instances-state 计算已分配资源
 		allocMem, allocCPU, allocDisk := computeAllocated(instances, name)
-		if poolMem := parseMemoryGi(srv.Allocated.Memory); poolMem > allocMem {
-			allocMem = poolMem
-		}
-		if srv.Allocated.CPUCores > allocCPU {
-			allocCPU = srv.Allocated.CPUCores
-		}
-		if poolDisk := parseMemoryGi(srv.Allocated.Disk); poolDisk > allocDisk {
-			allocDisk = poolDisk
-		}
 		remainMem := parseMemoryGi(srv.Capacity.Memory) - allocMem
 		remainCPU := srv.Capacity.CPUCores - allocCPU
 		remainDisk := parseMemoryGi(srv.Capacity.Disk) - allocDisk

@@ -7,7 +7,7 @@ type PoolServer struct {
 	AgentToken    string            `yaml:"agent_token" json:"agent_token"`
 	Labels        map[string]string `yaml:"labels" json:"labels"`
 	Capacity      ResourceSpec      `yaml:"capacity" json:"capacity"`
-	Allocated     ResourceSpec      `yaml:"allocated" json:"allocated"`
+	Allocated     ResourceSpec      `yaml:"-" json:"allocated"`
 	Instances     []string          `yaml:"instances" json:"instances"`
 	Status        string            `yaml:"status" json:"status"` // healthy | unhealthy | drain
 	LastHeartbeat string            `yaml:"last_heartbeat" json:"last_heartbeat"`

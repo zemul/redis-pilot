@@ -43,10 +43,15 @@ func TestSelectServer_FilterUnhealthy(t *testing.T) {
 
 func TestSelectServer_FilterInsufficientMemory(t *testing.T) {
 	pool := makePool(map[string]*apitypes.PoolServer{
-		"srv1": {Status: "healthy", Capacity: apitypes.ResourceSpec{CPUCores: 8, Memory: "32Gi"}, Allocated: apitypes.ResourceSpec{Memory: "30Gi"}},
-		"srv2": {Status: "healthy", Capacity: apitypes.ResourceSpec{CPUCores: 8, Memory: "32Gi"}, Allocated: apitypes.ResourceSpec{Memory: "0Gi"}},
+		"srv1": {Status: "healthy", Capacity: apitypes.ResourceSpec{CPUCores: 8, Memory: "32Gi"}},
+		"srv2": {Status: "healthy", Capacity: apitypes.ResourceSpec{CPUCores: 8, Memory: "32Gi"}},
 	})
-	name, err := selectServer(pool, emptyInstances(), "4Gi", 2, "", "")
+	instances := &apitypes.InstancesState{
+		Instances: map[string]*apitypes.Instance{
+			"big": {Server: "srv1", Memory: "30Gi", CPUs: 1, Status: "running"},
+		},
+	}
+	name, err := selectServer(pool, instances, "4Gi", 2, "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -57,10 +62,15 @@ func TestSelectServer_FilterInsufficientMemory(t *testing.T) {
 
 func TestSelectServer_FilterInsufficientCPU(t *testing.T) {
 	pool := makePool(map[string]*apitypes.PoolServer{
-		"srv1": {Status: "healthy", Capacity: apitypes.ResourceSpec{CPUCores: 4, Memory: "32Gi"}, Allocated: apitypes.ResourceSpec{CPUCores: 3}},
+		"srv1": {Status: "healthy", Capacity: apitypes.ResourceSpec{CPUCores: 4, Memory: "32Gi"}},
 		"srv2": {Status: "healthy", Capacity: apitypes.ResourceSpec{CPUCores: 8, Memory: "32Gi"}},
 	})
-	name, err := selectServer(pool, emptyInstances(), "4Gi", 2, "", "")
+	instances := &apitypes.InstancesState{
+		Instances: map[string]*apitypes.Instance{
+			"heavy": {Server: "srv1", Memory: "1Gi", CPUs: 3, Status: "running"},
+		},
+	}
+	name, err := selectServer(pool, instances, "4Gi", 2, "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -126,9 +136,14 @@ func TestSelectServer_ReplicaPreferDifferentZone(t *testing.T) {
 
 func TestSelectServer_NoResourcesAvailable(t *testing.T) {
 	pool := makePool(map[string]*apitypes.PoolServer{
-		"srv1": {Status: "healthy", Capacity: apitypes.ResourceSpec{CPUCores: 2, Memory: "4Gi"}, Allocated: apitypes.ResourceSpec{CPUCores: 2, Memory: "4Gi"}},
+		"srv1": {Status: "healthy", Capacity: apitypes.ResourceSpec{CPUCores: 2, Memory: "4Gi"}},
 	})
-	_, err := selectServer(pool, emptyInstances(), "4Gi", 2, "", "")
+	instances := &apitypes.InstancesState{
+		Instances: map[string]*apitypes.Instance{
+			"full": {Server: "srv1", Memory: "4Gi", CPUs: 2, Status: "running"},
+		},
+	}
+	_, err := selectServer(pool, instances, "4Gi", 2, "", "")
 	if err == nil {
 		t.Fatal("expected error for no resources")
 	}
