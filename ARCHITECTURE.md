@@ -1054,11 +1054,13 @@ podman run -d \
   --name redis-sentinel \
   --network host \
   --restart on-failure:5 \
-  -v /data/redis-sentinel/conf/sentinel.conf:/etc/redis/sentinel.conf:Z \
+  -v /data/redis-sentinel/conf:/etc/redis:Z \
   -v /data/redis-sentinel/data:/data:Z \
   docker.io/redis:7 \
   redis-sentinel /etc/redis/sentinel.conf
 ```
+
+**注意：必须挂载目录而非单文件。** Sentinel 保存配置时先写 `sentinel.conf.tmp` 再 `rename` 替换原文件。若将 `sentinel.conf` 以单文件 bind mount 挂入容器，`rename` 会因 inode 被宿主机锁定而报 `Device or resource busy`，导致新增 master 监控失败。挂载目录可让 rename 在同一文件系统内完成。
 
 如果不能使用 host network，必须显式配置 `sentinel announce-ip` / `sentinel announce-port`，并确保 Redis 实例的 replica announce 信息与实际可达地址一致。
 
