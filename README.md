@@ -8,7 +8,7 @@
 - 服务器资源池化与智能调度（跨可用区分布）
 - Envoy Redis Proxy 读写分离
 - 自动备份与恢复
-- 故障转移与状态自愈（定期 reconcile）
+- Sentinel 事件监听 + 定期 reconcile 的故障转移同步与状态自愈
 - 完整审计日志
 - 支持 Redis 5 / 6.2 / 7 和 Apache Kvrocks 2.15.0（版本由 Server 白名单统一管理）
 

@@ -93,6 +93,21 @@ func TestReadRESPNestedArrayAndSentinelMasterNames(t *testing.T) {
 	}
 }
 
+func TestParseSwitchMasterMessage(t *testing.T) {
+	resp := "*3\r\n" +
+		"$7\r\nmessage\r\n" +
+		"$14\r\n+switch-master\r\n" +
+		"$35\r\norder 10.0.1.10 6379 10.0.1.11 6379\r\n"
+	reply, err := readRESP(bufio.NewReader(strings.NewReader(resp)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	group, ok := parseSwitchMasterMessage(reply)
+	if !ok || group != "order" {
+		t.Fatalf("expected order switch-master message, got group=%q ok=%v", group, ok)
+	}
+}
+
 func TestSentinelEventEndpoint(t *testing.T) {
 	s := newTestServer(t, "")
 	s.state.WritePool(&apitypes.PoolState{Servers: map[string]*apitypes.PoolServer{
@@ -189,5 +204,46 @@ func TestHandleSentinelFailover_UpdatesState(t *testing.T) {
 	}
 	if oldMaster.Group != "order" || newMaster.Group != "order" || otherReplica.Group != "order" {
 		t.Fatalf("group should remain stable after failover")
+	}
+}
+
+func TestHandleSentinelFailover_NoOpWhenAlreadySynchronized(t *testing.T) {
+	s := newTestServer(t, "")
+	s.state.WritePool(&apitypes.PoolState{Servers: map[string]*apitypes.PoolServer{
+		"srv-a": {Endpoint: "10.0.1.10"},
+		"srv-b": {Endpoint: "10.0.1.11"},
+	}})
+	s.state.WriteInstances(&apitypes.InstancesState{
+		Groups: map[string]*apitypes.InstanceGroupState{
+			"order": {
+				Type:          "replication",
+				Engine:        "redis",
+				Category:      "cache",
+				CurrentMaster: "order-replica",
+				Envoy:         &apitypes.EnvoyConfig{AutoPort: 16379, MasterPort: 16500},
+			},
+		},
+		Instances: map[string]*apitypes.Instance{
+			"order-master": {
+				Group: "order", Role: "replica", Status: "failed", Server: "srv-a", Port: 6379,
+				ReplicaOf: "order-replica",
+			},
+			"order-replica": {
+				Group: "order", Role: "master", Status: "running", Server: "srv-b", Port: 6379,
+			},
+		},
+	})
+	if err := s.handleSentinelFailover("order", "10.0.1.11:6379", "test", "sentinel"); err != nil {
+		t.Fatal(err)
+	}
+	state, err := s.state.ReadInstances()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Groups["order"].CurrentMaster != "order-replica" {
+		t.Fatalf("current master changed unexpectedly: %#v", state.Groups["order"])
+	}
+	if state.Instances["order-master"].Status != "failed" || state.Instances["order-master"].ReplicaOf != "order-replica" {
+		t.Fatalf("old master was mutated unexpectedly: %#v", state.Instances["order-master"])
 	}
 }

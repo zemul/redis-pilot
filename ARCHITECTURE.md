@@ -995,7 +995,7 @@ POST /sentinel/sync
   Server 从 instances-state 派生完整 master 列表，并直接同步到各 Sentinel 节点
 
 POST /sentinel/event
-  Agent 监听到 +switch-master 后上报 Server（事件加速路径，reconcile 仍是兜底）
+  外部 Sentinel watcher 上报 +switch-master 事件；Server 会再次查询 Sentinel 确认当前 master 后再同步拓扑
 ```
 
 Server 下发的逻辑配置示例：
@@ -1089,7 +1089,29 @@ Sentinel 的 `group` 必须来自 `instances-state.yaml` 中显式保存的实�
 
 #### 3.7.6 故障转移同步机制
 
-第一版实现以 Server 定期 reconcile 为权威兜底：
+实现采用 Server 内置 watcher + 定期 reconcile 的双路径：
+
+```
+Server 启动时：
+  1. 从 server.yaml 的 sentinel.nodes 读取 3 或 5 个 Sentinel 节点
+  2. 对每个 Sentinel 节点启动 1 个 watcher
+  3. watcher 执行 SUBSCRIBE +switch-master
+  4. watcher 断线只记录日志并退避重连，不修改实例状态
+```
+
+`+switch-master` 是 Sentinel 的全局事件频道，一个 watcher 会收到该 Sentinel 监控的所有实例组切换事件；因此 watcher 数量等于 `sentinel.nodes` 数量，不按实例组放大。
+
+事件路径作为加速机制：
+
+```
+收到 +switch-master:
+  1. 解析事件 payload 中的 group
+  2. Server 再次查询 Sentinel：
+     SENTINEL get-master-addr-by-name <group>
+  3. 使用查询确认后的 master 地址调用 handleFailover(group, confirmedMasterAddr)
+```
+
+定期 reconcile 作为权威兜底：
 
 ```
 每 5-10 秒：
@@ -1099,28 +1121,23 @@ Sentinel 的 `group` 必须来自 `instances-state.yaml` 中显式保存的实�
   3. 如果不一致，调用 handleFailover(group, newMasterAddr)
 ```
 
-Agent 监听 `+switch-master` 作为加速路径：
-
-```
-Agent SUBSCRIBE +switch-master
-  → 收到事件后 POST /sentinel/event 到 Server
-  → Server 仍调用同一个 handleFailover(group, newMasterAddr)
-```
-
 `handleFailover` 必须是幂等的：
 
-1. 获取实例组编排锁
-2. 校验新 master 地址属于当前实例组
-3. 更新 `groups[group].current_master/topology_status`，并更新实例 `role` / `replica_of` / `status`
-4. 重新生成并落盘 Envoy 配置
-5. 写 `topology.failover` 审计日志
-6. 释放编排锁
+1. 如果 Sentinel 确认的新 master 已经是 `groups[group].current_master`，直接 no-op
+2. 获取实例组编排锁
+3. 校验新 master 地址属于当前实例组
+4. 更新 `groups[group].current_master/topology_status`，并更新实例 `role` / `replica_of` / `status`
+5. 重新生成并落盘 Envoy 配置
+6. 写 `topology.failover` 审计日志
+7. 释放编排锁
 
 #### 3.7.7 失败处理
 
 | 场景 | 处理策略 |
 |------|----------|
 | healthy Sentinel 数 < quorum | 标记自动故障转移能力降级，保留现有实例运行，触发告警 |
+| 单个 Sentinel watcher 断线 | 记录日志并后台退避重连，不修改 Redis 实例状态；其他 watcher 和 reconcile 继续工作 |
+| 所有 watcher 断线 | 丢失实时事件，但定期 reconcile 仍会查询 Sentinel 当前 master 并最终同步 |
 | 直连 Sentinel 同步部分节点失败 | 成功节点数 >= quorum 则继续并告警；否则返回 warning 并等待 reconcile 重试 |
 | Sentinel 返回的新 master 不在 instances-state | 标记 `failover_conflict`，不自动改拓扑，触发人工介入 |
 | 新主库再次故障 | 不主动抢占 Sentinel，等待下一轮 Sentinel failover；编排锁超时后允许重新同步 |
@@ -1298,13 +1315,16 @@ Skill: redis-failover
      → 投票判定 odown，自动执行 failover
      → 选择优先级最高的从库提升为主库
 
-  2. Agent 监听 Sentinel 事件（+switch-master）
-     → 收到事件后执行后续编排：
-       a. 在 instances-state 中标记 failover_in_progress: true（编排锁）
-       b. 根据事件中的 old-master/new-master 修正 instances-state 拓扑
+  2. Server Sentinel watcher 监听 Sentinel 事件（+switch-master）
+     → Server 启动时为 sentinel.nodes 中每个 Sentinel 节点启动 1 个 watcher
+     → 收到事件后只把它作为唤醒信号，不直接信任事件里的 new-master
+     → Server 通过 SENTINEL get-master-addr-by-name <group> 再次确认当前 master
+     → 确认后执行后续编排：
+       a. 获取同组实例编排锁
+       b. 使用确认后的 master 地址修正 instances-state 拓扑
        c. 更新 Envoy 路由并重新生成/落盘 Envoy 配置
        d. 写入 topology.failover 审计日志
-       e. 清除 failover_in_progress 标记
+       e. 释放编排锁
 
      instances-state 更新要求：
        - 实例组：
@@ -1335,16 +1355,15 @@ Skill: redis-failover
        - params 记录 Sentinel 事件和 Envoy 端口
        - result 记录 success / failed / conflict
 
-  3. 编排锁保护机制：
-     - 收到 +switch-master 后，Agent 先在 instances-state 中写入
-       failover_in_progress: true + failover_since: <timestamp>
-     - 编排锁期间，忽略同一实例组的后续 +switch-master 事件
+  3. 编排锁与幂等保护机制：
+     - 收到重复 +switch-master 或 reconcile 同时触发时，若当前 master 已同步则 no-op
+     - 编排锁期间，同一实例组的后续 +switch-master 事件由锁保护或下一轮 reconcile 兜底
        （防止 Sentinel failover-timeout 内重试触发重复编排）
      - 编排锁超时：60 秒（超过后自动释放，允许重新编排）
-     - 编排完成后必须清除锁标记
+     - 编排完成后必须释放锁
 
   4. 编排期间二次故障处理：
-     - 如果编排过程中新主库再次宕机，Agent 不主动干预
+     - 如果编排过程中新主库再次宕机，Server 不主动抢占 Sentinel
      - 等待 Sentinel 发起新一轮 failover（编排锁超时后）
      - 将实例状态标记为 failover_conflict，触发告警通知人工介入
 
@@ -1367,7 +1386,7 @@ Skill: redis-failover
 > - Sentinel 内置从库选举逻辑（优先级 → 复制偏移量 → Run ID），无需 Skill 重复实现
 
 > **编排锁为什么重要？**
-> - Sentinel 的 failover-timeout（30s）内可能重试 failover，导致 Agent 收到多个 +switch-master 事件
+> - Sentinel 的 failover-timeout（30s）内可能重试 failover，导致 Server watcher 收到多个 +switch-master 事件
 > - 没有锁保护时，多个编排流程并发执行会造成 Envoy 路由混乱、状态文件冲突和重复告警
 > - 编排锁确保同一实例组同一时刻只有一个故障转移编排流程在执行
 
@@ -1535,7 +1554,7 @@ Agent 配置与日志：
 Sentinel 数据目录：
 /data/redis-sentinel/
   ├── conf/
-  │   └── sentinel.conf    # Sentinel 配置（由 Agent 生成）
+  │   └── sentinel.conf    # Sentinel 配置（由 Server 下发 MONITOR/SET 后由 Sentinel rewrite 持久化）
   └── data/                # Sentinel 工作目录（存储状态文件）
 ```
 

@@ -28,6 +28,7 @@ func main() {
 	s := server.New(cfg)
 	s.StartReconcileLoop()
 	s.StartSentinelReconcileLoop()
+	s.StartSentinelWatchLoop()
 	s.StartBackupScheduler()
 	addr := fmt.Sprintf(":%d", cfg.Port)
 	log.Printf("redis-pilot server listening on %s", addr)

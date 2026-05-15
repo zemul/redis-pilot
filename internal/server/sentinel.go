@@ -32,7 +32,13 @@ func (s *Server) sentinelEvent(c *gin.Context) {
 	}
 	s.log.Infof("sentinel event received: event=%s group=%s old=%s new=%s", req.Event, req.Group, req.OldMaster, req.NewMaster)
 	if req.Group != "" && req.NewMaster != "" {
-		if err := s.handleSentinelFailover(req.Group, req.NewMaster, "event", operatorFrom(c)); err != nil {
+		newMaster := req.NewMaster
+		if confirmed, err := s.confirmSentinelMaster(req.Group); err == nil && confirmed != "" {
+			newMaster = confirmed
+		} else if err != nil {
+			s.log.Errorf("sentinel event confirm failed group=%s fallback=%s: %v", req.Group, req.NewMaster, err)
+		}
+		if err := s.handleSentinelFailover(req.Group, newMaster, "event", operatorFrom(c)); err != nil {
 			fail(c, 500, err.Error())
 			return
 		}
@@ -102,6 +108,117 @@ func (s *Server) StartSentinelReconcileLoop() {
 			s.reconcileSentinel()
 		}
 	}()
+}
+
+func (s *Server) StartSentinelWatchLoop() {
+	if !s.cfg.Sentinel.Enabled {
+		return
+	}
+	nodes := uniqueStrings(s.cfg.Sentinel.Nodes)
+	if len(nodes) == 0 {
+		return
+	}
+	for _, node := range nodes {
+		go s.watchSentinelNode(node)
+	}
+}
+
+func (s *Server) watchSentinelNode(node string) {
+	backoff := time.Second
+	for {
+		addr, err := s.sentinelNodeAddress(node)
+		if err != nil {
+			s.log.Errorf("sentinel watcher %s waiting for node address: %v", node, err)
+			time.Sleep(backoff)
+			backoff = nextBackoff(backoff)
+			continue
+		}
+
+		s.log.Infof("sentinel watcher %s connecting to %s", node, addr)
+		backoff = time.Second
+		err = s.subscribeSentinelSwitchMaster(addr, func(group string) {
+			current, err := s.confirmSentinelMaster(group)
+			if err != nil {
+				s.log.Errorf("sentinel watcher %s confirm master group=%s failed: %v", node, group, err)
+				return
+			}
+			if current == "" {
+				s.log.Errorf("sentinel watcher %s confirm master group=%s returned empty address", node, group)
+				return
+			}
+			if err := s.handleSentinelFailover(group, current, "watch", "system"); err != nil {
+				s.log.Errorf("sentinel watcher %s handle failover group=%s new=%s failed: %v", node, group, current, err)
+			}
+		})
+		s.log.Errorf("sentinel watcher %s disconnected: %v", node, err)
+		time.Sleep(backoff)
+		backoff = nextBackoff(backoff)
+	}
+}
+
+func (s *Server) sentinelNodeAddress(node string) (string, error) {
+	pool, err := s.state.ReadPool()
+	if err != nil {
+		return "", err
+	}
+	srv := pool.Servers[node]
+	if srv == nil || srv.Endpoint == "" {
+		return "", fmt.Errorf("sentinel node %s not found in pool-state", node)
+	}
+	return fmt.Sprintf("%s:%d", srv.Endpoint, s.sentinelPort()), nil
+}
+
+func (s *Server) subscribeSentinelSwitchMaster(addr string, onSwitch func(group string)) error {
+	conn, err := net.DialTimeout("tcp", addr, 2*time.Second)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	if err := writeRESPCommand(conn, "SUBSCRIBE", "+switch-master"); err != nil {
+		return err
+	}
+	reader := bufio.NewReader(conn)
+	for {
+		_ = conn.SetDeadline(time.Now().Add(5 * time.Minute))
+		reply, err := readRESP(reader)
+		if err != nil {
+			return err
+		}
+		group, ok := parseSwitchMasterMessage(reply)
+		if ok {
+			onSwitch(group)
+		}
+	}
+}
+
+func parseSwitchMasterMessage(reply interface{}) (string, bool) {
+	values, ok := reply.([]interface{})
+	if !ok || len(values) < 3 {
+		return "", false
+	}
+	kind, _ := values[0].(string)
+	channel, _ := values[1].(string)
+	payload, _ := values[2].(string)
+	if kind != "message" || channel != "+switch-master" {
+		return "", false
+	}
+	fields := strings.Fields(payload)
+	if len(fields) < 5 {
+		return "", false
+	}
+	return fields[0], true
+}
+
+func (s *Server) confirmSentinelMaster(group string) (string, error) {
+	pool, err := s.state.ReadPool()
+	if err != nil {
+		return "", err
+	}
+	nodes := s.selectSentinelNodes(pool)
+	if len(nodes) == 0 {
+		return "", errors.New("no sentinel nodes configured")
+	}
+	return s.querySentinelMaster(pool, nodes, group)
 }
 
 func (s *Server) reconcileSentinel() {
@@ -327,6 +444,7 @@ func (s *Server) handleSentinelFailover(group, newMasterAddr, source, operator s
 	start := time.Now()
 	var oldMasterName, oldMasterServer, newMasterName, newMasterServer string
 	var oldMasterFound bool
+	var noOp bool
 
 	err := s.state.WithInstances(func(instances *apitypes.InstancesState) error {
 		groupState := instances.Groups[group]
@@ -370,6 +488,10 @@ func (s *Server) handleSentinelFailover(group, newMasterAddr, source, operator s
 		if newMaster.Group != group {
 			return fmt.Errorf("new master %s belongs to group %s, not %s", newMasterName, newMaster.Group, group)
 		}
+		if groupState.CurrentMaster == newMasterName && newMaster.Role == "master" && newMaster.Status == "running" {
+			noOp = true
+			return nil
+		}
 		oldMasterServer = oldMaster.Server
 		newMasterServer = newMaster.Server
 
@@ -410,6 +532,10 @@ func (s *Server) handleSentinelFailover(group, newMasterAddr, source, operator s
 	}
 	if !oldMasterFound {
 		return fmt.Errorf("old master not found for group %s", group)
+	}
+	if noOp {
+		s.log.Infof("sentinel failover already synchronized: group=%s master=%s source=%s", group, newMasterName, source)
+		return nil
 	}
 
 	result := "success"
@@ -672,4 +798,25 @@ func containsString(values []string, value string) bool {
 		}
 	}
 	return false
+}
+
+func uniqueStrings(values []string) []string {
+	seen := map[string]bool{}
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		if value == "" || seen[value] {
+			continue
+		}
+		seen[value] = true
+		result = append(result, value)
+	}
+	return result
+}
+
+func nextBackoff(current time.Duration) time.Duration {
+	next := current * 2
+	if next > 30*time.Second {
+		return 30 * time.Second
+	}
+	return next
 }
