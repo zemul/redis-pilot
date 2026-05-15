@@ -99,6 +99,23 @@ func (s *Server) instanceList(c *gin.Context) {
 		fail(c, http.StatusInternalServerError, err.Error())
 		return
 	}
+	if group := c.Query("group"); group != "" {
+		filteredGroups := make(map[string]*apitypes.InstanceGroupState)
+		if g, exists := state.Groups[group]; exists {
+			filteredGroups[group] = g
+		}
+		filteredInstances := make(map[string]*apitypes.Instance)
+		for name, inst := range state.Instances {
+			if inst.Group == group {
+				filteredInstances[name] = inst
+			}
+		}
+		ok(c, &apitypes.InstancesState{
+			Groups:    filteredGroups,
+			Instances: filteredInstances,
+		})
+		return
+	}
 	ok(c, state)
 }
 

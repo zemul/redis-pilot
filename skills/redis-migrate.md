@@ -13,7 +13,6 @@ description: 跨服务器迁移 Redis/Kvrocks 实例
    ```
    redis-pilot-cli instance create <name>-new \
      --node <target-server> \
-     --port <port> \
      --engine <engine> \
      --memory <memory> \
      --replica-of <source-instance>
@@ -37,13 +36,12 @@ description: 跨服务器迁移 Redis/Kvrocks 实例
 
 5. 停止并删除旧主库
    ```
-   redis-pilot-cli instance stop <old-name>
    redis-pilot-cli instance delete <old-name>
    ```
 
-6. 更新 Envoy 路由
+6. 确认控制面快照已反映新拓扑。Envoy 不通过 CLI 手动改路由；`redis-pilot-xds` 会从 Server snapshot 自动下发配置。
    ```
-   redis-pilot-cli envoy route-update --group <group> --master <new-addr>
+   redis-pilot-cli instance list --group <group>
    ```
 
 ## 参数
@@ -57,4 +55,5 @@ description: 跨服务器迁移 Redis/Kvrocks 实例
 
 - 迁移期间实例持有锁，其他操作会被阻塞
 - 同步完成前不要执行 promote
+- Redis/Envoy 端口由 Server 管理；迁移流程不要传 `--port`，也不要生成或 reload Envoy 配置
 - 审计级别为 critical

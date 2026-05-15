@@ -110,7 +110,6 @@ func (s *Server) Router() *gin.Engine {
 	r.GET("/audit/query", s.auditQuery)
 	r.GET("/inventory", s.inventory)
 	r.POST("/reconcile", s.reconcile)
-	r.GET("/health-check", s.healthCheck)
 	r.GET("/metrics", s.metricsCollect)
 
 	r.GET("/proxy/snapshot", s.proxySnapshot)

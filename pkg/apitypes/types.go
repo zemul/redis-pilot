@@ -105,26 +105,26 @@ type InstanceGroupState struct {
 
 // Instance 单容器运行状态
 type Instance struct {
-	Group           string            `yaml:"group" json:"group"` // stable logical instance group
-	Role            string            `yaml:"role"`               // master | replica
+	Group           string            `yaml:"group" json:"group"`
+	Role            string            `yaml:"role" json:"role"`
 	EngineVersion   string            `yaml:"engine_version,omitempty" json:"engine_version,omitempty"`
-	Server          string            `yaml:"server"`
-	Container       string            `yaml:"container"`
-	Port            int               `yaml:"port"`
-	Memory          string            `yaml:"memory"`
-	CPUs            int               `yaml:"cpus"`
-	Disk            string            `yaml:"disk,omitempty"`
-	Password        string            `yaml:"password"`
-	ConfigPath      string            `yaml:"config_path"`
-	DataPath        string            `yaml:"data_path"`
-	BackupPath      string            `yaml:"backup_path"`
-	Persistence     *Persistence      `yaml:"persistence,omitempty"`
-	ConfigOverrides map[string]string `yaml:"config_overrides,omitempty"`
-	ReplicaOf       string            `yaml:"replica_of,omitempty"`
-	Backup          *BackupConfig     `yaml:"backup,omitempty"`
-	Status          string            `yaml:"status"` // creating | running | stopped | failed
-	Lock            *Lock             `yaml:"lock,omitempty"`
-	CreatedAt       string            `yaml:"created_at"`
+	Server          string            `yaml:"server" json:"server"`
+	Container       string            `yaml:"container" json:"container"`
+	Port            int               `yaml:"port" json:"port"`
+	Memory          string            `yaml:"memory" json:"memory"`
+	CPUs            int               `yaml:"cpus" json:"cpus"`
+	Disk            string            `yaml:"disk,omitempty" json:"disk,omitempty"`
+	Password        string            `yaml:"password" json:"password"`
+	ConfigPath      string            `yaml:"config_path" json:"config_path"`
+	DataPath        string            `yaml:"data_path" json:"data_path"`
+	BackupPath      string            `yaml:"backup_path" json:"backup_path"`
+	Persistence     *Persistence      `yaml:"persistence,omitempty" json:"persistence,omitempty"`
+	ConfigOverrides map[string]string `yaml:"config_overrides,omitempty" json:"config_overrides,omitempty"`
+	ReplicaOf       string            `yaml:"replica_of,omitempty" json:"replica_of,omitempty"`
+	Backup          *BackupConfig     `yaml:"backup,omitempty" json:"backup,omitempty"`
+	Status          string            `yaml:"status" json:"status"`
+	Lock            *Lock             `yaml:"lock,omitempty" json:"lock,omitempty"`
+	CreatedAt       string            `yaml:"created_at" json:"created_at"`
 }
 
 // InstancesState instances-state.yaml 根结构

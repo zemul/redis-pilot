@@ -14,13 +14,18 @@ description: 诊断 Redis/Kvrocks 实例问题，采集指标并分析
    redis-pilot-cli instance status <name>
    ```
 
-2. 采集关键指标（通过 Agent metrics 接口）：
+2. 采集关键指标（通过 Server 转发到 Agent metrics 接口）：
+   ```
+   redis-pilot-cli metrics <name>
+   ```
+
+3. 重点查看：
    - INFO 全量信息（memory、clients、stats、replication、keyspace）
    - SLOWLOG GET 20
    - MEMORY DOCTOR（Redis）
    - 容器资源使用（CPU/内存/磁盘）
 
-3. AI 分析以下维度：
+4. AI 分析以下维度：
    - 内存使用率和碎片率
    - 连接数是否异常
    - 慢查询模式
@@ -28,7 +33,7 @@ description: 诊断 Redis/Kvrocks 实例问题，采集指标并分析
    - 持久化状态
    - 淘汰策略是否合理
 
-4. 输出诊断报告和优化建议
+5. 输出诊断报告和优化建议
 
 ## 参数
 

@@ -16,9 +16,14 @@ var instanceListCmd = &cobra.Command{
 	Use:     "list",
 	Short:   "List all instances",
 	Long:    "List all instances with their status, engine, role, and server.",
-	Example: `  redis-pilot-cli instance list`,
+	Example: `  redis-pilot-cli instance list
+  redis-pilot-cli instance list --group order`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return checkResp(client.Get("/instance/list"))
+		path := "/instance/list"
+		if group, _ := cmd.Flags().GetString("group"); group != "" {
+			path += "?group=" + group
+		}
+		return checkResp(client.Get(path))
 	},
 }
 
@@ -201,6 +206,8 @@ func init() {
 		instanceStartCmd, instanceStopCmd, instanceConfigCmd,
 		instanceReplicateCmd, instancePromoteCmd, instanceDeleteCmd,
 	)
+
+	instanceListCmd.Flags().String("group", "", "Filter by instance group")
 
 	instanceCreateCmd.Flags().String("category", "cache", "Category: cache | persistent")
 	instanceCreateCmd.Flags().String("engine", "redis", "Engine: redis | kvrocks")
