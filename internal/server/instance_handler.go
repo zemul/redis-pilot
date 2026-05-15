@@ -78,6 +78,21 @@ func defaultPersistence(engine, category string, overrides map[string]string) *a
 	return p
 }
 
+func (s *Server) resolveEngineImage(engine, version string) (resolvedVersion, image string, err error) {
+	engineCfg, ok := s.cfg.Images[engine]
+	if !ok {
+		return "", "", fmt.Errorf("unsupported engine: %s", engine)
+	}
+	if version == "" {
+		version = engineCfg.Default
+	}
+	image, ok = engineCfg.Versions[version]
+	if !ok || image == "" {
+		return "", "", fmt.Errorf("unsupported %s version: %s", engine, version)
+	}
+	return version, image, nil
+}
+
 func (s *Server) instanceList(c *gin.Context) {
 	state, err := s.state.ReadInstances()
 	if err != nil {
@@ -113,6 +128,19 @@ func (s *Server) instanceCreate(c *gin.Context) {
 		fail(c, http.StatusBadRequest, err.Error())
 		return
 	}
+	req.Engine = strings.TrimSpace(req.Engine)
+	req.EngineVersion = strings.TrimSpace(req.EngineVersion)
+	if req.Engine != "redis" && req.Engine != "kvrocks" {
+		fail(c, http.StatusBadRequest, "engine must be redis or kvrocks")
+		return
+	}
+	resolvedVersion, engineImage, err := s.resolveEngineImage(req.Engine, req.EngineVersion)
+	if err != nil {
+		fail(c, http.StatusBadRequest, err.Error())
+		return
+	}
+	req.EngineVersion = resolvedVersion
+	req.EngineImage = engineImage
 
 	// 查找目标服务器（需要在原子操作外读 pool，因为调度需要 instances 快照）
 	pool, err := s.state.ReadPool()
@@ -164,6 +192,19 @@ func (s *Server) instanceCreate(c *gin.Context) {
 			if groupName == "" || group == nil {
 				return fmt.Errorf("replica_of target has no group: %s", masterName)
 			}
+			if group.Engine != req.Engine {
+				return fmt.Errorf("replica engine must match master group engine: %s", group.Engine)
+			}
+			if group.EngineVersion != "" {
+				req.EngineVersion = group.EngineVersion
+			} else if master.EngineVersion != "" {
+				req.EngineVersion = master.EngineVersion
+			}
+			_, engineImage, err = s.resolveEngineImage(req.Engine, req.EngineVersion)
+			if err != nil {
+				return err
+			}
+			req.EngineImage = engineImage
 			if group.Type == "standalone" {
 				group.Type = "replication"
 			}
@@ -209,6 +250,7 @@ func (s *Server) instanceCreate(c *gin.Context) {
 			instances.Groups[groupName] = &apitypes.InstanceGroupState{
 				Type:           req.Type,
 				Engine:         req.Engine,
+				EngineVersion:  req.EngineVersion,
 				Category:       req.Category,
 				CurrentMaster:  req.Name,
 				TopologyStatus: "degraded",
@@ -221,6 +263,7 @@ func (s *Server) instanceCreate(c *gin.Context) {
 		inst = &apitypes.Instance{
 			Group:           groupName,
 			Role:            role,
+			EngineVersion:   req.EngineVersion,
 			Server:          req.Server,
 			Container:       req.Engine + "-" + req.Name,
 			Port:            req.Port,
@@ -284,7 +327,6 @@ func (s *Server) instanceCreate(c *gin.Context) {
 		return nil
 	})
 
-
 	s.audit.Log(audit.Record{
 		Operator: operatorFrom(c),
 		Action:   "instance.create",
@@ -292,7 +334,7 @@ func (s *Server) instanceCreate(c *gin.Context) {
 		Result:   "success",
 		Duration: time.Since(start).Milliseconds(),
 		Target:   map[string]interface{}{"instance": req.Name, "group": groupName, "engine": req.Engine, "server": req.Server},
-		Params:   map[string]interface{}{"memory": req.Memory, "cpus": req.CPUs, "category": req.Category},
+		Params:   map[string]interface{}{"memory": req.Memory, "cpus": req.CPUs, "category": req.Category, "engine_version": req.EngineVersion},
 	})
 
 	s.log.Infof("instance created: %s on %s", req.Name, req.Server)
@@ -398,7 +440,6 @@ func (s *Server) instanceDelete(c *gin.Context) {
 		fail(c, http.StatusInternalServerError, err.Error())
 		return
 	}
-
 
 	s.audit.Log(audit.Record{
 		Operator: operatorFrom(c),
@@ -979,7 +1020,6 @@ func (s *Server) groupForInstance(name string) (*apitypes.InstanceGroupState, er
 	return group, nil
 }
 
-
 // resolveAndLockInternal 与 resolveAndLock 相同，但不依赖 gin.Context，供内部定时任务使用。
 func (s *Server) resolveAndLockInternal(name, operation string) (*apitypes.Instance, *apitypes.PoolServer, func(), error) {
 	sessionID := fmt.Sprintf("scheduler-%d", time.Now().UnixNano())
@@ -1055,4 +1095,3 @@ func parseMemoryGi(s string) int {
 	}
 	return 0
 }
-

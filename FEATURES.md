@@ -502,7 +502,7 @@ podman run -d \
   -v <datadir>/conf/redis.conf:/etc/redis/redis.conf:Z \
   -v <datadir>/data:/data:Z \
   -v <datadir>/backup:/backup:Z \
-  docker.io/redis:7 \
+  <server.yaml 中 images.redis.versions 解析出的镜像> \
   redis-server /etc/redis/redis.conf
 ```
 
@@ -514,12 +514,13 @@ podman run -d \
   --memory-swap <memory> \
   --cpus <cpus> \
   --restart on-failure:5 \
-  -p <port>:6666 \
+  -p <port>:6379 \
   -v <datadir>/conf/kvrocks.conf:/etc/kvrocks/kvrocks.conf:Z \
   -v <datadir>/data:/data:Z \
   -v <datadir>/backup:/backup:Z \
-  docker.io/apache/kvrocks:2.9 \
-  kvrocks --config /etc/kvrocks/kvrocks.conf
+  --entrypoint kvrocks \
+  <server.yaml 中 images.kvrocks.versions 解析出的镜像> \
+  -c /etc/kvrocks/kvrocks.conf
 ```
 
 ### 5.2 容器操作

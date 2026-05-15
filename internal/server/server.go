@@ -23,6 +23,7 @@ type Server struct {
 }
 
 func New(cfg *Config) *Server {
+	normalizeImageConfig(cfg)
 	if cfg.Ports.Redis.Start == 0 && cfg.Ports.Redis.End == 0 {
 		cfg.Ports.Redis = PortRange{Start: 6379, End: 6499}
 	}

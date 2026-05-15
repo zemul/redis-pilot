@@ -58,6 +58,7 @@ type Persistence struct {
 type InstanceGroupState struct {
 	Type             string       `yaml:"type" json:"type"` // standalone | replication
 	Engine           string       `yaml:"engine" json:"engine"`
+	EngineVersion    string       `yaml:"engine_version,omitempty" json:"engine_version,omitempty"`
 	Category         string       `yaml:"category" json:"category"`
 	CurrentMaster    string       `yaml:"current_master" json:"current_master"`
 	TopologyStatus   string       `yaml:"topology_status" json:"topology_status"` // healthy | degraded
@@ -71,6 +72,7 @@ type InstanceGroupState struct {
 type Instance struct {
 	Group           string            `yaml:"group" json:"group"` // stable logical instance group
 	Role            string            `yaml:"role"`               // master | replica
+	EngineVersion   string            `yaml:"engine_version,omitempty" json:"engine_version,omitempty"`
 	Server          string            `yaml:"server"`
 	Container       string            `yaml:"container"`
 	Port            int               `yaml:"port"`
@@ -159,6 +161,8 @@ type CreateInstanceRequest struct {
 	Category        string            `json:"category" binding:"required"` // cache | persistent
 	Group           string            `json:"group,omitempty"`             // stable logical group; required for master/standalone
 	Engine          string            `json:"engine" binding:"required"`   // redis | kvrocks
+	EngineVersion   string            `json:"engine_version,omitempty"`    // e.g. redis 5 | 6.2 | 7
+	EngineImage     string            `json:"engine_image,omitempty"`      // resolved by Server and consumed by Agent
 	Type            string            `json:"type" binding:"required"`     // standalone | replication
 	Server          string            `json:"server"`                      // 可选，为空时自动调度
 	Port            int               `json:"port"`

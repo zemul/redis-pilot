@@ -16,7 +16,7 @@ GAL → CLI → Server → Agent（各服务器）
 - 语言：Go
 - HTTP 框架：Gin
 - 容器：Podman
-- Redis 引擎：Redis 7 / Apache Kvrocks 2.9
+- Redis 引擎：Redis 5 / 6.2 / 7 / Apache Kvrocks 2.15.0
 
 ## 目录结构
 ```
@@ -35,7 +35,7 @@ redis-manager/
 ```
 
 ## 配置文件
-- `server.yaml`：Server 监听端口、CLI 鉴权 Token（空则不鉴权）
+- `server.yaml`：Server 监听端口、CLI 鉴权 Token（空则不鉴权）、Redis/Kvrocks 版本白名单
 - `pool-state.yaml`：服务器资源池，含各 Agent endpoint 和 Token（空则不鉴权）
 - `instances-state.yaml`：所有实例的完整状态
 - `~/.redis-pilot-cli/config.yaml`：CLI 配置，Server 地址默认 127.0.0.1:8080

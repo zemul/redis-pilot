@@ -302,8 +302,12 @@ func TestInstanceCreate_ServerNotFound(t *testing.T) {
 
 // TestInstanceCreate_WithFakeAgent 用 httptest 模拟 Agent，测试完整创建流程
 func TestInstanceCreate_WithFakeAgent(t *testing.T) {
+	var agentReq apitypes.CreateInstanceRequest
 	// 启动 fake agent
 	fakeAgent := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/instance/create" {
+			json.NewDecoder(r.Body).Decode(&agentReq)
+		}
 		json.NewEncoder(w).Encode(apitypes.APIResponse{Success: true})
 	}))
 	defer fakeAgent.Close()
@@ -356,6 +360,12 @@ func TestInstanceCreate_WithFakeAgent(t *testing.T) {
 	if instances.Groups["cache"].Type != "standalone" {
 		t.Fatalf("expected group type standalone, got %s", instances.Groups["cache"].Type)
 	}
+	if inst.EngineVersion != "7" || instances.Groups["cache"].EngineVersion != "7" {
+		t.Fatalf("expected default redis version 7, got instance=%q group=%q", inst.EngineVersion, instances.Groups["cache"].EngineVersion)
+	}
+	if agentReq.EngineImage != "docker.io/redis:7" {
+		t.Fatalf("expected Server to send redis:7 image to Agent, got %q", agentReq.EngineImage)
+	}
 }
 
 func TestInstanceCreate_RoleMaster(t *testing.T) {
@@ -371,7 +381,7 @@ func TestInstanceCreate_RoleMaster(t *testing.T) {
 		},
 	})
 	doRequest(s.Router(), "POST", "/instance/create", apitypes.CreateInstanceRequest{
-		Name: "redis-m", Category: "persistent", Group: "redis", Engine: "redis", Type: "replication",
+		Name: "redis-m", Category: "persistent", Group: "redis", Engine: "redis", EngineVersion: "6.2", Type: "replication",
 		Server: "srv1", Port: 6379, Memory: "4Gi", CPUs: 2,
 	})
 	instances, _ := s.state.ReadInstances()
@@ -393,7 +403,7 @@ func TestInstanceCreate_RoleReplica(t *testing.T) {
 		},
 	})
 	doRequest(s.Router(), "POST", "/instance/create", apitypes.CreateInstanceRequest{
-		Name: "redis-m", Category: "persistent", Group: "redis", Engine: "redis", Type: "replication",
+		Name: "redis-m", Category: "persistent", Group: "redis", Engine: "redis", EngineVersion: "6.2", Type: "replication",
 		Server: "srv1", Port: 6379, Memory: "4Gi", CPUs: 2,
 	})
 	doRequest(s.Router(), "POST", "/instance/create", apitypes.CreateInstanceRequest{
@@ -406,6 +416,9 @@ func TestInstanceCreate_RoleReplica(t *testing.T) {
 	}
 	if instances.Instances["redis-r"].Group != "redis" {
 		t.Fatalf("expected replica to inherit group redis, got %s", instances.Instances["redis-r"].Group)
+	}
+	if instances.Instances["redis-r"].EngineVersion != "6.2" {
+		t.Fatalf("expected replica to inherit redis version 6.2, got %q", instances.Instances["redis-r"].EngineVersion)
 	}
 }
 

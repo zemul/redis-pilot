@@ -1563,7 +1563,7 @@ podman run -d \
   -v /data/redis/{instance-name}/conf/redis.conf:/etc/redis/redis.conf:Z \
   -v /data/redis/{instance-name}/data:/data:Z \
   -v /data/redis/{instance-name}/backup:/backup:Z \
-  docker.io/redis:7 \
+  <Server 下发的 engine_image> \
   redis-server /etc/redis/redis.conf
 ```
 
@@ -1576,12 +1576,13 @@ podman run -d \
   --memory-swap {memory} \
   --cpus {cpus} \
   --restart on-failure:5 \
-  -p {port}:6666 \
+  -p {port}:6379 \
   -v /data/redis/{instance-name}/conf/kvrocks.conf:/etc/kvrocks/kvrocks.conf:Z \
   -v /data/redis/{instance-name}/data:/data:Z \
   -v /data/redis/{instance-name}/backup:/backup:Z \
-  docker.io/apache/kvrocks:2.15.0 \
-  kvrocks --config /etc/kvrocks/kvrocks.conf
+  --entrypoint kvrocks \
+  <Server 下发的 engine_image> \
+  -c /etc/kvrocks/kvrocks.conf
 ```
 
 ### 7.3 资源限制

@@ -10,7 +10,7 @@
 - 自动备份与恢复
 - 故障转移与状态自愈（定期 reconcile）
 - 完整审计日志
-- 支持 Redis 7 和 Apache Kvrocks 2.9
+- 支持 Redis 5 / 6.2 / 7 和 Apache Kvrocks 2.15.0（版本由 Server 白名单统一管理）
 
 ## 架构
 
@@ -102,6 +102,17 @@ ports:
   redis:          { start: 6379,  end: 6499  }
   envoy_auto:     { start: 16379, end: 16499 }
   envoy_master:   { start: 16500, end: 16619 }
+images:
+  redis:
+    default: "7"
+    versions:
+      "5": docker.io/redis:5
+      "6.2": docker.io/redis:6.2
+      "7": docker.io/redis:7
+  kvrocks:
+    default: "2.15.0"
+    versions:
+      "2.15.0": docker.io/apache/kvrocks:2.15.0
 log:
   dir: /opt/redis-pilot-server/logs
   stdout: true

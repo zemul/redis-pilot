@@ -59,11 +59,12 @@ Choosing the wrong category has real consequences:
   redis-pilot-cli instance create order-master --group order --engine kvrocks --category persistent --memory 8Gi --config "rocksdb.compression=lz4,rocksdb.write_buffer_size=256"
 
   # Redis with custom config overrides
-  redis-pilot-cli instance create order-master --group order --category persistent --memory 4Gi --config "hz=20,tcp-keepalive=60"`,
+  redis-pilot-cli instance create order-master --group order --category persistent --memory 4Gi --engine-version 6.2 --config "hz=20,tcp-keepalive=60"`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		category, _ := cmd.Flags().GetString("category")
 		engine, _ := cmd.Flags().GetString("engine")
+		engineVersion, _ := cmd.Flags().GetString("engine-version")
 		typ, _ := cmd.Flags().GetString("type")
 		node, _ := cmd.Flags().GetString("node")
 		memory, _ := cmd.Flags().GetString("memory")
@@ -81,16 +82,17 @@ Choosing the wrong category has real consequences:
 		}
 
 		req := map[string]interface{}{
-			"name":     args[0],
-			"category": category,
-			"group":    group,
-			"engine":   engine,
-			"type":     typ,
-			"server":   node,
-			"memory":   memory,
-			"disk":     disk,
-			"cpus":     cpus,
-			"password": password,
+			"name":           args[0],
+			"category":       category,
+			"group":          group,
+			"engine":         engine,
+			"engine_version": engineVersion,
+			"type":           typ,
+			"server":         node,
+			"memory":         memory,
+			"disk":           disk,
+			"cpus":           cpus,
+			"password":       password,
 		}
 		if replicaOf != "" {
 			req["replica_of"] = replicaOf
@@ -202,6 +204,7 @@ func init() {
 
 	instanceCreateCmd.Flags().String("category", "cache", "Category: cache | persistent")
 	instanceCreateCmd.Flags().String("engine", "redis", "Engine: redis | kvrocks")
+	instanceCreateCmd.Flags().String("engine-version", "", "Engine version (redis: 5, 6.2, 7; kvrocks: 2.15.0)")
 	instanceCreateCmd.Flags().String("type", "standalone", "Topology: standalone | replication")
 	instanceCreateCmd.Flags().String("node", "", "Target node name (from pool)")
 	instanceCreateCmd.Flags().String("memory", "1Gi", "Memory")
@@ -211,7 +214,6 @@ func init() {
 	instanceCreateCmd.Flags().String("group", "", "Stable logical group name for master/standalone")
 	instanceCreateCmd.Flags().String("replica-of", "", "Master instance name or address")
 	instanceCreateCmd.Flags().String("config", "", "Config overrides (k=v,k=v)")
-
 
 	instanceDeleteCmd.Flags().Bool("clean-data", false, "Also remove data directory")
 

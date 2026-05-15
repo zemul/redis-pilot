@@ -14,7 +14,7 @@ type ContainerStatus struct {
 
 // ContainerRuntime 容器运行时接口
 type ContainerRuntime interface {
-	Create(engine, name string, port int, memory string, cpus int, dataDir string) (string, error)
+	Create(engine, name, image string, port int, memory string, cpus int, dataDir string) (string, error)
 	Start(name string) error
 	Stop(name string) error
 	Remove(name string) error
@@ -36,7 +36,7 @@ func (r *Runtime) Run(args ...string) (string, error) {
 	return strings.TrimSpace(string(out)), nil
 }
 
-func (r *Runtime) Create(engine, name string, port int, memory string, cpus int, dataDir string) (string, error) {
+func (r *Runtime) Create(engine, name, image string, port int, memory string, cpus int, dataDir string) (string, error) {
 	if engine == "kvrocks" {
 		return r.Run("run", "-d",
 			"--name", name,
@@ -50,7 +50,7 @@ func (r *Runtime) Create(engine, name string, port int, memory string, cpus int,
 			"-v", fmt.Sprintf("%s/data:/data:Z", dataDir),
 			"-v", fmt.Sprintf("%s/backup:/backup:Z", dataDir),
 			"--entrypoint", "kvrocks",
-			"docker.io/apache/kvrocks:2.15.0",
+			image,
 			"-c", "/etc/kvrocks/kvrocks.conf",
 		)
 	}
@@ -64,7 +64,7 @@ func (r *Runtime) Create(engine, name string, port int, memory string, cpus int,
 		"-v", fmt.Sprintf("%s/conf/redis.conf:/etc/redis/redis.conf:Z", dataDir),
 		"-v", fmt.Sprintf("%s/data:/data:Z", dataDir),
 		"-v", fmt.Sprintf("%s/backup:/backup:Z", dataDir),
-		"docker.io/redis:7",
+		image,
 		"redis-server", "/etc/redis/redis.conf",
 	)
 }

@@ -130,6 +130,10 @@ func (a *Agent) instanceCreate(c *gin.Context) {
 		fail(c, http.StatusBadRequest, err.Error())
 		return
 	}
+	if req.EngineImage == "" {
+		fail(c, http.StatusBadRequest, "engine_image is required")
+		return
+	}
 
 	dataDir := filepath.Join(a.cfg.DataDir, req.Name)
 	for _, sub := range []string{"conf", "data", "backup"} {
@@ -181,7 +185,7 @@ func (a *Agent) instanceCreate(c *gin.Context) {
 
 	// 启动容器
 	containerName := req.Engine + "-" + req.Name
-	containerID, createErr := a.runtime.Create(req.Engine, containerName, req.Port, req.Memory, req.CPUs, dataDir)
+	containerID, createErr := a.runtime.Create(req.Engine, containerName, req.EngineImage, req.Port, req.Memory, req.CPUs, dataDir)
 	if createErr != nil {
 		fail(c, http.StatusInternalServerError, "podman create: "+createErr.Error())
 		return
@@ -193,6 +197,8 @@ func (a *Agent) instanceCreate(c *gin.Context) {
 		"container_id":   containerID,
 		"container_name": containerName,
 		"data_dir":       dataDir,
+		"engine_version": req.EngineVersion,
+		"image":          req.EngineImage,
 	})
 }
 

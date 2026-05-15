@@ -19,6 +19,7 @@ import (
 type fakeRuntime struct {
 	mu         sync.Mutex
 	calls      []string // 记录调用，如 "Create:redis:redis-myinst"
+	images     []string
 	containers []podman.ContainerStatus
 }
 
@@ -30,7 +31,10 @@ func (f *fakeRuntime) record(s string) {
 	f.calls = append(f.calls, s)
 }
 
-func (f *fakeRuntime) Create(engine, name string, port int, memory string, cpus int, dataDir string) (string, error) {
+func (f *fakeRuntime) Create(engine, name, image string, port int, memory string, cpus int, dataDir string) (string, error) {
+	f.mu.Lock()
+	f.images = append(f.images, image)
+	f.mu.Unlock()
 	f.record("Create:" + engine + ":" + name)
 	return "fake-container-id", nil
 }
@@ -52,6 +56,17 @@ func (f *fakeRuntime) hasCalled(prefix string) bool {
 	defer f.mu.Unlock()
 	for _, c := range f.calls {
 		if strings.HasPrefix(c, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+func (f *fakeRuntime) hasImage(image string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, got := range f.images {
+		if got == image {
 			return true
 		}
 	}
@@ -148,6 +163,9 @@ func TestWriteRedisConfig_Persistent(t *testing.T) {
 	content := string(data)
 	if !strings.Contains(content, "replicaof 10.0.0.1 6379") {
 		t.Error("expected replicaof in config")
+	}
+	if !strings.Contains(content, "masterauth pass") {
+		t.Error("expected masterauth in replica config")
 	}
 	if !strings.Contains(content, "appendonly yes") {
 		t.Error("expected appendonly yes")
@@ -465,15 +483,16 @@ func TestInstanceCreate_Redis_FullFlow(t *testing.T) {
 	a, fake := newTestAgentWithFake(t)
 	r := a.Router()
 	w := doAgentRequest(r, "POST", "/instance/create", apitypes.CreateInstanceRequest{
-		Name:     "myinst",
-		Category: "cache",
-		Engine:   "redis",
-		Type:     "standalone",
-		Server:   "srv1",
-		Port:     6379,
-		Memory:   "4Gi",
-		CPUs:     2,
-		Password: "pass123",
+		Name:        "myinst",
+		Category:    "cache",
+		Engine:      "redis",
+		EngineImage: "docker.io/redis:7",
+		Type:        "standalone",
+		Server:      "srv1",
+		Port:        6379,
+		Memory:      "4Gi",
+		CPUs:        2,
+		Password:    "pass123",
 	})
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
@@ -504,21 +523,67 @@ func TestInstanceCreate_Redis_FullFlow(t *testing.T) {
 	if !fake.hasCalled("Create:redis:redis-myinst") {
 		t.Errorf("expected Create call, got %v", fake.calls)
 	}
+	if !fake.hasImage("docker.io/redis:7") {
+		t.Errorf("expected default redis image, got %v", fake.images)
+	}
+}
+
+func TestInstanceCreate_Redis_WithEngineVersion(t *testing.T) {
+	a, fake := newTestAgentWithFake(t)
+	r := a.Router()
+	w := doAgentRequest(r, "POST", "/instance/create", apitypes.CreateInstanceRequest{
+		Name:          "myinst",
+		Category:      "cache",
+		Engine:        "redis",
+		EngineVersion: "6.2",
+		EngineImage:   "docker.io/redis:6.2",
+		Type:          "standalone",
+		Server:        "srv1",
+		Port:          6379,
+		Memory:        "4Gi",
+		CPUs:          2,
+	})
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if !fake.hasImage("docker.io/redis:6.2") {
+		t.Errorf("expected redis 6.2 image, got %v", fake.images)
+	}
+}
+
+func TestInstanceCreate_MissingEngineImage(t *testing.T) {
+	a, _ := newTestAgentWithFake(t)
+	r := a.Router()
+	w := doAgentRequest(r, "POST", "/instance/create", apitypes.CreateInstanceRequest{
+		Name:          "myinst",
+		Category:      "cache",
+		Engine:        "redis",
+		EngineVersion: "6.2",
+		Type:          "standalone",
+		Server:        "srv1",
+		Port:          6379,
+		Memory:        "4Gi",
+		CPUs:          2,
+	})
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", w.Code, w.Body.String())
+	}
 }
 
 func TestInstanceCreate_Kvrocks_FullFlow(t *testing.T) {
 	a, fake := newTestAgentWithFake(t)
 	r := a.Router()
 	w := doAgentRequest(r, "POST", "/instance/create", apitypes.CreateInstanceRequest{
-		Name:     "kvinst",
-		Category: "persistent",
-		Engine:   "kvrocks",
-		Type:     "standalone",
-		Server:   "srv1",
-		Port:     6666,
-		Memory:   "8Gi",
-		CPUs:     4,
-		Password: "kvpass",
+		Name:        "kvinst",
+		Category:    "persistent",
+		Engine:      "kvrocks",
+		EngineImage: "docker.io/apache/kvrocks:2.15.0",
+		Type:        "standalone",
+		Server:      "srv1",
+		Port:        6666,
+		Memory:      "8Gi",
+		CPUs:        4,
+		Password:    "kvpass",
 	})
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
@@ -539,15 +604,16 @@ func TestInstanceCreate_Persistent_FullFlow(t *testing.T) {
 	a, _ := newTestAgentWithFake(t)
 	r := a.Router()
 	w := doAgentRequest(r, "POST", "/instance/create", apitypes.CreateInstanceRequest{
-		Name:     "persist",
-		Category: "persistent",
-		Engine:   "redis",
-		Type:     "standalone",
-		Server:   "srv1",
-		Port:     6380,
-		Memory:   "8Gi",
-		CPUs:     4,
-		Password: "pass",
+		Name:        "persist",
+		Category:    "persistent",
+		Engine:      "redis",
+		EngineImage: "docker.io/redis:7",
+		Type:        "standalone",
+		Server:      "srv1",
+		Port:        6380,
+		Memory:      "8Gi",
+		CPUs:        4,
+		Password:    "pass",
 	})
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())

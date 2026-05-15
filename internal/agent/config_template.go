@@ -67,6 +67,8 @@ auto-aof-rewrite-min-size 64mb
 
 {{ if .ReplicaOf }}
 replicaof {{ .ReplicaOf }}
+{{ if .Password }}masterauth {{ .Password }}
+{{ end }}
 replica-read-only yes
 replica-serve-stale-data no
 replica-priority 100

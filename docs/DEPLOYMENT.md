@@ -91,6 +91,19 @@ ports:
     start: 16500
     end: 16619
 
+# 实例版本目录由 Server 统一维护，Agent 只执行 Server 下发的镜像
+images:
+  redis:
+    default: "7"
+    versions:
+      "5": docker.io/redis:5
+      "6.2": docker.io/redis:6.2
+      "7": docker.io/redis:7
+  kvrocks:
+    default: "2.15.0"
+    versions:
+      "2.15.0": docker.io/apache/kvrocks:2.15.0
+
 log:
   dir: /opt/redis-server/logs
   stdout: true

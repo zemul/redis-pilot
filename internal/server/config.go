@@ -35,15 +35,21 @@ type SentinelConfig struct {
 	ParallelSyncs         int      `yaml:"parallel_syncs"`
 }
 
+type EngineImageConfig struct {
+	Default  string            `yaml:"default"`
+	Versions map[string]string `yaml:"versions"`
+}
+
 type Config struct {
-	Port           int            `yaml:"port"`
-	Token          string         `yaml:"token"`
-	DataDir        string         `yaml:"data_dir"`
-	EnvoyDir       string         `yaml:"envoy_dir"`        // Envoy 配置输出目录，为空则不生成
-	EnvoyReloadCmd string         `yaml:"envoy_reload_cmd"` // 写完配置后执行的重载命令，为空则跳过
-	Ports          PortConfig     `yaml:"ports"`
-	Sentinel       SentinelConfig `yaml:"sentinel"`
-	Log            LogConfig      `yaml:"log"`
+	Port           int                          `yaml:"port"`
+	Token          string                       `yaml:"token"`
+	DataDir        string                       `yaml:"data_dir"`
+	EnvoyDir       string                       `yaml:"envoy_dir"`        // Envoy 配置输出目录，为空则不生成
+	EnvoyReloadCmd string                       `yaml:"envoy_reload_cmd"` // 写完配置后执行的重载命令，为空则跳过
+	Ports          PortConfig                   `yaml:"ports"`
+	Images         map[string]EngineImageConfig `yaml:"images"`
+	Sentinel       SentinelConfig               `yaml:"sentinel"`
+	Log            LogConfig                    `yaml:"log"`
 }
 
 func LoadConfig(path string) (*Config, error) {
@@ -55,6 +61,7 @@ func LoadConfig(path string) (*Config, error) {
 			EnvoyAuto:   PortRange{Start: 16379, End: 16499},
 			EnvoyMaster: PortRange{Start: 16500, End: 16619},
 		},
+		Images: defaultImageConfig(),
 		Sentinel: SentinelConfig{
 			Enabled:               true,
 			Nodes:                 nil,
@@ -76,5 +83,51 @@ func LoadConfig(path string) (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
-	return cfg, yaml.Unmarshal(data, cfg)
+	if err := yaml.Unmarshal(data, cfg); err != nil {
+		return nil, err
+	}
+	normalizeImageConfig(cfg)
+	return cfg, nil
+}
+
+func defaultImageConfig() map[string]EngineImageConfig {
+	return map[string]EngineImageConfig{
+		"redis": {
+			Default: "7",
+			Versions: map[string]string{
+				"5":   "docker.io/redis:5",
+				"6.2": "docker.io/redis:6.2",
+				"7":   "docker.io/redis:7",
+			},
+		},
+		"kvrocks": {
+			Default: "2.15.0",
+			Versions: map[string]string{
+				"2.15.0": "docker.io/apache/kvrocks:2.15.0",
+			},
+		},
+	}
+}
+
+func normalizeImageConfig(cfg *Config) {
+	defaults := defaultImageConfig()
+	if cfg.Images == nil {
+		cfg.Images = defaults
+		return
+	}
+	for engine, def := range defaults {
+		current := cfg.Images[engine]
+		if current.Default == "" {
+			current.Default = def.Default
+		}
+		if current.Versions == nil {
+			current.Versions = map[string]string{}
+		}
+		for version, image := range def.Versions {
+			if current.Versions[version] == "" {
+				current.Versions[version] = image
+			}
+		}
+		cfg.Images[engine] = current
+	}
 }
