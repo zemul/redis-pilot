@@ -10,9 +10,9 @@ DASHBOARD_DIR := web/dashboard
 DEPLOY_SERVER := redis01
 DEPLOY_AGENTS := redis01 redis02 redis03
 
-.PHONY: all clean dashboard $(BINS) build-linux deploy deploy-server deploy-agent deploy-cli setup
+.PHONY: all clean dashboard $(BINS) xds build-linux deploy deploy-server deploy-agent deploy-cli setup
 
-all: $(BINS)
+all: $(BINS) xds
 
 server: dashboard
 
@@ -22,6 +22,9 @@ dashboard:
 
 $(BINS):
 	go build $(GOFLAGS) -ldflags '$(LDFLAGS)' -o $(OUT)/redis-$@ ./cmd/$@
+
+xds:
+	go build $(GOFLAGS) -ldflags '$(LDFLAGS)' -o $(OUT)/redis-pilot-xds ./cmd/xds
 
 clean:
 	rm -rf $(OUT)

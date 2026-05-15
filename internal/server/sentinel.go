@@ -554,7 +554,6 @@ func (s *Server) handleSentinelFailover(group, newMasterAddr, source, operator s
 		Params: map[string]interface{}{"source": source},
 		Detail: detail,
 	})
-	s.refreshEnvoy()
 	s.syncSentinel()
 	return nil
 }

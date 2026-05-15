@@ -1,0 +1,14 @@
+listen: 0.0.0.0:18000
+
+server:
+  endpoint: http://127.0.0.1:8008
+  token: ""
+
+poll:
+  interval: 2s
+  timeout: 1s
+
+envoy:
+  node_ids:
+    - redis-pilot-envoy
+

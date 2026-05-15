@@ -121,24 +121,25 @@
 
 ---
 
-### 1.4 Envoy 代理管理 (`/envoy` 路由)
+### 1.4 Envoy xDS 代理控制面
 
 | API 路径 | 方法 | 功能 | 实现函数 |
 |---------|------|------|---------|
-| `/envoy/config` | GET | 生成 Envoy 配置（YAML 格式） | `envoyConfig()` |
-| `/envoy/route/update` | POST | 更新并写入 Envoy 配置，触发重载 | `envoyRouteUpdate()` |
+| `/api/v1/proxy/snapshot` | GET | 返回代理层结构化快照 | `proxySnapshot()` |
+| `/proxy/snapshot` | GET | 返回代理层结构化快照 | `proxySnapshot()` |
 
-**Envoy 配置生成逻辑**:
+**xDS 配置生成逻辑**:
 1. 按主库名聚合实例组（主库 + 所有从库）
-2. 为每个实例组创建业务 Listener:
+2. `redis-pilot-xds` 为每个实例组创建业务 Listener:
    - **MASTER 端口** (`MasterPort`): 后端仅包含主库，所有命令都走主库
    - **AUTO 端口** (`AutoPort`): 默认走主库，读命令通过 `read_command_policy` 走从库
 3. 创建 master/replica Cluster，master 指向当前主库，replica 指向所有从库
-4. 配置 Redis 健康检查（5s 间隔，2 次失败标记不健康）
+4. Envoy 通过 LDS/CDS/EDS 动态接收 Listener、Cluster、Endpoint
 
 **自动刷新机制**:
-- 实例创建/删除/拓扑变更后自动调用 `refreshEnvoy()`
-- 支持自定义重载命令（`EnvoyReloadCmd` 配置）
+- `redis-pilot-xds` 定时轮询 Server proxy snapshot
+- snapshot 版本变化后推送新的 xDS Snapshot
+- Server 不写 Envoy 配置文件，也不执行 Envoy reload
 
 ---
 
@@ -380,15 +381,9 @@ redis-pilot-cli backup set-schedule redis-1 --cron "0 2 * * *" --retention 7
   # 设置定时备份
 ```
 
-### 3.4 Envoy / Sentinel 命令
+### 3.4 Sentinel 命令
 
 ```bash
-redis-pilot-cli envoy config
-  # 查看生成的 Envoy 配置
-
-redis-pilot-cli envoy route-update
-  # 写入 Envoy 配置并执行 reload 命令
-
 redis-pilot-cli sentinel status
   # 查看已声明 Sentinel 节点状态
 

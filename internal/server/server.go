@@ -113,11 +113,8 @@ func (s *Server) Router() *gin.Engine {
 	r.GET("/health-check", s.healthCheck)
 	r.GET("/metrics", s.metricsCollect)
 
-	envoy := r.Group("/envoy")
-	{
-		envoy.POST("/route/update", s.envoyRouteUpdate)
-		envoy.GET("/config", s.envoyConfig)
-	}
+	r.GET("/proxy/snapshot", s.proxySnapshot)
+	r.GET("/api/v1/proxy/snapshot", s.proxySnapshot)
 
 	sentinel := r.Group("/sentinel")
 	{

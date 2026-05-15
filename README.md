@@ -77,7 +77,8 @@ redis-pilot-cli instance status my-cache
 │   ├── agent/           # Agent 入口
 │   └── cli/             # CLI 入口
 ├── internal/
-│   ├── server/          # Server: API handler、调度、Envoy 配置生成
+│   ├── server/          # Server: API handler、调度、代理层状态快照
+│   ├── xds/             # redis-pilot-xds: Envoy xDS 控制面
 │   ├── agent/           # Agent: 容器管理、健康检查、配置模板
 │   ├── state/           # YAML 状态文件读写 + 文件锁
 │   ├── audit/           # 审计日志（JSONL）
@@ -96,8 +97,6 @@ redis-pilot-cli instance status my-cache
 port: 8080
 token: ""                    # Bearer Token，空则不鉴权
 data_dir: /opt/redis-pilot-server/state
-envoy_dir: ""                # Envoy 配置输出目录
-envoy_reload_cmd: ""         # 配置变更后的重载命令
 ports:
   redis:          { start: 6379,  end: 6499  }
   envoy_auto:     { start: 16379, end: 16499 }
@@ -117,6 +116,23 @@ log:
   dir: /opt/redis-pilot-server/logs
   stdout: true
 ```
+
+### XDS (`xds.yaml`)
+
+```yaml
+listen: 0.0.0.0:18000
+server:
+  endpoint: http://127.0.0.1:8080
+  token: ""
+poll:
+  interval: 2s
+  timeout: 1s
+envoy:
+  node_ids:
+    - redis-pilot-envoy
+```
+
+Envoy 只保留 bootstrap 配置并连接 `redis-pilot-xds`，业务 Listener、Cluster、Endpoint 由 xDS 动态下发。
 
 ### Agent (`agent.yaml`)
 
@@ -162,9 +178,7 @@ redis-pilot-cli backup list <instance>
 redis-pilot-cli backup restore <instance> --backup-ts <timestamp>
 redis-pilot-cli backup set-schedule <instance> --cron "0 2 * * *" --retention 7
 
-# Envoy / Sentinel
-redis-pilot-cli envoy config
-redis-pilot-cli envoy route-update
+# Sentinel
 redis-pilot-cli sentinel status
 redis-pilot-cli sentinel sync
 ```

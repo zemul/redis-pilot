@@ -338,7 +338,6 @@ func (s *Server) instanceCreate(c *gin.Context) {
 	})
 
 	s.log.Infof("instance created: %s on %s", req.Name, req.Server)
-	s.refreshEnvoy()
 	s.syncSentinel()
 	ok(c, inst)
 }
@@ -453,7 +452,6 @@ func (s *Server) instanceDelete(c *gin.Context) {
 		group := inst.Group
 		s.removeSentinelMaster(group)
 	}
-	s.refreshEnvoy()
 	s.syncSentinel()
 	ok(c, nil)
 }
@@ -585,7 +583,6 @@ func (s *Server) instancePromote(c *gin.Context) {
 		Target:   map[string]interface{}{"instance": req.Name, "server": inst.Server},
 	})
 
-	s.refreshEnvoy()
 	s.syncSentinel()
 	ok(c, nil)
 }
@@ -669,7 +666,6 @@ func (s *Server) instanceReplicate(c *gin.Context) {
 		Params:   map[string]interface{}{"replica_of": req.ReplicaOf},
 	})
 
-	s.refreshEnvoy()
 	s.syncSentinel()
 	ok(c, nil)
 }

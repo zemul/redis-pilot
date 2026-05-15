@@ -74,7 +74,7 @@
 │  redis-pilot-cli backup-exec / restore / cleanup                 │
 │  redis-pilot-cli backup set-schedule / get-schedule              │
 │  redis-pilot-cli health-check / metrics-collect                  │
-│  redis-pilot-cli envoy-route-update                              │
+│  redis-pilot-cli sentinel status / sync                          │
 └──────────────────────────┬──────────────────────────────────┘
                            │ HTTP API (Token + HTTPS)
                            ▼
@@ -155,8 +155,8 @@
   GET  /backup/list             列出可用备份
 
 代理管理
-  POST /envoy/route/update      更新 Envoy 路由
-  GET  /envoy/config            查看当前 Envoy 配置
+  GET  /api/v1/proxy/snapshot   查看代理层结构化快照
+  GET  /proxy/snapshot          查看代理层结构化快照
 ```
 
 #### 部署
@@ -647,9 +647,9 @@ static_resources:
 > **说明**：
 > - RW cluster 只包含主库 endpoint，保证写入不会发到从库
 > - RO cluster 只包含从库 endpoint，从库不可用时该端口不可达
-> - Envoy 进程/容器属于预部署代理层，平台不负责创建 Envoy
-> - 配置由 Server 根据 instances-state 自动生成，拓扑变更后自动写入 `envoy_dir` 并执行 `envoy_reload_cmd`
-> - `envoy_dir` 为空时仅提供配置预览，不落盘、不重载；`envoy_reload_cmd` 只有在 Envoy 已部署并确认命令可用后才应配置
+> - Envoy 进程/容器属于独立数据面，平台不负责创建 Envoy
+> - Server 只暴露 proxy snapshot，不写 Envoy 配置文件，也不执行 reload
+> - `redis-pilot-xds` 轮询 Server snapshot，并通过 xDS 向 Envoy 动态发布 LDS/CDS/EDS
 
 #### 3.4.4 管理命令
 
@@ -1080,7 +1080,7 @@ podman run -d \
 ```
 1. 直连所有 Sentinel 节点执行 SENTINEL REMOVE <group>
 2. 从 instances-state 删除实例组
-3. 刷新 Envoy 配置
+3. 状态变更后 `redis-pilot-xds` 自动通过 xDS 推送新配置到 Envoy
 4. 写入审计日志
 ```
 
@@ -1127,7 +1127,7 @@ Server 启动时：
 2. 获取实例组编排锁
 3. 校验新 master 地址属于当前实例组
 4. 更新 `groups[group].current_master/topology_status`，并更新实例 `role` / `replica_of` / `status`
-5. 重新生成并落盘 Envoy 配置
+5. 状态变更后 `redis-pilot-xds` 自动通过 xDS 推送新配置到 Envoy
 6. 写 `topology.failover` 审计日志
 7. 释放编排锁
 
@@ -1141,7 +1141,7 @@ Server 启动时：
 | 直连 Sentinel 同步部分节点失败 | 成功节点数 >= quorum 则继续并告警；否则返回 warning 并等待 reconcile 重试 |
 | Sentinel 返回的新 master 不在 instances-state | 标记 `failover_conflict`，不自动改拓扑，触发人工介入 |
 | 新主库再次故障 | 不主动抢占 Sentinel，等待下一轮 Sentinel failover；编排锁超时后允许重新同步 |
-| Envoy 配置落盘失败 | 状态更新不得提交为 success，审计记录 failed，并保留旧配置 |
+| xDS 推送失败 | 不影响状态更新，xDS 下次轮询时自动重试推送 |
 
 #### 3.7.8 验证矩阵
 
@@ -1151,7 +1151,7 @@ Server 启动时：
 | Kvrocks 主库容器停止 | 行为同 Redis，需验证 `ROLE` / Sentinel failover / replication 状态兼容 |
 | Redis/Kvrocks 配置 requirepass | Sentinel auth-pass 生效，failover 成功 |
 | Sentinel 节点少于 quorum | 不发生自动故障转移，系统发出降级告警 |
-| Envoy 重启 | 从落盘配置恢复，业务端口不变化 |
+| Envoy 重启 | 通过 xDS 自动从控制面恢复配置，业务端口不变化 |
 
 ---
 
@@ -1187,7 +1187,8 @@ Skill: redis-create
   ├─5. health_check(server-c, 6379)
   │   → 验证 PONG + INFO 验证持久化配置生效
   │
-  ├─6. envoy_route_update(add, cache-1, server-c:6379, port=16381)
+  ├─6. state_update(instances-state, "cache-1", status=running, envoy.auto_port=16381)
+  │   → xDS 自动检测到 snapshot 变化并推送新配置到 Envoy
   │
   ├─7. state_update(instances-state, "cache-1", status=running)
   │   state_update(pool-state, server-c, allocated += 2Gi)
@@ -1249,8 +1250,8 @@ Skill: redis-create
   ├─7. health_check(server-b, 6379)
   │   → 验证 INFO replication: role=slave, master_link_status=up
   │
-  ├─8. envoy_route_update(add, order, master=server-a:6379,
-  │       replica=server-b:6379, rw_port=16379, w_port=16380)
+  ├─8. state_update(instances-state, envoy.auto_port=16379, envoy.master_port=16380)
+  │   → xDS 自动检测到 snapshot 变化并推送新配置到 Envoy
   │
   ├─9. state_update(instances-state, "order-master", status=running)
   │   state_update(instances-state, "order-replica", status=running)
@@ -1279,10 +1280,9 @@ Skill: redis-failover
   │   agent_exec(server-b, "instance/promote", { name: "order-replica" })
   │   → Agent: 执行 REPLICAOF NO ONE
   │
-  ├─3. 更新 Envoy 路由
-  │   envoy_route_update(update, order,
-  │       master=server-b:6379,
-  │       replicas=healthy_replicas)
+  ├─3. 更新状态（xDS 自动推送新路由到 Envoy）
+  │   state_update(instances-state, order, current_master=order-replica,
+  │       master=server-b:6379, replicas=healthy_replicas)
   │
   ├─4. 更新状态
   │   state_update(instances-state, order, current_master=order-replica)
@@ -1420,8 +1420,8 @@ Skill: redis-migrate
   │   agent_exec(server-a, "instance/stop", { name: "order-master" })
   │   agent_exec(server-a, "instance/delete", { name: "order-master" })
   │
-  ├─6. 更新 Envoy 路由
-  │   envoy_route_update(update, order,
+  ├─6. 更新状态（xDS 自动推送新路由到 Envoy）
+  │   state_update(instances-state, order,
   │       master=server-c:6379,
   │       replica=server-b:6379)
   │
@@ -1483,21 +1483,21 @@ Skill: redis-backup
 
 ```
 redis-create     → pool_query, port_allocate, agent_exec(create), health_check,
-                   envoy_route_update, state_update
+                   state_update (xDS 自动推送)
 
-redis-delete     → agent_exec(stop), agent_exec(delete), envoy_route_update, state_update
+redis-delete     → agent_exec(stop), agent_exec(delete), state_update (xDS 自动推送)
 
 redis-config     → agent_exec(config), health_check, state_update
 
 redis-scale      → pool_query, agent_exec(create/replicate), health_check,
-                   envoy_route_update, state_update
+                   state_update (xDS 自动推送)
 
 redis-migrate    → pool_query, agent_exec(create), agent_exec(promote),
                    agent_exec(replicate), agent_exec(stop/delete),
-                   envoy_route_update, state_update
+                   state_update (xDS 自动推送)
 
 redis-failover   → health_check, agent_exec(promote), agent_exec(create/replicate),
-                   envoy_route_update, state_update
+                   state_update (xDS 自动推送)
 
 redis-backup     → agent_exec(backup), agent_exec(restore), agent_exec(cleanup),
                    state_update
@@ -1505,8 +1505,6 @@ redis-backup     → agent_exec(backup), agent_exec(restore), agent_exec(cleanup
 redis-diagnose   → agent_exec(status), metrics_collect, AI 分析
 
 redis-status     → state_read, agent_exec(status), pool_query
-
-redis-envoy      → envoy_route_update, envoy_config_dump
 
 redis-inventory  → state_read, pool_query, audit_log_read(只读)
 

@@ -31,6 +31,41 @@ type EnvoyConfig struct {
 	MasterPort int `yaml:"master_port,omitempty" json:"master_port,omitempty"`
 }
 
+// ProxySnapshot is the stable, read-only view consumed by redis-pilot-xds.
+type ProxySnapshot struct {
+	Version     string          `json:"version"`
+	GeneratedAt string          `json:"generated_at"`
+	Listeners   []ProxyListener `json:"listeners"`
+	Clusters    []ProxyCluster  `json:"clusters"`
+}
+
+// ProxyListener describes one Envoy Redis proxy listener.
+type ProxyListener struct {
+	Name        string `json:"name"`
+	Group       string `json:"group"`
+	Mode        string `json:"mode"` // master | auto
+	Bind        string `json:"bind"`
+	Port        int    `json:"port"`
+	StatPrefix  string `json:"stat_prefix"`
+	Cluster     string `json:"cluster"`
+	ReadCluster string `json:"read_cluster,omitempty"`
+	Password    string `json:"password,omitempty"`
+	ReadPolicy  string `json:"read_policy"`
+}
+
+// ProxyCluster describes one logical upstream cluster.
+type ProxyCluster struct {
+	Name      string          `json:"name"`
+	Password  string          `json:"password,omitempty"`
+	Endpoints []ProxyEndpoint `json:"endpoints"`
+}
+
+// ProxyEndpoint is a concrete Redis/Kvrocks backend endpoint.
+type ProxyEndpoint struct {
+	Address string `json:"address"`
+	Port    int    `json:"port"`
+}
+
 // BackupConfig 备份配置
 type BackupConfig struct {
 	Schedule   string `yaml:"schedule"`
