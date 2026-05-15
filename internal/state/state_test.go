@@ -12,9 +12,9 @@ import (
 
 // ---------- Manager 读写测试 ----------
 
-func TestReadPool_FileNotExist(t *testing.T) {
+func TestReadNode_FileNotExist(t *testing.T) {
 	m := NewManager(t.TempDir())
-	ps, err := m.ReadPool()
+	ps, err := m.ReadNode()
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -26,7 +26,7 @@ func TestReadPool_FileNotExist(t *testing.T) {
 	}
 }
 
-func TestReadPool_ValidYAML(t *testing.T) {
+func TestReadNode_ValidYAML(t *testing.T) {
 	dir := t.TempDir()
 	yaml := `servers:
   srv1:
@@ -38,7 +38,7 @@ func TestReadPool_ValidYAML(t *testing.T) {
 		t.Fatal(err)
 	}
 	m := NewManager(dir)
-	ps, err := m.ReadPool()
+	ps, err := m.ReadNode()
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -57,10 +57,10 @@ func TestReadPool_ValidYAML(t *testing.T) {
 	}
 }
 
-func TestWritePool_ThenRead(t *testing.T) {
+func TestWriteNode_ThenRead(t *testing.T) {
 	m := NewManager(t.TempDir())
-	want := &apitypes.PoolState{
-		Servers: map[string]*apitypes.PoolServer{
+	want := &apitypes.NodeState{
+		Servers: map[string]*apitypes.NodeServer{
 			"srv1": {
 				Endpoint:  "10.0.0.1",
 				AgentPort: 8400,
@@ -70,10 +70,10 @@ func TestWritePool_ThenRead(t *testing.T) {
 			},
 		},
 	}
-	if err := m.WritePool(want); err != nil {
+	if err := m.WriteNode(want); err != nil {
 		t.Fatalf("write error: %v", err)
 	}
-	got, err := m.ReadPool()
+	got, err := m.ReadNode()
 	if err != nil {
 		t.Fatalf("read error: %v", err)
 	}

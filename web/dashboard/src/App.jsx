@@ -25,7 +25,7 @@ import {
 const TABS = [
   { id: 'dashboard', label: '大盘看板', icon: LayoutDashboard },
   { id: 'instances', label: '实例管理', icon: Database },
-  { id: 'servers', label: '服务器池', icon: Server },
+  { id: 'servers', label: '服务器节点', icon: Server },
   { id: 'audit', label: '操作审计', icon: List }
 ];
 
@@ -208,14 +208,14 @@ export default function App() {
     setLoading(true);
     setError('');
     try {
-      const [instanceData, poolData, auditData] = await Promise.all([
+      const [instanceData, nodeData, auditData] = await Promise.all([
         request('/instance/list'),
-        request('/pool/query'),
+        request('/node/list'),
         request('/audit/query')
       ]);
       setData({
         instances: instanceData || {},
-        servers: poolData || {},
+        servers: nodeData || {},
         audits: auditData?.records || auditData?.Records || []
       });
     } catch (err) {
@@ -231,15 +231,15 @@ export default function App() {
       setLoading(true);
       setError('');
       try {
-        const [instanceData, poolData, auditData] = await Promise.all([
+        const [instanceData, nodeData, auditData] = await Promise.all([
           request('/instance/list'),
-          request('/pool/query'),
+          request('/node/list'),
           request('/audit/query')
         ]);
         if (!ignore) {
           setData({
             instances: instanceData || {},
-            servers: poolData || {},
+            servers: nodeData || {},
             audits: auditData?.records || auditData?.Records || []
           });
         }
@@ -382,7 +382,7 @@ function DashboardView({ instances, servers, audits }) {
 
         <section className="panel">
           <div className="panel-header">
-            <h3>资源池与审计</h3>
+            <h3>节点与审计</h3>
             <Clock size={20} />
           </div>
           <div className="panel-body split-list">
@@ -590,7 +590,7 @@ function ReplicaRow({ item }) {
 
 function ServersView({ servers }) {
   if (servers.length === 0) {
-    return <section className="panel"><EmptyState icon={Server} title="暂无服务器" detail="资源池节点会从 pool-state.yaml 展示。" /></section>;
+    return <section className="panel"><EmptyState icon={Server} title="暂无服务器" detail="节点会从 pool-state.yaml 展示。" /></section>;
   }
 
   return (

@@ -11,7 +11,7 @@ export default defineConfig({
   server: {
     proxy: {
       '/instance': 'http://127.0.0.1:8080',
-      '/pool': 'http://127.0.0.1:8080',
+      '/node': 'http://127.0.0.1:8080',
       '/audit': 'http://127.0.0.1:8080',
       '/inventory': 'http://127.0.0.1:8080'
     }

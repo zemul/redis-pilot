@@ -14,7 +14,7 @@ import (
 
 type Manager struct {
 	dataDir string
-	poolMu  sync.RWMutex
+	nodeMu  sync.RWMutex
 	instMu  sync.RWMutex
 }
 
@@ -22,7 +22,7 @@ func NewManager(dataDir string) *Manager {
 	return &Manager{dataDir: dataDir}
 }
 
-func (m *Manager) poolStatePath() string {
+func (m *Manager) nodeStatePath() string {
 	return filepath.Join(m.dataDir, "pool-state.yaml")
 }
 
@@ -30,14 +30,14 @@ func (m *Manager) instancesStatePath() string {
 	return filepath.Join(m.dataDir, "instances-state.yaml")
 }
 
-func (m *Manager) ReadPool() (*apitypes.PoolState, error) {
-	m.poolMu.RLock()
-	defer m.poolMu.RUnlock()
+func (m *Manager) ReadNode() (*apitypes.NodeState, error) {
+	m.nodeMu.RLock()
+	defer m.nodeMu.RUnlock()
 
-	var state apitypes.PoolState
-	data, err := os.ReadFile(m.poolStatePath())
+	var state apitypes.NodeState
+	data, err := os.ReadFile(m.nodeStatePath())
 	if os.IsNotExist(err) {
-		state.Servers = make(map[string]*apitypes.PoolServer)
+		state.Servers = make(map[string]*apitypes.NodeServer)
 		return &state, nil
 	}
 	if err != nil {
@@ -47,25 +47,25 @@ func (m *Manager) ReadPool() (*apitypes.PoolState, error) {
 		return nil, err
 	}
 	if state.Servers == nil {
-		state.Servers = make(map[string]*apitypes.PoolServer)
+		state.Servers = make(map[string]*apitypes.NodeServer)
 	}
 	return &state, nil
 }
 
-func (m *Manager) WritePool(state *apitypes.PoolState) error {
-	m.poolMu.Lock()
-	defer m.poolMu.Unlock()
-	return writeYAML(m.poolStatePath(), state)
+func (m *Manager) WriteNode(state *apitypes.NodeState) error {
+	m.nodeMu.Lock()
+	defer m.nodeMu.Unlock()
+	return writeYAML(m.nodeStatePath(), state)
 }
 
-func (m *Manager) WithPool(fn func(*apitypes.PoolState) error) error {
-	m.poolMu.Lock()
-	defer m.poolMu.Unlock()
+func (m *Manager) WithNode(fn func(*apitypes.NodeState) error) error {
+	m.nodeMu.Lock()
+	defer m.nodeMu.Unlock()
 
-	var st apitypes.PoolState
-	data, err := os.ReadFile(m.poolStatePath())
+	var st apitypes.NodeState
+	data, err := os.ReadFile(m.nodeStatePath())
 	if os.IsNotExist(err) {
-		st.Servers = make(map[string]*apitypes.PoolServer)
+		st.Servers = make(map[string]*apitypes.NodeServer)
 	} else if err != nil {
 		return err
 	} else {
@@ -73,13 +73,13 @@ func (m *Manager) WithPool(fn func(*apitypes.PoolState) error) error {
 			return err
 		}
 		if st.Servers == nil {
-			st.Servers = make(map[string]*apitypes.PoolServer)
+			st.Servers = make(map[string]*apitypes.NodeServer)
 		}
 	}
 	if err := fn(&st); err != nil {
 		return err
 	}
-	return writeYAML(m.poolStatePath(), &st)
+	return writeYAML(m.nodeStatePath(), &st)
 }
 
 func (m *Manager) ReadInstances() (*apitypes.InstancesState, error) {

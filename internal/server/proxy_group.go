@@ -16,7 +16,7 @@ type instanceGroup struct {
 }
 
 // buildInstanceGroups按稳定实例组聚合，提取代理端口和后端地址。
-func (s *Server) buildInstanceGroups(instances *apitypes.InstancesState, pool *apitypes.PoolState) map[string]*instanceGroup {
+func (s *Server) buildInstanceGroups(instances *apitypes.InstancesState, node *apitypes.NodeState) map[string]*instanceGroup {
 	groups := make(map[string]*instanceGroup)
 
 	for groupName, group := range instances.Groups {
@@ -32,7 +32,7 @@ func (s *Server) buildInstanceGroups(instances *apitypes.InstancesState, pool *a
 			if inst == nil || inst.Group != groupName || inst.Status != "running" {
 				continue
 			}
-			srv := pool.Servers[inst.Server]
+			srv := node.Servers[inst.Server]
 			if srv == nil {
 				continue
 			}

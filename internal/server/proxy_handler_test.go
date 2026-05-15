@@ -9,13 +9,13 @@ import (
 
 func TestProxySnapshot(t *testing.T) {
 	s := newTestServer(t, "")
-	if err := s.state.WritePool(&apitypes.PoolState{
-		Servers: map[string]*apitypes.PoolServer{
+	if err := s.state.WriteNode(&apitypes.NodeState{
+		Servers: map[string]*apitypes.NodeServer{
 			"srv1": {Endpoint: "10.0.0.1"},
 			"srv2": {Endpoint: "10.0.0.2"},
 		},
 	}); err != nil {
-		t.Fatalf("WritePool() error = %v", err)
+		t.Fatalf("WriteNode() error = %v", err)
 	}
 	if err := s.state.WriteInstances(&apitypes.InstancesState{
 		Groups: map[string]*apitypes.InstanceGroupState{

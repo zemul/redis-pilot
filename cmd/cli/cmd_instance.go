@@ -13,9 +13,9 @@ var instanceCmd = &cobra.Command{
 }
 
 var instanceListCmd = &cobra.Command{
-	Use:     "list",
-	Short:   "List all instances",
-	Long:    "List all instances with their status, engine, role, and server.",
+	Use:   "list",
+	Short: "List all instances",
+	Long:  "List all instances with their status, engine, role, and server.",
 	Example: `  redis-pilot-cli instance list
   redis-pilot-cli instance list --group order`,
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -213,7 +213,7 @@ func init() {
 	instanceCreateCmd.Flags().String("engine", "redis", "Engine: redis | kvrocks")
 	instanceCreateCmd.Flags().String("engine-version", "", "Engine version (redis: 5, 6.2, 7; kvrocks: 2.15.0)")
 	instanceCreateCmd.Flags().String("type", "standalone", "Topology: standalone | replication")
-	instanceCreateCmd.Flags().String("node", "", "Target node name (from pool)")
+	instanceCreateCmd.Flags().String("node", "", "Target node name")
 	instanceCreateCmd.Flags().String("memory", "1Gi", "Memory")
 	instanceCreateCmd.Flags().String("disk", "", "Disk quota for capacity planning (e.g. 20Gi)")
 	instanceCreateCmd.Flags().Int("cpus", 1, "CPU cores")

@@ -15,13 +15,13 @@ func TestSelectSentinelNodes_ConfiguredOnly(t *testing.T) {
 		Nodes:   []string{"srv-c", "srv-a", "srv-c", "missing"},
 		Quorum:  2,
 	}
-	pool := &apitypes.PoolState{Servers: map[string]*apitypes.PoolServer{
+	node := &apitypes.NodeState{Servers: map[string]*apitypes.NodeServer{
 		"srv-a": {Status: "healthy", Labels: map[string]string{"zone": "az-1", "role": "production"}},
 		"srv-b": {Status: "healthy", Labels: map[string]string{"zone": "az-1", "role": "production"}},
 		"srv-c": {Status: "healthy", Labels: map[string]string{"zone": "az-2", "role": "production"}},
 		"srv-d": {Status: "healthy", Labels: map[string]string{"zone": "az-3", "role": "standby"}},
 	}}
-	got := s.selectSentinelNodes(pool)
+	got := s.selectSentinelNodes(node)
 	want := []string{"srv-c", "srv-a"}
 	if len(got) != len(want) {
 		t.Fatalf("expected configured sentinel nodes %v, got %v", want, got)
@@ -39,7 +39,7 @@ func TestBuildSentinelMasters(t *testing.T) {
 		FailoverTimeout:       40000,
 		ParallelSyncs:         2,
 	}}}
-	pool := &apitypes.PoolState{Servers: map[string]*apitypes.PoolServer{
+	node := &apitypes.NodeState{Servers: map[string]*apitypes.NodeServer{
 		"srv-a": {Endpoint: "10.0.1.10"},
 		"srv-b": {Endpoint: "10.0.1.11"},
 	}}
@@ -60,7 +60,7 @@ func TestBuildSentinelMasters(t *testing.T) {
 			},
 		},
 	}
-	masters := s.buildSentinelMasters(pool, instances)
+	masters := s.buildSentinelMasters(node, instances)
 	if len(masters) != 1 {
 		t.Fatalf("expected one monitored master, got %#v", masters)
 	}
@@ -110,7 +110,7 @@ func TestParseSwitchMasterMessage(t *testing.T) {
 
 func TestSentinelEventEndpoint(t *testing.T) {
 	s := newTestServer(t, "")
-	s.state.WritePool(&apitypes.PoolState{Servers: map[string]*apitypes.PoolServer{
+	s.state.WriteNode(&apitypes.NodeState{Servers: map[string]*apitypes.NodeServer{
 		"srv-a": {Endpoint: "10.0.1.10"},
 		"srv-b": {Endpoint: "10.0.1.11"},
 	}})
@@ -147,7 +147,7 @@ func TestSentinelEventEndpoint(t *testing.T) {
 
 func TestHandleSentinelFailover_UpdatesState(t *testing.T) {
 	s := newTestServer(t, "")
-	s.state.WritePool(&apitypes.PoolState{Servers: map[string]*apitypes.PoolServer{
+	s.state.WriteNode(&apitypes.NodeState{Servers: map[string]*apitypes.NodeServer{
 		"srv-a": {Endpoint: "10.0.1.10"},
 		"srv-b": {Endpoint: "10.0.1.11"},
 		"srv-c": {Endpoint: "10.0.1.12"},
@@ -209,7 +209,7 @@ func TestHandleSentinelFailover_UpdatesState(t *testing.T) {
 
 func TestHandleSentinelFailover_NoOpWhenAlreadySynchronized(t *testing.T) {
 	s := newTestServer(t, "")
-	s.state.WritePool(&apitypes.PoolState{Servers: map[string]*apitypes.PoolServer{
+	s.state.WriteNode(&apitypes.NodeState{Servers: map[string]*apitypes.NodeServer{
 		"srv-a": {Endpoint: "10.0.1.10"},
 		"srv-b": {Endpoint: "10.0.1.11"},
 	}})

@@ -137,8 +137,8 @@ systemctl enable --now redis-server
 ### 2.5 验证
 
 ```bash
-curl http://localhost:8080/pool/query
-# 应返回 {"servers":{}} 或类似空资源池响应
+curl http://localhost:8080/node/list
+# 应返回 {"servers":{}} 或类似空节点响应
 ```
 
 ---
@@ -386,24 +386,24 @@ redis-cli -p 16500 PING
 
 ---
 
-## 7. 注册服务器到资源池
+## 7. 注册服务器到节点
 
-部署完所有 Agent 后，将服务器注册到 Server 的资源池：
+部署完所有 Agent 后，将服务器注册到 Server 的节点：
 
 ```bash
-redis-tool pool-add server-a 10.0.1.10 8400
-redis-tool pool-add server-b 10.0.1.11 8400
-redis-tool pool-add server-c 10.0.1.12 8400
+redis-pilot-cli node add server-a 10.0.1.10 8400
+redis-pilot-cli node add server-b 10.0.1.11 8400
+redis-pilot-cli node add server-c 10.0.1.12 8400
 
 # 可选：设置标签用于调度
-redis-tool pool-update server-a --labels zone=az-1,role=production
-redis-tool pool-update server-b --labels zone=az-2,role=production
+redis-pilot-cli node update server-a --labels zone=az-1,role=production
+redis-pilot-cli node update server-b --labels zone=az-2,role=production
 ```
 
 验证：
 
 ```bash
-redis-tool pool-query
+redis-pilot-cli node list
 ```
 
 ---
@@ -474,7 +474,7 @@ redis-tool instance-status test-cache
 ├── redis-pilot-server            # Server 二进制
 ├── server.yaml                   # 配置
 ├── state/
-│   ├── pool-state.yaml           # 服务器资源池
+│   ├── pool-state.yaml           # 服务器节点
 │   └── instances-state.yaml      # 实例状态
 ├── audit/
 │   └── audit-YYYYMMDD.jsonl      # 审计日志

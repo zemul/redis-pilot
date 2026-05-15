@@ -15,7 +15,7 @@ type agentClient struct {
 	token    string
 }
 
-func newAgentClient(server *apitypes.PoolServer) *agentClient {
+func newAgentClient(server *apitypes.NodeServer) *agentClient {
 	return &agentClient{
 		endpoint: fmt.Sprintf("http://%s:%d", server.Endpoint, server.AgentPort),
 		token:    server.AgentToken,

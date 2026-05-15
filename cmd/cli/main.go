@@ -48,7 +48,7 @@ func init() {
 	rootCmd.PersistentFlags().String("operator", "", "Operator identifier for audit logs")
 
 	rootCmd.AddCommand(versionCmd)
-	rootCmd.AddCommand(poolCmd)
+	rootCmd.AddCommand(nodeCmd)
 	rootCmd.AddCommand(instanceCmd)
 	rootCmd.AddCommand(backupCmd)
 	rootCmd.AddCommand(inventoryCmd)

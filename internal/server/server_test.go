@@ -66,7 +66,7 @@ func parseResponse(t *testing.T, w *httptest.ResponseRecorder) apitypes.APIRespo
 func TestAuthMiddleware_NoToken(t *testing.T) {
 	s := newTestServer(t, "")
 	r := s.Router()
-	w := doRequest(r, "GET", "/pool/query", nil)
+	w := doRequest(r, "GET", "/node/list", nil)
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", w.Code)
 	}
@@ -75,7 +75,7 @@ func TestAuthMiddleware_NoToken(t *testing.T) {
 func TestAuthMiddleware_ValidToken(t *testing.T) {
 	s := newTestServer(t, "secret")
 	r := s.Router()
-	w := doRequestWithAuth(r, "GET", "/pool/query", "secret", nil)
+	w := doRequestWithAuth(r, "GET", "/node/list", "secret", nil)
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", w.Code)
 	}
@@ -84,7 +84,7 @@ func TestAuthMiddleware_ValidToken(t *testing.T) {
 func TestAuthMiddleware_InvalidToken(t *testing.T) {
 	s := newTestServer(t, "secret")
 	r := s.Router()
-	w := doRequestWithAuth(r, "GET", "/pool/query", "wrong", nil)
+	w := doRequestWithAuth(r, "GET", "/node/list", "wrong", nil)
 	if w.Code != http.StatusUnauthorized {
 		t.Fatalf("expected 401, got %d", w.Code)
 	}
@@ -93,7 +93,7 @@ func TestAuthMiddleware_InvalidToken(t *testing.T) {
 func TestAuthMiddleware_MissingToken(t *testing.T) {
 	s := newTestServer(t, "secret")
 	r := s.Router()
-	w := doRequest(r, "GET", "/pool/query", nil)
+	w := doRequest(r, "GET", "/node/list", nil)
 	if w.Code != http.StatusUnauthorized {
 		t.Fatalf("expected 401, got %d", w.Code)
 	}
@@ -114,12 +114,12 @@ func TestDashboard_NoAuthRequired(t *testing.T) {
 	}
 }
 
-// ---------- Pool Handlers ----------
+// ---------- Node Handlers ----------
 
-func TestPoolQuery_Empty(t *testing.T) {
+func TestNodeQuery_Empty(t *testing.T) {
 	s := newTestServer(t, "")
 	r := s.Router()
-	w := doRequest(r, "GET", "/pool/query", nil)
+	w := doRequest(r, "GET", "/node/list", nil)
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", w.Code)
 	}
@@ -129,7 +129,7 @@ func TestPoolQuery_Empty(t *testing.T) {
 	}
 }
 
-func TestPoolAdd_Success(t *testing.T) {
+func TestNodeAdd_Success(t *testing.T) {
 	s := newTestServer(t, "")
 	r := s.Router()
 	body := map[string]interface{}{
@@ -140,68 +140,68 @@ func TestPoolAdd_Success(t *testing.T) {
 			"status":     "healthy",
 		},
 	}
-	w := doRequest(r, "POST", "/pool/add", body)
+	w := doRequest(r, "POST", "/node/add", body)
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
 	}
 
 	// 验证写入
-	w = doRequest(r, "GET", "/pool/query", nil)
+	w = doRequest(r, "GET", "/node/list", nil)
 	resp := parseResponse(t, w)
 	data, _ := json.Marshal(resp.Data)
-	var pool apitypes.PoolState
-	json.Unmarshal(data, &pool)
-	if _, ok := pool.Servers["srv1"]; !ok {
+	var node apitypes.NodeState
+	json.Unmarshal(data, &node)
+	if _, ok := node.Servers["srv1"]; !ok {
 		t.Fatal("srv1 should exist after add")
 	}
 }
 
-func TestPoolAdd_Duplicate(t *testing.T) {
+func TestNodeAdd_Duplicate(t *testing.T) {
 	s := newTestServer(t, "")
 	r := s.Router()
 	body := map[string]interface{}{
 		"name":   "srv1",
 		"server": map[string]interface{}{"endpoint": "10.0.0.1", "agent_port": 8400},
 	}
-	doRequest(r, "POST", "/pool/add", body)
-	w := doRequest(r, "POST", "/pool/add", body)
+	doRequest(r, "POST", "/node/add", body)
+	w := doRequest(r, "POST", "/node/add", body)
 	if w.Code != http.StatusConflict {
 		t.Fatalf("expected 409, got %d", w.Code)
 	}
 }
 
-func TestPoolRemove_Success(t *testing.T) {
+func TestNodeRemove_Success(t *testing.T) {
 	s := newTestServer(t, "")
 	r := s.Router()
 	// 先添加
-	doRequest(r, "POST", "/pool/add", map[string]interface{}{
+	doRequest(r, "POST", "/node/add", map[string]interface{}{
 		"name":   "srv1",
 		"server": map[string]interface{}{"endpoint": "10.0.0.1", "agent_port": 8400},
 	})
 	// 再删除
-	w := doRequest(r, "POST", "/pool/remove", map[string]interface{}{"name": "srv1"})
+	w := doRequest(r, "POST", "/node/remove", map[string]interface{}{"name": "srv1"})
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", w.Code)
 	}
 }
 
-func TestPoolRemove_NotFound(t *testing.T) {
+func TestNodeRemove_NotFound(t *testing.T) {
 	s := newTestServer(t, "")
 	r := s.Router()
-	w := doRequest(r, "POST", "/pool/remove", map[string]interface{}{"name": "nonexistent"})
+	w := doRequest(r, "POST", "/node/remove", map[string]interface{}{"name": "nonexistent"})
 	if w.Code != http.StatusNotFound {
 		t.Fatalf("expected 404, got %d", w.Code)
 	}
 }
 
-func TestPoolUpdate_Success(t *testing.T) {
+func TestNodeUpdate_Success(t *testing.T) {
 	s := newTestServer(t, "")
 	r := s.Router()
-	doRequest(r, "POST", "/pool/add", map[string]interface{}{
+	doRequest(r, "POST", "/node/add", map[string]interface{}{
 		"name":   "srv1",
 		"server": map[string]interface{}{"endpoint": "10.0.0.1", "agent_port": 8400, "status": "healthy"},
 	})
-	w := doRequest(r, "POST", "/pool/update", map[string]interface{}{
+	w := doRequest(r, "POST", "/node/update", map[string]interface{}{
 		"name":   "srv1",
 		"server": map[string]interface{}{"endpoint": "10.0.0.2", "agent_port": 8400, "status": "drain"},
 	})
@@ -210,10 +210,10 @@ func TestPoolUpdate_Success(t *testing.T) {
 	}
 }
 
-func TestPoolUpdate_NotFound(t *testing.T) {
+func TestNodeUpdate_NotFound(t *testing.T) {
 	s := newTestServer(t, "")
 	r := s.Router()
-	w := doRequest(r, "POST", "/pool/update", map[string]interface{}{
+	w := doRequest(r, "POST", "/node/update", map[string]interface{}{
 		"name":   "nonexistent",
 		"server": map[string]interface{}{"endpoint": "10.0.0.1"},
 	})
@@ -318,9 +318,9 @@ func TestInstanceCreate_WithFakeAgent(t *testing.T) {
 	// 解析 fake agent 地址
 	agentHost, agentPort := fakeAgentHostPort(fakeAgent.Listener.Addr().String())
 
-	// 添加 server 到 pool，指向 fake agent
-	s.state.WritePool(&apitypes.PoolState{
-		Servers: map[string]*apitypes.PoolServer{
+	// 添加 server 到 node，指向 fake agent
+	s.state.WriteNode(&apitypes.NodeState{
+		Servers: map[string]*apitypes.NodeServer{
 			"srv1": {
 				Endpoint:  agentHost,
 				AgentPort: agentPort,
@@ -375,8 +375,8 @@ func TestInstanceCreate_RoleMaster(t *testing.T) {
 	defer fakeAgent.Close()
 	s := newTestServer(t, "")
 	agentHost, agentPort := fakeAgentHostPort(fakeAgent.Listener.Addr().String())
-	s.state.WritePool(&apitypes.PoolState{
-		Servers: map[string]*apitypes.PoolServer{
+	s.state.WriteNode(&apitypes.NodeState{
+		Servers: map[string]*apitypes.NodeServer{
 			"srv1": {Endpoint: agentHost, AgentPort: agentPort, Status: "healthy"},
 		},
 	})
@@ -397,8 +397,8 @@ func TestInstanceCreate_RoleReplica(t *testing.T) {
 	defer fakeAgent.Close()
 	s := newTestServer(t, "")
 	agentHost, agentPort := fakeAgentHostPort(fakeAgent.Listener.Addr().String())
-	s.state.WritePool(&apitypes.PoolState{
-		Servers: map[string]*apitypes.PoolServer{
+	s.state.WriteNode(&apitypes.NodeState{
+		Servers: map[string]*apitypes.NodeServer{
 			"srv1": {Endpoint: agentHost, AgentPort: agentPort, Status: "healthy"},
 		},
 	})
@@ -441,8 +441,8 @@ func TestInstanceDelete_WithFakeAgent(t *testing.T) {
 	r := s.Router()
 
 	agentHost, agentPort := fakeAgentHostPort(fakeAgent.Listener.Addr().String())
-	s.state.WritePool(&apitypes.PoolState{
-		Servers: map[string]*apitypes.PoolServer{
+	s.state.WriteNode(&apitypes.NodeState{
+		Servers: map[string]*apitypes.NodeServer{
 			"srv1": {
 				Endpoint:  agentHost,
 				AgentPort: agentPort,
@@ -497,8 +497,8 @@ func TestReconcile_AllConsistent(t *testing.T) {
 
 	s := newTestServer(t, "")
 	agentHost, agentPort := fakeAgentHostPort(agent.Listener.Addr().String())
-	s.state.WritePool(&apitypes.PoolState{
-		Servers: map[string]*apitypes.PoolServer{
+	s.state.WriteNode(&apitypes.NodeState{
+		Servers: map[string]*apitypes.NodeServer{
 			"srv1": {Endpoint: agentHost, AgentPort: agentPort},
 		},
 	})
@@ -531,8 +531,8 @@ func TestReconcile_CreatingButRunning(t *testing.T) {
 
 	s := newTestServer(t, "")
 	agentHost, agentPort := fakeAgentHostPort(agent.Listener.Addr().String())
-	s.state.WritePool(&apitypes.PoolState{
-		Servers: map[string]*apitypes.PoolServer{
+	s.state.WriteNode(&apitypes.NodeState{
+		Servers: map[string]*apitypes.NodeServer{
 			"srv1": {Endpoint: agentHost, AgentPort: agentPort},
 		},
 	})
@@ -561,8 +561,8 @@ func TestReconcile_RunningButStopped(t *testing.T) {
 
 	s := newTestServer(t, "")
 	agentHost, agentPort := fakeAgentHostPort(agent.Listener.Addr().String())
-	s.state.WritePool(&apitypes.PoolState{
-		Servers: map[string]*apitypes.PoolServer{
+	s.state.WriteNode(&apitypes.NodeState{
+		Servers: map[string]*apitypes.NodeServer{
 			"srv1": {Endpoint: agentHost, AgentPort: agentPort},
 		},
 	})
@@ -590,8 +590,8 @@ func TestReconcile_RunningButMissing(t *testing.T) {
 
 	s := newTestServer(t, "")
 	agentHost, agentPort := fakeAgentHostPort(agent.Listener.Addr().String())
-	s.state.WritePool(&apitypes.PoolState{
-		Servers: map[string]*apitypes.PoolServer{
+	s.state.WriteNode(&apitypes.NodeState{
+		Servers: map[string]*apitypes.NodeServer{
 			"srv1": {Endpoint: agentHost, AgentPort: agentPort},
 		},
 	})
@@ -620,8 +620,8 @@ func TestReconcile_FailedButRunning(t *testing.T) {
 
 	s := newTestServer(t, "")
 	agentHost, agentPort := fakeAgentHostPort(agent.Listener.Addr().String())
-	s.state.WritePool(&apitypes.PoolState{
-		Servers: map[string]*apitypes.PoolServer{
+	s.state.WriteNode(&apitypes.NodeState{
+		Servers: map[string]*apitypes.NodeServer{
 			"srv1": {Endpoint: agentHost, AgentPort: agentPort},
 		},
 	})

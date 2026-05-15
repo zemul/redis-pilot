@@ -21,7 +21,7 @@ func (s *Server) inventory(c *gin.Context) {
 		fail(c, http.StatusInternalServerError, err.Error())
 		return
 	}
-	pool, err := s.state.ReadPool()
+	node, err := s.state.ReadNode()
 	if err != nil {
 		fail(c, http.StatusInternalServerError, err.Error())
 		return
@@ -31,9 +31,9 @@ func (s *Server) inventory(c *gin.Context) {
 	case "port":
 		ok(c, s.buildPortView(instances, portFilter, engineFilter))
 	case "server":
-		ok(c, s.buildServerView(instances, pool, serverFilter, engineFilter))
+		ok(c, s.buildServerView(instances, node, serverFilter, engineFilter))
 	default:
-		ok(c, s.buildSummaryView(instances, pool, engineFilter))
+		ok(c, s.buildSummaryView(instances, node, engineFilter))
 	}
 }
 
@@ -88,7 +88,7 @@ func (s *Server) buildPortView(instances *apitypes.InstancesState, portFilter, e
 	return items
 }
 
-func (s *Server) buildServerView(instances *apitypes.InstancesState, pool *apitypes.PoolState, serverFilter, engineFilter string) map[string]*apitypes.ServerInventoryItem {
+func (s *Server) buildServerView(instances *apitypes.InstancesState, node *apitypes.NodeState, serverFilter, engineFilter string) map[string]*apitypes.ServerInventoryItem {
 	result := make(map[string]*apitypes.ServerInventoryItem)
 
 	for name, inst := range instances.Instances {
@@ -107,7 +107,7 @@ func (s *Server) buildServerView(instances *apitypes.InstancesState, pool *apity
 			ip := ""
 			totalMem := ""
 			totalCPU := 0
-			if ps, ok := pool.Servers[inst.Server]; ok {
+			if ps, ok := node.Servers[inst.Server]; ok {
 				ip = ps.Endpoint
 				totalMem = ps.Capacity.Memory
 				totalCPU = ps.Capacity.CPUCores
@@ -145,7 +145,7 @@ func (s *Server) buildServerView(instances *apitypes.InstancesState, pool *apity
 	return result
 }
 
-func (s *Server) buildSummaryView(instances *apitypes.InstancesState, pool *apitypes.PoolState, engineFilter string) *apitypes.InventorySummary {
+func (s *Server) buildSummaryView(instances *apitypes.InstancesState, node *apitypes.NodeState, engineFilter string) *apitypes.InventorySummary {
 	summary := &apitypes.InventorySummary{}
 	servers := make(map[string]bool)
 	totalCPU := 0

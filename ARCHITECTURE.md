@@ -14,7 +14,7 @@
 
 - **单点 / 主从实例**的创建、配置、删除、查看
 - **自动备份与备份管理**（创建、恢复、轮转、清理）
-- **服务器资源池化**，实例按资源状态智能分配
+- **服务器节点化**，实例按资源状态智能分配
 - **实例迁移与故障转移**，跨服务器自动/手动切换
 - **统一代理**，通过 Envoy 对业务侧暴露标准化接入点
 - **问题诊断与可观测**，采集指标 + AI 辅助分析
@@ -68,7 +68,7 @@
 ┌─────────────────────────────────────────────────────────────┐
 │                    CLI (原子操作层)                            │
 │                                                              │
-│  redis-pilot-cli pool-query / pool-add / pool-remove / pool-update│
+│  redis-pilot-cli node-list / node-add / node-remove / node-update│
 │  redis-pilot-cli instance-create / delete / start / stop         │
 │  redis-pilot-cli instance-config / promote / replicate           │
 │  redis-pilot-cli backup-exec / restore / cleanup                 │
@@ -132,11 +132,11 @@
 #### API 定义
 
 ```
-资源池管理（纯本地，不调用 Agent）
-  GET  /pool/query              查询资源池状态
-  POST /pool/add                注册新服务器
-  POST /pool/remove             移除服务器
-  POST /pool/update             更新服务器信息
+节点管理（纯本地，不调用 Agent）
+  GET  /node/list              查询节点状态
+  POST /node/add                注册新服务器
+  POST /node/remove             移除服务器
+  POST /node/update             更新服务器信息
 
 实例管理（转发到目标服务器 Agent）
   POST /instance/create         创建实例
@@ -165,7 +165,7 @@
 /opt/redis-server/
   ├── server.yaml               # Server 自身配置
   ├── state/
-  │   ├── pool-state.yaml       # 服务器资源池（含各 Agent 连接信息和 Token）
+  │   ├── pool-state.yaml       # 服务器节点（含各 Agent 连接信息和 Token）
   │   └── instances-state.yaml
   └── audit/
       └── audit-YYYYMMDD.jsonl
@@ -318,7 +318,7 @@ GET /host/resources
 
 ---
 
-### 3.2 服务器资源池
+### 3.2 服务器节点
 
 #### 3.2.1 池状态文件
 
@@ -934,7 +934,7 @@ Sentinel 用于 Redis/Kvrocks 主从实例组的自动故障转移。Sentinel �
 
 #### 3.7.1 部署策略
 
-Sentinel 是 Redis 高可用控制面，不要求每台 Agent 都部署，但必须由运维提前规划并在 Server 配置中显式声明。Server 不根据当前 healthy Agent 自动选择 Sentinel 节点，避免控制面随资源池健康状态漂移。
+Sentinel 是 Redis 高可用控制面，不要求每台 Agent 都部署，但必须由运维提前规划并在 Server 配置中显式声明。Server 不根据当前 healthy Agent 自动选择 Sentinel 节点，避免控制面随节点健康状态漂移。
 
 | 声明的 Sentinel 节点 | Sentinel 数 | quorum | 处理策略 |
 |----------------------|-------------|--------|----------|
@@ -1164,7 +1164,7 @@ Server 启动时：
 
 Skill: redis-create
   │
-  ├─1. pool_query()
+  ├─1. node_list()
   │   → 确认 server-c 资源充足（2Gi 内存可用）
   │
   ├─2. port_allocate()
@@ -1203,7 +1203,7 @@ Skill: redis-create
 
 Skill: redis-create
   │
-  ├─1. pool_query()
+  ├─1. node_list()
   │   → 选择 server-a（剩余 36Gi，zone: az-1）→ 主库
   │   → 选择 server-b（剩余 28Gi，zone: az-2）→ 从库（不同 zone）
   │
@@ -1477,22 +1477,22 @@ Skill: redis-backup
 | `redis-envoy` | "代理管理" | 查看路由 / 更新配置 / 重载 Envoy |
 | `redis-inventory` | "资源清单" / "端口对应什么" | 从 instances-state + pool-state 派生端口/集群/用途映射表，支持按端口/服务器/引擎查询 |
 | `redis-audit` | "操作记录" / "谁做了什么" | 查询审计日志，支持按时间/实例/操作级别过滤 |
-| `redis-pool` | "添加服务器" / "移除服务器" | 维护 pool-state.yaml，注册/移除/更新服务器信息，纯本地操作 |
+| `redis-node` | "添加服务器" / "移除服务器" | 维护 pool-state.yaml，注册/移除/更新服务器信息，纯本地操作 |
 
 ### 5.2 Skill 与 Tool 映射
 
 ```
-redis-create     → pool_query, port_allocate, agent_exec(create), health_check,
+redis-create     → node_list, port_allocate, agent_exec(create), health_check,
                    state_update (xDS 自动推送)
 
 redis-delete     → agent_exec(stop), agent_exec(delete), state_update (xDS 自动推送)
 
 redis-config     → agent_exec(config), health_check, state_update
 
-redis-scale      → pool_query, agent_exec(create/replicate), health_check,
+redis-scale      → node_list, agent_exec(create/replicate), health_check,
                    state_update (xDS 自动推送)
 
-redis-migrate    → pool_query, agent_exec(create), agent_exec(promote),
+redis-migrate    → node_list, agent_exec(create), agent_exec(promote),
                    agent_exec(replicate), agent_exec(stop/delete),
                    state_update (xDS 自动推送)
 
@@ -1504,13 +1504,13 @@ redis-backup     → agent_exec(backup), agent_exec(restore), agent_exec(cleanup
 
 redis-diagnose   → agent_exec(status), metrics_collect, AI 分析
 
-redis-status     → state_read, agent_exec(status), pool_query
+redis-status     → state_read, agent_exec(status), node_list
 
-redis-inventory  → state_read, pool_query, audit_log_read(只读)
+redis-inventory  → state_read, node_list, audit_log_read(只读)
 
 redis-audit      → audit_log_read
 
-redis-pool       → pool_add, pool_remove, pool_update, pool_query  (纯本地，不调用 Agent API)
+redis-node       → node_add, node_remove, node_update, node_list  (纯本地，不调用 Agent API)
 ```
 
 ---
@@ -1827,7 +1827,7 @@ redis-diagnose Skill
 | Agent | 部署在每台服务器上的管理守护进程 |
 | Skill | GAL 中的编排单元，组合多个 Tool 完成运维场景 |
 | Tool | 原子操作，如创建实例、更新配置 |
-| Pool | 服务器资源池，统一管理多台服务器的资源分配 |
+| Node | 服务器节点，统一管理多台服务器的资源分配 |
 | 实例组 | 一个主库及其所有从库的集合 |
 | 持久化 | Redis 数据落盘（RDB + AOF） |
 | 故障转移 | 主库不可用时，自动/手动提升从库为新主库 |

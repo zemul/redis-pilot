@@ -60,7 +60,7 @@ type sentinelClusterStatus struct {
 }
 
 func (s *Server) sentinelStatus(c *gin.Context) {
-	pool, err := s.state.ReadPool()
+	nodeState, err := s.state.ReadNode()
 	if err != nil {
 		fail(c, http.StatusInternalServerError, err.Error())
 		return
@@ -71,9 +71,9 @@ func (s *Server) sentinelStatus(c *gin.Context) {
 		Port:    s.sentinelPort(),
 		Quorum:  s.sentinelQuorum(),
 	}
-	for _, name := range s.selectSentinelNodes(pool) {
+	for _, name := range s.selectSentinelNodes(nodeState) {
 		node := sentinelNodeStatus{Name: name}
-		srv := pool.Servers[name]
+		srv := nodeState.Servers[name]
 		if srv == nil || srv.Endpoint == "" {
 			node.Error = "server not found in pool-state"
 			result.Nodes = append(result.Nodes, node)
@@ -157,11 +157,11 @@ func (s *Server) watchSentinelNode(node string) {
 }
 
 func (s *Server) sentinelNodeAddress(node string) (string, error) {
-	pool, err := s.state.ReadPool()
+	nodeState, err := s.state.ReadNode()
 	if err != nil {
 		return "", err
 	}
-	srv := pool.Servers[node]
+	srv := nodeState.Servers[node]
 	if srv == nil || srv.Endpoint == "" {
 		return "", fmt.Errorf("sentinel node %s not found in pool-state", node)
 	}
@@ -210,15 +210,15 @@ func parseSwitchMasterMessage(reply interface{}) (string, bool) {
 }
 
 func (s *Server) confirmSentinelMaster(group string) (string, error) {
-	pool, err := s.state.ReadPool()
+	node, err := s.state.ReadNode()
 	if err != nil {
 		return "", err
 	}
-	nodes := s.selectSentinelNodes(pool)
+	nodes := s.selectSentinelNodes(node)
 	if len(nodes) == 0 {
 		return "", errors.New("no sentinel nodes configured")
 	}
-	return s.querySentinelMaster(pool, nodes, group)
+	return s.querySentinelMaster(node, nodes, group)
 }
 
 func (s *Server) reconcileSentinel() {
@@ -231,7 +231,7 @@ func (s *Server) reconcileSentinelOnce() error {
 	if !s.cfg.Sentinel.Enabled {
 		return nil
 	}
-	pool, err := s.state.ReadPool()
+	node, err := s.state.ReadNode()
 	if err != nil {
 		return err
 	}
@@ -239,7 +239,7 @@ func (s *Server) reconcileSentinelOnce() error {
 	if err != nil {
 		return err
 	}
-	nodes := s.selectSentinelNodes(pool)
+	nodes := s.selectSentinelNodes(node)
 	if len(nodes) == 0 {
 		s.log.Infof("sentinel reconcile skipped: no sentinel.nodes configured")
 		return nil
@@ -259,12 +259,12 @@ func (s *Server) reconcileSentinelOnce() error {
 		if inst == nil {
 			continue
 		}
-		endpoint := poolEndpoint(pool, inst.Server)
+		endpoint := nodeEndpoint(node, inst.Server)
 		if endpoint == "" {
 			continue
 		}
 		expected := fmt.Sprintf("%s:%d", endpoint, inst.Port)
-		current, err := s.querySentinelMaster(pool, nodes, groupName)
+		current, err := s.querySentinelMaster(node, nodes, groupName)
 		if err != nil {
 			s.log.Errorf("query sentinel master %s failed: %v", groupName, err)
 			continue
@@ -278,10 +278,10 @@ func (s *Server) reconcileSentinelOnce() error {
 	return nil
 }
 
-func (s *Server) querySentinelMaster(pool *apitypes.PoolState, nodes []string, group string) (string, error) {
+func (s *Server) querySentinelMaster(nodeState *apitypes.NodeState, nodes []string, group string) (string, error) {
 	var firstErr error
 	for _, node := range nodes {
-		srv := pool.Servers[node]
+		srv := nodeState.Servers[node]
 		if srv == nil || srv.Endpoint == "" {
 			continue
 		}
@@ -300,7 +300,7 @@ func (s *Server) querySentinelMaster(pool *apitypes.PoolState, nodes []string, g
 	return "", firstErr
 }
 
-func (s *Server) querySentinelStatus(srv *apitypes.PoolServer) (*apitypes.SentinelStatus, error) {
+func (s *Server) querySentinelStatus(srv *apitypes.NodeServer) (*apitypes.SentinelStatus, error) {
 	addr := fmt.Sprintf("%s:%d", srv.Endpoint, s.sentinelPort())
 	reply, err := sentinelCommand(addr, "SENTINEL", "MASTERS")
 	if err != nil {
@@ -473,11 +473,11 @@ func (s *Server) handleSentinelFailover(group, newMasterAddr, source, operator s
 			}
 		}()
 
-		pool, err := s.state.ReadPool()
+		node, err := s.state.ReadNode()
 		if err != nil {
 			return err
 		}
-		newMasterName = findInstanceByAddress(pool, instances, newMasterAddr)
+		newMasterName = findInstanceByAddress(node, instances, newMasterAddr)
 		if newMasterName == "" {
 			return fmt.Errorf("new master %s not found in instances-state", newMasterAddr)
 		}
@@ -558,12 +558,12 @@ func (s *Server) handleSentinelFailover(group, newMasterAddr, source, operator s
 	return nil
 }
 
-func findInstanceByAddress(pool *apitypes.PoolState, instances *apitypes.InstancesState, addr string) string {
+func findInstanceByAddress(node *apitypes.NodeState, instances *apitypes.InstancesState, addr string) string {
 	for name, inst := range instances.Instances {
 		if inst == nil {
 			continue
 		}
-		if fmt.Sprintf("%s:%d", poolEndpoint(pool, inst.Server), inst.Port) == addr {
+		if fmt.Sprintf("%s:%d", nodeEndpoint(node, inst.Server), inst.Port) == addr {
 			return name
 		}
 	}
@@ -594,7 +594,7 @@ func (s *Server) syncSentinelMasters() error {
 	if !s.cfg.Sentinel.Enabled {
 		return nil
 	}
-	pool, err := s.state.ReadPool()
+	node, err := s.state.ReadNode()
 	if err != nil {
 		return err
 	}
@@ -603,17 +603,17 @@ func (s *Server) syncSentinelMasters() error {
 		return err
 	}
 
-	nodes := s.selectSentinelNodes(pool)
+	nodes := s.selectSentinelNodes(node)
 	if !validSentinelNodeCount(len(nodes)) {
 		return fmt.Errorf("sentinel disabled: configure exactly 3 or 5 sentinel.nodes, got %d", len(nodes))
 	}
 
-	masters := s.buildSentinelMasters(pool, instances)
+	masters := s.buildSentinelMasters(node, instances)
 
 	var firstErr error
 	success := 0
 	for _, name := range nodes {
-		srv := pool.Servers[name]
+		srv := node.Servers[name]
 		if srv == nil || srv.Endpoint == "" {
 			continue
 		}
@@ -637,13 +637,13 @@ func (s *Server) removeSentinelMaster(group string) {
 	if !s.cfg.Sentinel.Enabled || group == "" {
 		return
 	}
-	pool, err := s.state.ReadPool()
+	node, err := s.state.ReadNode()
 	if err != nil {
-		s.log.Errorf("sentinel remove read pool: %v", err)
+		s.log.Errorf("sentinel remove read node: %v", err)
 		return
 	}
-	for _, name := range s.selectSentinelNodes(pool) {
-		srv := pool.Servers[name]
+	for _, name := range s.selectSentinelNodes(node) {
+		srv := node.Servers[name]
 		if srv == nil || srv.Endpoint == "" {
 			continue
 		}
@@ -693,7 +693,7 @@ func syncSentinelNode(addr string, desired []apitypes.SentinelMaster, quorum int
 	return nil
 }
 
-func (s *Server) buildSentinelMasters(pool *apitypes.PoolState, instances *apitypes.InstancesState) []apitypes.SentinelMaster {
+func (s *Server) buildSentinelMasters(node *apitypes.NodeState, instances *apitypes.InstancesState) []apitypes.SentinelMaster {
 	var masters []apitypes.SentinelMaster
 	for groupName, group := range instances.Groups {
 		if group == nil || group.Type != "replication" {
@@ -703,7 +703,7 @@ func (s *Server) buildSentinelMasters(pool *apitypes.PoolState, instances *apity
 		if inst == nil || inst.Role != "master" || inst.Status != "running" {
 			continue
 		}
-		endpoint := poolEndpoint(pool, inst.Server)
+		endpoint := nodeEndpoint(node, inst.Server)
 		if endpoint == "" {
 			continue
 		}
@@ -721,14 +721,14 @@ func (s *Server) buildSentinelMasters(pool *apitypes.PoolState, instances *apity
 	return masters
 }
 
-func (s *Server) selectSentinelNodes(pool *apitypes.PoolState) []string {
+func (s *Server) selectSentinelNodes(node *apitypes.NodeState) []string {
 	var selected []string
 	seen := map[string]bool{}
 	for _, name := range s.cfg.Sentinel.Nodes {
 		if name == "" || seen[name] {
 			continue
 		}
-		if pool.Servers[name] == nil {
+		if node.Servers[name] == nil {
 			s.log.Errorf("configured sentinel node %s not found in pool-state", name)
 			continue
 		}

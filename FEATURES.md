@@ -11,17 +11,17 @@
 
 ## 1. Server 端 API 功能
 
-### 1.1 资源池管理 (`/pool` 路由)
+### 1.1 节点管理 (`/node` 路由)
 
 | API 路径 | 方法 | 功能 | 实现函数 |
 |---------|------|------|---------|
-| `/pool/query` | GET | 查询所有服务器及资源分配情况 | `poolQuery()` |
-| `/pool/add` | POST | 注册新服务器到资源池 | `poolAdd()` |
-| `/pool/remove` | POST | 从资源池移除服务器 | `poolRemove()` |
-| `/pool/update` | POST | 更新服务器信息（容量、标签等） | `poolUpdate()` |
+| `/node/list` | GET | 查询所有服务器及资源分配情况 | `nodeQuery()` |
+| `/node/add` | POST | 注册新服务器到节点 | `nodeAdd()` |
+| `/node/remove` | POST | 从节点移除服务器 | `nodeRemove()` |
+| `/node/update` | POST | 更新服务器信息（容量、标签等） | `nodeUpdate()` |
 
 **关键数据结构**:
-- `PoolServer`: 服务器信息（IP、Agent 端口、容量、已分配资源、实例列表、状态、心跳时间）
+- `NodeServer`: 服务器信息（IP、Agent 端口、容量、已分配资源、实例列表、状态、心跳时间）
 - `ResourceSpec`: 资源规格（CPU 核数、内存、磁盘）
 
 ---
@@ -300,13 +300,13 @@ type metrics struct {
 
 ## 3. CLI 命令
 
-### 3.1 资源池命令
+### 3.1 节点命令
 
 ```bash
-redis-pilot-cli pool query
+redis-pilot-cli node list
   # 查询所有服务器及资源分配
 
-redis-pilot-cli pool add server-1 \
+redis-pilot-cli node add server-1 \
   --endpoint 192.168.1.10 \
   --agent-port 8400 \
   --agent-token xxx \
@@ -317,10 +317,10 @@ redis-pilot-cli pool add server-1 \
   --role production
   # 注册服务器
 
-redis-pilot-cli pool remove server-1
+redis-pilot-cli node remove server-1
   # 移除服务器
 
-redis-pilot-cli pool update server-1 --json server.json
+redis-pilot-cli node update server-1 --json server.json
   # 更新服务器信息
 ```
 
@@ -678,7 +678,7 @@ server.StartReconcileLoop()
 
 | 功能模块 | 已实现 | 关键特性 |
 |---------|-------|---------|
-| **资源池管理** | ✅ | 服务器注册、容量管理、资源分配追踪 |
+| **节点管理** | ✅ | 服务器注册、容量管理、资源分配追踪 |
 | **实例生命周期** | ✅ | 创建、删除、启动、停止、自动调度 |
 | **配置管理** | ✅ | 热更新、重启生效、配置覆盖 |
 | **拓扑管理** | ✅ | 主从复制、从库提升、自动 Replicas 维护 |

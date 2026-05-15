@@ -28,12 +28,12 @@ func (s *Server) buildProxySnapshot() (*apitypes.ProxySnapshot, error) {
 	if err != nil {
 		return nil, err
 	}
-	pool, err := s.state.ReadPool()
+	node, err := s.state.ReadNode()
 	if err != nil {
 		return nil, err
 	}
 
-	groups := s.buildInstanceGroups(instances, pool)
+	groups := s.buildInstanceGroups(instances, node)
 	groupNames := make([]string, 0, len(groups))
 	for name := range groups {
 		groupNames = append(groupNames, name)

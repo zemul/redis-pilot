@@ -1,7 +1,7 @@
 package apitypes
 
-// PoolServer 服务器资源池中的一台服务器
-type PoolServer struct {
+// NodeServer 服务器节点中的一台服务器
+type NodeServer struct {
 	Endpoint      string            `yaml:"endpoint" json:"endpoint"`
 	AgentPort     int               `yaml:"agent_port" json:"agent_port"`
 	AgentToken    string            `yaml:"agent_token" json:"agent_token"`
@@ -20,9 +20,9 @@ type ResourceSpec struct {
 	Disk     string `yaml:"disk" json:"disk"`
 }
 
-// PoolState pool-state.yaml 根结构
-type PoolState struct {
-	Servers map[string]*PoolServer `yaml:"servers"`
+// NodeState pool-state.yaml 根结构
+type NodeState struct {
+	Servers map[string]*NodeServer `yaml:"servers"`
 }
 
 // EnvoyConfig 实例组的 Envoy 端口配置

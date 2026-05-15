@@ -12,9 +12,9 @@ import (
 //  1. 过滤：排除 status != healthy
 //  2. 过滤：排除剩余资源不足的
 //  3. 排序：主从不同服务器 > 不同可用区 > 剩余资源最多
-func selectServer(pool *apitypes.PoolState, instances *apitypes.InstancesState, reqMemory string, reqCPUs int, reqDisk string, replicaOf string) (string, error) {
-	if len(pool.Servers) == 0 {
-		return "", fmt.Errorf("no servers in pool")
+func selectServer(node *apitypes.NodeState, instances *apitypes.InstancesState, reqMemory string, reqCPUs int, reqDisk string, replicaOf string) (string, error) {
+	if len(node.Servers) == 0 {
+		return "", fmt.Errorf("no servers in node")
 	}
 
 	reqMem := parseMemoryGi(reqMemory)
@@ -25,10 +25,10 @@ func selectServer(pool *apitypes.PoolState, instances *apitypes.InstancesState, 
 	if replicaOf != "" {
 		for _, inst := range instances.Instances {
 			if inst.Role == "master" {
-				addr := fmt.Sprintf("%s:%d", poolEndpoint(pool, inst.Server), inst.Port)
+				addr := fmt.Sprintf("%s:%d", nodeEndpoint(node, inst.Server), inst.Port)
 				if addr == replicaOf {
 					masterServer = inst.Server
-					if srv := pool.Servers[inst.Server]; srv != nil {
+					if srv := node.Servers[inst.Server]; srv != nil {
 						masterZone = srv.Labels["zone"]
 					}
 					break
@@ -46,7 +46,7 @@ func selectServer(pool *apitypes.PoolState, instances *apitypes.InstancesState, 
 	}
 
 	var candidates []candidate
-	for name, srv := range pool.Servers {
+	for name, srv := range node.Servers {
 		// 过滤不健康
 		if srv.Status != "healthy" && srv.Status != "" {
 			continue
@@ -100,8 +100,8 @@ func selectServer(pool *apitypes.PoolState, instances *apitypes.InstancesState, 
 	return candidates[0].name, nil
 }
 
-func poolEndpoint(pool *apitypes.PoolState, serverName string) string {
-	if srv := pool.Servers[serverName]; srv != nil {
+func nodeEndpoint(node *apitypes.NodeState, serverName string) string {
+	if srv := node.Servers[serverName]; srv != nil {
 		return srv.Endpoint
 	}
 	return ""

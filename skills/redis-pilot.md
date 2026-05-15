@@ -21,12 +21,12 @@ operator: ""
 
 ## 可用命令
 
-### 资源池管理
+### 节点管理
 ```
-redis-pilot-cli pool query                                      # 查看资源池
-redis-pilot-cli pool add <name> --endpoint <ip> --cpu <n> --memory <mem> [--disk <disk>]
-redis-pilot-cli pool remove <name>                  # 移除服务器
-redis-pilot-cli pool update <name> --json ./server.json          # 更新服务器信息
+redis-pilot-cli node list                                      # 查看节点
+redis-pilot-cli node add <name> --endpoint <ip> --cpu <n> --memory <mem> [--disk <disk>]
+redis-pilot-cli node remove <name>                  # 移除服务器
+redis-pilot-cli node update <name> --json ./server.json          # 更新服务器信息
 ```
 
 ### 实例管理

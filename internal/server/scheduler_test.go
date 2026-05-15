@@ -6,8 +6,8 @@ import (
 	"gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/pkg/apitypes"
 )
 
-func makePool(servers map[string]*apitypes.PoolServer) *apitypes.PoolState {
-	return &apitypes.PoolState{Servers: servers}
+func makeNode(servers map[string]*apitypes.NodeServer) *apitypes.NodeState {
+	return &apitypes.NodeState{Servers: servers}
 }
 
 func emptyInstances() *apitypes.InstancesState {
@@ -15,10 +15,10 @@ func emptyInstances() *apitypes.InstancesState {
 }
 
 func TestSelectServer_SingleHealthy(t *testing.T) {
-	pool := makePool(map[string]*apitypes.PoolServer{
+	node := makeNode(map[string]*apitypes.NodeServer{
 		"srv1": {Endpoint: "10.0.0.1", Status: "healthy", Capacity: apitypes.ResourceSpec{CPUCores: 8, Memory: "32Gi"}},
 	})
-	name, err := selectServer(pool, emptyInstances(), "4Gi", 2, "", "")
+	name, err := selectServer(node, emptyInstances(), "4Gi", 2, "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -28,11 +28,11 @@ func TestSelectServer_SingleHealthy(t *testing.T) {
 }
 
 func TestSelectServer_FilterUnhealthy(t *testing.T) {
-	pool := makePool(map[string]*apitypes.PoolServer{
+	node := makeNode(map[string]*apitypes.NodeServer{
 		"srv1": {Status: "unhealthy", Capacity: apitypes.ResourceSpec{CPUCores: 8, Memory: "32Gi"}},
 		"srv2": {Status: "healthy", Capacity: apitypes.ResourceSpec{CPUCores: 8, Memory: "32Gi"}},
 	})
-	name, err := selectServer(pool, emptyInstances(), "4Gi", 2, "", "")
+	name, err := selectServer(node, emptyInstances(), "4Gi", 2, "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -42,7 +42,7 @@ func TestSelectServer_FilterUnhealthy(t *testing.T) {
 }
 
 func TestSelectServer_FilterInsufficientMemory(t *testing.T) {
-	pool := makePool(map[string]*apitypes.PoolServer{
+	node := makeNode(map[string]*apitypes.NodeServer{
 		"srv1": {Status: "healthy", Capacity: apitypes.ResourceSpec{CPUCores: 8, Memory: "32Gi"}},
 		"srv2": {Status: "healthy", Capacity: apitypes.ResourceSpec{CPUCores: 8, Memory: "32Gi"}},
 	})
@@ -51,7 +51,7 @@ func TestSelectServer_FilterInsufficientMemory(t *testing.T) {
 			"big": {Server: "srv1", Memory: "30Gi", CPUs: 1, Status: "running"},
 		},
 	}
-	name, err := selectServer(pool, instances, "4Gi", 2, "", "")
+	name, err := selectServer(node, instances, "4Gi", 2, "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -61,7 +61,7 @@ func TestSelectServer_FilterInsufficientMemory(t *testing.T) {
 }
 
 func TestSelectServer_FilterInsufficientCPU(t *testing.T) {
-	pool := makePool(map[string]*apitypes.PoolServer{
+	node := makeNode(map[string]*apitypes.NodeServer{
 		"srv1": {Status: "healthy", Capacity: apitypes.ResourceSpec{CPUCores: 4, Memory: "32Gi"}},
 		"srv2": {Status: "healthy", Capacity: apitypes.ResourceSpec{CPUCores: 8, Memory: "32Gi"}},
 	})
@@ -70,7 +70,7 @@ func TestSelectServer_FilterInsufficientCPU(t *testing.T) {
 			"heavy": {Server: "srv1", Memory: "1Gi", CPUs: 3, Status: "running"},
 		},
 	}
-	name, err := selectServer(pool, instances, "4Gi", 2, "", "")
+	name, err := selectServer(node, instances, "4Gi", 2, "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -80,11 +80,11 @@ func TestSelectServer_FilterInsufficientCPU(t *testing.T) {
 }
 
 func TestSelectServer_PreferMoreResources(t *testing.T) {
-	pool := makePool(map[string]*apitypes.PoolServer{
+	node := makeNode(map[string]*apitypes.NodeServer{
 		"srv1": {Status: "healthy", Capacity: apitypes.ResourceSpec{CPUCores: 8, Memory: "16Gi"}},
 		"srv2": {Status: "healthy", Capacity: apitypes.ResourceSpec{CPUCores: 8, Memory: "64Gi"}},
 	})
-	name, err := selectServer(pool, emptyInstances(), "4Gi", 2, "", "")
+	name, err := selectServer(node, emptyInstances(), "4Gi", 2, "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -94,7 +94,7 @@ func TestSelectServer_PreferMoreResources(t *testing.T) {
 }
 
 func TestSelectServer_ReplicaAvoidMasterServer(t *testing.T) {
-	pool := makePool(map[string]*apitypes.PoolServer{
+	node := makeNode(map[string]*apitypes.NodeServer{
 		"srv1": {Endpoint: "10.0.0.1", Status: "healthy", Capacity: apitypes.ResourceSpec{CPUCores: 16, Memory: "64Gi"}},
 		"srv2": {Endpoint: "10.0.0.2", Status: "healthy", Capacity: apitypes.ResourceSpec{CPUCores: 8, Memory: "32Gi"}},
 	})
@@ -104,7 +104,7 @@ func TestSelectServer_ReplicaAvoidMasterServer(t *testing.T) {
 		},
 	}
 	// 从库应避开主库所在的 srv1，选 srv2
-	name, err := selectServer(pool, instances, "4Gi", 2, "", "10.0.0.1:6379")
+	name, err := selectServer(node, instances, "4Gi", 2, "", "10.0.0.1:6379")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -114,7 +114,7 @@ func TestSelectServer_ReplicaAvoidMasterServer(t *testing.T) {
 }
 
 func TestSelectServer_ReplicaPreferDifferentZone(t *testing.T) {
-	pool := makePool(map[string]*apitypes.PoolServer{
+	node := makeNode(map[string]*apitypes.NodeServer{
 		"srv1": {Endpoint: "10.0.0.1", Status: "healthy", Labels: map[string]string{"zone": "az-1"}, Capacity: apitypes.ResourceSpec{CPUCores: 8, Memory: "32Gi"}},
 		"srv2": {Endpoint: "10.0.0.2", Status: "healthy", Labels: map[string]string{"zone": "az-1"}, Capacity: apitypes.ResourceSpec{CPUCores: 8, Memory: "64Gi"}},
 		"srv3": {Endpoint: "10.0.0.3", Status: "healthy", Labels: map[string]string{"zone": "az-2"}, Capacity: apitypes.ResourceSpec{CPUCores: 8, Memory: "32Gi"}},
@@ -125,7 +125,7 @@ func TestSelectServer_ReplicaPreferDifferentZone(t *testing.T) {
 		},
 	}
 	// srv2 资源更多但和主库同 zone，应选 srv3（不同 zone）
-	name, err := selectServer(pool, instances, "4Gi", 2, "", "10.0.0.1:6379")
+	name, err := selectServer(node, instances, "4Gi", 2, "", "10.0.0.1:6379")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -135,7 +135,7 @@ func TestSelectServer_ReplicaPreferDifferentZone(t *testing.T) {
 }
 
 func TestSelectServer_NoResourcesAvailable(t *testing.T) {
-	pool := makePool(map[string]*apitypes.PoolServer{
+	node := makeNode(map[string]*apitypes.NodeServer{
 		"srv1": {Status: "healthy", Capacity: apitypes.ResourceSpec{CPUCores: 2, Memory: "4Gi"}},
 	})
 	instances := &apitypes.InstancesState{
@@ -143,16 +143,16 @@ func TestSelectServer_NoResourcesAvailable(t *testing.T) {
 			"full": {Server: "srv1", Memory: "4Gi", CPUs: 2, Status: "running"},
 		},
 	}
-	_, err := selectServer(pool, instances, "4Gi", 2, "", "")
+	_, err := selectServer(node, instances, "4Gi", 2, "", "")
 	if err == nil {
 		t.Fatal("expected error for no resources")
 	}
 }
 
-func TestSelectServer_EmptyPool(t *testing.T) {
-	pool := makePool(map[string]*apitypes.PoolServer{})
-	_, err := selectServer(pool, emptyInstances(), "4Gi", 2, "", "")
+func TestSelectServer_EmptyNode(t *testing.T) {
+	node := makeNode(map[string]*apitypes.NodeServer{})
+	_, err := selectServer(node, emptyInstances(), "4Gi", 2, "", "")
 	if err == nil {
-		t.Fatal("expected error for empty pool")
+		t.Fatal("expected error for empty node")
 	}
 }

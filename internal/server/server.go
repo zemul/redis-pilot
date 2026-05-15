@@ -77,12 +77,12 @@ func (s *Server) Router() *gin.Engine {
 
 	r.Use(s.authMiddleware())
 
-	pool := r.Group("/pool")
+	node := r.Group("/node")
 	{
-		pool.GET("/query", s.poolQuery)
-		pool.POST("/add", s.poolAdd)
-		pool.POST("/remove", s.poolRemove)
-		pool.POST("/update", s.poolUpdate)
+		node.GET("/list", s.nodeQuery)
+		node.POST("/add", s.nodeAdd)
+		node.POST("/remove", s.nodeRemove)
+		node.POST("/update", s.nodeUpdate)
 	}
 
 	instance := r.Group("/instance")

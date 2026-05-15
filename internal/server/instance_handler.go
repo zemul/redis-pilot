@@ -17,7 +17,7 @@ import (
 
 // resolveReplicaOf 将 replica_of 参数解析为 ip:port 和主库实例名。
 // 支持两种格式：实例名（如 "order-master"）或 ip:port（如 "10.0.1.10:6379"）。
-func resolveReplicaOf(pool *apitypes.PoolState, instances *apitypes.InstancesState, replicaOf string) (addr string, masterName string, err error) {
+func resolveReplicaOf(node *apitypes.NodeState, instances *apitypes.InstancesState, replicaOf string) (addr string, masterName string, err error) {
 	if replicaOf == "" {
 		return "", "", nil
 	}
@@ -25,7 +25,7 @@ func resolveReplicaOf(pool *apitypes.PoolState, instances *apitypes.InstancesSta
 		// ip:port 格式，反查实例名
 		for name, inst := range instances.Instances {
 			if inst.Role == "master" {
-				a := fmt.Sprintf("%s:%d", poolEndpoint(pool, inst.Server), inst.Port)
+				a := fmt.Sprintf("%s:%d", nodeEndpoint(node, inst.Server), inst.Port)
 				if a == replicaOf {
 					return replicaOf, name, nil
 				}
@@ -41,7 +41,7 @@ func resolveReplicaOf(pool *apitypes.PoolState, instances *apitypes.InstancesSta
 	if inst.Role != "master" {
 		return "", "", fmt.Errorf("replica_of target must be master, got %s", inst.Role)
 	}
-	endpoint := poolEndpoint(pool, inst.Server)
+	endpoint := nodeEndpoint(node, inst.Server)
 	if endpoint == "" {
 		return "", "", fmt.Errorf("cannot resolve endpoint for server: %s", inst.Server)
 	}
@@ -159,8 +159,8 @@ func (s *Server) instanceCreate(c *gin.Context) {
 	req.EngineVersion = resolvedVersion
 	req.EngineImage = engineImage
 
-	// 查找目标服务器（需要在原子操作外读 pool，因为调度需要 instances 快照）
-	pool, err := s.state.ReadPool()
+	// 查找目标服务器（需要在原子操作外读 node，因为调度需要 instances 快照）
+	node, err := s.state.ReadNode()
 	if err != nil {
 		fail(c, http.StatusInternalServerError, err.Error())
 		return
@@ -174,7 +174,7 @@ func (s *Server) instanceCreate(c *gin.Context) {
 	req.Group = strings.TrimSpace(req.Group)
 
 	var inst *apitypes.Instance
-	var srv *apitypes.PoolServer
+	var srv *apitypes.NodeServer
 	var masterName string
 	groupName := req.Group
 
@@ -187,7 +187,7 @@ func (s *Server) instanceCreate(c *gin.Context) {
 
 		// 解析 replica_of：支持实例名或 ip:port
 		if req.ReplicaOf != "" {
-			addr, mName, err := resolveReplicaOf(pool, instances, req.ReplicaOf)
+			addr, mName, err := resolveReplicaOf(node, instances, req.ReplicaOf)
 			if err != nil {
 				return err
 			}
@@ -240,14 +240,14 @@ func (s *Server) instanceCreate(c *gin.Context) {
 		}
 
 		if req.Server == "" {
-			selected, err := selectServer(pool, instances, req.Memory, req.CPUs, req.Disk, resolvedAddr)
+			selected, err := selectServer(node, instances, req.Memory, req.CPUs, req.Disk, resolvedAddr)
 			if err != nil {
 				return fmt.Errorf("schedule: %s", err.Error())
 			}
 			req.Server = selected
 		}
 		var exists bool
-		srv, exists = pool.Servers[req.Server]
+		srv, exists = node.Servers[req.Server]
 		if !exists {
 			return fmt.Errorf("server not found: %s", req.Server)
 		}
@@ -412,12 +412,12 @@ func (s *Server) instanceDelete(c *gin.Context) {
 	}
 	defer s.releaseLockGroup(group, sessionID)
 
-	pool, err := s.state.ReadPool()
+	node, err := s.state.ReadNode()
 	if err != nil {
 		fail(c, http.StatusInternalServerError, err.Error())
 		return
 	}
-	srv := pool.Servers[inst.Server]
+	srv := node.Servers[inst.Server]
 	if srv == nil {
 		fail(c, http.StatusBadRequest, "server not found: "+inst.Server)
 		return
@@ -616,9 +616,9 @@ func (s *Server) instanceReplicate(c *gin.Context) {
 	}
 
 	// 解析 replica_of：支持实例名或 ip:port
-	pool, _ := s.state.ReadPool()
+	node, _ := s.state.ReadNode()
 	instances, _ := s.state.ReadInstances()
-	resolvedAddr, masterName, err := resolveReplicaOf(pool, instances, req.ReplicaOf)
+	resolvedAddr, masterName, err := resolveReplicaOf(node, instances, req.ReplicaOf)
 	if err != nil {
 		fail(c, http.StatusBadRequest, err.Error())
 		return
@@ -938,7 +938,7 @@ func (s *Server) instanceSimpleOp(c *gin.Context, newStatus, agentPath, auditAct
 }
 
 // resolveInstance 查找实例及其所在服务器（只读操作用）
-func (s *Server) resolveInstance(c *gin.Context, name string) (*apitypes.Instance, *apitypes.PoolServer, error) {
+func (s *Server) resolveInstance(c *gin.Context, name string) (*apitypes.Instance, *apitypes.NodeServer, error) {
 	instances, err := s.state.ReadInstances()
 	if err != nil {
 		fail(c, http.StatusInternalServerError, err.Error())
@@ -950,12 +950,12 @@ func (s *Server) resolveInstance(c *gin.Context, name string) (*apitypes.Instanc
 		return nil, nil, fmt.Errorf("instance not found: %s", name)
 	}
 
-	pool, err := s.state.ReadPool()
+	node, err := s.state.ReadNode()
 	if err != nil {
 		fail(c, http.StatusInternalServerError, err.Error())
 		return nil, nil, err
 	}
-	srv := pool.Servers[inst.Server]
+	srv := node.Servers[inst.Server]
 	if srv == nil {
 		fail(c, http.StatusBadRequest, "server not found: "+inst.Server)
 		return nil, nil, fmt.Errorf("server not found: %s", inst.Server)
@@ -964,7 +964,7 @@ func (s *Server) resolveInstance(c *gin.Context, name string) (*apitypes.Instanc
 }
 
 // resolveAndLock 查找实例 + 对整个实例组加操作锁（写操作用）。返回 unlock 函数供 defer 调用。
-func (s *Server) resolveAndLock(c *gin.Context, name, operation string) (*apitypes.Instance, *apitypes.PoolServer, func(), error) {
+func (s *Server) resolveAndLock(c *gin.Context, name, operation string) (*apitypes.Instance, *apitypes.NodeServer, func(), error) {
 	sessionID := c.GetHeader("X-Session-ID")
 	if sessionID == "" {
 		sessionID = fmt.Sprintf("auto-%d", time.Now().UnixNano())
@@ -1000,13 +1000,13 @@ func (s *Server) resolveAndLock(c *gin.Context, name, operation string) (*apityp
 	}
 
 	// 加锁成功后查找服务器，失败时释放锁
-	pool, err := s.state.ReadPool()
+	node, err := s.state.ReadNode()
 	if err != nil {
 		s.releaseLockGroup(group, sessionID)
 		fail(c, http.StatusInternalServerError, err.Error())
 		return nil, nil, nil, err
 	}
-	srv := pool.Servers[inst.Server]
+	srv := node.Servers[inst.Server]
 	if srv == nil {
 		s.releaseLockGroup(group, sessionID)
 		fail(c, http.StatusBadRequest, "server not found: "+inst.Server)
@@ -1034,7 +1034,7 @@ func (s *Server) groupForInstance(name string) (*apitypes.InstanceGroupState, er
 }
 
 // resolveAndLockInternal 与 resolveAndLock 相同，但不依赖 gin.Context，供内部定时任务使用。
-func (s *Server) resolveAndLockInternal(name, operation string) (*apitypes.Instance, *apitypes.PoolServer, func(), error) {
+func (s *Server) resolveAndLockInternal(name, operation string) (*apitypes.Instance, *apitypes.NodeServer, func(), error) {
 	sessionID := fmt.Sprintf("scheduler-%d", time.Now().UnixNano())
 
 	var inst *apitypes.Instance
@@ -1060,12 +1060,12 @@ func (s *Server) resolveAndLockInternal(name, operation string) (*apitypes.Insta
 		return nil, nil, nil, err
 	}
 
-	pool, err := s.state.ReadPool()
+	node, err := s.state.ReadNode()
 	if err != nil {
 		s.releaseLockGroup(group, sessionID)
 		return nil, nil, nil, err
 	}
-	srv := pool.Servers[inst.Server]
+	srv := node.Servers[inst.Server]
 	if srv == nil {
 		s.releaseLockGroup(group, sessionID)
 		return nil, nil, nil, fmt.Errorf("server not found: %s", inst.Server)

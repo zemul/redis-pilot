@@ -5,7 +5,7 @@
 ## 特性
 
 - 单点 & 主从实例创建、配置、删除
-- 服务器资源池化与智能调度（跨可用区分布）
+- 服务器节点化与智能调度（跨可用区分布）
 - Envoy Redis Proxy 读写分离
 - 自动备份与恢复
 - Sentinel 事件监听 + 定期 reconcile 的故障转移同步与状态自愈
@@ -55,8 +55,8 @@ bin/redis-agent --config /opt/redis-pilot-agent/agent.yaml
 ### 注册服务器 & 创建实例
 
 ```bash
-# 注册服务器到资源池
-redis-pilot-cli pool add server-a --endpoint 10.0.1.10 --cpu 16 --memory 64Gi
+# 注册服务器到节点
+redis-pilot-cli node add server-a --endpoint 10.0.1.10 --cpu 16 --memory 64Gi
 
 # 创建单点缓存实例
 redis-pilot-cli instance create my-cache --group cache --engine redis --memory 2Gi
@@ -155,11 +155,11 @@ token: ""
 ## CLI 命令参考
 
 ```bash
-# 资源池
-redis-pilot-cli pool query
-redis-pilot-cli pool add <name> --endpoint <ip> --cpu <cores> --memory <size>
-redis-pilot-cli pool remove <name>
-redis-pilot-cli pool update <name> --json <server.json>
+# 节点
+redis-pilot-cli node list
+redis-pilot-cli node add <name> --endpoint <ip> --cpu <cores> --memory <size>
+redis-pilot-cli node remove <name>
+redis-pilot-cli node update <name> --json <server.json>
 
 # 实例
 redis-pilot-cli instance list

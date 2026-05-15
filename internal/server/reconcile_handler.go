@@ -41,7 +41,7 @@ func (s *Server) runReconcile() ([]ReconcileResult, error) {
 	if err != nil {
 		return nil, err
 	}
-	pool, err := s.state.ReadPool()
+	node, err := s.state.ReadNode()
 	if err != nil {
 		return nil, err
 	}
@@ -56,9 +56,9 @@ func (s *Server) runReconcile() ([]ReconcileResult, error) {
 	var patches []statusPatch
 
 	for serverName, instNames := range serverInstances {
-		srv := pool.Servers[serverName]
+		srv := node.Servers[serverName]
 		if srv == nil {
-			// 服务器不在 pool 中，所有实例标记异常
+			// 服务器不在 node 中，所有实例标记异常
 			for _, name := range instNames {
 				results = append(results, ReconcileResult{
 					Instance: name, Server: serverName,
