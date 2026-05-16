@@ -213,9 +213,15 @@ var instanceReplicateCmd = &cobra.Command{
 
 func init() {
 	instanceCmd.AddCommand(
-		instanceListCmd, instanceStatusCmd, instanceCreateCmd,
-		instanceStartCmd, instanceStopCmd, instanceConfigCmd,
-		instanceReplicateCmd, instancePromoteCmd, instanceDeleteCmd,
+		instanceListCmd,
+		instanceStatusCmd,
+		instanceCreateCmd,
+		instanceConfigCmd,
+		instanceStartCmd,
+		instanceStopCmd,
+		instanceReplicateCmd,
+		instancePromoteCmd,
+		instanceDeleteCmd,
 	)
 
 	instanceListCmd.Flags().String("group", "", "Filter by instance group")

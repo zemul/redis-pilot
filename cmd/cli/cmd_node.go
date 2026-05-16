@@ -106,7 +106,7 @@ var nodeUpdateCmd = &cobra.Command{
 }
 
 func init() {
-	nodeCmd.AddCommand(nodeQueryCmd, nodeAddCmd, nodeRemoveCmd, nodeUpdateCmd)
+	nodeCmd.AddCommand(nodeQueryCmd, nodeAddCmd, nodeUpdateCmd, nodeRemoveCmd)
 
 	nodeAddCmd.Flags().String("endpoint", "", "Node IP")
 	nodeAddCmd.Flags().Int("agent-port", 8400, "Agent port")

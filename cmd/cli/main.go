@@ -47,13 +47,14 @@ func init() {
 	rootCmd.PersistentFlags().String("token", "", "Auth token")
 	rootCmd.PersistentFlags().String("operator", "", "Operator identifier for audit logs")
 
-	rootCmd.AddCommand(versionCmd)
-	rootCmd.AddCommand(nodeCmd)
+	rootCmd.AddCommand(inventoryCmd)
 	rootCmd.AddCommand(instanceCmd)
 	rootCmd.AddCommand(backupCmd)
-	rootCmd.AddCommand(inventoryCmd)
+	rootCmd.AddCommand(nodeCmd)
 	rootCmd.AddCommand(sentinelCmd)
+	rootCmd.AddCommand(metricsCmd)
 	rootCmd.AddCommand(auditCmd)
+	rootCmd.AddCommand(versionCmd)
 }
 
 func main() {

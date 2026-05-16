@@ -10,7 +10,3 @@ var metricsCmd = &cobra.Command{
 		return checkResp(client.Get("/metrics?name=" + args[0]))
 	},
 }
-
-func init() {
-	rootCmd.AddCommand(metricsCmd)
-}

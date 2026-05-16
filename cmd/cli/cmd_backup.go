@@ -90,7 +90,13 @@ Set --cron "" to disable automatic backups.`,
 }
 
 func init() {
-	backupCmd.AddCommand(backupExecCmd, backupListCmd, backupSetScheduleCmd, backupGetScheduleCmd, backupRestoreCmd)
+	backupCmd.AddCommand(
+		backupListCmd,
+		backupExecCmd,
+		backupRestoreCmd,
+		backupGetScheduleCmd,
+		backupSetScheduleCmd,
+	)
 
 	backupRestoreCmd.Flags().String("backup-ts", "", "Backup timestamp")
 	backupRestoreCmd.MarkFlagRequired("backup-ts")
