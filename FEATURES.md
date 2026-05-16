@@ -195,7 +195,7 @@
 | API 路径 | 方法 | 功能 | 实现函数 |
 |---------|------|------|---------|
 | `/instance/list` | GET | 列出所有容器及运行状态 | `instanceList()` |
-| `/instance/status` | GET | 获取实例详细信息（INFO + 缓存指标） | `instanceStatus()` |
+| `/instance/status` | GET | 获取实例详细信息（实时 INFO） | `instanceStatus()` |
 | `/instance/create` | POST | 创建容器并启动 | `instanceCreate()` |
 | `/instance/start` | POST | 启动容器 | `instanceStart()` |
 | `/instance/stop` | POST | 停止容器 | `instanceStop()` |

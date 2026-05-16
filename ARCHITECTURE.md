@@ -73,7 +73,7 @@
 │  redis-pilot-cli instance-config / promote / replicate           │
 │  redis-pilot-cli backup-exec / restore / cleanup                 │
 │  redis-pilot-cli backup set-schedule / get-schedule              │
-│  redis-pilot-cli metrics                                          │
+│  redis-pilot-cli instance metrics                                 │
 │  redis-pilot-cli sentinel status / sync                          │
 └──────────────────────────┬──────────────────────────────────┘
                            │ HTTP API (Token + HTTPS)

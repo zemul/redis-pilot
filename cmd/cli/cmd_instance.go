@@ -49,6 +49,17 @@ var instanceStatusCmd = &cobra.Command{
 	},
 }
 
+var instanceMetricsCmd = &cobra.Command{
+	Use:     "metrics <name>",
+	Short:   "Show instance metrics",
+	Long:    "Show real-time Redis INFO output collected from the instance.",
+	Example: `  redis-pilot-cli instance metrics order-master`,
+	Args:    cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return checkResp(client.Get("/instance/metrics?name=" + url.QueryEscape(args[0])))
+	},
+}
+
 var instanceCreateCmd = &cobra.Command{
 	Use:   "create <name>",
 	Short: "Create an instance",
@@ -215,6 +226,7 @@ func init() {
 	instanceCmd.AddCommand(
 		instanceListCmd,
 		instanceStatusCmd,
+		instanceMetricsCmd,
 		instanceCreateCmd,
 		instanceConfigCmd,
 		instanceStartCmd,

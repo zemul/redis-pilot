@@ -384,7 +384,7 @@ func (a *Agent) instanceStatus(c *gin.Context) {
 		fail(c, http.StatusInternalServerError, err.Error())
 		return
 	}
-	ok(c, gin.H{"info": info, "cached_metrics": a.mon.get(name), "timestamp": time.Now().Format(time.RFC3339)})
+	ok(c, gin.H{"info": info, "timestamp": time.Now().Format(time.RFC3339)})
 }
 
 func (a *Agent) instanceBackup(c *gin.Context) {

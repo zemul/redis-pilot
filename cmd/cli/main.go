@@ -52,7 +52,6 @@ func init() {
 	rootCmd.AddCommand(backupCmd)
 	rootCmd.AddCommand(nodeCmd)
 	rootCmd.AddCommand(sentinelCmd)
-	rootCmd.AddCommand(metricsCmd)
 	rootCmd.AddCommand(auditCmd)
 	rootCmd.AddCommand(versionCmd)
 }

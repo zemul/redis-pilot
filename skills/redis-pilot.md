@@ -90,7 +90,7 @@ redis-pilot-cli inventory --view server             # 服务器视图
 
 ### 指标采集
 ```
-redis-pilot-cli metrics <name>                      # 采集 INFO + 缓存指标
+redis-pilot-cli instance metrics <name>             # 采集实时 INFO 指标
 ```
 
 ### 其他

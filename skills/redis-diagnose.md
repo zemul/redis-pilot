@@ -16,7 +16,7 @@ description: 诊断 Redis/Kvrocks 实例问题，采集指标并分析
 
 2. 采集关键指标（通过 Server 转发到 Agent metrics 接口）：
    ```
-   redis-pilot-cli metrics <name>
+   redis-pilot-cli instance metrics <name>
    ```
 
 3. 重点查看：
