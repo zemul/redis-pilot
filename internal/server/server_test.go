@@ -237,6 +237,72 @@ func TestInstanceList_Empty(t *testing.T) {
 	}
 }
 
+func TestInstanceList_FilterCommonFields(t *testing.T) {
+	s := newTestServer(t, "")
+	if err := s.state.WriteInstances(&apitypes.InstancesState{
+		Groups: map[string]*apitypes.InstanceGroupState{
+			"order": {
+				Type:           "replication",
+				Engine:         "redis",
+				EngineVersion:  "7",
+				Category:       "persistent",
+				CurrentMaster:  "order-master",
+				TopologyStatus: "healthy",
+			},
+			"session": {
+				Type:           "standalone",
+				Engine:         "kvrocks",
+				EngineVersion:  "2.15.0",
+				Category:       "cache",
+				CurrentMaster:  "session-cache",
+				TopologyStatus: "healthy",
+			},
+		},
+		Instances: map[string]*apitypes.Instance{
+			"order-master": {
+				Group:  "order",
+				Role:   "master",
+				Server: "redis01",
+				Status: "running",
+			},
+			"order-replica": {
+				Group:  "order",
+				Role:   "replica",
+				Server: "redis02",
+				Status: "running",
+			},
+			"session-cache": {
+				Group:  "session",
+				Role:   "master",
+				Server: "redis02",
+				Status: "stopped",
+			},
+		},
+	}); err != nil {
+		t.Fatalf("write instances: %v", err)
+	}
+
+	w := doRequest(s.Router(), "GET", "/instance/list?server=redis02&engine=redis&role=replica&status=running&category=persistent&engine_version=7", nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	resp := parseResponse(t, w)
+	data, _ := json.Marshal(resp.Data)
+	var got apitypes.InstancesState
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if len(got.Instances) != 1 {
+		t.Fatalf("expected 1 instance, got %d", len(got.Instances))
+	}
+	if _, ok := got.Instances["order-replica"]; !ok {
+		t.Fatalf("expected order-replica in filtered response, got %#v", got.Instances)
+	}
+	if len(got.Groups) != 1 || got.Groups["order"] == nil {
+		t.Fatalf("expected only order group, got %#v", got.Groups)
+	}
+}
+
 func TestInstanceStatus_NotFound(t *testing.T) {
 	s := newTestServer(t, "")
 	r := s.Router()
@@ -360,8 +426,8 @@ func TestInstanceCreate_WithFakeAgent(t *testing.T) {
 	if instances.Groups["cache"].Type != "standalone" {
 		t.Fatalf("expected group type standalone, got %s", instances.Groups["cache"].Type)
 	}
-	if inst.EngineVersion != "7" || instances.Groups["cache"].EngineVersion != "7" {
-		t.Fatalf("expected default redis version 7, got instance=%q group=%q", inst.EngineVersion, instances.Groups["cache"].EngineVersion)
+	if instances.Groups["cache"].EngineVersion != "7" {
+		t.Fatalf("expected default redis version 7, got group=%q", instances.Groups["cache"].EngineVersion)
 	}
 	if agentReq.EngineImage != "docker.io/redis:7" {
 		t.Fatalf("expected Server to send redis:7 image to Agent, got %q", agentReq.EngineImage)
@@ -417,8 +483,8 @@ func TestInstanceCreate_RoleReplica(t *testing.T) {
 	if instances.Instances["redis-r"].Group != "redis" {
 		t.Fatalf("expected replica to inherit group redis, got %s", instances.Instances["redis-r"].Group)
 	}
-	if instances.Instances["redis-r"].EngineVersion != "6.2" {
-		t.Fatalf("expected replica to inherit redis version 6.2, got %q", instances.Instances["redis-r"].EngineVersion)
+	if instances.Groups["redis"].EngineVersion != "6.2" {
+		t.Fatalf("expected replica group redis version 6.2, got %q", instances.Groups["redis"].EngineVersion)
 	}
 }
 

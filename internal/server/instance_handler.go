@@ -99,15 +99,36 @@ func (s *Server) instanceList(c *gin.Context) {
 		fail(c, http.StatusInternalServerError, err.Error())
 		return
 	}
-	if group := c.Query("group"); group != "" {
+
+	groupFilter := c.Query("group")
+	serverFilter := c.Query("server")
+	if serverFilter == "" {
+		serverFilter = c.Query("node")
+	}
+	engineFilter := c.Query("engine")
+	engineVersionFilter := c.Query("engine_version")
+	roleFilter := c.Query("role")
+	statusFilter := c.Query("status")
+	categoryFilter := c.Query("category")
+
+	if groupFilter != "" || serverFilter != "" || engineFilter != "" || engineVersionFilter != "" ||
+		roleFilter != "" || statusFilter != "" || categoryFilter != "" {
 		filteredGroups := make(map[string]*apitypes.InstanceGroupState)
-		if g, exists := state.Groups[group]; exists {
-			filteredGroups[group] = g
-		}
 		filteredInstances := make(map[string]*apitypes.Instance)
 		for name, inst := range state.Instances {
-			if inst.Group == group {
-				filteredInstances[name] = inst
+			group := state.Groups[inst.Group]
+			if !instanceMatchesListFilters(inst, group, groupFilter, serverFilter, engineFilter, engineVersionFilter, roleFilter, statusFilter, categoryFilter) {
+				continue
+			}
+			filteredInstances[name] = inst
+			if group != nil {
+				filteredGroups[inst.Group] = group
+			}
+		}
+		if groupFilter != "" && len(filteredInstances) == 0 && serverFilter == "" && engineFilter == "" &&
+			engineVersionFilter == "" && roleFilter == "" && statusFilter == "" && categoryFilter == "" {
+			if g, exists := state.Groups[groupFilter]; exists {
+				filteredGroups[groupFilter] = g
 			}
 		}
 		ok(c, &apitypes.InstancesState{
@@ -117,6 +138,37 @@ func (s *Server) instanceList(c *gin.Context) {
 		return
 	}
 	ok(c, state)
+}
+
+func instanceMatchesListFilters(inst *apitypes.Instance, group *apitypes.InstanceGroupState, groupFilter, serverFilter, engineFilter, engineVersionFilter, roleFilter, statusFilter, categoryFilter string) bool {
+	if groupFilter != "" && inst.Group != groupFilter {
+		return false
+	}
+	if serverFilter != "" && inst.Server != serverFilter {
+		return false
+	}
+	if roleFilter != "" && inst.Role != roleFilter {
+		return false
+	}
+	if statusFilter != "" && inst.Status != statusFilter {
+		return false
+	}
+	if engineFilter != "" {
+		if group == nil || group.Engine != engineFilter {
+			return false
+		}
+	}
+	if engineVersionFilter != "" {
+		if group == nil || group.EngineVersion != engineVersionFilter {
+			return false
+		}
+	}
+	if categoryFilter != "" {
+		if group == nil || group.Category != categoryFilter {
+			return false
+		}
+	}
+	return true
 }
 
 func (s *Server) instanceStatus(c *gin.Context) {
@@ -212,11 +264,7 @@ func (s *Server) instanceCreate(c *gin.Context) {
 			if group.Engine != req.Engine {
 				return fmt.Errorf("replica engine must match master group engine: %s", group.Engine)
 			}
-			if group.EngineVersion != "" {
-				req.EngineVersion = group.EngineVersion
-			} else if master.EngineVersion != "" {
-				req.EngineVersion = master.EngineVersion
-			}
+			req.EngineVersion = group.EngineVersion
 			_, engineImage, err = s.resolveEngineImage(req.Engine, req.EngineVersion)
 			if err != nil {
 				return err
@@ -280,7 +328,6 @@ func (s *Server) instanceCreate(c *gin.Context) {
 		inst = &apitypes.Instance{
 			Group:           groupName,
 			Role:            role,
-			EngineVersion:   req.EngineVersion,
 			Server:          req.Server,
 			Container:       req.Engine + "-" + req.Name,
 			Port:            req.Port,

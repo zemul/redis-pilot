@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"net/url"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -17,11 +18,21 @@ var instanceListCmd = &cobra.Command{
 	Short: "List all instances",
 	Long:  "List all instances with their status, engine, role, and server.",
 	Example: `  redis-pilot-cli instance list
-  redis-pilot-cli instance list --group order`,
+  redis-pilot-cli instance list --group order
+  redis-pilot-cli instance list --node redis01 --role replica --status running`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		path := "/instance/list"
-		if group, _ := cmd.Flags().GetString("group"); group != "" {
-			path += "?group=" + group
+		q := url.Values{}
+		for _, flag := range []string{"group", "engine", "role", "status", "category", "engine-version"} {
+			if value, _ := cmd.Flags().GetString(flag); value != "" {
+				q.Set(strings.ReplaceAll(flag, "-", "_"), value)
+			}
+		}
+		if node, _ := cmd.Flags().GetString("node"); node != "" {
+			q.Set("server", node)
+		}
+		if encoded := q.Encode(); encoded != "" {
+			path += "?" + encoded
 		}
 		return checkResp(client.Get(path))
 	},
@@ -208,6 +219,12 @@ func init() {
 	)
 
 	instanceListCmd.Flags().String("group", "", "Filter by instance group")
+	instanceListCmd.Flags().String("node", "", "Filter by node/server name")
+	instanceListCmd.Flags().String("engine", "", "Filter by engine: redis | kvrocks")
+	instanceListCmd.Flags().String("engine-version", "", "Filter by engine version")
+	instanceListCmd.Flags().String("role", "", "Filter by role: master | replica")
+	instanceListCmd.Flags().String("status", "", "Filter by instance status")
+	instanceListCmd.Flags().String("category", "", "Filter by category: cache | persistent")
 
 	instanceCreateCmd.Flags().String("category", "cache", "Category: cache | persistent")
 	instanceCreateCmd.Flags().String("engine", "redis", "Engine: redis | kvrocks")

@@ -107,7 +107,6 @@ type InstanceGroupState struct {
 type Instance struct {
 	Group           string            `yaml:"group" json:"group"`
 	Role            string            `yaml:"role" json:"role"`
-	EngineVersion   string            `yaml:"engine_version,omitempty" json:"engine_version,omitempty"`
 	Server          string            `yaml:"server" json:"server"`
 	Container       string            `yaml:"container" json:"container"`
 	Port            int               `yaml:"port" json:"port"`
