@@ -96,8 +96,12 @@ Choosing the wrong category has real consequences:
 		node, _ := cmd.Flags().GetString("node")
 		memory, _ := cmd.Flags().GetString("memory")
 		disk, _ := cmd.Flags().GetString("disk")
-		if engine == "kvrocks" && disk == "" {
-			disk = "10Gi"
+		if disk == "" {
+			if engine == "kvrocks" {
+				disk = "20Gi"
+			} else {
+				disk = "10Gi"
+			}
 		}
 		cpus, _ := cmd.Flags().GetInt("cpus")
 		password, _ := cmd.Flags().GetString("password")

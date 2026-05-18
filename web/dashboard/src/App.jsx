@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import {
   Activity,
   AlertCircle,
+  BarChart3,
   ChevronDown,
   ChevronRight,
   CheckCircle2,
@@ -10,6 +11,7 @@ import {
   Database,
   GitMerge,
   HardDrive,
+  Info,
   LayoutDashboard,
   List,
   Menu,
@@ -17,6 +19,7 @@ import {
   Search,
   Server,
   Settings,
+  SlidersHorizontal,
   ShieldCheck,
   Trash2,
   X
@@ -32,6 +35,11 @@ const TABS = [
 function normalizeMap(value, upperKey, lowerKey) {
   const data = value?.[upperKey] || value?.[lowerKey] || {};
   return Object.entries(data).map(([name, item]) => ({ ...item, name }));
+}
+
+function normalizeNamedMap(value, upperKey, lowerKey) {
+	const data = value?.[upperKey] || value?.[lowerKey] || {};
+	return new Map(Object.entries(data).map(([name, item]) => [name, { ...item, name }]));
 }
 
 function getField(item, lower, upper, fallback = '') {
@@ -55,6 +63,30 @@ function displayValue(value, fallback = '-') {
 	return String(value);
 }
 
+function formatDateTime(value, fallback = '-') {
+	if (!value) return fallback;
+	const text = String(value);
+	const match = text.match(/^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2}:\d{2})(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})?$/);
+	return match ? `${match[1]} ${match[2]}` : displayValue(value, fallback);
+}
+
+function formatAuditDate(value) {
+	if (!value) return '';
+	return String(value).replaceAll('-', '');
+}
+
+function auditQuery(filters) {
+	const params = new URLSearchParams();
+	if (filters.from) params.set('from', formatAuditDate(filters.from));
+	if (filters.to) params.set('to', formatAuditDate(filters.to));
+	if (filters.group) params.set('group', filters.group.trim());
+	if (filters.instance) params.set('instance', filters.instance.trim());
+	if (filters.level) params.set('level', filters.level);
+	if (filters.action) params.set('action', filters.action.trim());
+	const query = params.toString();
+	return query ? `/audit/query?${query}` : '/audit/query';
+}
+
 function parseGi(value) {
 	if (!value) return 0;
 	const match = String(value).trim().match(/^([0-9.]+)\s*(Gi|G|Mi|M|Ti|T)?/i);
@@ -64,6 +96,11 @@ function parseGi(value) {
   if (unit === 'mi' || unit === 'm') return amount / 1024;
   if (unit === 'ti' || unit === 't') return amount * 1024;
   return amount;
+}
+
+function formatGi(value) {
+	const amount = Number(value || 0);
+	return `${amount.toFixed(amount >= 10 || amount === 0 ? 0 : 1)}Gi`;
 }
 
 function statusMeta(status) {
@@ -76,6 +113,8 @@ function statusMeta(status) {
     unexpected_stopped: '异常停止',
     healthy: '健康',
     unhealthy: '异常',
+    degraded: '拓扑降级',
+    failover_conflict: '故障转移冲突',
     drain: '下线中',
     success: '成功',
     error: '失败'
@@ -90,6 +129,8 @@ function statusMeta(status) {
     failed: 'bad',
     unexpected_stopped: 'bad',
     unhealthy: 'bad',
+    degraded: 'warn',
+    failover_conflict: 'bad',
     error: 'bad'
   };
   return { label: labels[status] || status || '未知', tone: tone[status] || 'neutral' };
@@ -106,14 +147,32 @@ function groupStatus(instances) {
 	return instances[0] ? getField(instances[0], 'status', 'Status') : 'unknown';
 }
 
-function buildInstanceGroups(instances) {
+function topologyStatus(groupState, instances) {
+	if (getField(groupState, 'failover_conflict', 'FailoverConflict', false)) return 'failover_conflict';
+	const topology = getField(groupState, 'topology_status', 'TopologyStatus', '');
+	const instanceStatus = groupStatus(instances);
+	if (instanceStatusTone(instanceStatus) === 'bad') return instanceStatus;
+	if (topology) return topology;
+	return instanceStatus;
+}
+
+function buildInstanceGroups(instanceState) {
+	const instances = normalizeMap(instanceState, 'Instances', 'instances');
+	const groupStates = normalizeNamedMap(instanceState, 'Groups', 'groups');
 	const groups = new Map();
 	for (const item of instances) {
 		const groupName = getField(item, 'group', 'Group', item.name) || item.name;
+		const groupState = groupStates.get(groupName);
 		if (!groups.has(groupName)) {
 			groups.set(groupName, {
 				groupName,
-				engine: getField(item, 'engine', 'Engine', '-'),
+				groupState,
+				engine: getField(groupState, 'engine', 'Engine', getField(item, 'engine', 'Engine', '-')),
+				engineVersion: getField(groupState, 'engine_version', 'EngineVersion', ''),
+				category: getField(groupState, 'category', 'Category', ''),
+				type: getField(groupState, 'type', 'Type', ''),
+				currentMaster: getField(groupState, 'current_master', 'CurrentMaster', ''),
+				envoy: getField(groupState, 'envoy', 'Envoy', null),
 				master: null,
 				replicas: [],
 				instances: []
@@ -129,16 +188,83 @@ function buildInstanceGroups(instances) {
 			group.replicas.push(item);
 		}
 	}
+	for (const [groupName, groupState] of groupStates.entries()) {
+		if (!groups.has(groupName)) {
+			groups.set(groupName, {
+				groupName,
+				groupState,
+				engine: getField(groupState, 'engine', 'Engine', '-'),
+				engineVersion: getField(groupState, 'engine_version', 'EngineVersion', ''),
+				category: getField(groupState, 'category', 'Category', ''),
+				type: getField(groupState, 'type', 'Type', ''),
+				currentMaster: getField(groupState, 'current_master', 'CurrentMaster', ''),
+				envoy: getField(groupState, 'envoy', 'Envoy', null),
+				master: null,
+				replicas: [],
+				instances: []
+			});
+		}
+	}
 	return Array.from(groups.values()).map((group) => {
-		const primary = group.master || group.instances[0] || null;
+		const primary = group.currentMaster
+			? group.instances.find((item) => item.name === group.currentMaster) || group.master || group.instances[0] || null
+			: group.master || group.instances[0] || null;
+		const memory = group.instances.reduce((sum, item) => sum + parseGi(getField(item, 'memory', 'Memory')), 0);
+		const disk = group.instances.reduce((sum, item) => sum + parseGi(getField(item, 'disk', 'Disk')), 0);
+		const cpus = group.instances.reduce((sum, item) => sum + Number(getField(item, 'cpus', 'CPUs', 0) || 0), 0);
 		return {
 			...group,
 			master: primary,
 			replicas: group.instances.filter((item) => item.name !== primary?.name && getField(item, 'role', 'Role') !== 'master' && getField(item, 'role', 'Role') !== 'standalone'),
-			status: groupStatus(group.instances),
-			engine: primary ? getField(primary, 'engine', 'Engine', group.engine) : group.engine
+			status: topologyStatus(group.groupState, group.instances),
+			engine: getField(group.groupState, 'engine', 'Engine', primary ? getField(primary, 'engine', 'Engine', group.engine) : group.engine),
+			engineVersion: getField(group.groupState, 'engine_version', 'EngineVersion', group.engineVersion),
+			category: getField(group.groupState, 'category', 'Category', group.category),
+			type: getField(group.groupState, 'type', 'Type', group.type),
+			resource: { memory, disk, cpus }
 		};
 	});
+}
+
+function engineLabel(group) {
+	const engine = displayValue(group.engine, '-');
+	const version = displayValue(group.engineVersion, '');
+	return version ? `${engine.toUpperCase()} ${version}` : engine.toUpperCase();
+}
+
+function extractMetricsPayload(metrics) {
+	return metrics?.data || metrics?.Data || metrics || {};
+}
+
+function parseRedisInfo(info) {
+	const sections = {};
+	let current = 'default';
+	for (const rawLine of String(info || '').split('\n')) {
+		const line = rawLine.trim();
+		if (!line) continue;
+		if (line.startsWith('#')) {
+			current = line.slice(1).trim().toLowerCase() || 'default';
+			if (!sections[current]) sections[current] = {};
+			continue;
+		}
+		const index = line.indexOf(':');
+		if (index < 0) continue;
+		if (!sections[current]) sections[current] = {};
+		sections[current][line.slice(0, index)] = line.slice(index + 1);
+	}
+	return sections;
+}
+
+function metricValue(sections, key, fallback = '-') {
+	for (const section of Object.values(sections)) {
+		if (section && section[key] !== undefined) return section[key];
+	}
+	return fallback;
+}
+
+function topologyLabel(group, master) {
+	const type = group.type || (getField(master, 'role', 'Role') === 'standalone' ? 'standalone' : '');
+	return type === 'standalone' ? 'Standalone' : `1 Master / ${group.replicas.length} Replicas`;
 }
 
 function StatusBadge({ status, children }) {
@@ -146,9 +272,16 @@ function StatusBadge({ status, children }) {
   return <span className={`badge ${meta.tone}`}>{children || meta.label}</span>;
 }
 
-function IconButton({ icon: Icon, label }) {
+function IconButton({ icon: Icon, label, onClick, disabled = false }) {
   return (
-    <button className="icon-button" disabled title={`${label}暂未开放`} aria-label={label}>
+    <button
+      className="icon-button"
+      disabled={disabled}
+      title={disabled ? `${label}暂未开放` : label}
+      aria-label={label}
+      onClick={onClick}
+      type="button"
+    >
       <Icon size={16} />
     </button>
   );
@@ -185,12 +318,14 @@ export default function App() {
   const [token, setToken] = useState(() => localStorage.getItem('redisPilotToken') || '');
   const [query, setQuery] = useState('');
   const [expandedGroups, setExpandedGroups] = useState({});
+  const [auditFilters, setAuditFilters] = useState({ from: '', to: '', group: '', instance: '', level: '', action: '' });
+  const [detail, setDetail] = useState(null);
   const [data, setData] = useState({ instances: {}, servers: {}, audits: [] });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
 
   const instances = useMemo(() => normalizeMap(data.instances, 'Instances', 'instances'), [data.instances]);
-  const instanceGroups = useMemo(() => buildInstanceGroups(instances), [instances]);
+  const instanceGroups = useMemo(() => buildInstanceGroups(data.instances), [data.instances]);
   const servers = useMemo(() => normalizeMap(data.servers, 'Servers', 'servers'), [data.servers]);
   const activeTitle = TABS.find((tab) => tab.id === activeTab)?.label || '大盘看板';
 
@@ -211,7 +346,7 @@ export default function App() {
       const [instanceData, nodeData, auditData] = await Promise.all([
         request('/instance/list'),
         request('/node/list'),
-        request('/audit/query')
+        request(auditQuery(auditFilters))
       ]);
       setData({
         instances: instanceData || {},
@@ -234,7 +369,7 @@ export default function App() {
         const [instanceData, nodeData, auditData] = await Promise.all([
           request('/instance/list'),
           request('/node/list'),
-          request('/audit/query')
+          request(auditQuery(auditFilters))
         ]);
         if (!ignore) {
           setData({
@@ -258,6 +393,16 @@ export default function App() {
   function saveToken() {
     localStorage.setItem('redisPilotToken', token.trim());
     refresh();
+  }
+
+  async function openInstanceDetail(item, group) {
+    setDetail({ item, group, loading: true, error: '', metrics: null });
+    try {
+      const metrics = await request(`/instance/metrics?name=${encodeURIComponent(item.name)}`);
+      setDetail({ item, group, loading: false, error: '', metrics });
+    } catch (err) {
+      setDetail({ item, group, loading: false, error: err.message || String(err), metrics: null });
+    }
   }
 
   const nav = (
@@ -300,10 +445,6 @@ export default function App() {
           </div>
         </div>
         {nav}
-        <div className="sidebar-card">
-          <strong>GAL Agent</strong>
-          <span>Server 同端口只读看板</span>
-        </div>
       </aside>
 
       <main className="main">
@@ -331,7 +472,7 @@ export default function App() {
             <div className="panel loading">正在读取 Server 状态...</div>
           ) : (
             <>
-              {activeTab === 'dashboard' && <DashboardView instances={instances} servers={servers} audits={data.audits} />}
+              {activeTab === 'dashboard' && <DashboardView groups={instanceGroups} servers={servers} audits={data.audits} />}
               {activeTab === 'instances' && (
                 <InstancesView
                   groups={instanceGroups}
@@ -339,25 +480,31 @@ export default function App() {
                   setQuery={setQuery}
                   expandedGroups={expandedGroups}
                   setExpandedGroups={setExpandedGroups}
+                  onOpenDetail={openInstanceDetail}
                 />
               )}
               {activeTab === 'servers' && <ServersView servers={servers} />}
-              {activeTab === 'audit' && <AuditView audits={data.audits} />}
+              {activeTab === 'audit' && (
+                <AuditView
+                  audits={data.audits}
+                  filters={auditFilters}
+                  setFilters={setAuditFilters}
+                  onApply={refresh}
+                />
+              )}
             </>
           )}
         </section>
       </main>
+      {detail && <InstanceDetailModal detail={detail} onClose={() => setDetail(null)} />}
     </div>
   );
 }
 
-function DashboardView({ instances, servers, audits }) {
-  const groups = useMemo(() => buildInstanceGroups(instances), [instances]);
-  const healthy = servers.filter((item) => getField(item, 'status', 'Status') === 'healthy').length;
-  const healthyGroups = groups.filter((group) => group.status === 'running').length;
+function DashboardView({ groups, servers, audits }) {
+  const healthyGroups = groups.filter((group) => group.status === 'healthy' || group.status === 'running').length;
   const alerts = groups.filter((group) => instanceStatusTone(group.status) === 'bad').length +
     servers.filter((item) => getField(item, 'status', 'Status') === 'unhealthy').length;
-  const memory = instances.reduce((sum, item) => sum + parseGi(getField(item, 'memory', 'Memory')), 0);
 
   return (
     <div className="stack">
@@ -382,20 +529,14 @@ function DashboardView({ instances, servers, audits }) {
 
         <section className="panel">
           <div className="panel-header">
-            <h3>节点与审计</h3>
+            <h3>审计记录</h3>
             <Clock size={20} />
           </div>
-          <div className="panel-body split-list">
-            <div>
-              <div className="subhead">已分配内存</div>
-              <div className="large-metric">{memory ? `${memory.toFixed(memory >= 10 ? 0 : 1)}Gi` : '0Gi'}</div>
-            </div>
-            <div className="audit-list">
-              {(audits || []).slice(0, 4).map((log, index) => (
-                <AuditCard key={log.id || log.ID || index} log={log} />
-              ))}
-              {(!audits || audits.length === 0) && <EmptyState icon={List} title="暂无审计记录" />}
-            </div>
+          <div className="panel-body audit-list">
+            {(audits || []).slice(0, 4).map((log, index) => (
+              <AuditCard key={log.id || log.ID || index} log={log} />
+            ))}
+            {(!audits || audits.length === 0) && <EmptyState icon={List} title="暂无审计记录" />}
           </div>
         </section>
       </div>
@@ -418,7 +559,7 @@ function StatCard({ label, value, icon: Icon, tone }) {
 function InstanceGroupCard({ group }) {
   const master = group.master;
   const masterServer = master ? getField(master, 'server', 'Server', '-') : '';
-  const topology = getField(master, 'role', 'Role') === 'standalone' ? '单点' : '集群';
+  const topology = topologyLabel(group, master).startsWith('Standalone') ? '单点' : '主从';
   return (
     <div className="instance-card">
       <div className={`status-dot ${statusMeta(group.status).tone}`} />
@@ -428,22 +569,24 @@ function InstanceGroupCard({ group }) {
       </div>
       <div className="card-side">
         <StatusBadge status={group.status} />
-        <span><GitMerge size={12} /> {group.engine} · {topology}</span>
+        <span><GitMerge size={12} /> {engineLabel(group)} · {topology}</span>
       </div>
     </div>
   );
 }
 
-function InstancesView({ groups, query, setQuery, expandedGroups, setExpandedGroups }) {
+function InstancesView({ groups, query, setQuery, expandedGroups, setExpandedGroups, onOpenDetail }) {
   const filtered = groups.filter((group) => {
     const text = [
       group.groupName,
       group.engine,
+      group.engineVersion,
+      group.category,
+      group.type,
       group.status,
       ...group.instances.flatMap((item) => [
         item.name,
         getField(item, 'server', 'Server'),
-        getField(item, 'engine', 'Engine'),
         getField(item, 'port', 'Port')
       ])
     ].join(' ').toLowerCase();
@@ -469,7 +612,7 @@ function InstancesView({ groups, query, setQuery, expandedGroups, setExpandedGro
             <thead>
               <tr>
                 <th>实例名称 / 组</th>
-                <th>引擎</th>
+                <th>引擎版本</th>
                 <th>拓扑角色</th>
                 <th>Server</th>
                 <th>端口</th>
@@ -487,6 +630,7 @@ function InstancesView({ groups, query, setQuery, expandedGroups, setExpandedGro
                   group={group}
                   expanded={!!expandedGroups[group.groupName]}
                   onToggle={() => toggleGroup(group.groupName)}
+                  onOpenDetail={onOpenDetail}
                 />
               ))}
             </tbody>
@@ -497,11 +641,12 @@ function InstancesView({ groups, query, setQuery, expandedGroups, setExpandedGro
   );
 }
 
-function InstanceGroupRows({ group, expanded, onToggle }) {
+function InstanceGroupRows({ group, expanded, onToggle, onOpenDetail }) {
   const master = group.master;
   const hasReplicas = group.replicas.length > 0;
-  const role = getField(master, 'role', 'Role');
-  const topology = role === 'standalone' ? 'Standalone' : `1 Master / ${group.replicas.length} Replicas`;
+  const topology = topologyLabel(group, master);
+  const isStandalone = topology === 'Standalone';
+  const category = group.category ? ` · ${group.category}` : '';
 
   return (
     <>
@@ -518,35 +663,42 @@ function InstanceGroupRows({ group, expanded, onToggle }) {
             <div>
               <div className="group-title">
                 <strong>{group.groupName}</strong>
-                <span className="role-chip">{role === 'standalone' ? '单点' : 'Master'}</span>
+                <span className="role-chip">{isStandalone ? '单点' : 'Master'}</span>
+                {category && <span className="role-chip subtle">{group.category}</span>}
               </div>
               <span className="muted">
-                {master ? `实例: ${master.name} · ${getField(master, 'server', 'Server', '-')}` : '主库状态异常'}
+                {master ? `当前主库: ${master.name} · ${getField(master, 'server', 'Server', '-')}${category}` : '主库状态异常'}
               </span>
             </div>
           </div>
         </td>
-        <td><span className="engine">{String(group.engine || '-').toUpperCase()}</span></td>
+        <td><span className="engine">{engineLabel(group)}</span></td>
         <td>{topology}</td>
         <td>{master ? getField(master, 'server', 'Server', '-') : '-'}</td>
-        <td>{master ? <EnvoyPorts item={master} /> : '-'}</td>
-        <td>{master ? `${getField(master, 'memory', 'Memory', '-')} / ${getField(master, 'cpus', 'CPUs', '-')}C` : '-'}</td>
+        <td>{master ? <EnvoyPorts group={group} item={master} /> : '-'}</td>
+        <td>{master ? <ResourceValue memory={group.resource.memory} cpus={group.resource.cpus} disk={group.resource.disk} /> : '-'}</td>
         <td><StatusBadge status={group.status} /></td>
         <td>
           <div className="row-actions">
-            <IconButton icon={Settings} label="配置" />
-            <IconButton icon={HardDrive} label="备份" />
-            <IconButton icon={Trash2} label="删除" />
+            {master && <IconButton icon={Info} label="详情与指标" onClick={(event) => {
+              event.stopPropagation();
+              onOpenDetail(master, group);
+            }} />}
+            <IconButton icon={Settings} label="配置" disabled />
+            <IconButton icon={HardDrive} label="备份" disabled />
+            <IconButton icon={Trash2} label="删除" disabled />
           </div>
         </td>
       </tr>
-      {expanded && group.replicas.map((replica) => <ReplicaRow key={replica.name} item={replica} />)}
+      {expanded && group.replicas.map((replica) => (
+        <ReplicaRow key={replica.name} item={replica} group={group} onOpenDetail={onOpenDetail} />
+      ))}
     </>
   );
 }
 
-function EnvoyPorts({ item }) {
-  const envoy = getField(item, 'envoy', 'Envoy', {}) || {};
+function EnvoyPorts({ group, item }) {
+  const envoy = getField(group, 'envoy', 'Envoy', {}) || {};
   const ports = [
     envoy.master_port || envoy.MasterPort ? `MASTER ${envoy.master_port || envoy.MasterPort}` : '',
     envoy.auto_port || envoy.AutoPort ? `AUTO ${envoy.auto_port || envoy.AutoPort}` : ''
@@ -559,7 +711,16 @@ function EnvoyPorts({ item }) {
   );
 }
 
-function ReplicaRow({ item }) {
+function ResourceValue({ memory, cpus, disk }) {
+  return (
+    <>
+      <span>{formatGi(memory)} / {cpus || 0}C</span>
+      <span className="muted">Disk: {formatGi(disk)}</span>
+    </>
+  );
+}
+
+function ReplicaRow({ item, group, onOpenDetail }) {
   return (
     <tr className="replica-row">
       <td>
@@ -571,17 +732,21 @@ function ReplicaRow({ item }) {
           </div>
         </div>
       </td>
-      <td><span className="muted">--</span></td>
+      <td><span className="muted">{engineLabel(group)}</span></td>
       <td>Replica</td>
       <td>{getField(item, 'server', 'Server', '-')}</td>
       <td><span className="muted">通过主库 Envoy 路由读</span></td>
-      <td>{getField(item, 'memory', 'Memory', '-')} / {getField(item, 'cpus', 'CPUs', '-')}C</td>
+      <td>
+        <span>{getField(item, 'memory', 'Memory', '-')} / {getField(item, 'cpus', 'CPUs', '-')}C</span>
+        <span className="muted">Disk: {displayValue(getField(item, 'disk', 'Disk'), '0Gi')}</span>
+      </td>
       <td><StatusBadge status={getField(item, 'status', 'Status')} /></td>
       <td>
         <div className="row-actions">
-          <IconButton icon={Settings} label="配置" />
-          <IconButton icon={HardDrive} label="备份" />
-          <IconButton icon={Trash2} label="删除" />
+          <IconButton icon={Info} label="详情与指标" onClick={() => onOpenDetail(item, group)} />
+          <IconButton icon={Settings} label="配置" disabled />
+          <IconButton icon={HardDrive} label="备份" disabled />
+          <IconButton icon={Trash2} label="删除" disabled />
         </div>
       </td>
     </tr>
@@ -628,11 +793,18 @@ function ServerCard({ server }) {
           tone="indigo"
         />
         <ProgressBar
-          label={<><HardDrive size={13} /> Memory</>}
+          label={<><Database size={13} /> Memory</>}
           current={parseGi(allocated.memory || allocated.Memory)}
           max={parseGi(capacity.memory || capacity.Memory)}
           unit="Gi"
           tone="blue"
+        />
+        <ProgressBar
+          label={<><HardDrive size={13} /> Disk</>}
+          current={parseGi(allocated.disk || allocated.Disk)}
+          max={parseGi(capacity.disk || capacity.Disk)}
+          unit="Gi"
+          tone="green"
         />
       </div>
       <div className="muted">实例: {instances.length ? instances.join(', ') : '暂无'}</div>
@@ -640,41 +812,91 @@ function ServerCard({ server }) {
   );
 }
 
-function AuditView({ audits }) {
+function AuditView({ audits, filters, setFilters, onApply }) {
   const records = audits || [];
+  function updateFilter(key, value) {
+    setFilters((current) => ({ ...current, [key]: value }));
+  }
+  function resetFilters() {
+    setFilters({ from: '', to: '', group: '', instance: '', level: '', action: '' });
+  }
   return (
-    <section className="panel table-panel">
-      <div className="panel-header">
-        <h3>最近审计记录</h3>
-        <button className="primary-button" disabled>筛选</button>
-      </div>
-      <div className="table-scroll">
-        <table>
-          <thead>
-            <tr>
-              <th>时间</th>
-              <th>操作者</th>
-              <th>动作</th>
-              <th>目标</th>
-              <th>结果</th>
-            </tr>
-          </thead>
-          <tbody>
-            {records.length === 0 ? (
-              <tr><td colSpan="5"><EmptyState icon={List} title="暂无审计记录" /></td></tr>
-            ) : records.slice(0, 50).map((log, index) => (
-              <tr key={log.id || log.ID || index}>
-                <td>{displayValue(log.time || log.Time || log.timestamp || log.Timestamp)}</td>
-                <td>{displayValue(log.operator || log.Operator)}</td>
-                <td>{displayValue(log.action || log.Action)}</td>
-                <td>{displayValue(log.target || log.Target || log.instance || log.Instance)}</td>
-                <td><StatusBadge status={log.result || log.Result || log.level || log.Level} /></td>
+    <div className="stack">
+      <section className="panel filter-panel">
+        <div className="filter-grid">
+          <label>
+            <span>开始日期</span>
+            <input type="date" value={filters.from} onChange={(event) => updateFilter('from', event.target.value)} />
+          </label>
+          <label>
+            <span>结束日期</span>
+            <input type="date" value={filters.to} onChange={(event) => updateFilter('to', event.target.value)} />
+          </label>
+          <label>
+            <span>实例组</span>
+            <input value={filters.group} onChange={(event) => updateFilter('group', event.target.value)} placeholder="group" />
+          </label>
+          <label>
+            <span>实例</span>
+            <input value={filters.instance} onChange={(event) => updateFilter('instance', event.target.value)} placeholder="instance" />
+          </label>
+          <label>
+            <span>级别</span>
+            <select value={filters.level} onChange={(event) => updateFilter('level', event.target.value)}>
+              <option value="">全部</option>
+              <option value="normal">normal</option>
+              <option value="important">important</option>
+              <option value="critical">critical</option>
+            </select>
+          </label>
+          <label>
+            <span>动作</span>
+            <input value={filters.action} onChange={(event) => updateFilter('action', event.target.value)} placeholder="backup.exec" />
+          </label>
+        </div>
+        <div className="filter-actions">
+          <button className="ghost-button" onClick={() => {
+            resetFilters();
+            window.setTimeout(onApply, 0);
+          }}>重置</button>
+          <button className="primary-button" onClick={onApply}>
+            <SlidersHorizontal size={16} /> 应用筛选
+          </button>
+        </div>
+      </section>
+      <section className="panel table-panel">
+        <div className="panel-header">
+          <h3>审计记录</h3>
+          <span className="muted">当前展示 {records.length} 条</span>
+        </div>
+        <div className="table-scroll">
+          <table>
+            <thead>
+              <tr>
+                <th>时间</th>
+                <th>操作者</th>
+                <th>动作</th>
+                <th>目标</th>
+                <th>结果</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-    </section>
+            </thead>
+            <tbody>
+              {records.length === 0 ? (
+                <tr><td colSpan="5"><EmptyState icon={List} title="暂无审计记录" /></td></tr>
+              ) : records.slice(0, 50).map((log, index) => (
+                <tr key={log.id || log.ID || index}>
+	                  <td>{formatDateTime(log.time || log.Time || log.timestamp || log.Timestamp)}</td>
+                  <td>{displayValue(log.operator || log.Operator)}</td>
+                  <td>{displayValue(log.action || log.Action)}</td>
+                  <td>{displayValue(log.target || log.Target || log.instance || log.Instance)}</td>
+                  <td><StatusBadge status={log.result || log.Result || log.level || log.Level} /></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </div>
   );
 }
 
@@ -688,7 +910,85 @@ function AuditCard({ log }) {
         <strong>{displayValue(log.action || log.Action)}</strong>
         <span>目标: {displayValue(log.target || log.Target || log.instance || log.Instance)} · {displayValue(log.operator || log.Operator)}</span>
       </div>
-      <time>{displayValue(log.time || log.Time || log.timestamp || log.Timestamp)}</time>
+      <time>{formatDateTime(log.time || log.Time || log.timestamp || log.Timestamp)}</time>
+    </div>
+  );
+}
+
+function InstanceDetailModal({ detail, onClose }) {
+  const { item, group, loading, error, metrics } = detail;
+  const payload = extractMetricsPayload(metrics);
+  const info = payload.info || payload.Info || '';
+  const sections = parseRedisInfo(info);
+  const metricsSummary = [
+    ['Redis 版本', metricValue(sections, 'redis_version')],
+    ['角色', metricValue(sections, 'role', getField(item, 'role', 'Role', '-'))],
+    ['已用内存', metricValue(sections, 'used_memory_human')],
+    ['连接数', metricValue(sections, 'connected_clients')],
+    ['Keyspace', displayValue(sections.keyspace || sections.Keyspace)],
+    ['运行秒数', metricValue(sections, 'uptime_in_seconds')]
+  ];
+  const fields = [
+    ['实例', item.name],
+    ['实例组', group.groupName],
+    ['引擎版本', engineLabel(group)],
+    ['角色', getField(item, 'role', 'Role', '-')],
+    ['Server', getField(item, 'server', 'Server', '-')],
+    ['Redis 端口', getField(item, 'port', 'Port', '-')],
+    ['资源', `${getField(item, 'memory', 'Memory', '-')} / ${getField(item, 'cpus', 'CPUs', '-')}C / Disk ${displayValue(getField(item, 'disk', 'Disk'), '0Gi')}`],
+    ['数据目录', getField(item, 'data_path', 'DataPath', '-')],
+    ['配置目录', getField(item, 'config_path', 'ConfigPath', '-')],
+    ['备份目录', getField(item, 'backup_path', 'BackupPath', '-')],
+    ['创建时间', formatDateTime(getField(item, 'created_at', 'CreatedAt', '-'))]
+  ];
+
+  return (
+    <div className="modal-backdrop" role="presentation" onMouseDown={onClose}>
+      <section className="modal" role="dialog" aria-modal="true" onMouseDown={(event) => event.stopPropagation()}>
+        <div className="modal-header">
+          <div>
+            <h3>{item.name}</h3>
+            <span>{group.groupName} · {engineLabel(group)}</span>
+          </div>
+          <button className="icon-button" onClick={onClose} aria-label="关闭" type="button"><X size={18} /></button>
+        </div>
+        <div className="modal-body">
+          <section>
+            <h4><Info size={16} /> 实例详情</h4>
+            <div className="detail-grid">
+              {fields.map(([label, value]) => (
+                <div key={label}>
+                  <span>{label}</span>
+                  <strong>{displayValue(value)}</strong>
+                </div>
+              ))}
+            </div>
+          </section>
+          <section>
+            <h4><BarChart3 size={16} /> 运行指标</h4>
+            {loading ? (
+              <div className="inline-loading">正在读取 metrics...</div>
+            ) : error ? (
+              <div className="notice compact"><AlertCircle size={16} /> {error}</div>
+            ) : (
+              <>
+                <div className="detail-grid metrics-grid">
+                  {metricsSummary.map(([label, value]) => (
+                    <div key={label}>
+                      <span>{label}</span>
+                      <strong>{displayValue(value)}</strong>
+                    </div>
+                  ))}
+                </div>
+                <details className="raw-metrics">
+                  <summary>查看 INFO 原文</summary>
+                  <pre>{info || '无 metrics 数据'}</pre>
+                </details>
+              </>
+            )}
+          </section>
+        </div>
+      </section>
     </div>
   );
 }
