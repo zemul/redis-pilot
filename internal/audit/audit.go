@@ -15,9 +15,9 @@ import (
 type Level string
 
 const (
-	LevelNormal   Level = "normal"
+	LevelNormal    Level = "normal"
 	LevelImportant Level = "important"
-	LevelCritical Level = "critical"
+	LevelCritical  Level = "critical"
 )
 
 // Record 审计日志记录
@@ -189,13 +189,16 @@ func (l *Logger) Query(f QueryFilter) ([]Record, error) {
 	}
 
 	var results []Record
-	for _, date := range dates {
+	for i := len(dates) - 1; i >= 0; i-- {
+		date := dates[i]
 		path := filepath.Join(l.dir, "audit-"+date+".jsonl")
 		data, err := os.ReadFile(path)
 		if err != nil {
 			continue
 		}
-		for _, line := range splitLines(data) {
+		lines := splitLines(data)
+		for j := len(lines) - 1; j >= 0; j-- {
+			line := lines[j]
 			var r Record
 			if json.Unmarshal(line, &r) != nil {
 				continue

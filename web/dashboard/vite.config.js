@@ -14,6 +14,7 @@ export default defineConfig({
     proxy: {
       '/instance': apiTarget,
       '/node': apiTarget,
+      '/backup': apiTarget,
       '/audit': apiTarget,
       '/inventory': apiTarget
     }

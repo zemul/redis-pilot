@@ -15,13 +15,13 @@ import {
   LayoutDashboard,
   List,
   Menu,
+  Play,
+  Power,
   RefreshCw,
   Search,
   Server,
-  Settings,
   SlidersHorizontal,
   ShieldCheck,
-  Trash2,
   X
 } from 'lucide-react';
 
@@ -68,6 +68,25 @@ function formatDateTime(value, fallback = '-') {
 	const text = String(value);
 	const match = text.match(/^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2}:\d{2})(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})?$/);
 	return match ? `${match[1]} ${match[2]}` : displayValue(value, fallback);
+}
+
+function backupRows(payload) {
+	const backups = payload?.data?.backups || payload?.data?.Backups || payload?.backups || payload?.Backups || [];
+	const list = Array.isArray(backups) ? backups : [];
+	return list.sort().reverse().map((name) => {
+		const text = String(name);
+		const timestamp = text.replace(/\.(rdb|aof|tar\.gz|checkpoint\.tar\.gz)$/i, '').replace(/\/$/, '');
+		const extMatch = text.match(/\.([^.]+(?:\.tar\.gz)?)$/i);
+		return {
+			name: text,
+			time: formatDateTime(timestamp, timestamp),
+			type: extMatch ? extMatch[1].toUpperCase() : 'DIR'
+		};
+	});
+}
+
+function auditOperator(log) {
+	return displayValue(log?.operator || log?.Operator, 'unknown');
 }
 
 function formatAuditDate(value) {
@@ -141,6 +160,7 @@ function instanceStatusTone(status) {
 }
 
 function groupStatus(instances) {
+	if (instances.length === 1) return getField(instances[0], 'status', 'Status', 'unknown');
 	if (instances.some((item) => instanceStatusTone(getField(item, 'status', 'Status')) === 'bad')) return 'failed';
 	if (instances.some((item) => instanceStatusTone(getField(item, 'status', 'Status')) === 'warn')) return 'creating';
 	if (instances.length > 0 && instances.every((item) => getField(item, 'status', 'Status') === 'running')) return 'running';
@@ -152,6 +172,7 @@ function topologyStatus(groupState, instances) {
 	const topology = getField(groupState, 'topology_status', 'TopologyStatus', '');
 	const instanceStatus = groupStatus(instances);
 	if (instanceStatusTone(instanceStatus) === 'bad') return instanceStatus;
+	if (instanceStatus && instanceStatus !== 'running') return instanceStatus;
 	if (topology) return topology;
 	return instanceStatus;
 }
@@ -277,7 +298,7 @@ function IconButton({ icon: Icon, label, onClick, disabled = false }) {
     <button
       className="icon-button"
       disabled={disabled}
-      title={disabled ? `${label}暂未开放` : label}
+      title={typeof disabled === 'string' ? disabled : disabled ? `${label}暂未开放` : label}
       aria-label={label}
       onClick={onClick}
       type="button"
@@ -285,6 +306,27 @@ function IconButton({ icon: Icon, label, onClick, disabled = false }) {
       <Icon size={16} />
     </button>
   );
+}
+
+function powerActionFor(item, group) {
+	const status = getField(item, 'status', 'Status', '');
+	const role = getField(item, 'role', 'Role', '');
+	const groupType = getField(group, 'type', 'Type', '');
+	if (status === 'running' || status === 'healthy') {
+		if (role === 'master' && groupType !== 'standalone') {
+			return {
+				action: 'stop',
+				label: '停止实例',
+				icon: Power,
+				disabledReason: '当前主库不可直接停止，请先完成故障转移。'
+			};
+		}
+		return { action: 'stop', label: '停止实例', icon: Power };
+	}
+	if (status === 'stopped' || status === 'unexpected_stopped' || status === 'failed') {
+		return { action: 'start', label: '启动实例', icon: Play };
+	}
+	return null;
 }
 
 function ProgressBar({ label, current, max, unit = '', tone = 'blue' }) {
@@ -320,6 +362,9 @@ export default function App() {
   const [expandedGroups, setExpandedGroups] = useState({});
   const [auditFilters, setAuditFilters] = useState({ from: '', to: '', group: '', instance: '', level: '', action: '' });
   const [detail, setDetail] = useState(null);
+  const [backupDetail, setBackupDetail] = useState(null);
+  const [confirmAction, setConfirmAction] = useState(null);
+  const [pendingAction, setPendingAction] = useState('');
   const [data, setData] = useState({ instances: {}, servers: {}, audits: [] });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -329,9 +374,17 @@ export default function App() {
   const servers = useMemo(() => normalizeMap(data.servers, 'Servers', 'servers'), [data.servers]);
   const activeTitle = TABS.find((tab) => tab.id === activeTab)?.label || '大盘看板';
 
-  async function request(path) {
+  async function request(path, options = {}) {
     const headers = token ? { Authorization: `Bearer ${token}` } : {};
-    const response = await fetch(path, { headers });
+    const response = await fetch(path, {
+      ...options,
+      headers: {
+        ...headers,
+        'X-Operator': 'dashboard',
+        ...(options.body ? { 'Content-Type': 'application/json' } : {}),
+        ...(options.headers || {})
+      }
+    });
     if (response.status === 401) throw new Error('接口鉴权失败，请输入 server.yaml 中配置的 token。');
     if (!response.ok) throw new Error(`请求失败：${response.status} ${path}`);
     const body = await response.json();
@@ -405,6 +458,40 @@ export default function App() {
     }
   }
 
+  async function openBackupList(item, group) {
+    setBackupDetail({ item, group, loading: true, error: '', backups: [] });
+    try {
+      const payload = await request(`/backup/list?name=${encodeURIComponent(item.name)}`);
+      setBackupDetail({ item, group, loading: false, error: '', backups: backupRows(payload) });
+    } catch (err) {
+      setBackupDetail({ item, group, loading: false, error: err.message || String(err), backups: [] });
+    }
+  }
+
+  function changeInstancePower(item, group, action) {
+    setConfirmAction({ item, group, action });
+  }
+
+  async function executeInstancePower() {
+    if (!confirmAction) return;
+    const { item, action } = confirmAction;
+    const actionKey = `${action}:${item.name}`;
+    setPendingAction(actionKey);
+    setError('');
+    try {
+      await request(`/instance/${action}`, {
+        method: 'POST',
+        body: JSON.stringify({ name: item.name })
+      });
+      setConfirmAction(null);
+      await refresh();
+    } catch (err) {
+      setError(err.message || String(err));
+    } finally {
+      setPendingAction('');
+    }
+  }
+
   const nav = (
     <nav className="nav">
       {TABS.map((tab) => {
@@ -473,16 +560,19 @@ export default function App() {
           ) : (
             <>
               {activeTab === 'dashboard' && <DashboardView groups={instanceGroups} servers={servers} audits={data.audits} />}
-              {activeTab === 'instances' && (
-                <InstancesView
-                  groups={instanceGroups}
-                  query={query}
-                  setQuery={setQuery}
-                  expandedGroups={expandedGroups}
-                  setExpandedGroups={setExpandedGroups}
-                  onOpenDetail={openInstanceDetail}
-                />
-              )}
+	              {activeTab === 'instances' && (
+	                <InstancesView
+	                  groups={instanceGroups}
+	                  query={query}
+	                  setQuery={setQuery}
+	                  expandedGroups={expandedGroups}
+	                  setExpandedGroups={setExpandedGroups}
+	                  onOpenDetail={openInstanceDetail}
+	                  onOpenBackups={openBackupList}
+	                  onPowerAction={changeInstancePower}
+	                  pendingAction={pendingAction}
+	                />
+	              )}
               {activeTab === 'servers' && <ServersView servers={servers} />}
               {activeTab === 'audit' && (
                 <AuditView
@@ -495,11 +585,20 @@ export default function App() {
             </>
           )}
         </section>
-      </main>
-      {detail && <InstanceDetailModal detail={detail} onClose={() => setDetail(null)} />}
-    </div>
-  );
-}
+	      </main>
+	      {detail && <InstanceDetailModal detail={detail} onClose={() => setDetail(null)} />}
+	      {backupDetail && <BackupListModal detail={backupDetail} onClose={() => setBackupDetail(null)} />}
+	      {confirmAction && (
+	        <ConfirmPowerModal
+	          detail={confirmAction}
+	          loading={pendingAction === `${confirmAction.action}:${confirmAction.item.name}`}
+	          onCancel={() => setConfirmAction(null)}
+	          onConfirm={executeInstancePower}
+	        />
+	      )}
+	    </div>
+	  );
+	}
 
 function DashboardView({ groups, servers, audits }) {
   const healthyGroups = groups.filter((group) => group.status === 'healthy' || group.status === 'running').length;
@@ -575,7 +674,7 @@ function InstanceGroupCard({ group }) {
   );
 }
 
-function InstancesView({ groups, query, setQuery, expandedGroups, setExpandedGroups, onOpenDetail }) {
+function InstancesView({ groups, query, setQuery, expandedGroups, setExpandedGroups, onOpenDetail, onOpenBackups, onPowerAction, pendingAction }) {
   const filtered = groups.filter((group) => {
     const text = [
       group.groupName,
@@ -629,9 +728,12 @@ function InstancesView({ groups, query, setQuery, expandedGroups, setExpandedGro
                   key={group.groupName}
                   group={group}
                   expanded={!!expandedGroups[group.groupName]}
-                  onToggle={() => toggleGroup(group.groupName)}
-                  onOpenDetail={onOpenDetail}
-                />
+	                onToggle={() => toggleGroup(group.groupName)}
+	                onOpenDetail={onOpenDetail}
+	                onOpenBackups={onOpenBackups}
+	                onPowerAction={onPowerAction}
+	                pendingAction={pendingAction}
+	              />
               ))}
             </tbody>
           </table>
@@ -641,12 +743,13 @@ function InstancesView({ groups, query, setQuery, expandedGroups, setExpandedGro
   );
 }
 
-function InstanceGroupRows({ group, expanded, onToggle, onOpenDetail }) {
+function InstanceGroupRows({ group, expanded, onToggle, onOpenDetail, onOpenBackups, onPowerAction, pendingAction }) {
   const master = group.master;
   const hasReplicas = group.replicas.length > 0;
   const topology = topologyLabel(group, master);
   const isStandalone = topology === 'Standalone';
   const category = group.category ? ` · ${group.category}` : '';
+  const powerAction = master ? powerActionFor(master, group) : null;
 
   return (
     <>
@@ -684,14 +787,33 @@ function InstanceGroupRows({ group, expanded, onToggle, onOpenDetail }) {
               event.stopPropagation();
               onOpenDetail(master, group);
             }} />}
-            <IconButton icon={Settings} label="配置" disabled />
-            <IconButton icon={HardDrive} label="备份" disabled />
-            <IconButton icon={Trash2} label="删除" disabled />
+            {master && <IconButton icon={HardDrive} label="备份列表" onClick={(event) => {
+              event.stopPropagation();
+              onOpenBackups(master, group);
+            }} />}
+            {master && powerAction && <IconButton
+              icon={powerAction.icon}
+              label={powerAction.label}
+              disabled={powerAction.disabledReason || pendingAction === `${powerAction.action}:${master.name}`}
+              onClick={(event) => {
+                event.stopPropagation();
+                if (powerAction.disabledReason) return;
+                onPowerAction(master, group, powerAction.action);
+              }}
+            />}
           </div>
         </td>
       </tr>
       {expanded && group.replicas.map((replica) => (
-        <ReplicaRow key={replica.name} item={replica} group={group} onOpenDetail={onOpenDetail} />
+        <ReplicaRow
+          key={replica.name}
+          item={replica}
+          group={group}
+          onOpenDetail={onOpenDetail}
+          onOpenBackups={onOpenBackups}
+          onPowerAction={onPowerAction}
+          pendingAction={pendingAction}
+        />
       ))}
     </>
   );
@@ -720,7 +842,9 @@ function ResourceValue({ memory, cpus, disk }) {
   );
 }
 
-function ReplicaRow({ item, group, onOpenDetail }) {
+function ReplicaRow({ item, group, onOpenDetail, onOpenBackups, onPowerAction, pendingAction }) {
+  const powerAction = powerActionFor(item, group);
+
   return (
     <tr className="replica-row">
       <td>
@@ -744,9 +868,16 @@ function ReplicaRow({ item, group, onOpenDetail }) {
       <td>
         <div className="row-actions">
           <IconButton icon={Info} label="详情与指标" onClick={() => onOpenDetail(item, group)} />
-          <IconButton icon={Settings} label="配置" disabled />
-          <IconButton icon={HardDrive} label="备份" disabled />
-          <IconButton icon={Trash2} label="删除" disabled />
+          <IconButton icon={HardDrive} label="备份列表" onClick={() => onOpenBackups(item, group)} />
+          {powerAction && <IconButton
+            icon={powerAction.icon}
+            label={powerAction.label}
+            disabled={powerAction.disabledReason || pendingAction === `${powerAction.action}:${item.name}`}
+            onClick={() => {
+              if (powerAction.disabledReason) return;
+              onPowerAction(item, group, powerAction.action);
+            }}
+          />}
         </div>
       </td>
     </tr>
@@ -886,7 +1017,7 @@ function AuditView({ audits, filters, setFilters, onApply }) {
               ) : records.slice(0, 50).map((log, index) => (
                 <tr key={log.id || log.ID || index}>
 	                  <td>{formatDateTime(log.time || log.Time || log.timestamp || log.Timestamp)}</td>
-                  <td>{displayValue(log.operator || log.Operator)}</td>
+                  <td>{auditOperator(log)}</td>
                   <td>{displayValue(log.action || log.Action)}</td>
                   <td>{displayValue(log.target || log.Target || log.instance || log.Instance)}</td>
                   <td><StatusBadge status={log.result || log.Result || log.level || log.Level} /></td>
@@ -908,7 +1039,7 @@ function AuditCard({ log }) {
       <Icon size={18} />
       <div>
         <strong>{displayValue(log.action || log.Action)}</strong>
-        <span>目标: {displayValue(log.target || log.Target || log.instance || log.Instance)} · {displayValue(log.operator || log.Operator)}</span>
+        <span>目标: {displayValue(log.target || log.Target || log.instance || log.Instance)} · 操作人: {auditOperator(log)}</span>
       </div>
       <time>{formatDateTime(log.time || log.Time || log.timestamp || log.Timestamp)}</time>
     </div>
@@ -987,6 +1118,91 @@ function InstanceDetailModal({ detail, onClose }) {
               </>
             )}
           </section>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function BackupListModal({ detail, onClose }) {
+  const { item, group, loading, error, backups } = detail;
+
+  return (
+    <div className="modal-backdrop" role="presentation" onMouseDown={onClose}>
+      <section className="modal" role="dialog" aria-modal="true" onMouseDown={(event) => event.stopPropagation()}>
+        <div className="modal-header">
+          <div>
+            <h3>{item.name} 备份列表</h3>
+            <span>{group.groupName} · 只读查看</span>
+          </div>
+          <button className="icon-button" onClick={onClose} aria-label="关闭" type="button"><X size={18} /></button>
+        </div>
+        <div className="modal-body">
+          <section>
+            <h4><HardDrive size={16} /> 可用备份</h4>
+            {loading ? (
+              <div className="inline-loading">正在读取备份列表...</div>
+            ) : error ? (
+              <div className="notice compact"><AlertCircle size={16} /> {error}</div>
+            ) : backups.length === 0 ? (
+              <EmptyState icon={HardDrive} title="暂无备份" detail="该实例当前没有可用备份文件。" />
+            ) : (
+              <div className="backup-list">
+                {backups.map((backup) => (
+                  <div className="backup-item" key={backup.name}>
+                    <HardDrive size={18} />
+                    <div>
+                      <strong>{backup.time}</strong>
+                      <span>{backup.name}</span>
+                    </div>
+                    <span className="backup-type">{backup.type}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </section>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function ConfirmPowerModal({ detail, loading, onCancel, onConfirm }) {
+  const { item, group, action } = detail;
+  const isStop = action === 'stop';
+  const title = isStop ? '确认停止实例' : '确认启动实例';
+  const actionText = isStop ? '停止' : '启动';
+  const role = getField(item, 'role', 'Role', '-');
+  const status = getField(item, 'status', 'Status', '-');
+
+  return (
+    <div className="modal-backdrop" role="presentation" onMouseDown={onCancel}>
+      <section className="confirm-modal" role="dialog" aria-modal="true" onMouseDown={(event) => event.stopPropagation()}>
+        <div className="confirm-head">
+          <div className={isStop ? 'confirm-icon warn' : 'confirm-icon'}>
+            {isStop ? <Power size={20} /> : <Play size={20} />}
+          </div>
+          <div>
+            <h3>{title}</h3>
+            <span>{item.name} · {group.groupName}</span>
+          </div>
+        </div>
+        <div className="confirm-body">
+          <p>
+            将要{actionText}实例 <strong>{item.name}</strong>。
+            {isStop ? '停止后该实例上的 Redis 服务会不可用，副本冗余或读流量可能受影响。' : '启动会尝试恢复该实例容器。'}
+          </p>
+          <div className="confirm-facts">
+            <span>角色: {displayValue(role)}</span>
+            <span>当前状态: {statusMeta(status).label}</span>
+            <span>Server: {displayValue(getField(item, 'server', 'Server'))}</span>
+          </div>
+        </div>
+        <div className="confirm-actions">
+          <button className="ghost-button" onClick={onCancel} disabled={loading}>取消</button>
+          <button className={isStop ? 'danger-button' : 'primary-button'} onClick={onConfirm} disabled={loading}>
+            {loading ? '处理中...' : `确认${actionText}`}
+          </button>
         </div>
       </section>
     </div>
