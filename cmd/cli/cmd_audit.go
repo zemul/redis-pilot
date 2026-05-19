@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"time"
 
 	"github.com/spf13/cobra"
 )
@@ -11,7 +10,7 @@ var auditCmd = &cobra.Command{
 	Use:   "audit",
 	Short: "Query audit logs",
 	Long: `Query audit logs with filtering by date, group, level, and action.
-Defaults to showing today's records.`,
+Defaults to showing the most recent 30 records across all dates.`,
 	Example: `  # Today's audit logs
   redis-pilot-cli audit
 
@@ -33,12 +32,6 @@ Defaults to showing today's records.`,
 		instance, _ := cmd.Flags().GetString("instance")
 		level, _ := cmd.Flags().GetString("level")
 		action, _ := cmd.Flags().GetString("action")
-		today, _ := cmd.Flags().GetBool("today")
-
-		if today || (from == "" && to == "") {
-			from = time.Now().Format("20060102")
-			to = from
-		}
 
 		query := fmt.Sprintf("/audit/query?from=%s&to=%s", from, to)
 		if group != "" {
@@ -64,5 +57,4 @@ func init() {
 	auditCmd.Flags().String("instance", "", "Filter by instance name")
 	auditCmd.Flags().String("level", "", "Filter by level: normal | important | critical")
 	auditCmd.Flags().String("action", "", "Filter by action type")
-	auditCmd.Flags().Bool("today", false, "Show today's logs (default when no date specified)")
 }

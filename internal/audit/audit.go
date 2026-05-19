@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -57,7 +58,13 @@ type Logger struct {
 func New(dataDir string) *Logger {
 	dir := filepath.Join(dataDir, "audit")
 	os.MkdirAll(dir, 0755)
-	return &Logger{dir: dir}
+	l := &Logger{dir: dir}
+	// 恢复当天已有记录数，避免重启后 ID 重复
+	today := time.Now().Format("20060102")
+	if data, err := os.ReadFile(filepath.Join(dir, "audit-"+today+".jsonl")); err == nil {
+		l.seq.Store(int64(len(splitLines(data))))
+	}
+	return l
 }
 
 // Log 写入一条审计记录
@@ -181,9 +188,17 @@ type QueryFilter struct {
 // Query 按条件查询审计日志
 func (l *Logger) Query(f QueryFilter) ([]Record, error) {
 	if f.Limit <= 0 {
-		f.Limit = 200
+		f.Limit = 30
 	}
-	dates, err := l.dateRange(f.From, f.To)
+	var (
+		dates []string
+		err   error
+	)
+	if f.From == "" && f.To == "" {
+		dates, err = l.allDates()
+	} else {
+		dates, err = l.dateRange(f.From, f.To)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -222,6 +237,23 @@ func (l *Logger) Query(f QueryFilter) ([]Record, error) {
 		}
 	}
 	return results, nil
+}
+
+func (l *Logger) allDates() ([]string, error) {
+	entries, err := os.ReadDir(l.dir)
+	if err != nil {
+		return nil, err
+	}
+	var dates []string
+	for _, e := range entries {
+		name := e.Name()
+		// audit-YYYYMMDD.jsonl
+		if len(name) > 14 && name[:6] == "audit-" && filepath.Ext(name) == ".jsonl" {
+			dates = append(dates, name[6:14])
+		}
+	}
+	sort.Strings(dates)
+	return dates, nil
 }
 
 func (l *Logger) dateRange(from, to string) ([]string, error) {

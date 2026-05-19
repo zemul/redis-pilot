@@ -12,15 +12,15 @@ var inventoryCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		view, _ := cmd.Flags().GetString("view")
 		port, _ := cmd.Flags().GetString("port")
-		server, _ := cmd.Flags().GetString("server")
+		node, _ := cmd.Flags().GetString("node")
 		engine, _ := cmd.Flags().GetString("engine")
 
 		query := fmt.Sprintf("/inventory?view=%s", view)
 		if port != "" {
 			query += "&port=" + port
 		}
-		if server != "" {
-			query += "&server=" + server
+		if node != "" {
+			query += "&server=" + node
 		}
 		if engine != "" {
 			query += "&engine=" + engine
@@ -31,7 +31,7 @@ var inventoryCmd = &cobra.Command{
 
 func init() {
 	inventoryCmd.Flags().String("port", "", "Filter by Envoy port")
-	inventoryCmd.Flags().String("server", "", "Filter by server name")
+	inventoryCmd.Flags().String("node", "", "Filter by server name")
 	inventoryCmd.Flags().String("engine", "", "Filter by engine (redis|kvrocks)")
 	inventoryCmd.Flags().String("view", "summary", "View: summary | port | server")
 }
