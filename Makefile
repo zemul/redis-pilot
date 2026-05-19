@@ -32,7 +32,7 @@ clean:
 build-linux:
 	GOOS=linux GOARCH=amd64 $(MAKE) all
 
-deploy: build-linux deploy-server deploy-agent deploy-cli
+deploy: build-linux deploy-server deploy-agent deploy-cli deploy-xds
 
 deploy-server:
 	ssh $(DEPLOY_SERVER) systemctl stop redis-pilot-server || true
@@ -52,6 +52,11 @@ deploy-cli:
 		echo "→ cli $$h"; \
 		scp bin/redis-cli $$h:/usr/local/bin/redis-pilot-cli; \
 	done
+
+deploy-xds:
+	ssh $(DEPLOY_SERVER) systemctl stop redis-pilot-xds || true
+	scp bin/redis-pilot-xds $(DEPLOY_SERVER):/opt/redis-pilot-xds/redis-pilot-xds
+	ssh $(DEPLOY_SERVER) systemctl start redis-pilot-xds
 
 setup:
 	bash scripts/setup.sh
