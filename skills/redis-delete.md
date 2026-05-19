@@ -34,9 +34,9 @@ description: 删除 Redis/Kvrocks 实例组
 
 6. 确认清理完成
    ```
-   redis-pilot-cli instance status <group>
+   redis-pilot-cli instance list --group <group>
    ```
-   预期返回"实例组不存在"。
+   预期返回空实例列表或"实例组不存在"。
 
 ## 参数
 

@@ -52,7 +52,7 @@ description: 扩容 Redis 实例（加从库或提升配置）
 
 4. 其他从库改复制目标
    ```
-   redis-pilot-cli instance replicate <old-replica> --master <new-name>
+   redis-pilot-cli instance replicate <old-replica> --replica-of <new-name>
    ```
 
 5. 删除旧主库

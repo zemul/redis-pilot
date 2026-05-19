@@ -38,7 +38,7 @@ redis-pilot-cli instance create <name> --node <server> --group <group> --categor
 redis-pilot-cli instance create <replica> --replica-of <master> --node <server> --memory <mem>
 redis-pilot-cli instance delete <name>              # 删除实例
 redis-pilot-cli instance start <name>               # 启动实例
-redis-pilot-cli instance stop <name>                # 停止实例
+redis-pilot-cli instance stop <name>                # 停止实例（主库需加 --force）
 redis-pilot-cli instance config <name> --set k=v    # 修改配置
 redis-pilot-cli instance promote <name>             # 提升为主库
 redis-pilot-cli instance replicate <name> --replica-of <master>  # 设置复制
@@ -70,7 +70,7 @@ curl http://<server>/api/v1/proxy/snapshot          # 只读查看控制面快�
 
 ### 审计日志
 ```
-redis-pilot-cli audit                               # 今天的审计日志
+redis-pilot-cli audit                               # 最近 30 条审计日志
 redis-pilot-cli audit --group <g>                   # 按实例组过滤
 redis-pilot-cli audit --instance <name>             # 按实例过滤
 redis-pilot-cli audit --level critical              # 按级别过滤
@@ -81,7 +81,7 @@ redis-pilot-cli audit --from 20260501 --to 20260510 # 日期范围
 ### 资源清单
 ```
 redis-pilot-cli inventory                           # 全部清单
-redis-pilot-cli inventory --server <name>           # 按服务器
+redis-pilot-cli inventory --node <name>             # 按服务器
 redis-pilot-cli inventory --engine redis            # 按引擎
 redis-pilot-cli inventory --port 16379              # 按 Envoy 端口
 redis-pilot-cli inventory --view port               # 端口视图

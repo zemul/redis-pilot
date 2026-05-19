@@ -525,7 +525,69 @@ func (s *Server) instanceStart(c *gin.Context) {
 }
 
 func (s *Server) instanceStop(c *gin.Context) {
-	s.instanceSimpleOp(c, "stop", "/instance/stop", "instance.stop", audit.LevelImportant)
+	start := time.Now()
+	var req struct {
+		Name  string `json:"name" binding:"required"`
+		Force bool   `json:"force"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		fail(c, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	// 如果是主从组的 master，且未传 force，拒绝并给出提示
+	if !req.Force {
+		instances, err := s.state.ReadInstances()
+		if err != nil {
+			fail(c, http.StatusInternalServerError, err.Error())
+			return
+		}
+		if inst, ok := instances.Instances[req.Name]; ok && inst.Role == "master" {
+			if group := instances.Groups[inst.Group]; group != nil && group.Type == "replication" {
+				fail(c, http.StatusBadRequest,
+					fmt.Sprintf("stopping master %q will remove Sentinel monitoring for group %q; promote a replica first, or pass force=true to override", req.Name, inst.Group))
+				return
+			}
+		}
+	}
+
+	inst, srv, unlock, err := s.resolveAndLock(c, req.Name, "stop")
+	if err != nil {
+		return
+	}
+	defer unlock()
+
+	groupState, err := s.groupForInstance(req.Name)
+	if err != nil {
+		fail(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+	client := newAgentClient(srv)
+	if _, err := client.post("/instance/stop", map[string]string{
+		"name":   req.Name,
+		"engine": groupState.Engine,
+	}); err != nil {
+		fail(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	s.state.WithInstances(func(is *apitypes.InstancesState) error {
+		if i, ok := is.Instances[req.Name]; ok {
+			i.Status = "stopped"
+			state.RecalculateGroupTopology(is, i.Group)
+		}
+		return nil
+	})
+
+	s.audit.Log(audit.Record{
+		Operator: operatorFrom(c),
+		Action:   "instance.stop", Level: audit.LevelImportant, Result: "success",
+		Duration: time.Since(start).Milliseconds(),
+		Target:   map[string]interface{}{"instance": req.Name, "server": inst.Server},
+	})
+
+	s.syncSentinel()
+	ok(c, nil)
 }
 
 func (s *Server) instanceConfig(c *gin.Context) {

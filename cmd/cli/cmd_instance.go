@@ -167,13 +167,21 @@ var instanceStartCmd = &cobra.Command{
 }
 
 var instanceStopCmd = &cobra.Command{
-	Use:     "stop <name>",
-	Short:   "Stop an instance",
-	Long:    "Gracefully stop a running instance. Data is preserved.",
-	Example: `  redis-pilot-cli instance stop order-master`,
-	Args:    cobra.ExactArgs(1),
+	Use:   "stop <name>",
+	Short: "Stop an instance",
+	Long: `Gracefully stop a running instance. Data is preserved.
+
+Stopping the current master of a replication group will remove Sentinel monitoring.
+Use "instance promote <replica>" first for a safe switchover, or pass --force to override.`,
+	Example: `  redis-pilot-cli instance stop order-master
+  redis-pilot-cli instance stop order-master --force`,
+	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return checkResp(client.Post("/instance/stop", map[string]string{"name": args[0]}))
+		force, _ := cmd.Flags().GetBool("force")
+		return checkResp(client.Post("/instance/stop", map[string]interface{}{
+			"name":  args[0],
+			"force": force,
+		}))
 	},
 }
 
@@ -262,6 +270,8 @@ func init() {
 	instanceCreateCmd.Flags().String("config", "", "Config overrides (k=v,k=v)")
 
 	instanceDeleteCmd.Flags().Bool("clean-data", false, "Also remove data directory")
+
+	instanceStopCmd.Flags().Bool("force", false, "Force stop even if instance is the current master")
 
 	instanceConfigCmd.Flags().String("set", "", "Config entries (k=v,k=v)")
 	instanceConfigCmd.Flags().Bool("restart", false, "Restart to apply")
