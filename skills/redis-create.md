@@ -56,6 +56,7 @@ description: 创建 Redis/Kvrocks 实例，支持单点和主从
 
 ## 注意事项
 
+- **实例命名不要包含角色或节点信息**（如 master、replica、node1、redis01）。主从角色会因 failover 切换，实例也可能迁移到不同服务器，名字应使用纯序号，例如 `order-1` / `order-2` 或 `order-a` / `order-b`。当前主库由 group 的 `current_master` 字段维护。
 - 创建主从时，先创建主库再创建从库
 - group 名在 Sentinel/Envoy/审计中统一使用
 - Redis 实例端口和 Envoy 端口均由 Server 统一分配，不从 CLI 传 `--port`

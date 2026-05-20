@@ -1567,6 +1567,20 @@ Redis 实例:  redis-{instance-name}     例: redis-cache-1
 Kvrocks 实例: kvrocks-{instance-name}  例: kvrocks-order-master, kvrocks-order-replica
 ```
 
+### 7.1.1 实例命名规范
+
+实例名一旦创建不可更改，但主从角色会因 failover 而切换，实例也可能迁移到不同服务器。**不要在实例名中编码角色或节点信息**（如 `master`、`replica`、`node1`、`redis01`），否则 failover 或迁移后名字与实际状态倒置，容易误导操作。
+
+**推荐命名方式**（纯序号，不绑定角色和节点）：
+
+| 场景 | 推荐 | 避免 |
+|------|------|------|
+| 数字序号 | `order-1` / `order-2` | `order-master` / `order-replica` |
+| 字母序号 | `order-a` / `order-b` | `order-primary` / `order-standby` |
+| 避免节点绑定 | `cache-1` / `cache-2` | `cache-node1` / `cache-redis01` |
+
+当前主库信息由 group 状态的 `current_master` 字段维护，实例名无需重复表达角色或位置。
+
 ### 7.2 运行参数
 
 ```bash
