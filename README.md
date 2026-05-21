@@ -14,16 +14,65 @@
 
 ## 架构
 
+```mermaid
+flowchart TB
+    user["用户 / 运维人员"]
+    skills["GAL Skills<br/>redis-create / backup / migrate / diagnose"]
+    cli["CLI<br/>redis-pilot-cli"]
+
+    server["Server :8080<br/>状态管理 / API 网关 / 调度 / 审计"]
+    state[("状态文件<br/>pool-state.yaml<br/>instances-state.yaml")]
+    audit[("审计日志<br/>audit-YYYYMMDD.jsonl")]
+
+    xds["redis-pilot-xds :18000<br/>Envoy xDS 控制面"]
+    envoy["Envoy Redis Proxy<br/>统一入口 / 读写分离"]
+    app["业务应用"]
+
+    subgraph nodes["数据节点集群"]
+        direction LR
+
+        subgraph nodeA["Server A"]
+            agentA["Agent :8400"]
+            podmanA["Podman"]
+            instA1["Redis / Kvrocks<br/>master"]
+            instA2["Redis / Kvrocks<br/>replica"]
+            agentA --> podmanA --> instA1
+            podmanA --> instA2
+        end
+
+        subgraph nodeB["Server B"]
+            agentB["Agent :8400"]
+            podmanB["Podman"]
+            instB1["Redis / Kvrocks<br/>master"]
+            instB2["Redis / Kvrocks<br/>replica"]
+            agentB --> podmanB --> instB1
+            podmanB --> instB2
+        end
+    end
+
+    user --> skills --> cli
+    cli -- "HTTP API / Bearer Token" --> server
+    server <--> state
+    server --> audit
+    server -- "Agent API / Bearer Token" --> agentA
+    server -- "Agent API / Bearer Token" --> agentB
+    server -- "proxy snapshot" --> xds
+    xds -- "动态 Listener / Cluster / Endpoint" --> envoy
+    app -- "Redis 协议" --> envoy
+    envoy -- "读写流量" --> instA1
+    envoy -- "只读流量" --> instA2
+    envoy -- "读写流量" --> instB1
+    envoy -- "只读流量" --> instB2
 ```
-用户 → GAL Skills → CLI (redis-pilot-cli) → Server → Agent → Podman
-                                                                  ↓
-                                                             Envoy Proxy
-```
+
+管理流量从 GAL Skills/CLI 进入 Server，再由 Server 调度到各节点 Agent 执行 Podman 容器操作；业务流量不经过 Server，直接通过 Envoy Redis Proxy 访问后端 Redis/Kvrocks 实例。Server 是全局状态唯一写入点，`pool-state.yaml` 记录节点资源和 Agent 连接信息，`instances-state.yaml` 记录实例拓扑、端口、角色和备份配置。
 
 | 组件 | 端口 | 职责 |
 |------|------|------|
 | Server | 8080 | 全局状态管理、API 网关、资源调度 |
 | Agent | 8400 | 容器管理、健康检查、备份执行（每台服务器一个） |
+| redis-pilot-xds | 18000 | 读取 Server 代理快照并向 Envoy 下发动态配置 |
+| Envoy Proxy | 16379+ | 业务 Redis 协议入口，提供统一访问和读写分离 |
 | CLI | - | 命令行工具，调用 Server API |
 
 ## 快速开始
