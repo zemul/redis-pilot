@@ -246,6 +246,3 @@ redis-pilot-cli sentinel sync
 - Envoy Redis Proxy（读写分离）
 - YAML（状态存储）
 
-## License
-
-Internal use only.
