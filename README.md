@@ -1,6 +1,6 @@
 # Redis Pilot
 
-基于 Agent 的 Redis/Kvrocks 多实例管理平台，支持单点/主从实例的全生命周期管理。
+轻量级 Redis/Kvrocks 多实例管理平台。通过 Server + Agent 架构集中管理分布在多台服务器上的 Redis 和 Kvrocks 容器实例，提供创建、主从复制、自动备份、故障转移、读写分离代理等能力，替代手动 SSH 逐台操作的运维方式。
 
 ## 特性
 
