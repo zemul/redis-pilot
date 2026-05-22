@@ -1,6 +1,6 @@
 # Redis Pilot
 
-基于 GAL 的 Redis/Kvrocks 多实例管理平台，支持单点/主从实例的全生命周期管理。
+基于 Agent 的 Redis/Kvrocks 多实例管理平台，支持单点/主从实例的全生命周期管理。
 
 ## 特性
 
