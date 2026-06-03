@@ -329,13 +329,14 @@ function powerActionFor(item, group) {
 	return null;
 }
 
-function ProgressBar({ label, current, max, unit = '', tone = 'blue' }) {
+function ProgressBar({ label, current, max, unit = '' }) {
   const percent = max > 0 ? Math.min(100, Math.round((current / max) * 100)) : 0;
+  const tone = percent >= 90 ? 'danger' : percent >= 80 ? 'warn' : '';
   return (
     <div className="progress">
       <div className="progress-label">
         <span>{label}</span>
-        <span>{current || 0}{unit} / {max || 0}{unit}</span>
+        <span className="mono">{current || 0}{unit} / {max || 0}{unit}</span>
       </div>
       <div className="progress-track">
         <span className={tone} style={{ width: `${percent}%` }} />
@@ -605,20 +606,24 @@ function DashboardView({ groups, servers, audits }) {
   const alerts = groups.filter((group) => instanceStatusTone(group.status) === 'bad').length +
     servers.filter((item) => getField(item, 'status', 'Status') === 'unhealthy').length;
 
+  const allHealthy = groups.length > 0 && healthyGroups === groups.length;
+  const healthTone = groups.length === 0 ? 'neutral' : allHealthy ? 'positive' : 'warn';
+  const alertTone = alerts > 0 ? 'alert' : 'neutral';
+
   return (
     <div className="stack">
-      <div className="stat-grid">
-        <StatCard label="总实例组数" value={groups.length} icon={Database} tone="blue" />
-        <StatCard label="服务器节点" value={servers.length} icon={Server} tone="indigo" />
-        <StatCard label="健康集群" value={healthyGroups} icon={ShieldCheck} tone="green" />
-        <StatCard label="待处理告警" value={alerts} icon={AlertCircle} tone="red" />
-      </div>
+      <section className="panel summary-strip">
+        <SummaryCell label="总实例组数" value={groups.length} icon={Database} />
+        <SummaryCell label="服务器节点" value={servers.length} icon={Server} />
+        <SummaryCell label="健康集群" value={healthyGroups} icon={ShieldCheck} tone={healthTone} />
+        <SummaryCell label="待处理告警" value={alerts} icon={AlertCircle} tone={alertTone} />
+      </section>
 
       <div className="dashboard-grid">
         <section className="panel">
           <div className="panel-header">
             <h3>实例运行状态概览</h3>
-            <Activity size={20} />
+            <Activity size={18} />
           </div>
           <div className="panel-body list">
             {groups.length === 0 ? <EmptyState title="暂无实例组" detail="创建实例后会在这里展示运行状态。" /> :
@@ -629,7 +634,7 @@ function DashboardView({ groups, servers, audits }) {
         <section className="panel">
           <div className="panel-header">
             <h3>审计记录</h3>
-            <Clock size={20} />
+            <Clock size={18} />
           </div>
           <div className="panel-body audit-list">
             {(audits || []).slice(0, 4).map((log, index) => (
@@ -643,15 +648,12 @@ function DashboardView({ groups, servers, audits }) {
   );
 }
 
-function StatCard({ label, value, icon: Icon, tone }) {
+function SummaryCell({ label, value, icon: Icon, tone = 'neutral' }) {
   return (
-    <section className="panel stat-card">
-      <div className={`stat-icon ${tone}`}><Icon size={24} /></div>
-      <div>
-        <span>{label}</span>
-        <strong>{value}</strong>
-      </div>
-    </section>
+    <div className={`summary-cell tone-${tone}`}>
+      <span className="summary-label"><Icon size={15} /> {label}</span>
+      <span className="summary-value">{value}</span>
+    </div>
   );
 }
 
@@ -821,14 +823,14 @@ function InstanceGroupRows({ group, expanded, onToggle, onOpenDetail, onOpenBack
 
 function EnvoyPorts({ group, item }) {
   const envoy = getField(group, 'envoy', 'Envoy', {}) || {};
-  const ports = [
-    envoy.master_port || envoy.MasterPort ? `MASTER ${envoy.master_port || envoy.MasterPort}` : '',
-    envoy.auto_port || envoy.AutoPort ? `AUTO ${envoy.auto_port || envoy.AutoPort}` : ''
-  ].filter(Boolean).join(' / ');
+  const masterPort = envoy.master_port || envoy.MasterPort;
+  const autoPort = envoy.auto_port || envoy.AutoPort;
   return (
     <>
-      <span className="muted">Redis: {getField(item, 'port', 'Port', '-')}</span>
-      <span className="muted">Envoy: {ports || '-'}</span>
+      <span className="muted">Redis <span className="mono">{getField(item, 'port', 'Port', '-')}</span></span>
+      {masterPort && <span className="muted">Envoy·M <span className="mono">{masterPort}</span></span>}
+      {autoPort && <span className="muted">Envoy·A <span className="mono">{autoPort}</span></span>}
+      {!masterPort && !autoPort && <span className="muted">Envoy <span className="mono">-</span></span>}
     </>
   );
 }
@@ -836,8 +838,8 @@ function EnvoyPorts({ group, item }) {
 function ResourceValue({ memory, cpus, disk }) {
   return (
     <>
-      <span>{formatGi(memory)} / {cpus || 0}C</span>
-      <span className="muted">Disk: {formatGi(disk)}</span>
+      <span className="mono">{formatGi(memory)} / {cpus || 0}C</span>
+      <span className="muted">Disk: <span className="mono">{formatGi(disk)}</span></span>
     </>
   );
 }
@@ -861,8 +863,8 @@ function ReplicaRow({ item, group, onOpenDetail, onOpenBackups, onPowerAction, p
       <td>{getField(item, 'server', 'Server', '-')}</td>
       <td><span className="muted">通过主库 Envoy 路由读</span></td>
       <td>
-        <span>{getField(item, 'memory', 'Memory', '-')} / {getField(item, 'cpus', 'CPUs', '-')}C</span>
-        <span className="muted">Disk: {displayValue(getField(item, 'disk', 'Disk'), '0Gi')}</span>
+        <span className="mono">{getField(item, 'memory', 'Memory', '-')} / {getField(item, 'cpus', 'CPUs', '-')}C</span>
+        <span className="muted">Disk: <span className="mono">{displayValue(getField(item, 'disk', 'Disk'), '0Gi')}</span></span>
       </td>
       <td><StatusBadge status={getField(item, 'status', 'Status')} /></td>
       <td>
@@ -904,7 +906,6 @@ function ServerCard({ server }) {
 
   return (
     <section className="panel server-card">
-      <div className="watermark"><Server size={104} /></div>
       <div className="server-head">
         <div>
           <h3>{server.name}</h3>
@@ -921,21 +922,18 @@ function ServerCard({ server }) {
           label={<><Cpu size={13} /> CPU Core</>}
           current={Number(allocated.cpu_cores || allocated.CPUCores || 0)}
           max={Number(capacity.cpu_cores || capacity.CPUCores || 0)}
-          tone="indigo"
         />
         <ProgressBar
           label={<><Database size={13} /> Memory</>}
           current={parseGi(allocated.memory || allocated.Memory)}
           max={parseGi(capacity.memory || capacity.Memory)}
           unit="Gi"
-          tone="blue"
         />
         <ProgressBar
           label={<><HardDrive size={13} /> Disk</>}
           current={parseGi(allocated.disk || allocated.Disk)}
           max={parseGi(capacity.disk || capacity.Disk)}
           unit="Gi"
-          tone="green"
         />
       </div>
       <div className="muted">实例: {instances.length ? instances.join(', ') : '暂无'}</div>
@@ -1016,9 +1014,9 @@ function AuditView({ audits, filters, setFilters, onApply }) {
                 <tr><td colSpan="5"><EmptyState icon={List} title="暂无审计记录" /></td></tr>
               ) : records.slice(0, 50).map((log, index) => (
                 <tr key={log.id || log.ID || index}>
-	                  <td>{formatDateTime(log.time || log.Time || log.timestamp || log.Timestamp)}</td>
+	                  <td className="mono">{formatDateTime(log.time || log.Time || log.timestamp || log.Timestamp)}</td>
                   <td>{auditOperator(log)}</td>
-                  <td>{displayValue(log.action || log.Action)}</td>
+                  <td><span className="mono">{displayValue(log.action || log.Action)}</span></td>
                   <td>{displayValue(log.target || log.Target || log.instance || log.Instance)}</td>
                   <td><StatusBadge status={log.result || log.Result || log.level || log.Level} /></td>
                 </tr>
@@ -1033,9 +1031,10 @@ function AuditView({ audits, filters, setFilters, onApply }) {
 
 function AuditCard({ log }) {
   const result = log.result || log.Result || log.level || log.Level || 'success';
-  const Icon = statusMeta(result).tone === 'bad' ? AlertCircle : CheckCircle2;
+  const isBad = statusMeta(result).tone === 'bad';
+  const Icon = isBad ? AlertCircle : CheckCircle2;
   return (
-    <div className="audit-card">
+    <div className={isBad ? 'audit-card is-bad' : 'audit-card'}>
       <Icon size={18} />
       <div>
         <strong>{displayValue(log.action || log.Action)}</strong>
