@@ -15,7 +15,7 @@ type NodeServer struct {
 
 // ResourceSpec 资源规格
 type ResourceSpec struct {
-	CPUCores int    `yaml:"cpu_cores" json:"cpu_cores"`
+	CPUCores float64 `yaml:"cpu_cores" json:"cpu_cores"`
 	Memory   string `yaml:"memory" json:"memory"`
 	Disk     string `yaml:"disk" json:"disk"`
 }
@@ -111,7 +111,7 @@ type Instance struct {
 	Container       string            `yaml:"container" json:"container"`
 	Port            int               `yaml:"port" json:"port"`
 	Memory          string            `yaml:"memory" json:"memory"`
-	CPUs            int               `yaml:"cpus" json:"cpus"`
+	CPUs            float64           `yaml:"cpus" json:"cpus"`
 	Disk            string            `yaml:"disk,omitempty" json:"disk,omitempty"`
 	Password        string            `yaml:"password" json:"password"`
 	ConfigPath      string            `yaml:"config_path" json:"config_path"`
@@ -156,8 +156,8 @@ type ServerInventoryItem struct {
 	Instances       []ServerInstanceSummary `json:"instances"`
 	AllocatedMemory string                  `json:"allocated_memory"`
 	TotalMemory     string                  `json:"total_memory"`
-	AllocatedCPU    int                     `json:"allocated_cpu"`
-	TotalCPU        int                     `json:"total_cpu"`
+	AllocatedCPU    float64                 `json:"allocated_cpu"`
+	TotalCPU        float64                 `json:"total_cpu"`
 }
 
 // ServerInstanceSummary 服务器上的实例摘要
@@ -166,7 +166,7 @@ type ServerInstanceSummary struct {
 	Engine        string `json:"engine"`
 	ContainerPort int    `json:"container_port"`
 	Memory        string `json:"memory"`
-	CPUs          int    `json:"cpus"`
+	CPUs          float64 `json:"cpus"`
 	Status        string `json:"status"`
 }
 
@@ -176,7 +176,7 @@ type InventorySummary struct {
 	TotalInstances  int                   `json:"total_instances"`
 	TotalServers    int                   `json:"total_servers"`
 	AllocatedMemory string                `json:"allocated_memory"`
-	AllocatedCPU    int                   `json:"allocated_cpu"`
+	AllocatedCPU    float64               `json:"allocated_cpu"`
 }
 
 // InstanceSummaryItem 实例摘要条目
@@ -201,7 +201,7 @@ type CreateInstanceRequest struct {
 	Server          string            `json:"server"`                      // 可选，为空时自动调度
 	Port            int               `json:"port"`
 	Memory          string            `json:"memory" binding:"required"`
-	CPUs            int               `json:"cpus"`
+	CPUs            float64           `json:"cpus"`
 	Disk            string            `json:"disk,omitempty"`
 	Password        string            `json:"password"`
 	ReplicaOf       string            `json:"replica_of,omitempty"`

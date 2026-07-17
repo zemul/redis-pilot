@@ -106,7 +106,7 @@ func (s *Server) buildServerView(instances *apitypes.InstancesState, node *apity
 		if !exists {
 			ip := ""
 			totalMem := ""
-			totalCPU := 0
+			totalCPU := 0.0
 			if ps, ok := node.Servers[inst.Server]; ok {
 				ip = ps.Endpoint
 				totalMem = ps.Capacity.Memory
@@ -148,7 +148,7 @@ func (s *Server) buildServerView(instances *apitypes.InstancesState, node *apity
 func (s *Server) buildSummaryView(instances *apitypes.InstancesState, node *apitypes.NodeState, engineFilter string) *apitypes.InventorySummary {
 	summary := &apitypes.InventorySummary{}
 	servers := make(map[string]bool)
-	totalCPU := 0
+	totalCPU := 0.0
 
 	for name, inst := range instances.Instances {
 		group := instances.Groups[inst.Group]

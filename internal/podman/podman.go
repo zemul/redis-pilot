@@ -14,7 +14,7 @@ type ContainerStatus struct {
 
 // ContainerRuntime 容器运行时接口
 type ContainerRuntime interface {
-	Create(engine, name, image string, port int, memory string, cpus int, dataDir string) (string, error)
+	Create(engine, name, image string, port int, memory string, cpus float64, dataDir string) (string, error)
 	Start(name string) error
 	Stop(name string) error
 	Remove(name string) error
@@ -36,14 +36,14 @@ func (r *Runtime) Run(args ...string) (string, error) {
 	return strings.TrimSpace(string(out)), nil
 }
 
-func (r *Runtime) Create(engine, name, image string, port int, memory string, cpus int, dataDir string) (string, error) {
+func (r *Runtime) Create(engine, name, image string, port int, memory string, cpus float64, dataDir string) (string, error) {
 	if engine == "kvrocks" {
 		return r.Run("run", "-d",
 			"--name", name,
 			"--user", "0:0",
 			"--memory", memory,
 			"--memory-swap", memory,
-			"--cpus", fmt.Sprintf("%d", cpus),
+			"--cpus", fmt.Sprintf("%g", cpus),
 			"--restart", "on-failure:5",
 			"-p", fmt.Sprintf("%d:6379", port),
 			"-v", fmt.Sprintf("%s/conf/kvrocks.conf:/etc/kvrocks/kvrocks.conf:Z", dataDir),
@@ -58,7 +58,7 @@ func (r *Runtime) Create(engine, name, image string, port int, memory string, cp
 		"--name", name,
 		"--memory", memory,
 		"--memory-swap", memory,
-		"--cpus", fmt.Sprintf("%d", cpus),
+		"--cpus", fmt.Sprintf("%g", cpus),
 		"--restart", "on-failure:5",
 		"-p", fmt.Sprintf("%d:6379", port),
 		"-v", fmt.Sprintf("%s/conf/redis.conf:/etc/redis/redis.conf:Z", dataDir),

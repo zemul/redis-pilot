@@ -31,7 +31,7 @@ func (f *fakeRuntime) record(s string) {
 	f.calls = append(f.calls, s)
 }
 
-func (f *fakeRuntime) Create(engine, name, image string, port int, memory string, cpus int, dataDir string) (string, error) {
+func (f *fakeRuntime) Create(engine, name, image string, port int, memory string, cpus float64, dataDir string) (string, error) {
 	f.mu.Lock()
 	f.images = append(f.images, image)
 	f.mu.Unlock()

@@ -103,7 +103,7 @@ Choosing the wrong category has real consequences:
 				disk = "10Gi"
 			}
 		}
-		cpus, _ := cmd.Flags().GetInt("cpus")
+		cpus, _ := cmd.Flags().GetFloat64("cpus")
 		password, _ := cmd.Flags().GetString("password")
 		group, _ := cmd.Flags().GetString("group")
 		replicaOf, _ := cmd.Flags().GetString("replica-of")
@@ -263,7 +263,7 @@ func init() {
 	instanceCreateCmd.Flags().String("node", "", "Target node name")
 	instanceCreateCmd.Flags().String("memory", "1Gi", "Memory")
 	instanceCreateCmd.Flags().String("disk", "", "Disk quota for capacity planning (e.g. 20Gi)")
-	instanceCreateCmd.Flags().Int("cpus", 1, "CPU cores")
+	instanceCreateCmd.Flags().Float64("cpus", 1, "CPU cores")
 	instanceCreateCmd.Flags().String("password", "", "Password")
 	instanceCreateCmd.Flags().String("group", "", "Stable logical group name for master/standalone")
 	instanceCreateCmd.Flags().String("replica-of", "", "Master instance name or address")

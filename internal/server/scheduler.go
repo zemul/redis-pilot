@@ -12,7 +12,7 @@ import (
 //  1. 过滤：排除 status != healthy
 //  2. 过滤：排除剩余资源不足的
 //  3. 排序：主从不同服务器 > 不同可用区 > 剩余资源最多
-func selectServer(node *apitypes.NodeState, instances *apitypes.InstancesState, reqMemory string, reqCPUs int, reqDisk string, replicaOf string) (string, error) {
+func selectServer(node *apitypes.NodeState, instances *apitypes.InstancesState, reqMemory string, reqCPUs float64, reqDisk string, replicaOf string) (string, error) {
 	if len(node.Servers) == 0 {
 		return "", fmt.Errorf("no servers in node")
 	}
@@ -40,7 +40,7 @@ func selectServer(node *apitypes.NodeState, instances *apitypes.InstancesState, 
 	type candidate struct {
 		name         string
 		remainingMem int
-		remainingCPU int
+		remainingCPU float64
 		sameMaster   bool // 和主库在同一台服务器
 		sameZone     bool // 和主库在同一个可用区
 	}
@@ -79,7 +79,7 @@ func selectServer(node *apitypes.NodeState, instances *apitypes.InstancesState, 
 	}
 
 	if len(candidates) == 0 {
-		return "", fmt.Errorf("no server has enough resources (need %s memory, %d cpus)", reqMemory, reqCPUs)
+		return "", fmt.Errorf("no server has enough resources (need %s memory, %g cpus)", reqMemory, reqCPUs)
 	}
 
 	// 排序：不同服务器 > 不同可用区 > 剩余资源多
@@ -107,7 +107,7 @@ func nodeEndpoint(node *apitypes.NodeState, serverName string) string {
 	return ""
 }
 
-func computeAllocated(instances *apitypes.InstancesState, serverName string) (memGi int, cpus int, diskGi int) {
+func computeAllocated(instances *apitypes.InstancesState, serverName string) (memGi int, cpus float64, diskGi int) {
 	for _, inst := range instances.Instances {
 		if inst == nil || inst.Server != serverName || inst.Status == "failed" {
 			continue

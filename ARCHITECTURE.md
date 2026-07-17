@@ -1629,6 +1629,8 @@ podman run -d \
 | xlarge | redis | 32Gi | 8 | 超大缓存 |
 | xlarge | kvrocks | 32Gi | 8 | 核心业务、大数据集 |
 
+> `cpus` 支持小数核（如 `0.5`、`1.5`），直接透传给 `podman --cpus`，用于精细化资源限制；上表为推荐档位。
+
 ---
 
 ## 8. 安全设计

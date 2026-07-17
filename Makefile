@@ -37,6 +37,7 @@ deploy: build-linux deploy-server deploy-agent deploy-cli deploy-xds
 deploy-server:
 	ssh $(DEPLOY_SERVER) systemctl stop redis-pilot-server || true
 	scp bin/redis-server $(DEPLOY_SERVER):/opt/redis-pilot-server/redis-pilot-server
+	ssh $(DEPLOY_SERVER) systemctl daemon-reload
 	ssh $(DEPLOY_SERVER) systemctl start redis-pilot-server
 
 deploy-agent:
@@ -44,6 +45,7 @@ deploy-agent:
 		echo "→ agent $$h"; \
 		ssh $$h systemctl stop redis-pilot-agent || true; \
 		scp bin/redis-agent $$h:/opt/redis-pilot-agent/redis-pilot-agent; \
+		ssh $$h systemctl daemon-reload; \
 		ssh $$h systemctl start redis-pilot-agent; \
 	done
 
@@ -56,6 +58,7 @@ deploy-cli:
 deploy-xds:
 	ssh $(DEPLOY_SERVER) systemctl stop redis-pilot-xds || true
 	scp bin/redis-pilot-xds $(DEPLOY_SERVER):/opt/redis-pilot-xds/redis-pilot-xds
+	ssh $(DEPLOY_SERVER) systemctl daemon-reload
 	ssh $(DEPLOY_SERVER) systemctl start redis-pilot-xds
 
 setup:
