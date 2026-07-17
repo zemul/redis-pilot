@@ -22,7 +22,7 @@ type Server struct {
 	scheduler *backupScheduler
 }
 
-func New(cfg *Config) *Server {
+func New(cfg *Config) (*Server, error) {
 	normalizeImageConfig(cfg)
 	if cfg.Ports.Redis.Start == 0 && cfg.Ports.Redis.End == 0 {
 		cfg.Ports.Redis = PortRange{Start: 6379, End: 6499}
@@ -33,14 +33,20 @@ func New(cfg *Config) *Server {
 	if cfg.Ports.EnvoyMaster.Start == 0 && cfg.Ports.EnvoyMaster.End == 0 {
 		cfg.Ports.EnvoyMaster = PortRange{Start: 16500, End: 16619}
 	}
+
+	st, err := state.NewManager(cfg.DataDir)
+	if err != nil {
+		return nil, fmt.Errorf("server: init state: %w", err)
+	}
+
 	s := &Server{
 		cfg:   cfg,
-		state: state.NewManager(cfg.DataDir),
+		state: st,
 		log:   logger.New(cfg.Log.Dir, cfg.Log.Stdout),
-		audit: audit.New(cfg.DataDir),
+		audit: audit.New(st.DB()),
 	}
 	s.scheduler = newBackupScheduler(s)
-	return s
+	return s, nil
 }
 
 // StartReconcileLoop 启动定时状态校验，每 30 秒执行一次

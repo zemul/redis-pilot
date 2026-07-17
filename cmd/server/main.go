@@ -25,7 +25,10 @@ func main() {
 		log.Fatalf("load config: %v", err)
 	}
 
-	s := server.New(cfg)
+	s, err := server.New(cfg)
+	if err != nil {
+		log.Fatalf("init server: %v", err)
+	}
 	s.StartReconcileLoop()
 	s.StartSentinelReconcileLoop()
 	s.StartSentinelWatchLoop()

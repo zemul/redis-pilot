@@ -1,141 +1,84 @@
+// Package state 提供全局状态管理，底层委托给 internal/store (SQLite)。
+// 对外接口与原 YAML 版本保持一致，上层 handler 无需改动。
 package state
 
 import (
 	"fmt"
-	"os"
-	"path/filepath"
-	"sync"
 	"time"
 
-	"gopkg.in/yaml.v3"
-
+	"gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/internal/store"
 	"gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/pkg/apitypes"
 )
 
+// Manager 封装所有状态读写，底层使用 SQLite。
 type Manager struct {
-	dataDir string
-	nodeMu  sync.RWMutex
-	instMu  sync.RWMutex
+	db *store.DB
 }
 
-func NewManager(dataDir string) *Manager {
-	return &Manager{dataDir: dataDir}
+// NewManager 打开（或创建）dataDir/pilot.db 并返回 Manager。
+func NewManager(dataDir string) (*Manager, error) {
+	db, err := store.Open(dataDir)
+	if err != nil {
+		return nil, fmt.Errorf("state: open store: %w", err)
+	}
+	return &Manager{db: db}, nil
 }
 
-func (m *Manager) nodeStatePath() string {
-	return filepath.Join(m.dataDir, "pool-state.yaml")
+// Close 关闭底层数据库连接。
+func (m *Manager) Close() error {
+	return m.db.Close()
 }
 
-func (m *Manager) instancesStatePath() string {
-	return filepath.Join(m.dataDir, "instances-state.yaml")
+// DB 返回底层 store.DB，供需要直接访问 store 的模块使用（如 audit.Logger）。
+func (m *Manager) DB() *store.DB {
+	return m.db
 }
 
+// ── 节点 ──────────────────────────────────────────────────────────────────────
+
+// ReadNode 返回当前节点状态快照（只读）。
 func (m *Manager) ReadNode() (*apitypes.NodeState, error) {
-	m.nodeMu.RLock()
-	defer m.nodeMu.RUnlock()
-
-	var state apitypes.NodeState
-	data, err := os.ReadFile(m.nodeStatePath())
-	if os.IsNotExist(err) {
-		state.Servers = make(map[string]*apitypes.NodeServer)
-		return &state, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	if err := yaml.Unmarshal(data, &state); err != nil {
-		return nil, err
-	}
-	if state.Servers == nil {
-		state.Servers = make(map[string]*apitypes.NodeServer)
-	}
-	return &state, nil
+	return m.db.ReadNodeState()
 }
 
+// WriteNode 覆写全量节点状态。
 func (m *Manager) WriteNode(state *apitypes.NodeState) error {
-	m.nodeMu.Lock()
-	defer m.nodeMu.Unlock()
-	return writeYAML(m.nodeStatePath(), state)
+	return m.db.WriteNodeState(state)
 }
 
+// WithNode 在事务中原子执行 read → fn → write。
 func (m *Manager) WithNode(fn func(*apitypes.NodeState) error) error {
-	m.nodeMu.Lock()
-	defer m.nodeMu.Unlock()
-
-	var st apitypes.NodeState
-	data, err := os.ReadFile(m.nodeStatePath())
-	if os.IsNotExist(err) {
-		st.Servers = make(map[string]*apitypes.NodeServer)
-	} else if err != nil {
-		return err
-	} else {
-		if err := yaml.Unmarshal(data, &st); err != nil {
-			return err
-		}
-		if st.Servers == nil {
-			st.Servers = make(map[string]*apitypes.NodeServer)
-		}
-	}
-	if err := fn(&st); err != nil {
-		return err
-	}
-	return writeYAML(m.nodeStatePath(), &st)
+	return m.db.WithServers(func(servers map[string]*apitypes.NodeServer) error {
+		st := &apitypes.NodeState{Servers: servers}
+		return fn(st)
+	})
 }
 
+// ── 实例 ──────────────────────────────────────────────────────────────────────
+
+// ReadInstances 返回当前实例状态快照（只读）。
 func (m *Manager) ReadInstances() (*apitypes.InstancesState, error) {
-	m.instMu.RLock()
-	defer m.instMu.RUnlock()
-
-	var state apitypes.InstancesState
-	data, err := os.ReadFile(m.instancesStatePath())
-	if os.IsNotExist(err) {
-		ensureInstancesState(&state)
-		return &state, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	if err := yaml.Unmarshal(data, &state); err != nil {
-		return nil, err
-	}
-	ensureInstancesState(&state)
-	return &state, nil
+	return m.db.ReadInstances()
 }
 
+// WriteInstances 覆写全量实例状态。
 func (m *Manager) WriteInstances(state *apitypes.InstancesState) error {
-	m.instMu.Lock()
-	defer m.instMu.Unlock()
-	ensureInstancesState(state)
-	return writeYAML(m.instancesStatePath(), state)
+	return m.db.WithInstances(func(st *apitypes.InstancesState) error {
+		st.Groups = state.Groups
+		st.Instances = state.Instances
+		return nil
+	})
 }
 
-// WithInstances 在写锁保护下原子执行 read → fn → write。
-// fn 可修改 InstancesState，返回 error 时不写入。
+// WithInstances 在事务中原子执行 read → fn → write。
 func (m *Manager) WithInstances(fn func(*apitypes.InstancesState) error) error {
-	m.instMu.Lock()
-	defer m.instMu.Unlock()
-
-	var st apitypes.InstancesState
-	data, err := os.ReadFile(m.instancesStatePath())
-	if os.IsNotExist(err) {
-		ensureInstancesState(&st)
-	} else if err != nil {
-		return err
-	} else {
-		if err := yaml.Unmarshal(data, &st); err != nil {
-			return err
-		}
-		ensureInstancesState(&st)
-	}
-
-	if err := fn(&st); err != nil {
-		return err
-	}
-	return writeYAML(m.instancesStatePath(), &st)
+	return m.db.WithInstances(fn)
 }
+
+// ── 锁 ────────────────────────────────────────────────────────────────────────
 
 // TryAcquireLock 在已读取的实例上尝试获取操作锁，成功则修改 inst.Lock。
-// 调用方负责 ReadInstances / WriteInstances。
+// 调用方负责在 WithInstances 内调用。
 func TryAcquireLock(inst *apitypes.Instance, heldBy, operation string, timeout int) error {
 	now := time.Now()
 	if inst.Lock != nil {
@@ -144,7 +87,6 @@ func TryAcquireLock(inst *apitypes.Instance, heldBy, operation string, timeout i
 		}
 		acquired, err := time.Parse(time.RFC3339, inst.Lock.AcquiredAt)
 		if err != nil {
-			// 时间格式损坏，视为锁仍有效，拒绝抢占
 			return fmt.Errorf("locked by %s (operation: %s, bad acquired_at)", inst.Lock.HeldBy, inst.Lock.Operation)
 		}
 		if now.Sub(acquired) < time.Duration(inst.Lock.Timeout)*time.Second {
@@ -170,14 +112,7 @@ func ReleaseLock(inst *apitypes.Instance, heldBy string) {
 	}
 }
 
-func ensureInstancesState(st *apitypes.InstancesState) {
-	if st.Groups == nil {
-		st.Groups = make(map[string]*apitypes.InstanceGroupState)
-	}
-	if st.Instances == nil {
-		st.Instances = make(map[string]*apitypes.Instance)
-	}
-}
+// ── 拓扑辅助 ──────────────────────────────────────────────────────────────────
 
 // InstanceGroup 返回实例所属组的所有实例名（主库+所有从库）。
 func InstanceGroup(instances *apitypes.InstancesState, name string) []string {
@@ -224,12 +159,4 @@ func RecalculateGroupTopology(instances *apitypes.InstancesState, groupName stri
 		group.TopologyStatus = "degraded"
 	}
 	group.UpdatedAt = time.Now().Format(time.RFC3339)
-}
-
-func writeYAML(path string, v interface{}) error {
-	data, err := yaml.Marshal(v)
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(path, data, 0644)
 }

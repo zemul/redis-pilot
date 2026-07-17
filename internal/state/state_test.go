@@ -1,8 +1,6 @@
 package state
 
 import (
-	"os"
-	"path/filepath"
 	"sort"
 	"testing"
 	"time"
@@ -10,10 +8,21 @@ import (
 	"gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/pkg/apitypes"
 )
 
+// newTestManager 创建一个使用临时目录的 Manager（测试辅助）
+func newTestManager(t *testing.T) *Manager {
+	t.Helper()
+	m, err := NewManager(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	t.Cleanup(func() { m.Close() })
+	return m
+}
+
 // ---------- Manager 读写测试 ----------
 
-func TestReadNode_FileNotExist(t *testing.T) {
-	m := NewManager(t.TempDir())
+func TestReadNode_Empty(t *testing.T) {
+	m := newTestManager(t)
 	ps, err := m.ReadNode()
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -26,39 +35,8 @@ func TestReadNode_FileNotExist(t *testing.T) {
 	}
 }
 
-func TestReadNode_ValidYAML(t *testing.T) {
-	dir := t.TempDir()
-	yaml := `servers:
-  srv1:
-    endpoint: "10.0.0.1"
-    agent_port: 8400
-    status: healthy
-`
-	if err := os.WriteFile(filepath.Join(dir, "pool-state.yaml"), []byte(yaml), 0644); err != nil {
-		t.Fatal(err)
-	}
-	m := NewManager(dir)
-	ps, err := m.ReadNode()
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	srv, ok := ps.Servers["srv1"]
-	if !ok {
-		t.Fatal("expected srv1 in servers")
-	}
-	if srv.Endpoint != "10.0.0.1" {
-		t.Fatalf("expected endpoint 10.0.0.1, got %s", srv.Endpoint)
-	}
-	if srv.AgentPort != 8400 {
-		t.Fatalf("expected agent_port 8400, got %d", srv.AgentPort)
-	}
-	if srv.Status != "healthy" {
-		t.Fatalf("expected status healthy, got %s", srv.Status)
-	}
-}
-
 func TestWriteNode_ThenRead(t *testing.T) {
-	m := NewManager(t.TempDir())
+	m := newTestManager(t)
 	want := &apitypes.NodeState{
 		Servers: map[string]*apitypes.NodeServer{
 			"srv1": {
@@ -92,8 +70,8 @@ func TestWriteNode_ThenRead(t *testing.T) {
 	}
 }
 
-func TestReadInstances_FileNotExist(t *testing.T) {
-	m := NewManager(t.TempDir())
+func TestReadInstances_Empty(t *testing.T) {
+	m := newTestManager(t)
 	is, err := m.ReadInstances()
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -106,40 +84,8 @@ func TestReadInstances_FileNotExist(t *testing.T) {
 	}
 }
 
-func TestReadInstances_ValidYAML(t *testing.T) {
-	dir := t.TempDir()
-	yaml := `groups:
-  redis:
-    type: standalone
-    engine: redis
-    category: cache
-    current_master: redis-1
-instances:
-  redis-1:
-    group: redis
-    role: master
-    port: 6379
-    status: running
-`
-	if err := os.WriteFile(filepath.Join(dir, "instances-state.yaml"), []byte(yaml), 0644); err != nil {
-		t.Fatal(err)
-	}
-	m := NewManager(dir)
-	is, err := m.ReadInstances()
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	inst, ok := is.Instances["redis-1"]
-	if !ok {
-		t.Fatal("expected redis-1")
-	}
-	if is.Groups["redis"].Engine != "redis" || inst.Role != "master" || inst.Port != 6379 || inst.Status != "running" {
-		t.Fatalf("fields mismatch: %+v", inst)
-	}
-}
-
 func TestWriteInstances_ThenRead(t *testing.T) {
-	m := NewManager(t.TempDir())
+	m := newTestManager(t)
 	want := &apitypes.InstancesState{
 		Groups: map[string]*apitypes.InstanceGroupState{
 			"redis": {
@@ -190,6 +136,23 @@ func TestWriteInstances_ThenRead(t *testing.T) {
 	}
 }
 
+func TestWithInstances_Atomic(t *testing.T) {
+	m := newTestManager(t)
+
+	err := m.WithInstances(func(st *apitypes.InstancesState) error {
+		st.Groups["g1"] = &apitypes.InstanceGroupState{Type: "standalone", Engine: "redis"}
+		st.Instances["inst1"] = &apitypes.Instance{Group: "g1", Role: "master", Status: "running"}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("WithInstances: %v", err)
+	}
+	got, _ := m.ReadInstances()
+	if got.Instances["inst1"] == nil {
+		t.Fatal("inst1 should exist after WithInstances")
+	}
+}
+
 // ---------- TryAcquireLock 测试 ----------
 
 func TestTryAcquireLock_Success(t *testing.T) {
@@ -207,7 +170,7 @@ func TestTryAcquireLock_Success(t *testing.T) {
 
 func TestTryAcquireLock_Reentrant(t *testing.T) {
 	inst := &apitypes.Instance{}
-	TryAcquireLock(inst, "session-1", "create", 60)
+	TryAcquireLock(inst, "session-1", "create", 60) //nolint:errcheck
 	if err := TryAcquireLock(inst, "session-1", "create", 60); err != nil {
 		t.Fatalf("reentrant lock should succeed: %v", err)
 	}
@@ -215,7 +178,7 @@ func TestTryAcquireLock_Reentrant(t *testing.T) {
 
 func TestTryAcquireLock_Conflict(t *testing.T) {
 	inst := &apitypes.Instance{}
-	TryAcquireLock(inst, "session-1", "create", 60)
+	TryAcquireLock(inst, "session-1", "create", 60) //nolint:errcheck
 	err := TryAcquireLock(inst, "session-2", "delete", 60)
 	if err == nil {
 		t.Fatal("expected conflict error")
@@ -228,7 +191,7 @@ func TestTryAcquireLock_Expired(t *testing.T) {
 			HeldBy:     "session-1",
 			Operation:  "create",
 			AcquiredAt: time.Now().Add(-10 * time.Minute).Format(time.RFC3339),
-			Timeout:    1, // 1 秒超时，早已过期
+			Timeout:    1,
 		},
 	}
 	if err := TryAcquireLock(inst, "session-2", "delete", 60); err != nil {
@@ -241,7 +204,7 @@ func TestTryAcquireLock_Expired(t *testing.T) {
 
 func TestTryAcquireLock_DefaultTimeout(t *testing.T) {
 	inst := &apitypes.Instance{}
-	TryAcquireLock(inst, "session-1", "create", 0)
+	TryAcquireLock(inst, "session-1", "create", 0) //nolint:errcheck
 	if inst.Lock.Timeout != 300 {
 		t.Fatalf("expected default timeout 300, got %d", inst.Lock.Timeout)
 	}
@@ -251,7 +214,7 @@ func TestTryAcquireLock_DefaultTimeout(t *testing.T) {
 
 func TestReleaseLock_ByHolder(t *testing.T) {
 	inst := &apitypes.Instance{}
-	TryAcquireLock(inst, "session-1", "create", 60)
+	TryAcquireLock(inst, "session-1", "create", 60) //nolint:errcheck
 	ReleaseLock(inst, "session-1")
 	if inst.Lock != nil {
 		t.Fatal("lock should be nil after release")
@@ -260,7 +223,7 @@ func TestReleaseLock_ByHolder(t *testing.T) {
 
 func TestReleaseLock_ByEmpty(t *testing.T) {
 	inst := &apitypes.Instance{}
-	TryAcquireLock(inst, "session-1", "create", 60)
+	TryAcquireLock(inst, "session-1", "create", 60) //nolint:errcheck
 	ReleaseLock(inst, "")
 	if inst.Lock != nil {
 		t.Fatal("empty heldBy should force release")
@@ -269,7 +232,7 @@ func TestReleaseLock_ByEmpty(t *testing.T) {
 
 func TestReleaseLock_ByOther(t *testing.T) {
 	inst := &apitypes.Instance{}
-	TryAcquireLock(inst, "session-1", "create", 60)
+	TryAcquireLock(inst, "session-1", "create", 60) //nolint:errcheck
 	ReleaseLock(inst, "session-2")
 	if inst.Lock == nil {
 		t.Fatal("non-holder should not release lock")
@@ -279,26 +242,26 @@ func TestReleaseLock_ByOther(t *testing.T) {
 // ---------- InstanceGroup 测试 ----------
 
 func TestInstanceGroup_Standalone(t *testing.T) {
-	state := &apitypes.InstancesState{
+	st := &apitypes.InstancesState{
 		Instances: map[string]*apitypes.Instance{
 			"redis-1": {Role: "master"},
 		},
 	}
-	group := InstanceGroup(state, "redis-1")
+	group := InstanceGroup(st, "redis-1")
 	if len(group) != 1 || group[0] != "redis-1" {
 		t.Fatalf("expected [redis-1], got %v", group)
 	}
 }
 
 func TestInstanceGroup_Master(t *testing.T) {
-	state := &apitypes.InstancesState{
+	st := &apitypes.InstancesState{
 		Instances: map[string]*apitypes.Instance{
 			"redis-1":    {Role: "master", Group: "redis"},
 			"redis-1-r1": {Role: "replica", Group: "redis", ReplicaOf: "redis-1"},
 			"redis-1-r2": {Role: "replica", Group: "redis", ReplicaOf: "redis-1"},
 		},
 	}
-	group := InstanceGroup(state, "redis-1")
+	group := InstanceGroup(st, "redis-1")
 	sort.Strings(group)
 	expected := []string{"redis-1", "redis-1-r1", "redis-1-r2"}
 	sort.Strings(expected)
@@ -313,13 +276,13 @@ func TestInstanceGroup_Master(t *testing.T) {
 }
 
 func TestInstanceGroup_Replica(t *testing.T) {
-	state := &apitypes.InstancesState{
+	st := &apitypes.InstancesState{
 		Instances: map[string]*apitypes.Instance{
 			"redis-1":    {Role: "master", Group: "redis"},
 			"redis-1-r1": {Role: "replica", Group: "redis", ReplicaOf: "redis-1"},
 		},
 	}
-	group := InstanceGroup(state, "redis-1-r1")
+	group := InstanceGroup(st, "redis-1-r1")
 	sort.Strings(group)
 	expected := []string{"redis-1", "redis-1-r1"}
 	sort.Strings(expected)
@@ -334,14 +297,14 @@ func TestInstanceGroup_Replica(t *testing.T) {
 }
 
 func TestInstanceGroup_StableGroupField(t *testing.T) {
-	state := &apitypes.InstancesState{
+	st := &apitypes.InstancesState{
 		Instances: map[string]*apitypes.Instance{
 			"order-master":  {Role: "master", Group: "order"},
 			"order-replica": {Role: "replica", Group: "order", ReplicaOf: "order-master"},
 			"cache-1":       {Role: "master", Group: "cache"},
 		},
 	}
-	group := InstanceGroup(state, "order-replica")
+	group := InstanceGroup(st, "order-replica")
 	sort.Strings(group)
 	expected := []string{"order-master", "order-replica"}
 	if len(group) != len(expected) {
@@ -355,17 +318,17 @@ func TestInstanceGroup_StableGroupField(t *testing.T) {
 }
 
 func TestInstanceGroup_NotExist(t *testing.T) {
-	state := &apitypes.InstancesState{
+	st := &apitypes.InstancesState{
 		Instances: map[string]*apitypes.Instance{},
 	}
-	group := InstanceGroup(state, "nonexistent")
+	group := InstanceGroup(st, "nonexistent")
 	if len(group) != 1 || group[0] != "nonexistent" {
 		t.Fatalf("expected [nonexistent], got %v", group)
 	}
 }
 
 func TestRecalculateGroupTopology_StandaloneHealthyWithMasterOnly(t *testing.T) {
-	state := &apitypes.InstancesState{
+	st := &apitypes.InstancesState{
 		Groups: map[string]*apitypes.InstanceGroupState{
 			"cache": {Type: "standalone", CurrentMaster: "cache-1"},
 		},
@@ -373,14 +336,14 @@ func TestRecalculateGroupTopology_StandaloneHealthyWithMasterOnly(t *testing.T) 
 			"cache-1": {Group: "cache", Role: "master", Status: "running"},
 		},
 	}
-	RecalculateGroupTopology(state, "cache")
-	if state.Groups["cache"].TopologyStatus != "healthy" {
-		t.Fatalf("expected standalone healthy, got %s", state.Groups["cache"].TopologyStatus)
+	RecalculateGroupTopology(st, "cache")
+	if st.Groups["cache"].TopologyStatus != "healthy" {
+		t.Fatalf("expected standalone healthy, got %s", st.Groups["cache"].TopologyStatus)
 	}
 }
 
 func TestRecalculateGroupTopology_ReplicationDegradedWithoutReplica(t *testing.T) {
-	state := &apitypes.InstancesState{
+	st := &apitypes.InstancesState{
 		Groups: map[string]*apitypes.InstanceGroupState{
 			"order": {Type: "replication", CurrentMaster: "order-master"},
 		},
@@ -388,14 +351,14 @@ func TestRecalculateGroupTopology_ReplicationDegradedWithoutReplica(t *testing.T
 			"order-master": {Group: "order", Role: "master", Status: "running"},
 		},
 	}
-	RecalculateGroupTopology(state, "order")
-	if state.Groups["order"].TopologyStatus != "degraded" {
-		t.Fatalf("expected replication degraded without replica, got %s", state.Groups["order"].TopologyStatus)
+	RecalculateGroupTopology(st, "order")
+	if st.Groups["order"].TopologyStatus != "degraded" {
+		t.Fatalf("expected replication degraded without replica, got %s", st.Groups["order"].TopologyStatus)
 	}
 }
 
 func TestRecalculateGroupTopology_ReplicationHealthyWithReplica(t *testing.T) {
-	state := &apitypes.InstancesState{
+	st := &apitypes.InstancesState{
 		Groups: map[string]*apitypes.InstanceGroupState{
 			"order": {Type: "replication", CurrentMaster: "order-master"},
 		},
@@ -404,8 +367,8 @@ func TestRecalculateGroupTopology_ReplicationHealthyWithReplica(t *testing.T) {
 			"order-replica": {Group: "order", Role: "replica", Status: "running", ReplicaOf: "order-master"},
 		},
 	}
-	RecalculateGroupTopology(state, "order")
-	if state.Groups["order"].TopologyStatus != "healthy" {
-		t.Fatalf("expected replication healthy with replica, got %s", state.Groups["order"].TopologyStatus)
+	RecalculateGroupTopology(st, "order")
+	if st.Groups["order"].TopologyStatus != "healthy" {
+		t.Fatalf("expected replication healthy with replica, got %s", st.Groups["order"].TopologyStatus)
 	}
 }

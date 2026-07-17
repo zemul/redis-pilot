@@ -22,7 +22,12 @@ func newTestServer(t *testing.T, token string) *Server {
 		DataDir: dir,
 		Log:     LogConfig{Dir: dir + "/log", Stdout: false},
 	}
-	return New(cfg)
+	s, err := New(cfg)
+	if err != nil {
+		t.Fatalf("server.New: %v", err)
+	}
+	t.Cleanup(func() { s.state.Close() })
+	return s
 }
 
 func doRequest(router http.Handler, method, path string, body interface{}) *httptest.ResponseRecorder {
