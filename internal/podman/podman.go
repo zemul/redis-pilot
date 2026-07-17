@@ -1,6 +1,7 @@
 package podman
 
 import (
+	"encoding/json"
 	"fmt"
 	"os/exec"
 	"strings"
@@ -85,22 +86,30 @@ func (r *Runtime) Remove(name string) error {
 }
 
 func (r *Runtime) ListAll() ([]ContainerStatus, error) {
-	out, err := r.Run("ps", "-a", "--format", "{{.Names}}\t{{.State}}")
+	out, err := r.Run("ps", "-a", "--format", "json")
 	if err != nil {
 		return nil, err
 	}
-	if out == "" {
+	if out == "" || out == "null" || out == "[]" {
 		return nil, nil
 	}
+	// podman json: [{"Names":["name"],"State":"running"/"exited"}, ...]
+	var rows []struct {
+		Names []string `json:"Names"`
+		State string   `json:"State"`
+	}
+	if err := json.Unmarshal([]byte(out), &rows); err != nil {
+		return nil, fmt.Errorf("podman ps json: %w", err)
+	}
 	var result []ContainerStatus
-	for _, line := range strings.Split(out, "\n") {
-		parts := strings.SplitN(line, "\t", 2)
-		if len(parts) != 2 {
+	for _, row := range rows {
+		if len(row.Names) == 0 {
 			continue
 		}
+		state := strings.ToLower(row.State)
 		result = append(result, ContainerStatus{
-			Name:    parts[0],
-			Running: parts[1] == "running",
+			Name:    row.Names[0],
+			Running: state == "running" || strings.HasPrefix(state, "up"),
 		})
 	}
 	return result, nil
