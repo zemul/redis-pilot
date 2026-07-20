@@ -540,14 +540,6 @@ export default function App() {
           <h2>{activeTitle}</h2>
           <div className="toolbar">
             <div className="health-pill"><span /> Server API</div>
-            <input
-              value={token}
-              onChange={(event) => setToken(event.target.value)}
-              className="token-input"
-              type="password"
-              placeholder="Bearer Token（如已配置）"
-            />
-            <button className="ghost-button" onClick={saveToken}>保存 Token</button>
             <button className="primary-button" onClick={refresh}>
               <RefreshCw size={16} /> 刷新
             </button>
