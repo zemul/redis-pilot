@@ -539,7 +539,6 @@ export default function App() {
         <header className="topbar">
           <h2>{activeTitle}</h2>
           <div className="toolbar">
-            <div className="health-pill"><span /> Server API</div>
             <button className="primary-button" onClick={refresh}>
               <RefreshCw size={16} /> 刷新
             </button>
