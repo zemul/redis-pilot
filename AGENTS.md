@@ -1,4 +1,4 @@
-# Redis 多实例管理系统
+# Redis Pilot
 
 ## 项目概述
 基于 GAL 的 Redis 多实例管理平台，支持单点/主从实例的创建、配置、备份、迁移、故障转移。
@@ -7,9 +7,10 @@
 ```
 GAL → CLI → Server → Agent（各服务器）
 ```
-- **Server**：状态管理层，持有 pool-state.yaml + instances-state.yaml，暴露 HTTP API
+- **Server**：状态管理层，状态和审计日志统一存储在 `pilot.db`（SQLite），暴露 HTTP API
 - **Agent**：部署在每台服务器，管理本机 Redis/Kvrocks 容器（Podman），定时健康检查/指标采集
 - **CLI**：原子操作命令行工具，调用 Server HTTP API
+- **redis-pilot-xds**：Envoy xDS 控制面，读取 Server 代理快照并向 Envoy 下发动态配置
 - **Envoy**：统一代理层，读写分离
 
 ## 技术栈
@@ -20,32 +21,40 @@ GAL → CLI → Server → Agent（各服务器）
 
 ## 目录结构
 ```
-redis-manager/
+redis-pilot/
   ├── cmd/
-  │   ├── server/
-  │   ├── agent/
-  │   └── cli/
+  │   ├── server/   # Server 入口
+  │   ├── agent/    # Agent 入口
+  │   ├── cli/      # CLI 入口
+  │   ├── xds/      # redis-pilot-xds 入口
+  │   └── migrate/  # 一次性迁移工具：旧版 pool-state.yaml/instances-state.yaml → pilot.db
   ├── internal/
-  │   ├── state/       # pool-state / instances-state 读写 + 文件锁
-  │   ├── server/      # Server HTTP handler
-  │   ├── agent/       # Agent HTTP handler + 定时任务
-  │   └── podman/      # Podman API 封装
+  │   ├── store/    # pilot.db（SQLite）读写：servers/instance_groups/instances/audit_log 等表
+  │   ├── state/    # 状态管理薄封装层，委托给 internal/store，对上层 handler 保持稳定接口
+  │   ├── server/   # Server HTTP handler、调度、代理层状态快照
+  │   ├── xds/      # redis-pilot-xds：Envoy xDS 控制面
+  │   ├── agent/    # Agent HTTP handler + 定时任务
+  │   ├── audit/    # 审计日志（底层委托给 internal/store，对外接口与原 JSONL 版本保持一致）
+  │   └── podman/   # Podman API 封装
   └── pkg/
-      └── apitypes/    # Server ↔ Agent 共享请求/响应结构体
+      └── apitypes/ # Server ↔ Agent 共享请求/响应结构体
 ```
 
 ## 配置文件
-- `server.yaml`：Server 监听端口、CLI 鉴权 Token（空则不鉴权）、Redis/Kvrocks 版本白名单
-- `pool-state.yaml`：服务器节点，含各 Agent endpoint 和 Token（空则不鉴权）
-- `instances-state.yaml`：所有实例的完整状态
+- `server.yaml`：Server 监听端口、CLI 鉴权 Token（空则不鉴权）、Redis/Kvrocks 版本白名单、`data_dir`（`pilot.db` 存放目录）
+- `agent.yaml`：Agent 监听端口、鉴权 Token（空则不鉴权）
+- `xds.yaml`：redis-pilot-xds 监听地址、`auth_token`、Server 连接信息
 - `~/.redis-pilot-cli/config.yaml`：CLI 配置，Server 地址默认 127.0.0.1:8080
+
+> 服务器节点和实例的完整状态不再使用独立 YAML 文件，统一存储在 `data_dir/pilot.db`（SQLite）。旧版 `pool-state.yaml`/`instances-state.yaml` 仅由 `cmd/migrate` 一次性迁移使用。
 
 ## 认证
 - CLI → Server：Bearer Token，Token 为空则跳过鉴权
 - Server → Agent：Bearer Token，Token 为空则跳过鉴权
+- redis-pilot-xds ↔ Server / Envoy：Bearer Token（`auth_token`），Token 为空则跳过鉴权
 
 ## 开发顺序
-1. Server（状态文件读写 + HTTP API）
+1. Server（状态存储读写 + HTTP API）
 2. Agent（Podman 管理 + 定时任务）
 3. CLI（子命令封装）
 4. Envoy 集成
@@ -53,3 +62,6 @@ redis-manager/
 
 ## 参考文档
 - 详细设计：docs/architecture/overview.md（另见同目录 components.md / flows.md / deployment-ops.md）
+
+## 说明
+如果有些文档描述不完整，或者不合理，修改以后需要更新文档 `docs/architecture/` 下对应的文档。
