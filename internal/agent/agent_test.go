@@ -115,6 +115,34 @@ func parseAgentResponse(t *testing.T, w *httptest.ResponseRecorder) apitypes.API
 
 // ---------- 配置模板渲染测试 ----------
 
+func TestValidateInstanceName(t *testing.T) {
+	cases := []struct {
+		name    string
+		wantErr bool
+	}{
+		{"my-cache", false},
+		{"order_01", false},
+		{"a", false},
+		{strings.Repeat("a", 64), false},
+		{strings.Repeat("a", 65), true}, // 超长
+		{"", true},                      // 空
+		{"-privileged", true},           // 以 "-" 开头，防止参数注入
+		{"--privileged", true},          // 以 "-" 开头，防止参数注入
+		{"../etc", true},                // 路径穿越字符
+		{"foo bar", true},               // 含空格
+		{"foo;rm -rf", true},            // 含 shell 元字符
+	}
+	for _, tc := range cases {
+		err := validateInstanceName(tc.name)
+		if tc.wantErr && err == nil {
+			t.Errorf("validateInstanceName(%q) = nil, want error", tc.name)
+		}
+		if !tc.wantErr && err != nil {
+			t.Errorf("validateInstanceName(%q) = %v, want nil", tc.name, err)
+		}
+	}
+}
+
 func TestWriteRedisConfig_Cache(t *testing.T) {
 	dir := t.TempDir()
 	err := writeRedisConfig(dir, RedisConfigParams{
