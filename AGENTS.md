@@ -52,4 +52,4 @@ redis-manager/
 5. GAL Skills
 
 ## 参考文档
-- 详细设计：ARCHITECTURE.md
+- 详细设计：docs/ARCHITECTURE.md
