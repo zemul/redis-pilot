@@ -325,6 +325,7 @@ chmod +x /opt/redis-pilot-xds/redis-pilot-xds
 
 ```yaml
 listen: 0.0.0.0:18000
+auth_token: "your-secret-token"    # 与 server.yaml/agent.yaml 中的 token 一致，防止明文密码被未授权读取
 
 server:
   endpoint: http://127.0.0.1:8080   # 本机 Server 地址（A 上 Server 和 xDS 同机）
@@ -338,6 +339,10 @@ envoy:
   node_ids:
     - redis-pilot-envoy              # 必须与 Envoy bootstrap 中的 node.id 一致
 ```
+
+> xDS snapshot 中包含 Envoy 连接后端 Redis/Kvrocks 所需的明文密码，务必设置 `auth_token`，
+> 并在 Envoy 的 `envoy-xds-bootstrap.yaml` 的 `ads_config.grpc_services[].envoy_grpc.initial_metadata`
+> 中配置相同的 `authorization: Bearer <auth_token>`，否则任何能访问 `:18000` 的网络主体都可拉取全部密码。
 
 #### 5.1.3 Systemd 服务
 
@@ -387,6 +392,7 @@ chmod +x /opt/redis-pilot-xds/redis-pilot-xds
 
 ```yaml
 listen: 0.0.0.0:18000
+auth_token: "your-secret-token"    # 与 server.yaml/agent.yaml 中的 token 一致
 
 server:
   endpoint: http://127.0.0.1:8080   # 本机 Server 地址（B 故障切换后 Server 在 B 上运行）
