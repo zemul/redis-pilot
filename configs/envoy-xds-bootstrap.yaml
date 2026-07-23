@@ -15,6 +15,12 @@ dynamic_resources:
     grpc_services:
       - envoy_grpc:
           cluster_name: redis-pilot-xds
+          # 若 redis-pilot-xds 配置了 auth_token，取消注释并填入相同的 token，
+          # 否则 ADS 连接会被 xDS 服务的鉴权拦截器拒绝（S7：xDS 默认无鉴权、
+          # snapshot 内含明文 Redis 密码，需要与 Server/Agent 同等的 Bearer Token 保护）。
+          # initial_metadata:
+          #   - key: authorization
+          #     value: "Bearer <auth_token>"
   cds_config:
     ads: {}
     resource_api_version: V3

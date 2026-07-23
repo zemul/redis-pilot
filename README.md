@@ -170,6 +170,7 @@ log:
 
 ```yaml
 listen: 0.0.0.0:18000
+auth_token: ""             # Bearer Token，Envoy 侧需在 ads_config 的 initial_metadata 中携带同样的 token
 server:
   endpoint: http://127.0.0.1:8080
   token: ""
@@ -182,6 +183,12 @@ envoy:
 ```
 
 Envoy 只保留 bootstrap 配置并连接 `redis-pilot-xds`，业务 Listener、Cluster、Endpoint 由 xDS 动态下发。
+
+> **安全提示**：xDS snapshot 中包含 Redis 明文密码（用于 Envoy 与后端建立连接）。
+> 若 `listen` 绑定在 `0.0.0.0` 且未设置 `auth_token`，任何能访问该端口的网络主体
+> 都可拉取全部密码。生产环境请至少设置 `auth_token`（同时在 Envoy 的
+> `envoy-xds-bootstrap.yaml` 中配置对应的 `initial_metadata`），或将 `listen`
+> 收紧到仅 Envoy 所在的可信网段/回环地址。
 
 ### Agent (`agent.yaml`)
 
