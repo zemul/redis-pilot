@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -15,6 +16,27 @@ import (
 	"gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/internal/podman"
 	"gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/pkg/apitypes"
 )
+
+// validInstanceName 限制实例名只能包含字母、数字、下划线、中横线，长度 1-64。
+// 用于防止 req.Name 被拼入文件路径/容器名时发生路径穿越（如 "../../etc"）或命令注入。
+var validInstanceName = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,64}$`)
+
+func validateInstanceName(name string) error {
+	if !validInstanceName.MatchString(name) {
+		return fmt.Errorf("invalid instance name: must match ^[a-zA-Z0-9_-]{1,64}$")
+	}
+	return nil
+}
+
+// validBackupTs 限制备份时间戳格式为 "2006-01-02T15:04:05"，防止 backup_ts 被用于路径穿越。
+var validBackupTs = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$`)
+
+func validateBackupTs(ts string) error {
+	if !validBackupTs.MatchString(ts) {
+		return fmt.Errorf("invalid backup_ts: must match ^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}$")
+	}
+	return nil
+}
 
 type Agent struct {
 	cfg       *Config
@@ -134,6 +156,10 @@ func (a *Agent) instanceCreate(c *gin.Context) {
 		fail(c, http.StatusBadRequest, "engine_image is required")
 		return
 	}
+	if err := validateInstanceName(req.Name); err != nil {
+		fail(c, http.StatusBadRequest, err.Error())
+		return
+	}
 
 	dataDir := filepath.Join(a.cfg.DataDir, req.Name)
 	for _, sub := range []string{"conf", "data", "backup"} {
@@ -211,6 +237,10 @@ func (a *Agent) instanceStart(c *gin.Context) {
 		fail(c, http.StatusBadRequest, err.Error())
 		return
 	}
+	if err := validateInstanceName(req.Name); err != nil {
+		fail(c, http.StatusBadRequest, err.Error())
+		return
+	}
 	if err := a.runtime.Start(req.Engine + "-" + req.Name); err != nil {
 		fail(c, http.StatusInternalServerError, err.Error())
 		return
@@ -224,6 +254,10 @@ func (a *Agent) instanceStop(c *gin.Context) {
 		Engine string `json:"engine" binding:"required"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
+		fail(c, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := validateInstanceName(req.Name); err != nil {
 		fail(c, http.StatusBadRequest, err.Error())
 		return
 	}
@@ -241,6 +275,10 @@ func (a *Agent) instanceDelete(c *gin.Context) {
 		CleanData bool   `json:"clean_data"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
+		fail(c, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := validateInstanceName(req.Name); err != nil {
 		fail(c, http.StatusBadRequest, err.Error())
 		return
 	}
@@ -268,6 +306,10 @@ func (a *Agent) instanceConfig(c *gin.Context) {
 		Port            int               `json:"port"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
+		fail(c, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := validateInstanceName(req.Name); err != nil {
 		fail(c, http.StatusBadRequest, err.Error())
 		return
 	}
@@ -336,6 +378,10 @@ func (a *Agent) instancePromote(c *gin.Context) {
 		fail(c, http.StatusBadRequest, err.Error())
 		return
 	}
+	if err := validateInstanceName(req.Name); err != nil {
+		fail(c, http.StatusBadRequest, err.Error())
+		return
+	}
 	if _, err := redisCmd(req.Name, a.getPassword(req.Name), "REPLICAOF", "NO", "ONE"); err != nil {
 		fail(c, http.StatusInternalServerError, err.Error())
 		return
@@ -349,6 +395,10 @@ func (a *Agent) instanceReplicate(c *gin.Context) {
 		ReplicaOf string `json:"replica_of" binding:"required"` // "ip port"
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
+		fail(c, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := validateInstanceName(req.Name); err != nil {
 		fail(c, http.StatusBadRequest, err.Error())
 		return
 	}
@@ -379,6 +429,10 @@ func (a *Agent) instanceStatus(c *gin.Context) {
 		fail(c, http.StatusBadRequest, "name is required")
 		return
 	}
+	if err := validateInstanceName(name); err != nil {
+		fail(c, http.StatusBadRequest, err.Error())
+		return
+	}
 	info, err := redisCmd(name, a.getPassword(name), "INFO")
 	if err != nil {
 		fail(c, http.StatusInternalServerError, err.Error())
@@ -394,6 +448,10 @@ func (a *Agent) instanceBackup(c *gin.Context) {
 		Retention int    `json:"retention"` // 保留份数，0 表示不清理
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
+		fail(c, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := validateInstanceName(req.Name); err != nil {
 		fail(c, http.StatusBadRequest, err.Error())
 		return
 	}
@@ -496,6 +554,14 @@ func (a *Agent) instanceRestore(c *gin.Context) {
 		fail(c, http.StatusBadRequest, err.Error())
 		return
 	}
+	if err := validateInstanceName(req.Name); err != nil {
+		fail(c, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := validateBackupTs(req.BackupTs); err != nil {
+		fail(c, http.StatusBadRequest, err.Error())
+		return
+	}
 
 	backupDir := filepath.Join(a.cfg.DataDir, req.Name, "backup")
 	dataDir := filepath.Join(a.cfg.DataDir, req.Name, "data")
@@ -558,6 +624,10 @@ func (a *Agent) instanceBackups(c *gin.Context) {
 	name := c.Query("name")
 	if name == "" {
 		fail(c, http.StatusBadRequest, "name is required")
+		return
+	}
+	if err := validateInstanceName(name); err != nil {
+		fail(c, http.StatusBadRequest, err.Error())
 		return
 	}
 	backupDir := filepath.Join(a.cfg.DataDir, name, "backup")
