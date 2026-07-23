@@ -240,7 +240,7 @@ redis-pilot-cli sentinel sync
 ## 文档
 
 - [部署文档](docs/DEPLOYMENT.md) — 完整的生产部署指南
-- [架构设计](docs/ARCHITECTURE.md) — 详细设计文档
+- [架构设计](docs/architecture/overview.md) — 详细设计文档（拆分为 overview / components / flows / deployment-ops 四篇）
 
 ## 技术栈
 

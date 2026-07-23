@@ -1,0 +1,1049 @@
+# Redis 多实例管理系统 — 组件详细设计
+
+> 上一篇：[架构概述](overview.md) · 下一篇：[关键流程](flows.md)
+
+---
+
+## 3. 组件详细设计
+
+### 3.0 Server（状态管理层）
+
+部署在控制节点，是 CLI 和各服务器 Agent 之间的中间层，负责全局状态管理和并发控制。
+
+#### 职责
+
+| 职责 | 说明 |
+|------|------|
+| 状态存储 | 持有 pilot.db（SQLite 单文件，servers / instance_groups / instances / audit_log 等表），所有读写经过 Server 串行化 |
+| 并发控制 | 内存读写锁（sync.RWMutex）+ 实例级操作锁（业务层），防止多 GAL 会话并发冲突。Server 为单进程部署，`WithInstances`/`WithServers` 通过 `DB.mu`（`sync.Mutex`）将"读快照 → 修改 → 全量重写"过程串行化，避免并发事务基于同一旧快照互相覆盖，无需文件级锁 |
+| API 网关 | 暴露与 CLI Tools 一一对应的 HTTP API，转发操作到各服务器 Agent |
+| 审计日志 | 记录所有管理操作到 pilot.db 的 audit_log 表 |
+
+#### API 定义
+
+```
+节点管理（纯本地，不调用 Agent）
+  GET  /node/list              查询节点状态
+  POST /node/add                注册新服务器
+  POST /node/remove             移除服务器
+  POST /node/update             更新服务器信息
+
+实例管理（转发到目标服务器 Agent）
+  POST /instance/create         创建实例
+  POST /instance/delete         删除实例
+  POST /instance/start          启动实例
+  POST /instance/stop           停止实例
+  POST /instance/config         更新配置
+  POST /instance/promote        从库提升为主库
+  POST /instance/replicate      设置复制目标
+  GET  /instance/list           列出所有实例
+  GET  /instance/status         实例详细状态
+
+备份管理（转发到目标服务器 Agent）
+  POST /backup/exec             执行备份
+  POST /backup/restore          从备份恢复
+  GET  /backup/list             列出可用备份
+
+代理管理
+  GET  /api/v1/proxy/snapshot   查看代理层结构化快照
+  GET  /proxy/snapshot          查看代理层结构化快照
+```
+
+#### 部署
+
+```
+/opt/redis-server/
+  ├── server.yaml               # Server 自身配置
+  └── state/
+      └── pilot.db               # SQLite：servers / instance_groups / instances / audit_log 等表
+```
+
+#### 认证
+
+```yaml
+# server.yaml
+port: 8080
+token: ""           # CLI 调用 Server 的鉴权 Token，为空则不鉴权
+data_dir: /opt/redis-server/state
+```
+
+```yaml
+# 以下字段现存储于 pilot.db 的 servers 表（每行对应一台服务器，含 Agent 连接信息）
+# servers 表：
+#   name TEXT PRIMARY KEY, endpoint, agent_port, agent_token,
+#   labels(JSON), capacity(JSON), instances(JSON), status, last_heartbeat
+servers:
+  server-a:
+    endpoint: 10.0.1.10
+    agent_port: 8400
+    agent_token: ""  # Server 调用 Agent 的鉴权 Token，为空则不鉴权
+    ...
+```
+
+CLI 配置：
+
+```yaml
+# ~/.redis-pilot-cli/config.yaml
+server: 127.0.0.1:8080   # 默认连接本机 Server
+token: ""                # 为空则不鉴权
+```
+
+CLI Token 优先级（从高到低）：`--token` 参数 > `REDIS_SERVER_TOKEN` 环境变量 > 配置文件。
+
+---
+
+### 3.1 管理 Agent
+
+每台服务器部署一个 Agent，负责本机所有 Redis 实例的生命周期管理。
+
+#### 3.1.1 职责
+
+| 职责 | 说明 |
+|------|------|
+| Podman 生命周期 | 创建 / 启动 / 停止 / 删除容器 |
+| 资源采集 | CPU / 内存 / 磁盘使用率，定时上报 |
+| 配置管理 | 生成 redis.conf，挂载到容器 |
+| 持久化目录管理 | 创建 / 清理 conf 和 data 目录 |
+| 备份执行 | 本地执行 BGSAVE / RDB 文件复制 |
+| 健康检查 | 定期 ping 实例，检测进程存活 |
+| 故障自愈 | 检测到实例挂掉，自动重启 |
+| 指标采集 | INFO 命令解析，内存 / 连接 / 命令统计 |
+
+#### 3.1.2 技术选型
+
+**推荐方案：轻量 Python/Go 守护进程**
+
+- 暴露 HTTP API，供 Server 层远程调用
+- 内置健康检查循环，异常时自动重启实例
+- 使用 Podman API（libpod）管理容器，避免 shell 拼接
+- 可选：结合 Podman Quadlet（systemd 单元文件）管理容器生命周期
+
+#### 3.1.3 API 定义
+
+```
+实例管理
+  POST /instance/create        创建实例
+  POST /instance/start         启动实例
+  POST /instance/stop          停止实例
+  POST /instance/delete        删除实例（需确认数据清理）
+  POST /instance/config        更新配置（热更新 or 重启）
+  POST /instance/promote       从库提升为主库
+  POST /instance/replicate     设置复制目标
+
+  GET  /instance/list          列出本机所有实例
+  GET  /instance/status        实例详细状态（含 INFO 解析）
+
+备份管理
+  POST /instance/backup        执行备份
+  POST /instance/restore       从备份恢复
+  GET  /instance/backups       列出可用备份
+
+主机管理
+  GET  /host/resources         服务器资源使用情况
+  GET  /host/health            健康检查
+```
+
+#### 3.1.4 请求/响应示例
+
+**创建实例**
+
+```
+POST /instance/create
+
+master/standalone 必须显式传 group；replica 不需要传 group，会从 replica_of 指向的 master 继承。
+
+请求体：
+{
+  "name": "order-master",
+  "group": "order",
+  "port": 6379,
+  "memory": "4Gi",
+  "cpus": 2,
+  "password": "******",
+  "persistence": {
+    "rdb": true,
+    "rdb_frequency": "3600 1 300 100",   // save 配置
+    "aof": true,
+    "aof_policy": "everysec"
+  },
+  "replica_of": null,                      // 主库不设置
+  "config_overrides": {                     // 额外配置覆盖
+    "maxmemory-policy": "allkeys-lru",
+    "timeout": 300
+  }
+}
+
+响应体：
+{
+  "success": true,
+  "container_id": "a1b2c3d4",
+  "container_name": "redis-order-master",
+  "port": 6379,
+  "conf_dir": "/data/redis/order-master/conf",
+  "data_dir": "/data/redis/order-master/data",
+  "backup_dir": "/data/redis/order-master/backup"
+}
+```
+
+**查询主机资源**
+
+```
+GET /host/resources
+
+响应体：
+{
+  "hostname": "server-a",
+  "cpu": { "total_cores": 16, "usage_percent": 45.2 },
+  "memory": { "total": "64Gi", "used": "28Gi", "available": "36Gi" },
+  "disk": {
+    "total": "500Gi",
+    "used": "120Gi",
+    "available": "380Gi",
+    "redis_data": "80Gi"
+  },
+  "instances": ["order-master", "cache-1"],
+  "podman": { "containers": 2, "running": 2 }
+}
+```
+
+---
+
+### 3.2 服务器节点
+
+#### 3.2.1 服务器节点存储
+
+全局维护在 `pilot.db` 的 `servers` 表中，记录每台服务器的容量和分配情况。字段以下用 YAML 风格展示概念性结构，实际存储为 SQLite 表的一行（`labels` / `capacity` / `instances` 等复合字段以 JSON 编码存入对应列）：
+
+```yaml
+# 概念性字段说明；实际存储为 pilot.db 的 servers 表
+servers:
+  server-a:
+    endpoint: 10.0.1.10
+    agent_port: 8400
+    agent_token: ""            # Server 调用 Agent 的鉴权 Token，为空则不鉴权
+    labels:
+      zone: az-1
+      role: production
+    capacity:
+      cpu_cores: 16
+      memory: 64Gi
+      disk: 500Gi
+    allocated:
+      cpu_cores: 4
+      memory: 16Gi
+      disk: 80Gi
+    instances:
+      - order-master
+      - cache-1
+    status: healthy
+    last_heartbeat: "2026-04-23T18:00:00Z"
+
+  server-b:
+    endpoint: 10.0.1.11
+    agent_port: 8400
+    labels:
+      zone: az-2
+      role: production
+    capacity:
+      cpu_cores: 16
+      memory: 64Gi
+      disk: 500Gi
+    allocated:
+      cpu_cores: 8
+      memory: 32Gi
+      disk: 120Gi
+    instances:
+      - order-replica
+      - user-master
+      - user-replica
+    status: healthy
+    last_heartbeat: "2026-04-23T18:00:00Z"
+
+  server-c:
+    endpoint: 10.0.1.12
+    agent_port: 8400
+    labels:
+      zone: az-1
+      role: standby
+    capacity:
+      cpu_cores: 8
+      memory: 32Gi
+      disk: 200Gi
+    allocated:
+      cpu_cores: 0
+      memory: 0Gi
+      disk: 0Gi
+    instances: []
+    status: healthy
+    last_heartbeat: "2026-04-23T18:00:00Z"
+```
+
+> 注：`labels` / `capacity` / `instances` 在 `servers` 表中以 JSON 文本列存储；`allocated` 不落库，由 Server 在查询时读取 `instances` 表实时汇总计算得出（见 `computeAllocated`），因此不是 `servers` 表的持久化字段，上面的 `allocated` 段仅用于说明查询返回值的语义。
+
+#### 3.2.2 调度策略
+
+创建实例时的服务器选择逻辑：
+
+```
+1. 过滤：排除 status != healthy 的服务器
+2. 过滤：排除剩余资源 < 申请量的服务器
+3. 排序优先级：
+   a. 主从必须分布在不同服务器（容灾）
+   b. 主从优先分布在不同可用区（zone 标签）
+   c. 剩余资源最多的服务器优先（均衡分配）
+4. 锁定：选定后写入 `instances` 表（`server` 字段指向选中的服务器），服务器的已分配资源由 Server 查询时从 `instances` 表实时汇总派生，无需单独更新 `servers` 表
+```
+
+---
+
+### 3.3 实例状态
+
+#### 3.3.1 实例状态存储
+
+全局维护在 `pilot.db` 的 `instance_groups` 表 + `instances` 表中，其中 `instance_groups` 是拓扑与入口的权威状态，`instances` 只记录单容器运行状态。以下用 YAML 风格展示概念性结构，实际存储为两张 SQLite 表（复合字段如 `envoy` / `persistence` / `config_overrides` / `backup` / `lock` 以 JSON 编码存入对应列）：
+
+```yaml
+# 概念性字段说明；实际存储为 pilot.db 的 instance_groups 表 + instances 表
+groups:
+  order:
+    type: replication                 # standalone | replication
+    engine: kvrocks                   # redis | kvrocks
+    category: persistent              # cache | persistent
+    current_master: order-master      # 当前主库实例名
+    topology_status: healthy          # standalone: 主库运行即 healthy；replication: 主库和至少 1 个从库运行才 healthy
+    failover_conflict: false
+    envoy:
+      master_port: 16500              # Envoy 强一致主库端口，所有命令走主库
+      auto_port: 16379                # Envoy 自动读写分离端口，读命令走从库
+    created_at: "2026-04-23T10:00:00Z"
+    updated_at: "2026-04-23T10:05:00Z"
+
+instances:
+  order-master:
+    group: order                      # 稳定实例组名；Sentinel/Envoy/审计均使用该名字
+    role: master                      # master | replica
+    server: server-a
+    container: redis-order-master
+    port: 6379
+    memory: 4Gi
+    cpus: 2
+    password: "******"               # 脱敏存储
+    config_path: /data/redis/order-master/conf
+    data_path: /data/redis/order-master/data
+    backup_path: /data/redis/order-master/backup
+    persistence: null                 # Kvrocks 实例无需 RDB/AOF，RocksDB 原生持久化
+    config_overrides:
+      rocksdb.compression: lz4
+      rocksdb.write_buffer_size: "256"
+      rocksdb.max_write_buffer_number: "4"
+      maxmemory-policy: noeviction    # 持久化实例不禁用数据
+      timeout: "300"
+    replica_of: null
+    backup:
+      schedule: "0 */6 * * *"        # 每 6 小时
+      retention: 7                   # 保留 7 份
+      last_backup: "2026-04-23T12:00:00Z"
+    status: running
+    created_at: "2026-04-23T10:00:00Z"
+
+  order-replica:
+    group: order                      # 从库继承主库 group；failover 后不变化
+    role: replica
+    server: server-b
+    container: redis-order-replica
+    port: 6379
+    memory: 4Gi
+    cpus: 2
+    password: "******"
+    config_path: /data/redis/order-replica/conf
+    data_path: /data/redis/order-replica/data
+    backup_path: /data/redis/order-replica/backup
+    persistence: null                 # Kvrocks 实例无需 RDB/AOF，RocksDB 原生持久化
+    config_overrides:
+      rocksdb.compression: lz4
+      rocksdb.write_buffer_size: "256"
+      rocksdb.max_write_buffer_number: "4"
+      maxmemory-policy: noeviction    # 持久化实例不禁用数据
+      timeout: "300"
+    replica_of: order-master         # 引用主库实例名
+    backup:
+      schedule: "0 */6 * * *"
+      retention: 7
+      last_backup: "2026-04-23T12:00:00Z"
+    status: running
+    created_at: "2026-04-23T10:05:00Z"
+```
+
+#### 3.3.2 状态一致性规则
+
+- **创建前**：先写入 `instances` 表（status: creating），再调用 Agent
+- **创建成功**：更新 status → running；服务器已分配资源由查询时从 `instances` 表实时汇总派生，无需单独更新 `servers` 表
+- **创建失败**：回滚 — 调用 Agent 清理已创建的资源，更新 status → failed
+- **每次操作**：先读状态，操作完成后更新状态
+- **定期校验**：Skills 可触发全量状态校验（实际容器 vs `pilot.db` 中的状态）
+
+#### 3.3.3 操作锁机制
+
+多 GAL 会话可能同时操作同一实例（如一个在 scale up，另一个在 migrate），并发读写需要锁保护。Server 通过 `WithInstances`（内部由 `DB.mu` 串行化"读快照 → 修改 → 全量重写"）保证同一时刻只有一个操作在改写 `instances` 表，业务层的实例级操作锁则在此基础上防止跨请求的逻辑冲突（如两个操作都读到了旧快照后各自认为自己拿到了锁）。
+
+**实例级操作锁**：
+
+```yaml
+# lock 字段现存储于 instances 表的 lock 列（JSON 编码）
+instances:
+  order-master:
+    name: order-master
+    # ... 其他字段 ...
+    lock:
+      held_by: "gal-session-abc123"    # 持有锁的 GAL 会话 ID
+      operation: "migrate"             # 正在执行的操作类型
+      acquired_at: "2026-04-23T14:30:00Z"  # 锁获取时间
+      timeout: 300                     # 锁超时（秒），默认 300
+```
+
+**锁规则**：
+
+1. **获取锁**：任何修改操作前，必须先在 `instances` 表对应行的 `lock` 列（JSON）中写入锁信息
+   - 如果 lock 已存在且未超时，拒绝操作并返回冲突提示
+   - 如果 lock 已超时（`now - acquired_at > timeout`），视为锁失效，可被新会话抢占
+2. **释放锁**：操作完成后（无论成功或失败），必须清除 lock 字段
+3. **锁超时**：默认 300 秒，防止会话异常退出后锁永远不释放
+4. **锁粒度**：实例级（同一实例组的主从共享一把锁，因为操作主库可能影响从库拓扑）
+5. **只读操作**：查询类操作（info / list / status）不需要获取锁
+
+**冲突解决**：
+
+| 场景 | 处理策略 |
+|------|----------|
+| 锁未超时 + 同一会话 | 允许（同一会话可重入） |
+| 锁未超时 + 不同会话 | 拒绝，返回当前锁持有者和操作类型 |
+| 锁已超时 | 新会话可抢占，写入新 lock 并执行 |
+| 锁字段缺失 | 无锁，可直接操作 |
+
+**定期校验（Reconciliation）**：
+
+- **触发条件**：Skill 手动触发 / 定时任务（每 30 秒）
+- **权威源**：以 Agent 实时上报为事实源（actual），YAML 为期望状态（desired）
+- **差异处理**：
+  - actual=running + desired=running → 无需操作
+  - actual=running + desired=creating → 状态漂移，更新 YAML 为 running
+  - actual=stopped + desired=running → 异常，标记 status: unexpected_stopped，触发告警
+  - actual=running + desired=failed → 状态漂移，更新 YAML 为 running
+- **校验范围**：实例状态 + 端口占用 + 资源分配
+
+---
+
+### 3.4 Envoy 统一代理
+
+#### 3.4.1 端口分配策略
+
+Redis 协议无 Host Header，**只能通过端口区分不同实例**：
+
+| 端口范围 | 用途 | 说明 |
+|----------|------|------|
+| 16379-16499 | 业务读写端口（RW） | 每个实例组分配一个，后端为主库，支持读写 |
+| 16500-16619 | 业务只读端口（RO） | 主从实例组分配，后端为从库，仅支持读操作 |
+
+#### 3.4.2 代理模式
+
+**双端口模型（主从实例组）**
+
+```
+客户端 → Envoy:16379 (RW)  → 主库 order-master:6379   （读写均可）
+客户端 → Envoy:16500 (RO)  → 从库 order-replica:6379  （只读，减轻主库压力）
+```
+
+- RW 端口：后端 cluster 只包含主库 endpoint，所有命令（读+写）都走主库
+- RO 端口：后端 cluster 只包含从库 endpoint，用于读多写少场景分流读请求
+- 从库不可用时 RO 端口不可达，业务应回退到 RW 端口
+- 类似 AWS ElastiCache 的 Primary Endpoint + Reader Endpoint 模型
+
+**单端口模型（单点实例）**
+
+```
+客户端 → Envoy:16379 (RW)  → 主库 cache-1:6379
+```
+
+- 单点实例只分配 RW 端口，无 RO 端口
+
+> **设计说明**：Envoy `redis_proxy` 的 `read_policy: REPLICA` 仅对 Redis Cluster 协议有效（通过 `CLUSTER SLOTS` 发现拓扑）。本系统只管理 standalone 主从，不使用 Redis Cluster 协议，因此无法在单端口内实现自动读写分离，采用双端口模型由业务侧显式选择。
+
+#### 3.4.3 Envoy 配置片段
+
+```yaml
+# Envoy Redis Proxy 配置示例（由 Server 自动生成）
+static_resources:
+  listeners:
+  - name: redis-order-rw
+    address:
+      socket_address:
+        address: 0.0.0.0
+        port_value: 16379
+    filter_chains:
+    - filters:
+      - name: envoy.filters.network.redis_proxy
+        typed_config:
+          "@type": type.googleapis.com/envoy.extensions.filters.network.redis_proxy.v3.RedisProxy
+          stat_prefix: redis_order
+          settings:
+            op_timeout: 5s
+            read_policy: MASTER
+          prefix_routes:
+            catch_all_route:
+              cluster: redis-order-cluster
+
+  - name: redis-order-ro
+    address:
+      socket_address:
+        address: 0.0.0.0
+        port_value: 16500
+    filter_chains:
+    - filters:
+      - name: envoy.filters.network.redis_proxy
+        typed_config:
+          "@type": type.googleapis.com/envoy.extensions.filters.network.redis_proxy.v3.RedisProxy
+          stat_prefix: redis_order_ro
+          settings:
+            op_timeout: 5s
+            read_policy: MASTER
+          prefix_routes:
+            catch_all_route:
+              cluster: redis-order-ro-cluster
+
+  clusters:
+  - name: redis-order-cluster        # RW cluster：仅主库
+    type: STRICT_DNS
+    load_assignment:
+      cluster_name: redis-order-cluster
+      endpoints:
+      - lb_endpoints:
+        - endpoint:
+            address:
+              socket_address:
+                address: 10.0.1.10    # 主库
+                port_value: 6379
+
+  - name: redis-order-ro-cluster     # RO cluster：仅从库
+    type: STRICT_DNS
+    load_assignment:
+      cluster_name: redis-order-ro-cluster
+      endpoints:
+      - lb_endpoints:
+        - endpoint:
+            address:
+              socket_address:
+                address: 10.0.1.11    # 从库
+                port_value: 6379
+```
+
+> **说明**：
+> - RW cluster 只包含主库 endpoint，保证写入不会发到从库
+> - RO cluster 只包含从库 endpoint，从库不可用时该端口不可达
+> - Envoy 进程/容器属于独立数据面，平台不负责创建 Envoy
+> - Server 只暴露 proxy snapshot，不写 Envoy 配置文件，也不执行 reload
+> - `redis-pilot-xds` 轮询 Server snapshot，并通过 xDS 向 Envoy 动态发布 LDS/CDS/EDS
+
+#### 3.4.4 管理命令
+
+管理命令（`INFO`、`CONFIG GET/SET`、`SLOWLOG GET`、`CLIENT LIST` 等）应通过 RW 端口执行，该端口直连主库。RO 端口后端为从库，不支持写入和管理命令。
+
+---
+
+### 3.5 持久化与备份
+
+#### 3.5.1 持久化策略
+
+每个实例的持久化配置：
+
+| 参数 | 主库默认值 | 从库默认值 | 说明 |
+|------|-----------|-----------|------|
+| save | 3600 1 / 300 100 / 60 10000 | 同主库 | RDB 快照频率 |
+| appendonly | yes | yes | 开启 AOF |
+| appendfsync | everysec | everysec | AOF 刷盘策略 |
+| stop-writes-on-bgsave-error | yes | yes | BGSAVE 失败时拒绝写入 |
+
+**Kvrocks 持久化实例（engine: kvrocks）：**
+
+Kvrocks 基于 RocksDB 存储，数据天然持久化到磁盘，无需 RDB/AOF：
+- `persistence` 字段设为 `null`（不生成 RDB/AOF 配置）
+- 数据写入即落盘（WAL + MemTable → SST），崩溃恢复由 RocksDB 自动完成
+- 无需 `save` / `appendonly` / `appendfsync` 等配置
+- 持久化相关指标来自 RocksDB（见 §9.1）
+
+#### 3.5.2 备份策略
+
+**备份来源：优先从从库备份**
+
+- **Redis 实例（engine: redis）：**
+  - 避免对主库性能影响
+  - 从库执行 `BGSAVE`，完成后复制 RDB 文件到 backup 目录
+  - 无从库的单点实例，在主库执行（安排在低峰期）
+  - **如果开启了 AOF（appendonly: yes），备份时必须同时保存 AOF 文件**：
+    1. 先执行 `BGREWRITEAOF` 生成精简 AOF
+    2. 等待 `BGREWRITEAOF` 完成（`INFO Persistence: aof_rewrite_in_progress=0`）
+    3. 备份 RDB 文件 + 重写后的 AOF 文件（appendonly.aof）
+    4. 两者作为同一备份集，使用相同时间戳目录
+
+- **Kvrocks 实例（engine: kvrocks）：**
+  - 使用 RocksDB Checkpoint 创建一致性快照（不阻塞读写）
+  - 从库执行 `ROCKSDB.CHECKPOINT` 生成快照目录，打包复制到 backup 目录
+  - 无从库的单点实例，在主库执行 Checkpoint
+
+**定时备份配置：**
+
+备份调度由 Server 内置 cron 驱动，配置读取自 `instances` 表每个实例的 `backup` 列（JSON）。Server 负责注册定时任务并在触发时调用目标实例所在 Agent 执行备份；Agent 不独立维护调度状态。
+
+```yaml
+backup:
+  schedule: "0 2 * * *"   # cron 表达式，空字符串表示不启用自动备份
+  retention: 7             # 保留份数
+```
+
+通过 CLI 配置：
+
+```bash
+# 设置定时备份
+redis-pilot-cli backup set-schedule <instance> --cron "0 2 * * *" --retention 7
+
+# 查看当前配置
+redis-pilot-cli backup get-schedule <instance>
+
+# 禁用自动备份
+redis-pilot-cli backup set-schedule <instance> --cron ""
+```
+
+Server 启动时读取所有实例的 `backup.schedule`，注册内部 cron，并每 60 秒与 `instances` 表同步一次。实例备份配置变更后，Server 调度器在下一轮同步中增删对应任务。
+
+**备份轮转：**
+
+```
+# Redis 实例（RDB-only 实例）
+/data/redis/{instance-name}/backup/
+  ├── 2026-04-23T12:00:00.rdb
+  ├── 2026-04-23T06:00:00.rdb
+  ├── 2026-04-23T00:00:00.rdb
+  └── ...
+  保留策略：保留最近 N 份（默认 7），超期自动清理
+
+# Redis 实例（开启 AOF 的实例 — RDB+AOF 联合备份）
+/data/redis/{instance-name}/backup/
+  ├── 2026-04-23T12:00:00/
+  │   ├── dump.rdb              # RDB 快照
+  │   └── appendonly.aof        # 重写后的 AOF
+  ├── 2026-04-23T06:00:00/
+  │   ├── dump.rdb
+  │   └── appendonly.aof
+  └── ...
+  保留策略：保留最近 N 份（默认 7），超期自动清理
+
+# Kvrocks 实例
+/data/redis/{instance-name}/backup/
+  ├── 2026-04-23T12:00:00.checkpoint.tar.gz
+  ├── 2026-04-23T06:00:00.checkpoint.tar.gz
+  ├── 2026-04-23T00:00:00.checkpoint.tar.gz
+  └── ...
+  保留策略：保留最近 N 份（默认 7），超期自动清理
+```
+
+**延迟从库（可选高级功能）：**
+
+- 设置 `REPLICA_DELAY`（如 3600 秒），从库延迟 1 小时应用主库写入
+- 用途：误删除数据的快速恢复（延迟窗口内提升延迟从库为主库）
+- 需要额外从库资源，按需开启
+
+#### 3.5.3 备份恢复流程
+
+**Redis 实例恢复（优先 AOF → 回退 RDB）：**
+
+```
+1. 停止目标实例
+
+2. 判断备份类型：
+   ├─ 备份目录包含 AOF 文件（RDB+AOF 联合备份）：
+   │   a. 将备份的 dump.rdb 复制到 data 目录
+   │   b. 将备份的 appendonly.aof 复制到 AOF 目录
+   │   c. 启动实例（Redis 自动优先加载 AOF，AOF 包含更完整的数据）
+   │   d. 验证数据完整性（DBSIZE / 指定 key 抽查）
+   │   → 恢复完成，无需额外操作
+   │
+   └─ 备份仅包含 RDB 文件：
+       a. 将备份 RDB 文件复制到 data 目录，重命名为 dump.rdb
+       b. 清空 AOF 目录（避免旧 AOF 与 RDB 不一致）
+       c. 临时关闭 AOF：appendonly no
+       d. 启动实例，从 RDB 加载数据
+       e. 验证数据完整性
+       f. 重新开启 AOF：CONFIG SET appendonly yes → BGREWRITEAOF
+       → 恢复完成
+
+3. 验证步骤：
+   - 检查 INFO Server: uptime > 0
+   - 检查 INFO Keyspace: keyspace 与预期一致
+   - 检查 INFO Persistence: rdb_last_load_status=ok / aof_enabled=1
+   - 可选：对关键 key 执行 GET 验证值正确性
+```
+
+**Kvrocks 实例恢复：**
+
+```
+1. 停止目标实例
+2. 清空数据目录
+3. 解压 checkpoint.tar.gz 到数据目录
+4. 启动实例
+5. 验证数据完整性（DBSIZE / 指定 key 抽查）
+```
+
+> **为什么优先使用 AOF 恢复？**
+> - AOF 记录了所有写操作，数据完整性高于 RDB（RDB 是定时快照，可能丢失最后一次快照后的写入）
+> - 联合备份时已通过 `BGREWRITEAOF` 生成精简 AOF，恢复效率与 RDB 相当
+> - 仅在 AOF 文件损坏或备份中无 AOF 时，才回退到 RDB 恢复
+
+---
+
+### 3.6 资源清单
+
+#### 3.6.1 设计目标
+
+运维需要快速回答：
+- **哪个端口对应哪个集群？**
+- **这个实例做什么用的？**
+- **当前一共分配了多少端口/容器？**
+- **某台服务器上跑了哪些实例？**
+
+#### 3.6.2 清单数据源
+
+资源清单 **不单独维护**，由 `instances`/`instance_groups` 表 + `servers` 表实时派生，确保单一数据源（Single Source of Truth）。
+
+#### 3.6.3 清单视图
+
+**视图 A：端口-实例映射表**（面向网络/防火墙运维）
+
+```yaml
+# 由 Skill: redis-inventory 生成，可输出为 table / yaml / json
+port_inventory:
+  - envoy_port: 16379
+    mode: readwrite
+    instance_group: order
+    engine: kvrocks
+    category: persistent
+    role: group
+    purpose: "订单持久化存储读写入口"
+    backend_servers: ["server-a:6379(master)"]
+
+  - envoy_port: 16380
+    mode: readonly
+    instance_group: order
+    engine: kvrocks
+    category: persistent
+    role: group
+    purpose: "订单只读入口"
+    backend_servers: ["server-b:6379(replica)"]
+
+  - envoy_port: 16381
+    mode: readwrite
+    instance_group: cache-1
+    engine: redis
+    category: cache
+    role: group
+    purpose: "用户会话缓存"
+    backend_servers: ["server-c:6379(master)"]
+```
+
+**视图 B：服务器-实例分布表**（面向容量规划）
+
+```yaml
+server_inventory:
+  server-a:
+    ip: 10.0.1.10
+    instances:
+      - name: order-master
+        engine: kvrocks
+        container_port: 6379
+        memory: 4Gi
+        cpus: 2
+        status: running
+    allocated_memory: 4Gi
+    total_memory: 64Gi
+    utilization: 6.25%
+
+  server-b:
+    ip: 10.0.1.11
+    instances:
+      - name: order-replica
+        engine: kvrocks
+        container_port: 6379
+        memory: 4Gi
+        cpus: 2
+        status: running
+    allocated_memory: 4Gi
+    total_memory: 64Gi
+    utilization: 6.25%
+
+  server-c:
+    ip: 10.0.1.12
+    instances:
+      - name: cache-1
+        engine: redis
+        container_port: 6379
+        memory: 2Gi
+        cpus: 1
+        status: running
+    allocated_memory: 2Gi
+    total_memory: 64Gi
+    utilization: 3.125%
+```
+
+**视图 C：全局摘要**（面向管理层/日报）
+
+```
+┌──────────────────────────────────────────────────────┐
+│ 资源清单摘要                                          │
+├──────────┬────────┬──────────┬──────────┬────────────┤
+│ 实例组    │ Engine │ 用途      │ Envoy端口 │ 状态       │
+├──────────┼────────┼──────────┼──────────┼────────────┤
+│ order    │kvrocks │ 订单持久化 │ 16379/80 │ ✅ running │
+│ cache-1  │redis   │ 会话缓存   │ 16381    │ ✅ running │
+├──────────┴────────┴──────────┴──────────┴────────────┤
+│ 总计: 2 实例组 / 3 容器 / 3 服务器                     │
+│ 已分配: 10Gi 内存 / 5 CPU                             │
+└──────────────────────────────────────────────────────┘
+```
+
+#### 3.6.4 清单查询方式
+
+| 查询场景 | 方式 | 说明 |
+|----------|------|------|
+| "端口 16379 是什么" | `redis-inventory --port 16379` | 按端口反查实例 |
+| "server-a 上有什么" | `redis-inventory --server server-a` | 按服务器查实例 |
+| "所有 kvrocks 实例" | `redis-inventory --engine kvrocks` | 按引擎过滤 |
+| "导出完整清单" | `redis-inventory --format yaml` | 输出完整视图 A+B |
+| "每日资源报告" | `redis-inventory --summary` | 输出视图 C |
+
+---
+
+### 3.7 Sentinel 高可用设计
+
+Sentinel 用于 Redis/Kvrocks 主从实例组的自动故障转移。Sentinel 只负责判定主库故障、选举从库并执行主从切换；平台仍负责状态文件同步、刷新 Envoy 和记录审计。
+
+#### 3.7.1 部署策略
+
+Sentinel 是 Redis 高可用控制面，不要求每台 Agent 都部署，但必须由运维提前规划并在 Server 配置中显式声明。Server 不根据当前 healthy Agent 自动选择 Sentinel 节点，避免控制面随节点健康状态漂移。
+
+| 声明的 Sentinel 节点 | Sentinel 数 | quorum | 处理策略 |
+|----------------------|-------------|--------|----------|
+| `sentinel.nodes` 未配置 | 0 | - | 不启用自动故障转移，创建主从时返回 warning |
+| 3 个显式节点 | 3 | 2 | 标准生产部署 |
+| 5 个显式节点 | 5 | 3 | 高等级业务使用，容忍更多 Sentinel 节点故障 |
+| 其他数量的显式节点 | - | - | 配置非法，不启用自动故障转移 |
+
+Sentinel 节点规划规则：
+
+1. 节点名必须来自 `servers` 表的 `name` 主键
+2. Sentinel 数固定为奇数（3 或 5），避免偶数投票拓扑
+3. 节点应跨 `zone` / 机架 / 故障域部署
+4. 避免选择临时节点、维护节点、低规格节点或 `role=standby` 节点
+5. 节点列表写入 `server.yaml` 的 `sentinel.nodes`，作为 Server 下发和 reconcile 的唯一依据
+
+示例：
+
+```yaml
+sentinel:
+  enabled: true
+  nodes:
+    - redis-a
+    - redis-b
+    - redis-c
+  port: 26379
+  quorum: 2
+```
+
+#### 3.7.2 Server 与 Sentinel 交互
+
+Server 直接通过 Redis/Sentinel 协议连接 `sentinel.nodes` 的 `port` 下发监控配置，不依赖 Agent 操作 Sentinel 容器。Sentinel 由运维独立部署，并负责把动态配置 rewrite 到自身可写、持久化的 `sentinel.conf`。
+
+```
+SENTINEL MONITOR <group> <master-ip> <master-port> <quorum>
+  添加实例组主库监控
+
+SENTINEL SET <group> down-after-milliseconds <ms>
+SENTINEL SET <group> failover-timeout <ms>
+SENTINEL SET <group> parallel-syncs <n>
+  设置故障检测和切换参数
+
+SENTINEL REMOVE <group>
+  移除指定实例组监控
+
+SENTINEL MASTERS
+SENTINEL get-master-addr-by-name <group>
+  查询 Sentinel 当前监控状态和主库地址
+```
+
+Server API：
+
+```
+GET /sentinel/status
+  Server 直连各 Sentinel 节点，返回已监控 master 列表和连通状态
+
+POST /sentinel/sync
+  Server 从 `instances` 表派生完整 master 列表，并直接同步到各 Sentinel 节点
+
+POST /sentinel/event
+  外部 Sentinel watcher 上报 +switch-master 事件；Server 会再次查询 Sentinel 确认当前 master 后再同步拓扑
+```
+
+Server 下发的逻辑配置示例：
+
+```json
+{
+  "port": 26379,
+  "quorum": 2,
+  "masters": [
+    {
+      "group": "order",
+      "host": "10.0.1.10",
+      "port": 6379,
+      "password": "******",
+      "down_after_milliseconds": 5000,
+      "failover_timeout": 30000,
+      "parallel_syncs": 1
+    }
+  ]
+}
+```
+
+#### 3.7.3 sentinel.conf 模板
+
+```conf
+port {{ sentinel_port }}
+bind 0.0.0.0
+dir /data
+
+sentinel resolve-hostnames yes
+
+{% if announce_ip %}
+sentinel announce-ip {{ announce_ip }}
+sentinel announce-port {{ sentinel_port }}
+{% endif %}
+
+{% for master in masters %}
+sentinel monitor {{ master.group }} {{ master.host }} {{ master.port }} {{ quorum }}
+{% if master.password %}
+sentinel auth-pass {{ master.group }} {{ master.password }}
+{% endif %}
+sentinel down-after-milliseconds {{ master.group }} {{ master.down_after_milliseconds | default(5000) }}
+sentinel failover-timeout {{ master.group }} {{ master.failover_timeout | default(30000) }}
+sentinel parallel-syncs {{ master.group }} {{ master.parallel_syncs | default(1) }}
+{% endfor %}
+```
+
+如果 Redis/Kvrocks 实例启用了 `requirepass`，必须配置 `sentinel auth-pass`。否则 Sentinel 能检测端口存活，但无法执行 INFO、REPLICAOF、故障转移等命令。
+
+#### 3.7.4 Podman 容器规范
+
+Sentinel 容器推荐使用 host network，避免容器 NAT/端口映射导致 Sentinel 宣告错误地址、无法发现其他 Sentinel 或无法连接从库。
+
+```bash
+podman run -d \
+  --name redis-sentinel \
+  --network host \
+  --restart on-failure:5 \
+  -v /data/redis-sentinel/conf:/etc/redis:Z \
+  -v /data/redis-sentinel/data:/data:Z \
+  docker.io/redis:7 \
+  redis-sentinel /etc/redis/sentinel.conf
+```
+
+**注意：必须挂载目录而非单文件。** Sentinel 保存配置时先写 `sentinel.conf.tmp` 再 `rename` 替换原文件。若将 `sentinel.conf` 以单文件 bind mount 挂入容器，`rename` 会因 inode 被宿主机锁定而报 `Device or resource busy`，导致新增 master 监控失败。挂载目录可让 rename 在同一文件系统内完成。
+
+如果不能使用 host network，必须显式配置 `sentinel announce-ip` / `sentinel announce-port`，并确保 Redis 实例的 replica announce 信息与实际可达地址一致。
+
+#### 3.7.5 创建与删除时机
+
+创建主从实例组成功后，Server 执行：
+
+```
+1. 从 server.yaml 的 sentinel.nodes 读取已规划 Sentinel 节点
+2. 从 `instances` 表派生所有需要监控的 master 列表
+3. 直接连接各 Sentinel 节点 26379，执行 SENTINEL REMOVE / MONITOR / SET
+4. 如果 sentinel.nodes 未配置或数量不是 3/5，跳过 Sentinel 并在创建结果中返回 warning
+```
+
+删除实例组时，Server 执行：
+
+```
+1. 直连所有 Sentinel 节点执行 SENTINEL REMOVE <group>
+2. 从 `instance_groups` 表删除实例组
+3. 状态变更后 `redis-pilot-xds` 自动通过 xDS 推送新配置到 Envoy
+4. 写入审计日志
+```
+
+Sentinel 配置应由 Server 统一派生并下发；Agent 不应独立决定监控哪些 master。
+Sentinel 的 `group` 必须来自 `instance_groups` 表中显式保存的实例组名，而不是当前 master 实例名；master 发生 failover 后，monitor name 仍保持不变。
+
+#### 3.7.6 故障转移同步机制
+
+实现采用 Server 内置 watcher + 定期 reconcile 的双路径：
+
+```
+Server 启动时：
+  1. 从 server.yaml 的 sentinel.nodes 读取 3 或 5 个 Sentinel 节点
+  2. 对每个 Sentinel 节点启动 1 个 watcher
+  3. watcher 执行 SUBSCRIBE +switch-master
+  4. watcher 断线只记录日志并退避重连，不修改实例状态
+```
+
+`+switch-master` 是 Sentinel 的全局事件频道，一个 watcher 会收到该 Sentinel 监控的所有实例组切换事件；因此 watcher 数量等于 `sentinel.nodes` 数量，不按实例组放大。
+
+事件路径作为加速机制：
+
+```
+收到 +switch-master:
+  1. 解析事件 payload 中的 group
+  2. Server 再次查询 Sentinel：
+     SENTINEL get-master-addr-by-name <group>
+  3. 使用查询确认后的 master 地址调用 handleFailover(group, confirmedMasterAddr)
+```
+
+定期 reconcile 作为权威兜底：
+
+```
+每 5-10 秒：
+  1. Server 查询任一健康 Sentinel：
+     SENTINEL get-master-addr-by-name <group>
+  2. 对比 Sentinel 返回的 master 地址和 `instances` 表当前 master
+  3. 如果不一致，调用 handleFailover(group, newMasterAddr)
+```
+
+`handleFailover` 必须是幂等的：
+
+1. 如果 Sentinel 确认的新 master 已经是 `groups[group].current_master`，直接 no-op
+2. 获取实例组编排锁
+3. 校验新 master 地址属于当前实例组
+4. 更新 `groups[group].current_master/topology_status`，并更新实例 `role` / `replica_of` / `status`
+5. 状态变更后 `redis-pilot-xds` 自动通过 xDS 推送新配置到 Envoy
+6. 写 `topology.failover` 审计日志
+7. 释放编排锁
+
+#### 3.7.7 失败处理
+
+| 场景 | 处理策略 |
+|------|----------|
+| healthy Sentinel 数 < quorum | 标记自动故障转移能力降级，保留现有实例运行，触发告警 |
+| 单个 Sentinel watcher 断线 | 记录日志并后台退避重连，不修改 Redis 实例状态；其他 watcher 和 reconcile 继续工作 |
+| 所有 watcher 断线 | 丢失实时事件，但定期 reconcile 仍会查询 Sentinel 当前 master 并最终同步 |
+| 直连 Sentinel 同步部分节点失败 | 成功节点数 >= quorum 则继续并告警；否则返回 warning 并等待 reconcile 重试 |
+| Sentinel 返回的新 master 不在 `instances` 表 | 标记 `failover_conflict`，不自动改拓扑，触发人工介入 |
+| 新主库再次故障 | 不主动抢占 Sentinel，等待下一轮 Sentinel failover；编排锁超时后允许重新同步 |
+| xDS 推送失败 | 不影响状态更新，xDS 下次轮询时自动重试推送 |
+
+#### 3.7.8 验证矩阵
+
+| 场景 | 期望 |
+|------|------|
+| Redis 主库容器停止 | Sentinel 提升从库，Envoy 写入口切到新 master，Server 状态最终同步 |
+| Kvrocks 主库容器停止 | 行为同 Redis，需验证 `ROLE` / Sentinel failover / replication 状态兼容 |
+| Redis/Kvrocks 配置 requirepass | Sentinel auth-pass 生效，failover 成功 |
+| Sentinel 节点少于 quorum | 不发生自动故障转移，系统发出降级告警 |
+| Envoy 重启 | 通过 xDS 自动从控制面恢复配置，业务端口不变化 |
+
+---
+
