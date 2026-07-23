@@ -111,7 +111,13 @@ func (d *DB) GetServer(name string) (*apitypes.NodeServer, error) {
 
 // WithServers 在事务中原子执行 read → fn → write 所有变更。
 // fn 接收当前全量 map，修改后由框架批量写回。
+//
+// 用 DB.mu 强制同一时间只有一个 WithInstances/WithServers 在执行，避免并发调用者
+// 各自基于旧快照修改后互相覆盖（丢失更新），或触发 SQLITE_BUSY_SNAPSHOT 静默失败。
 func (d *DB) WithServers(fn func(map[string]*apitypes.NodeServer) error) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
 	tx, err := d.sql.Begin()
 	if err != nil {
 		return err

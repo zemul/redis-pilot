@@ -369,13 +369,15 @@ func (s *Server) instanceCreate(c *gin.Context) {
 			"clean_data": true,
 		})
 		// 标记实例为 failed，保留记录供排查
-		s.state.WithInstances(func(instances *apitypes.InstancesState) error {
+		if markErr := s.state.WithInstances(func(instances *apitypes.InstancesState) error {
 			if i := instances.Instances[req.Name]; i != nil {
 				i.Status = "failed"
 				state.RecalculateGroupTopology(instances, i.Group)
 			}
 			return nil
-		})
+		}); markErr != nil {
+			s.log.Errorf("instance create: failed to mark %s as failed: %v", req.Name, markErr)
+		}
 		s.audit.Log(audit.Record{Operator: operatorFrom(c), Action: "instance.create", Level: audit.LevelImportant, Result: "failed", Detail: err.Error(),
 			Target: map[string]interface{}{"instance": req.Name, "server": req.Server}})
 		fail(c, http.StatusInternalServerError, "agent create failed: "+err.Error())
@@ -383,13 +385,17 @@ func (s *Server) instanceCreate(c *gin.Context) {
 	}
 
 	// 更新状态为 running
-	s.state.WithInstances(func(instances *apitypes.InstancesState) error {
+	if err := s.state.WithInstances(func(instances *apitypes.InstancesState) error {
 		if i := instances.Instances[req.Name]; i != nil {
 			i.Status = "running"
 			state.RecalculateGroupTopology(instances, i.Group)
 		}
 		return nil
-	})
+	}); err != nil {
+		s.log.Errorf("instance create: failed to mark %s as running: %v", req.Name, err)
+	} else {
+		inst.Status = "running"
+	}
 
 	s.audit.Log(audit.Record{
 		Operator: operatorFrom(c),
@@ -571,13 +577,15 @@ func (s *Server) instanceStop(c *gin.Context) {
 		return
 	}
 
-	s.state.WithInstances(func(is *apitypes.InstancesState) error {
+	if err := s.state.WithInstances(func(is *apitypes.InstancesState) error {
 		if i, ok := is.Instances[req.Name]; ok {
 			i.Status = "stopped"
 			state.RecalculateGroupTopology(is, i.Group)
 		}
 		return nil
-	})
+	}); err != nil {
+		s.log.Errorf("instance stop: failed to mark %s as stopped: %v", req.Name, err)
+	}
 
 	s.audit.Log(audit.Record{
 		Operator: operatorFrom(c),
@@ -631,7 +639,7 @@ func (s *Server) instanceConfig(c *gin.Context) {
 	}
 
 	// 更新 instances-state 中的 config_overrides
-	s.state.WithInstances(func(is *apitypes.InstancesState) error {
+	if err := s.state.WithInstances(func(is *apitypes.InstancesState) error {
 		if i, ok2 := is.Instances[req.Name]; ok2 {
 			if i.ConfigOverrides == nil {
 				i.ConfigOverrides = make(map[string]string)
@@ -641,7 +649,9 @@ func (s *Server) instanceConfig(c *gin.Context) {
 			}
 		}
 		return nil
-	})
+	}); err != nil {
+		s.log.Errorf("instance config: failed to persist config_overrides for %s: %v", req.Name, err)
+	}
 
 	s.audit.Log(audit.Record{
 		Operator: operatorFrom(c),
@@ -682,7 +692,7 @@ func (s *Server) instancePromote(c *gin.Context) {
 	}
 
 	// 更新状态：角色变更 + group current_master 切换。
-	s.state.WithInstances(func(is *apitypes.InstancesState) error {
+	if err := s.state.WithInstances(func(is *apitypes.InstancesState) error {
 		i := is.Instances[req.Name]
 		if i == nil {
 			return nil
@@ -700,7 +710,11 @@ func (s *Server) instancePromote(c *gin.Context) {
 		i.ReplicaOf = ""
 		state.RecalculateGroupTopology(is, i.Group)
 		return nil
-	})
+	}); err != nil {
+		s.log.Errorf("instance promote: failed to persist role change for %s: %v", req.Name, err)
+		fail(c, http.StatusInternalServerError, "promote state update failed: "+err.Error())
+		return
+	}
 
 	s.audit.Log(audit.Record{
 		Operator: operatorFrom(c),
@@ -753,7 +767,7 @@ func (s *Server) instanceReplicate(c *gin.Context) {
 	}
 
 	// 更新状态：角色变更 + 归入目标 group。
-	s.state.WithInstances(func(is *apitypes.InstancesState) error {
+	if err := s.state.WithInstances(func(is *apitypes.InstancesState) error {
 		i := is.Instances[req.Name]
 		if i == nil {
 			return nil
@@ -782,7 +796,11 @@ func (s *Server) instanceReplicate(c *gin.Context) {
 		}
 		state.RecalculateGroupTopology(is, groupName)
 		return nil
-	})
+	}); err != nil {
+		s.log.Errorf("instance replicate: failed to persist role change for %s: %v", req.Name, err)
+		fail(c, http.StatusInternalServerError, "replicate state update failed: "+err.Error())
+		return
+	}
 
 	s.audit.Log(audit.Record{
 		Operator: operatorFrom(c),
@@ -843,7 +861,7 @@ func (s *Server) execBackup(name, operator string) error {
 	}
 
 	// 更新 last_backup
-	s.state.WithInstances(func(is *apitypes.InstancesState) error {
+	if err := s.state.WithInstances(func(is *apitypes.InstancesState) error {
 		if i, ok2 := is.Instances[name]; ok2 {
 			if i.Backup == nil {
 				i.Backup = &apitypes.BackupConfig{}
@@ -851,7 +869,9 @@ func (s *Server) execBackup(name, operator string) error {
 			i.Backup.LastBackup = time.Now().Format(time.RFC3339)
 		}
 		return nil
-	})
+	}); err != nil {
+		s.log.Errorf("backup exec: failed to persist last_backup for %s: %v", name, err)
+	}
 
 	s.audit.Log(audit.Record{
 		Operator: operator,
@@ -1026,7 +1046,7 @@ func (s *Server) instanceSimpleOp(c *gin.Context, newStatus, agentPath, auditAct
 	}
 
 	statusMap := map[string]string{"start": "running", "stop": "stopped"}
-	s.state.WithInstances(func(is *apitypes.InstancesState) error {
+	if err := s.state.WithInstances(func(is *apitypes.InstancesState) error {
 		if i, ok2 := is.Instances[req.Name]; ok2 {
 			if status, ok3 := statusMap[newStatus]; ok3 {
 				i.Status = status
@@ -1034,7 +1054,9 @@ func (s *Server) instanceSimpleOp(c *gin.Context, newStatus, agentPath, auditAct
 			}
 		}
 		return nil
-	})
+	}); err != nil {
+		s.log.Errorf("instance %s: failed to persist status for %s: %v", newStatus, req.Name, err)
+	}
 
 	s.audit.Log(audit.Record{
 		Operator: operatorFrom(c),
@@ -1186,14 +1208,16 @@ func (s *Server) resolveAndLockInternal(name, operation string) (*apitypes.Insta
 
 // releaseLockGroup 原子释放实例组的操作锁。
 func (s *Server) releaseLockGroup(group []string, sessionID string) {
-	s.state.WithInstances(func(instances *apitypes.InstancesState) error {
+	if err := s.state.WithInstances(func(instances *apitypes.InstancesState) error {
 		for _, n := range group {
 			if i, ok := instances.Instances[n]; ok {
 				state.ReleaseLock(i, sessionID)
 			}
 		}
 		return nil
-	})
+	}); err != nil {
+		s.log.Errorf("release lock: failed to persist unlock for session %s (group %v): %v", sessionID, group, err)
+	}
 }
 
 func toMap(m map[string]string) map[string]interface{} {

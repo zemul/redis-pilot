@@ -7,13 +7,21 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 
 	_ "modernc.org/sqlite"
 )
 
 // DB 封装 SQLite 连接，提供分域存储方法。
+//
+// mu 用于在应用层串行化 WithInstances/WithServers 的"读快照 → 修改 → 全量重写"过程。
+// SQLite 的写锁串行化只保证单条语句/单个事务内部的原子性，不能防止两个并发事务
+// 各自基于同一份旧快照做出修改后互相覆盖（丢失更新），也不能防止 WAL 模式下
+// 后提交的事务因快照过期返回 SQLITE_BUSY_SNAPSHOT（_busy_timeout 不会重试这种错误）。
+// 因此这里在应用层用 mu 强制同一时间只有一个 WithInstances/WithServers 在执行。
 type DB struct {
 	sql *sql.DB
+	mu  sync.Mutex
 }
 
 // Open 打开（或创建）dataDir/pilot.db，执行建表迁移后返回。
@@ -26,7 +34,9 @@ func Open(dataDir string) (*DB, error) {
 	if err != nil {
 		return nil, fmt.Errorf("store: open %s: %w", path, err)
 	}
-	// WAL 模式允许并发读，写由 SQLite 内部串行化。
+	// WAL 模式允许并发读；写锁本身由 SQLite 序列化，但跨越"读快照→改内存→写回"
+	// 的 WithInstances/WithServers 需要额外的应用层锁（见 DB.mu），否则并发调用会
+	// 因快照冲突（SQLITE_BUSY_SNAPSHOT）静默失败或发生丢失更新。
 	// 不限制 MaxOpenConns，避免嵌套查询（如事务内读另一张表）死锁。
 	db.SetMaxIdleConns(4)
 
