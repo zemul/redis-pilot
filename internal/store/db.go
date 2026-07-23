@@ -25,9 +25,17 @@ type DB struct {
 }
 
 // Open 打开（或创建）dataDir/pilot.db，执行建表迁移后返回。
+//
+// dataDir 和 pilot.db（以及 WAL/SHM 伴生文件）均限制为仅属主可读写（0700/0600），
+// 因为 instances.password 和 servers.agent_token 以明文形式存储在库中，
+// 若目录或文件权限过宽，本机其他用户可直接读取数据库文件窃取凭据。
 func Open(dataDir string) (*DB, error) {
-	if err := os.MkdirAll(dataDir, 0755); err != nil {
+	if err := os.MkdirAll(dataDir, 0700); err != nil {
 		return nil, fmt.Errorf("store: mkdir %s: %w", dataDir, err)
+	}
+	// 目录可能已存在且权限过宽（如从旧版本升级），显式收紧一次。
+	if err := os.Chmod(dataDir, 0700); err != nil {
+		return nil, fmt.Errorf("store: chmod %s: %w", dataDir, err)
 	}
 	path := filepath.Join(dataDir, "pilot.db")
 	db, err := sql.Open("sqlite", path+"?_journal_mode=WAL&_busy_timeout=5000&_foreign_keys=on")
@@ -45,7 +53,32 @@ func Open(dataDir string) (*DB, error) {
 		db.Close()
 		return nil, fmt.Errorf("store: migrate: %w", err)
 	}
+
+	// pilot.db 及其 WAL/SHM 伴生文件在上面的 sql.Open/migrate 过程中才会被
+	// sqlite 驱动实际创建，创建时权限受进程 umask 影响（常见为 0644），
+	// 因此必须在文件确定存在之后再显式收紧为仅属主可读写。
+	for _, suffix := range []string{"", "-wal", "-shm"} {
+		if err := restrictFilePerm(path + suffix); err != nil {
+			db.Close()
+			return nil, err
+		}
+	}
 	return s, nil
+}
+
+// restrictFilePerm 将存在的文件权限收紧为 0600（仅属主可读写）。
+// 文件不存在时视为无需处理（例如尚未产生 WAL/SHM 伴生文件）。
+func restrictFilePerm(path string) error {
+	if _, err := os.Stat(path); err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("store: stat %s: %w", path, err)
+	}
+	if err := os.Chmod(path, 0600); err != nil {
+		return fmt.Errorf("store: chmod %s: %w", path, err)
+	}
+	return nil
 }
 
 // Close 关闭数据库连接。
