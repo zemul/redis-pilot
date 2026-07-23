@@ -17,13 +17,16 @@ import (
 	"gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/pkg/apitypes"
 )
 
-// validInstanceName 限制实例名只能包含字母、数字、下划线、中横线，长度 1-64。
-// 用于防止 req.Name 被拼入文件路径/容器名时发生路径穿越（如 "../../etc"）或命令注入。
-var validInstanceName = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,64}$`)
+// validInstanceName 限制实例名只能包含字母、数字、下划线、中横线，长度 1-64，且不能以 "-" 开头。
+// 用于防止 req.Name 被拼入文件路径/容器名时发生路径穿越（如 "../../etc"）或命令注入；
+// 禁止以 "-" 开头是为了防止参数注入（如名字为 "--privileged"）——该名字会被拼入
+// podman run 的命令行参数（见 internal/podman/podman.go），若允许以 "-" 开头，
+// podman 的参数解析器可能把实例名当作一个真正的 flag 处理，从而绕过预期的容器隔离。
+var validInstanceName = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$`)
 
 func validateInstanceName(name string) error {
 	if !validInstanceName.MatchString(name) {
-		return fmt.Errorf("invalid instance name: must match ^[a-zA-Z0-9_-]{1,64}$")
+		return fmt.Errorf("invalid instance name: must match ^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$")
 	}
 	return nil
 }
