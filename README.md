@@ -21,8 +21,7 @@ flowchart TB
     cli["CLI<br/>redis-pilot-cli"]
 
     server["Server :8080<br/>状态管理 / API 网关 / 调度 / 审计"]
-    state[("状态文件<br/>pool-state.yaml<br/>instances-state.yaml")]
-    audit[("审计日志<br/>audit-YYYYMMDD.jsonl")]
+    state[("pilot.db (SQLite)<br/>servers / instances / audit_log 等表")]
 
     xds["redis-pilot-xds :18000<br/>Envoy xDS 控制面"]
     envoy["Envoy Redis Proxy<br/>统一入口 / 读写分离"]
@@ -53,7 +52,6 @@ flowchart TB
     user --> skills --> cli
     cli -- "HTTP API / Bearer Token" --> server
     server <--> state
-    server --> audit
     server -- "Agent API / Bearer Token" --> agentA
     server -- "Agent API / Bearer Token" --> agentB
     server -- "proxy snapshot" --> xds
@@ -65,7 +63,7 @@ flowchart TB
     envoy -- "只读流量" --> instB2
 ```
 
-管理流量从 GAL Skills/CLI 进入 Server，再由 Server 调度到各节点 Agent 执行 Podman 容器操作；业务流量不经过 Server，直接通过 Envoy Redis Proxy 访问后端 Redis/Kvrocks 实例。Server 是全局状态唯一写入点，`pool-state.yaml` 记录节点资源和 Agent 连接信息，`instances-state.yaml` 记录实例拓扑、端口、角色和备份配置。
+管理流量从 GAL Skills/CLI 进入 Server，再由 Server 调度到各节点 Agent 执行 Podman 容器操作；业务流量不经过 Server，直接通过 Envoy Redis Proxy 访问后端 Redis/Kvrocks 实例。Server 是全局状态唯一写入点，状态和审计日志统一存储在 `pilot.db`（SQLite）：`servers` 表记录节点资源和 Agent 连接信息，`instances`/`instance_groups` 表记录实例拓扑、端口、角色和备份配置，`audit_log` 表记录所有管理操作。
 
 | 组件 | 端口 | 职责 |
 |------|------|------|

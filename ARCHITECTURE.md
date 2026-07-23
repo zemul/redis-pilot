@@ -81,7 +81,7 @@
 ┌─────────────────────────────────────────────────────────────┐
 │                  Server (状态管理层)                           │
 │                                                              │
-│  持有 pool-state.yaml + instances-state.yaml                 │
+│  持有 pilot.db（SQLite，servers/instance_groups/instances 等表）│
 │  所有状态读写串行化，实例级操作锁 + 内存读写锁                    │
 │  暴露与 CLI Tools 一一对应的 HTTP API                         │
 └──────────────────────────┬──────────────────────────────────┘
@@ -124,10 +124,10 @@
 
 | 职责 | 说明 |
 |------|------|
-| 状态文件管理 | 持有 pool-state.yaml + instances-state.yaml，所有读写经过 Server 串行化 |
-| 并发控制 | 内存读写锁（sync.RWMutex）+ 实例级操作锁（业务层），防止多 GAL 会话并发冲突。Server 为单进程部署，所有状态文件读写经过 Server 串行化，无需文件级锁 |
+| 状态存储 | 持有 pilot.db（SQLite 单文件，servers / instance_groups / instances / audit_log 等表），所有读写经过 Server 串行化 |
+| 并发控制 | 内存读写锁（sync.RWMutex）+ 实例级操作锁（业务层），防止多 GAL 会话并发冲突。Server 为单进程部署，`WithInstances`/`WithServers` 通过 `DB.mu`（`sync.Mutex`）将"读快照 → 修改 → 全量重写"过程串行化，避免并发事务基于同一旧快照互相覆盖，无需文件级锁 |
 | API 网关 | 暴露与 CLI Tools 一一对应的 HTTP API，转发操作到各服务器 Agent |
-| 审计日志 | 记录所有管理操作到 audit/audit-YYYYMMDD.jsonl |
+| 审计日志 | 记录所有管理操作到 pilot.db 的 audit_log 表 |
 
 #### API 定义
 
@@ -164,11 +164,8 @@
 ```
 /opt/redis-server/
   ├── server.yaml               # Server 自身配置
-  ├── state/
-  │   ├── pool-state.yaml       # 服务器节点（含各 Agent 连接信息和 Token）
-  │   └── instances-state.yaml
-  └── audit/
-      └── audit-YYYYMMDD.jsonl
+  └── state/
+      └── pilot.db               # SQLite：servers / instance_groups / instances / audit_log 等表
 ```
 
 #### 认证
@@ -181,7 +178,10 @@ data_dir: /opt/redis-server/state
 ```
 
 ```yaml
-# pool-state.yaml（每台服务器记录含 Agent 连接信息）
+# 以下字段现存储于 pilot.db 的 servers 表（每行对应一台服务器，含 Agent 连接信息）
+# servers 表：
+#   name TEXT PRIMARY KEY, endpoint, agent_port, agent_token,
+#   labels(JSON), capacity(JSON), instances(JSON), status, last_heartbeat
 servers:
   server-a:
     endpoint: 10.0.1.10
@@ -320,12 +320,12 @@ GET /host/resources
 
 ### 3.2 服务器节点
 
-#### 3.2.1 池状态文件
+#### 3.2.1 服务器节点存储
 
-全局维护一个 `pool-state.yaml`，记录每台服务器的容量和分配情况：
+全局维护在 `pilot.db` 的 `servers` 表中，记录每台服务器的容量和分配情况。字段以下用 YAML 风格展示概念性结构，实际存储为 SQLite 表的一行（`labels` / `capacity` / `instances` 等复合字段以 JSON 编码存入对应列）：
 
 ```yaml
-# pool-state.yaml
+# 概念性字段说明；实际存储为 pilot.db 的 servers 表
 servers:
   server-a:
     endpoint: 10.0.1.10
@@ -388,6 +388,8 @@ servers:
     last_heartbeat: "2026-04-23T18:00:00Z"
 ```
 
+> 注：`labels` / `capacity` / `instances` 在 `servers` 表中以 JSON 文本列存储；`allocated` 不落库，由 Server 在查询时读取 `instances` 表实时汇总计算得出（见 `computeAllocated`），因此不是 `servers` 表的持久化字段，上面的 `allocated` 段仅用于说明查询返回值的语义。
+
 #### 3.2.2 调度策略
 
 创建实例时的服务器选择逻辑：
@@ -399,19 +401,19 @@ servers:
    a. 主从必须分布在不同服务器（容灾）
    b. 主从优先分布在不同可用区（zone 标签）
    c. 剩余资源最多的服务器优先（均衡分配）
-4. 锁定：选定后更新 pool-state 的 allocated 字段
+4. 锁定：选定后写入 `instances` 表（`server` 字段指向选中的服务器），服务器的已分配资源由 Server 查询时从 `instances` 表实时汇总派生，无需单独更新 `servers` 表
 ```
 
 ---
 
 ### 3.3 实例状态
 
-#### 3.3.1 实例状态文件
+#### 3.3.1 实例状态存储
 
-全局维护 `instances-state.yaml`，其中 `groups` 是拓扑与入口的权威状态，`instances` 只记录单容器运行状态：
+全局维护在 `pilot.db` 的 `instance_groups` 表 + `instances` 表中，其中 `instance_groups` 是拓扑与入口的权威状态，`instances` 只记录单容器运行状态。以下用 YAML 风格展示概念性结构，实际存储为两张 SQLite 表（复合字段如 `envoy` / `persistence` / `config_overrides` / `backup` / `lock` 以 JSON 编码存入对应列）：
 
 ```yaml
-# instances-state.yaml
+# 概念性字段说明；实际存储为 pilot.db 的 instance_groups 表 + instances 表
 groups:
   order:
     type: replication                 # standalone | replication
@@ -484,20 +486,20 @@ instances:
 
 #### 3.3.2 状态一致性规则
 
-- **创建前**：先写 instances-state（status: creating），再调用 Agent
-- **创建成功**：更新 status → running，更新 pool-state allocated
+- **创建前**：先写入 `instances` 表（status: creating），再调用 Agent
+- **创建成功**：更新 status → running；服务器已分配资源由查询时从 `instances` 表实时汇总派生，无需单独更新 `servers` 表
 - **创建失败**：回滚 — 调用 Agent 清理已创建的资源，更新 status → failed
 - **每次操作**：先读状态，操作完成后更新状态
-- **定期校验**：Skills 可触发全量状态校验（实际容器 vs 状态文件）
+- **定期校验**：Skills 可触发全量状态校验（实际容器 vs `pilot.db` 中的状态）
 
 #### 3.3.3 操作锁机制
 
-多 GAL 会话可能同时操作同一实例（如一个在 scale up，另一个在 migrate），YAML 文件的并发读写需要锁保护。
+多 GAL 会话可能同时操作同一实例（如一个在 scale up，另一个在 migrate），并发读写需要锁保护。Server 通过 `WithInstances`（内部由 `DB.mu` 串行化"读快照 → 修改 → 全量重写"）保证同一时刻只有一个操作在改写 `instances` 表，业务层的实例级操作锁则在此基础上防止跨请求的逻辑冲突（如两个操作都读到了旧快照后各自认为自己拿到了锁）。
 
 **实例级操作锁**：
 
 ```yaml
-# instances-state.yaml 中每个实例增加 lock 字段
+# lock 字段现存储于 instances 表的 lock 列（JSON 编码）
 instances:
   order-master:
     name: order-master
@@ -511,7 +513,7 @@ instances:
 
 **锁规则**：
 
-1. **获取锁**：任何修改操作前，必须先在 instances-state 中写入 lock 字段
+1. **获取锁**：任何修改操作前，必须先在 `instances` 表对应行的 `lock` 列（JSON）中写入锁信息
    - 如果 lock 已存在且未超时，拒绝操作并返回冲突提示
    - 如果 lock 已超时（`now - acquired_at > timeout`），视为锁失效，可被新会话抢占
 2. **释放锁**：操作完成后（无论成功或失败），必须清除 lock 字段
@@ -699,7 +701,7 @@ Kvrocks 基于 RocksDB 存储，数据天然持久化到磁盘，无需 RDB/AOF�
 
 **定时备份配置：**
 
-备份调度由 Server 内置 cron 驱动，配置写在 instances-state.yaml 的实例 `backup` 字段。Server 负责注册定时任务并在触发时调用目标实例所在 Agent 执行备份；Agent 不独立维护调度状态。
+备份调度由 Server 内置 cron 驱动，配置读取自 `instances` 表每个实例的 `backup` 列（JSON）。Server 负责注册定时任务并在触发时调用目标实例所在 Agent 执行备份；Agent 不独立维护调度状态。
 
 ```yaml
 backup:
@@ -720,7 +722,7 @@ redis-pilot-cli backup get-schedule <instance>
 redis-pilot-cli backup set-schedule <instance> --cron ""
 ```
 
-Server 启动时读取所有实例的 `backup.schedule`，注册内部 cron，并每 60 秒与 instances-state 同步一次。实例备份配置变更后，Server 调度器在下一轮同步中增删对应任务。
+Server 启动时读取所有实例的 `backup.schedule`，注册内部 cron，并每 60 秒与 `instances` 表同步一次。实例备份配置变更后，Server 调度器在下一轮同步中增删对应任务。
 
 **备份轮转：**
 
@@ -819,7 +821,7 @@ Server 启动时读取所有实例的 `backup.schedule`，注册内部 cron，�
 
 #### 3.6.2 清单数据源
 
-资源清单 **不单独维护**，由 `instances-state.yaml` + `pool-state.yaml` 实时派生，确保单一数据源（Single Source of Truth）。
+资源清单 **不单独维护**，由 `instances`/`instance_groups` 表 + `servers` 表实时派生，确保单一数据源（Single Source of Truth）。
 
 #### 3.6.3 清单视图
 
@@ -945,7 +947,7 @@ Sentinel 是 Redis 高可用控制面，不要求每台 Agent 都部署，但必
 
 Sentinel 节点规划规则：
 
-1. 节点名必须来自 `pool-state.yaml` 的 `servers` key
+1. 节点名必须来自 `servers` 表的 `name` 主键
 2. Sentinel 数固定为奇数（3 或 5），避免偶数投票拓扑
 3. 节点应跨 `zone` / 机架 / 故障域部署
 4. 避免选择临时节点、维护节点、低规格节点或 `role=standby` 节点
@@ -992,7 +994,7 @@ GET /sentinel/status
   Server 直连各 Sentinel 节点，返回已监控 master 列表和连通状态
 
 POST /sentinel/sync
-  Server 从 instances-state 派生完整 master 列表，并直接同步到各 Sentinel 节点
+  Server 从 `instances` 表派生完整 master 列表，并直接同步到各 Sentinel 节点
 
 POST /sentinel/event
   外部 Sentinel watcher 上报 +switch-master 事件；Server 会再次查询 Sentinel 确认当前 master 后再同步拓扑
@@ -1070,7 +1072,7 @@ podman run -d \
 
 ```
 1. 从 server.yaml 的 sentinel.nodes 读取已规划 Sentinel 节点
-2. 从 instances-state 派生所有需要监控的 master 列表
+2. 从 `instances` 表派生所有需要监控的 master 列表
 3. 直接连接各 Sentinel 节点 26379，执行 SENTINEL REMOVE / MONITOR / SET
 4. 如果 sentinel.nodes 未配置或数量不是 3/5，跳过 Sentinel 并在创建结果中返回 warning
 ```
@@ -1079,13 +1081,13 @@ podman run -d \
 
 ```
 1. 直连所有 Sentinel 节点执行 SENTINEL REMOVE <group>
-2. 从 instances-state 删除实例组
+2. 从 `instance_groups` 表删除实例组
 3. 状态变更后 `redis-pilot-xds` 自动通过 xDS 推送新配置到 Envoy
 4. 写入审计日志
 ```
 
 Sentinel 配置应由 Server 统一派生并下发；Agent 不应独立决定监控哪些 master。
-Sentinel 的 `group` 必须来自 `instances-state.yaml` 中显式保存的实例组名，而不是当前 master 实例名；master 发生 failover 后，monitor name 仍保持不变。
+Sentinel 的 `group` 必须来自 `instance_groups` 表中显式保存的实例组名，而不是当前 master 实例名；master 发生 failover 后，monitor name 仍保持不变。
 
 #### 3.7.6 故障转移同步机制
 
@@ -1117,7 +1119,7 @@ Server 启动时：
 每 5-10 秒：
   1. Server 查询任一健康 Sentinel：
      SENTINEL get-master-addr-by-name <group>
-  2. 对比 Sentinel 返回的 master 地址和 instances-state 当前 master
+  2. 对比 Sentinel 返回的 master 地址和 `instances` 表当前 master
   3. 如果不一致，调用 handleFailover(group, newMasterAddr)
 ```
 
@@ -1139,7 +1141,7 @@ Server 启动时：
 | 单个 Sentinel watcher 断线 | 记录日志并后台退避重连，不修改 Redis 实例状态；其他 watcher 和 reconcile 继续工作 |
 | 所有 watcher 断线 | 丢失实时事件，但定期 reconcile 仍会查询 Sentinel 当前 master 并最终同步 |
 | 直连 Sentinel 同步部分节点失败 | 成功节点数 >= quorum 则继续并告警；否则返回 warning 并等待 reconcile 重试 |
-| Sentinel 返回的新 master 不在 instances-state | 标记 `failover_conflict`，不自动改拓扑，触发人工介入 |
+| Sentinel 返回的新 master 不在 `instances` 表 | 标记 `failover_conflict`，不自动改拓扑，触发人工介入 |
 | 新主库再次故障 | 不主动抢占 Sentinel，等待下一轮 Sentinel failover；编排锁超时后允许重新同步 |
 | xDS 推送失败 | 不影响状态更新，xDS 下次轮询时自动重试推送 |
 
@@ -1171,7 +1173,7 @@ Skill: redis-create
   │   → 分配实例端口 6379（本机无冲突）
   │   → 分配 Envoy 端口 16381
   │
-  ├─3. state_update(instances-state, "cache-1", status=creating)
+  ├─3. state_update(instances, "cache-1", status=creating)
   │
   ├─4. agent_exec(server-c, "instance/create", {
   │       name: "cache-1",
@@ -1187,11 +1189,11 @@ Skill: redis-create
   ├─5. health_check(server-c, 6379)
   │   → 验证 PONG + INFO 验证持久化配置生效
   │
-  ├─6. state_update(instances-state, "cache-1", status=running, envoy.auto_port=16381)
+  ├─6. state_update(instances, "cache-1", status=running, envoy.auto_port=16381)
   │   → xDS 自动检测到 snapshot 变化并推送新配置到 Envoy
   │
-  ├─7. state_update(instances-state, "cache-1", status=running)
-  │   state_update(pool-state, server-c, allocated += 2Gi)
+  ├─7. state_update(instances, "cache-1", status=running)
+  │   state_update(servers, server-c, allocated += 2Gi)
   │
   └─8. 返回结果: "缓存 Redis 已创建，连接地址 env-proxy:16381"
 ```
@@ -1211,8 +1213,8 @@ Skill: redis-create
   │   → 主库端口 6379，Envoy 端口 16379 (读写) + 16380 (只读)
   │   → 从库端口 6379
   │
-  ├─3. state_update(instances-state, "order-master", status=creating)
-  │   state_update(instances-state, "order-replica", status=creating)
+  ├─3. state_update(instances, "order-master", status=creating)
+  │   state_update(instances, "order-replica", status=creating)
   │
   ├─4. agent_exec(server-a, "instance/create", {
   │       name: "order-master",
@@ -1250,13 +1252,13 @@ Skill: redis-create
   ├─7. health_check(server-b, 6379)
   │   → 验证 INFO replication: role=slave, master_link_status=up
   │
-  ├─8. state_update(instances-state, envoy.auto_port=16379, envoy.master_port=16380)
+  ├─8. state_update(instances, envoy.auto_port=16379, envoy.master_port=16380)
   │   → xDS 自动检测到 snapshot 变化并推送新配置到 Envoy
   │
-  ├─9. state_update(instances-state, "order-master", status=running)
-  │   state_update(instances-state, "order-replica", status=running)
-  │   state_update(pool-state, server-a, allocated += 4Gi)
-  │   state_update(pool-state, server-b, allocated += 4Gi)
+  ├─9. state_update(instances, "order-master", status=running)
+  │   state_update(instances, "order-replica", status=running)
+  │   state_update(servers, server-a, allocated += 4Gi)
+  │   state_update(servers, server-b, allocated += 4Gi)
   │
   └─10. 返回: "订单 Redis 主从已创建
               读写地址: env-proxy:16379
@@ -1281,13 +1283,13 @@ Skill: redis-failover
   │   → Agent: 执行 REPLICAOF NO ONE
   │
   ├─3. 更新状态（xDS 自动推送新路由到 Envoy）
-  │   state_update(instances-state, order, current_master=order-replica,
+  │   state_update(instances, order, current_master=order-replica,
   │       master=server-b:6379, replicas=healthy_replicas)
   │
   ├─4. 更新状态
-  │   state_update(instances-state, order, current_master=order-replica)
-  │   state_update(instances-state, order-master, status=failed, server=server-a)
-  │   state_update(instances-state, order-replica, role=master, server=server-b)
+  │   state_update(instances, order, current_master=order-replica)
+  │   state_update(instances, order-master, status=failed, server=server-a)
+  │   state_update(instances, order-replica, role=master, server=server-b)
   │
   └─5. 通知: "故障转移完成，主库已切换到 server-b"
 ```
@@ -1321,12 +1323,12 @@ Skill: redis-failover
      → Server 通过 SENTINEL get-master-addr-by-name <group> 再次确认当前 master
      → 确认后执行后续编排：
        a. 获取同组实例编排锁
-       b. 使用确认后的 master 地址修正 instances-state 拓扑
+       b. 使用确认后的 master 地址修正 `instances`/`instance_groups` 表拓扑
        c. 更新 Envoy 路由并重新生成/落盘 Envoy 配置
        d. 写入 topology.failover 审计日志
        e. 释放编排锁
 
-     instances-state 更新要求：
+     `instances` 表更新要求：
        - 实例组：
          current_master: <新主库实例名>
          topology_status: healthy 或 degraded
@@ -1421,7 +1423,7 @@ Skill: redis-migrate
   │   agent_exec(server-a, "instance/delete", { name: "order-master" })
   │
   ├─6. 更新状态（xDS 自动推送新路由到 Envoy）
-  │   state_update(instances-state, order,
+  │   state_update(instances, order,
   │       master=server-c:6379,
   │       replica=server-b:6379)
   │
@@ -1454,7 +1456,7 @@ Skill: redis-backup
   │       retention: 7
   │   })
   │
-  └─4. state_update(instances-state, order-replica, last_backup=now)
+  └─4. state_update(instances, order-replica, last_backup=now)
 ```
 
 ---
@@ -1475,9 +1477,9 @@ Skill: redis-backup
 | `redis-diagnose` | "Redis 有问题" | 采集 INFO/SLOWLOG/MEMORY → AI 分析 → 建议 |
 | `redis-status` | "查看 Redis 状态" | 池状态 / 实例状态 / 主从同步状态 |
 | `redis-envoy` | "代理管理" | 查看路由 / 更新配置 / 重载 Envoy |
-| `redis-inventory` | "资源清单" / "端口对应什么" | 从 instances-state + pool-state 派生端口/集群/用途映射表，支持按端口/服务器/引擎查询 |
+| `redis-inventory` | "资源清单" / "端口对应什么" | 从 `instances`/`instance_groups` 表 + `servers` 表派生端口/集群/用途映射表，支持按端口/服务器/引擎查询 |
 | `redis-audit` | "操作记录" / "谁做了什么" | 查询审计日志，支持按时间/实例/操作级别过滤 |
-| `redis-node` | "添加服务器" / "移除服务器" | 维护 pool-state.yaml，注册/移除/更新服务器信息，纯本地操作 |
+| `redis-node` | "添加服务器" / "移除服务器" | 维护 `servers` 表，注册/移除/更新服务器信息，纯本地操作 |
 
 ### 5.2 Skill 与 Tool 映射
 

@@ -78,7 +78,7 @@
 
 3. 更新状态为 "running"
 
-4. 更新 pool-state 资源分配
+4. 更新 `servers` 表资源分配
 
 5. 刷新 Envoy 配置
 ```
@@ -395,67 +395,93 @@ redis-pilot-cli sentinel sync
 
 ## 4. 状态管理
 
-### 4.1 状态文件结构
+### 4.1 状态存储结构
 
-#### `pool-state.yaml`
-```yaml
-servers:
-  server-1:
-    endpoint: 192.168.1.10
-    agent_port: 8400
-    agent_token: xxx
-    labels:
-      zone: zone-a
-      role: production
-    capacity:
-      cpu_cores: 32
-      memory: 256Gi
-      disk: 2Ti
-    allocated:
-      cpu_cores: 8
-      memory: 16Gi
-      disk: 500Gi
-    instances:
-      - redis-1
-      - redis-2
-    status: healthy
-    last_heartbeat: 2024-01-15T10:30:00Z
-```
+状态统一存储在 `pilot.db`（SQLite 单文件），不再使用独立的 YAML 状态文件。以下按表列出核心字段（JSON 编码列已展开为等价结构，便于对照）：
 
-#### `instances-state.yaml`
-```yaml
-instances:
-  redis-1:
-    category: cache
-    engine: redis
-    type: standalone
-    role: standalone
-    server: server-1
-    container: redis-redis-1
-    port: 6379
-    memory: 4Gi
-    cpus: 2
-    password: xxx
-    config_path: /data/redis/redis-1/conf
-    data_path: /data/redis/redis-1/data
-    backup_path: /data/redis/redis-1/backup
-    config_overrides:
-      timeout: "300"
-    status: running
-    envoy:
-      master_port: 8000
-      auto_port: 8001
-    backup:
-      schedule: "0 2 * * *"
-      retention: 7
-      last_backup: 2024-01-15T02:00:00Z
-    created_at: 2024-01-10T10:00:00Z
-    lock:
-      held_by: auto-1234567890
-      operation: config
-      acquired_at: 2024-01-15T10:30:00Z
-      timeout: 300
+#### `servers` 表
+
+| 列 | 类型 | 说明 |
+|----|------|------|
+| name | TEXT PK | 服务器名，如 `server-1` |
+| endpoint | TEXT | Agent 监听地址 |
+| agent_port | INTEGER | Agent 端口，默认 8400 |
+| agent_token | TEXT | Server 调用该 Agent 的鉴权 Token，为空则不鉴权 |
+| labels | TEXT (JSON) | 如 `{"zone":"zone-a","role":"production"}` |
+| capacity | TEXT (JSON) | `ResourceSpec`，如 `{"cpu_cores":32,"memory":"256Gi","disk":"2Ti"}` |
+| instances | TEXT (JSON) | 该服务器上的实例名列表 |
+| status | TEXT | healthy / unhealthy 等 |
+| last_heartbeat | TEXT | 最近心跳时间（RFC3339） |
+
+对应示例（等价 JSON 视图）：
+```json
+{
+  "name": "server-1",
+  "endpoint": "192.168.1.10",
+  "agent_port": 8400,
+  "agent_token": "xxx",
+  "labels": { "zone": "zone-a", "role": "production" },
+  "capacity": { "cpu_cores": 32, "memory": "256Gi", "disk": "2Ti" },
+  "allocated": { "cpu_cores": 8, "memory": "16Gi", "disk": "500Gi" },
+  "instances": ["redis-1", "redis-2"],
+  "status": "healthy",
+  "last_heartbeat": "2024-01-15T10:30:00Z"
+}
 ```
+> 注：`allocated` 由 `instances`/`instance_groups` 表实时派生，不单独持久化存储。
+
+#### `instances` 表（单容器运行状态）+ `instance_groups` 表（拓扑权威状态）
+
+| 列（instances） | 类型 | 说明 |
+|----|------|------|
+| name | TEXT PK | 实例名，如 `redis-1` |
+| grp | TEXT | 所属实例组 |
+| role | TEXT | master / replica / standalone |
+| server | TEXT | 所在服务器名 |
+| container | TEXT | 容器名 |
+| port | INTEGER | 服务端口 |
+| memory / cpus / disk | — | 资源规格 |
+| password | TEXT | Redis/Kvrocks 密码（明文存储，见安全说明） |
+| config_path / data_path / backup_path | TEXT | 挂载路径 |
+| config_overrides | TEXT (JSON) | 配置覆盖项，如 `{"timeout":"300"}` |
+| backup | TEXT (JSON) | `{"schedule":"0 2 * * *","retention":7,"last_backup":"..."}` |
+| status | TEXT | creating / running / stopped / failed |
+| lock | TEXT (JSON) | 乐观锁，`{"held_by":"...","operation":"config","acquired_at":"...","timeout":300}` |
+| created_at | TEXT | 创建时间 |
+
+对应示例（等价 JSON 视图）：
+```json
+{
+  "name": "redis-1",
+  "group": "cache",
+  "engine": "redis",
+  "role": "standalone",
+  "server": "server-1",
+  "container": "redis-redis-1",
+  "port": 6379,
+  "memory": "4Gi",
+  "cpus": 2,
+  "password": "xxx",
+  "config_path": "/data/redis/redis-1/conf",
+  "data_path": "/data/redis/redis-1/data",
+  "backup_path": "/data/redis/redis-1/backup",
+  "config_overrides": { "timeout": "300" },
+  "status": "running",
+  "backup": { "schedule": "0 2 * * *", "retention": 7, "last_backup": "2024-01-15T02:00:00Z" },
+  "created_at": "2024-01-10T10:00:00Z",
+  "lock": {
+    "held_by": "auto-1234567890",
+    "operation": "config",
+    "acquired_at": "2024-01-15T10:30:00Z",
+    "timeout": 300
+  }
+}
+```
+> `envoy`（`master_port`/`auto_port`）等拓扑/入口相关字段存储在 `instance_groups` 表的 `envoy` 列（JSON），因为它们是实例组级别的属性，不随单个容器变化。
+
+安全说明：`instances.password` 和 `servers.agent_token` 目前明文存储在 `pilot.db` 中；数据目录权限收紧为 `0700`、数据库文件权限收紧为 `0600`（仅属主可访问）以降低本机其他用户读取风险，长期考虑加密存储。
+
+并发控制：`WithInstances`/`WithServers` 通过 `DB.mu`（`sync.Mutex`）将"读快照 → 修改 → 全量重写"过程串行化，避免并发调用基于同一旧快照互相覆盖丢失更新，不依赖文件锁。
 
 ### 4.2 状态管理 API
 
@@ -541,7 +567,7 @@ server.StartBackupScheduler()
 **工作流程**:
 1. 启动时立即同步一次
 2. 每 60 秒同步一次
-3. 读取 instances-state，构建期望状态（running 且有 schedule 的实例）
+3. 读取 `instances` 表，构建期望状态（running 且有 schedule 的实例）
 4. 对比当前 cron 任务:
    - 删除不再需要的任务
    - 新增或更新任务
