@@ -131,13 +131,13 @@ func (s *Server) instanceList(c *gin.Context) {
 				filteredGroups[groupFilter] = g
 			}
 		}
-		ok(c, &apitypes.InstancesState{
+		ok(c, (&apitypes.InstancesState{
 			Groups:    filteredGroups,
 			Instances: filteredInstances,
-		})
+		}).ToView())
 		return
 	}
-	ok(c, state)
+	ok(c, state.ToView())
 }
 
 func instanceMatchesListFilters(inst *apitypes.Instance, group *apitypes.InstanceGroupState, groupFilter, serverFilter, engineFilter, engineVersionFilter, roleFilter, statusFilter, categoryFilter string) bool {
@@ -187,7 +187,7 @@ func (s *Server) instanceStatus(c *gin.Context) {
 		fail(c, http.StatusNotFound, "instance not found: "+name)
 		return
 	}
-	ok(c, inst)
+	ok(c, inst.ToView())
 }
 
 func (s *Server) instanceCreate(c *gin.Context) {
