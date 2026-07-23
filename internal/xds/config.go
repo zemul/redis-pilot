@@ -8,10 +8,11 @@ import (
 )
 
 type Config struct {
-	Listen string       `yaml:"listen"`
-	Server ServerConfig `yaml:"server"`
-	Poll   PollConfig   `yaml:"poll"`
-	Envoy  EnvoyConfig  `yaml:"envoy"`
+	Listen    string       `yaml:"listen"`
+	AuthToken string       `yaml:"auth_token"`
+	Server    ServerConfig `yaml:"server"`
+	Poll      PollConfig   `yaml:"poll"`
+	Envoy     EnvoyConfig  `yaml:"envoy"`
 }
 
 type ServerConfig struct {
