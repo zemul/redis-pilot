@@ -24,7 +24,13 @@ func (s *Server) nodeQuery(c *gin.Context) {
 			srv.Allocated.Disk = fmt.Sprintf("%dGi", diskGi)
 		}
 	}
-	ok(c, state)
+
+	// 剥离 AgentToken 等敏感凭证后再返回，避免通过只读查询接口泄露 Agent Token。
+	views := make(map[string]*apitypes.NodeServerView, len(state.Servers))
+	for name, srv := range state.Servers {
+		views[name] = srv.ToView()
+	}
+	ok(c, gin.H{"servers": views})
 }
 
 func (s *Server) nodeAdd(c *gin.Context) {

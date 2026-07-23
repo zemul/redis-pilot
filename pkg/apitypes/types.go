@@ -13,6 +13,36 @@ type NodeServer struct {
 	LastHeartbeat string            `yaml:"last_heartbeat" json:"last_heartbeat"`
 }
 
+// NodeServerView 是 NodeServer 面向对外查询接口的安全投影，不包含 AgentToken 等凭证字段，
+// 用于防止 Agent Token 通过只读查询接口（如 /node/list）泄露给调用方。
+type NodeServerView struct {
+	Endpoint      string            `json:"endpoint"`
+	AgentPort     int               `json:"agent_port"`
+	Labels        map[string]string `json:"labels"`
+	Capacity      ResourceSpec      `json:"capacity"`
+	Allocated     ResourceSpec      `json:"allocated"`
+	Instances     []string          `json:"instances"`
+	Status        string            `json:"status"`
+	LastHeartbeat string            `json:"last_heartbeat"`
+}
+
+// ToView 将 NodeServer 转换为不含敏感凭证的对外展示视图。
+func (n *NodeServer) ToView() *NodeServerView {
+	if n == nil {
+		return nil
+	}
+	return &NodeServerView{
+		Endpoint:      n.Endpoint,
+		AgentPort:     n.AgentPort,
+		Labels:        n.Labels,
+		Capacity:      n.Capacity,
+		Allocated:     n.Allocated,
+		Instances:     n.Instances,
+		Status:        n.Status,
+		LastHeartbeat: n.LastHeartbeat,
+	}
+}
+
 // ResourceSpec 资源规格
 type ResourceSpec struct {
 	CPUCores float64 `yaml:"cpu_cores" json:"cpu_cores"`
@@ -130,6 +160,77 @@ type Instance struct {
 type InstancesState struct {
 	Groups    map[string]*InstanceGroupState `yaml:"groups" json:"groups"`
 	Instances map[string]*Instance           `yaml:"instances" json:"instances"`
+}
+
+// InstanceView 是 Instance 面向对外查询接口的安全投影，不包含 Password 字段，
+// 用于防止 Redis/Kvrocks 明文密码通过只读查询接口（如 /instance/list、/instance/status）泄露。
+type InstanceView struct {
+	Group           string            `json:"group"`
+	Role            string            `json:"role"`
+	Server          string            `json:"server"`
+	Container       string            `json:"container"`
+	Port            int               `json:"port"`
+	Memory          string            `json:"memory"`
+	CPUs            float64           `json:"cpus"`
+	Disk            string            `json:"disk,omitempty"`
+	ConfigPath      string            `json:"config_path"`
+	DataPath        string            `json:"data_path"`
+	BackupPath      string            `json:"backup_path"`
+	Persistence     *Persistence      `json:"persistence,omitempty"`
+	ConfigOverrides map[string]string `json:"config_overrides,omitempty"`
+	ReplicaOf       string            `json:"replica_of,omitempty"`
+	Backup          *BackupConfig     `json:"backup,omitempty"`
+	Status          string            `json:"status"`
+	Lock            *Lock             `json:"lock,omitempty"`
+	CreatedAt       string            `json:"created_at"`
+}
+
+// ToView 将 Instance 转换为不含明文密码的对外展示视图。
+func (i *Instance) ToView() *InstanceView {
+	if i == nil {
+		return nil
+	}
+	return &InstanceView{
+		Group:           i.Group,
+		Role:            i.Role,
+		Server:          i.Server,
+		Container:       i.Container,
+		Port:            i.Port,
+		Memory:          i.Memory,
+		CPUs:            i.CPUs,
+		Disk:            i.Disk,
+		ConfigPath:      i.ConfigPath,
+		DataPath:        i.DataPath,
+		BackupPath:      i.BackupPath,
+		Persistence:     i.Persistence,
+		ConfigOverrides: i.ConfigOverrides,
+		ReplicaOf:       i.ReplicaOf,
+		Backup:          i.Backup,
+		Status:          i.Status,
+		Lock:            i.Lock,
+		CreatedAt:       i.CreatedAt,
+	}
+}
+
+// InstancesStateView 是 InstancesState 的对外安全投影，Instances 中不含 Password。
+type InstancesStateView struct {
+	Groups    map[string]*InstanceGroupState `json:"groups"`
+	Instances map[string]*InstanceView       `json:"instances"`
+}
+
+// ToView 将 InstancesState 转换为不含明文密码的对外展示视图。
+func (s *InstancesState) ToView() *InstancesStateView {
+	if s == nil {
+		return nil
+	}
+	views := make(map[string]*InstanceView, len(s.Instances))
+	for name, inst := range s.Instances {
+		views[name] = inst.ToView()
+	}
+	return &InstancesStateView{
+		Groups:    s.Groups,
+		Instances: views,
+	}
 }
 
 // APIResponse 通用 API 响应
