@@ -88,7 +88,19 @@ func (s *Server) runReconcile() ([]ReconcileResult, error) {
 
 		// 解析 Agent 返回的容器列表
 		var apiResp apitypes.APIResponse
-		json.Unmarshal(resp, &apiResp)
+		if err := json.Unmarshal(resp, &apiResp); err != nil {
+			// Agent 响应格式异常（网络抖动/截断/非预期响应），不能当作"容器全部消失"处理，
+			// 否则会把所有实例误判为 missing 并标记为 failed。按 Agent 不可达的方式处理。
+			for _, name := range instNames {
+				results = append(results, ReconcileResult{
+					Instance: name, Server: serverName,
+					Desired: instances.Instances[name].Status,
+					Actual:  "unreachable",
+					Action:  "alert",
+				})
+			}
+			continue
+		}
 		containerMap := parseContainerMap(apiResp.Data)
 
 		// 逐个对比
