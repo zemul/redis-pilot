@@ -116,6 +116,8 @@ rocksdb.max_subcompactions 2
 
 {{ if .ReplicaOf }}
 slaveof {{ .ReplicaOf }}
+{{ if .Password }}masterauth {{ .Password }}
+{{ end }}
 slave-read-only yes
 slave-priority 100
 {{ end }}

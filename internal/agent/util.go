@@ -28,6 +28,14 @@ func redisCmd(instanceName, password string, args ...string) (string, error) {
 	return "", fmt.Errorf("instance %s not found or not running", instanceName)
 }
 
+// isRedisErrReply 判断 redis-cli 的输出是否是一条 RESP 错误回复（例如 "ERR ..."）。
+// redis-cli 即使收到服务端的 -ERR 错误回复，进程本身也会以退出码 0 正常结束，
+// 错误信息体现在标准输出内容里，而不是 exec.Command 返回的 error，调用方必须
+// 显式检查输出内容才能感知命令是否真正执行成功。
+func isRedisErrReply(out string) bool {
+	return strings.HasPrefix(out, "ERR ") || strings.HasPrefix(out, "-ERR ")
+}
+
 // runShell 执行 shell 命令
 func runShell(name string, args ...string) (string, error) {
 	out, err := exec.Command(name, args...).CombinedOutput()

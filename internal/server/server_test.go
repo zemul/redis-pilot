@@ -720,3 +720,147 @@ func fakeAgentHostPort(addr string) (string, int) {
 	port, _ := strconv.Atoi(portStr)
 	return host, port
 }
+
+// TestInstancePromote_DemotesOldMaster 验证 promote 会真正向旧 master 所在 Agent
+// 下发 REPLICAOF，让它追随新 master，而不仅仅是更新状态存储里的角色标记。
+// 回归背景：此前 instancePromote 只调用了新 master 的 /instance/promote，
+// 没有调用旧 master 的 /instance/replicate，导致旧 master 在运行时仍然是
+// 独立 master（脑裂风险），即使状态存储显示它已经是 replica。
+func TestInstancePromote_DemotesOldMaster(t *testing.T) {
+	var newMasterPromoteCalled bool
+	var oldMasterReplicateReq struct {
+		Name      string `json:"name"`
+		ReplicaOf string `json:"replica_of"`
+	}
+	var oldMasterReplicateCalled bool
+
+	// 新 master (order-replica) 所在的 fake agent
+	newMasterAgent := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/instance/promote" {
+			newMasterPromoteCalled = true
+		}
+		json.NewEncoder(w).Encode(apitypes.APIResponse{Success: true})
+	}))
+	defer newMasterAgent.Close()
+
+	// 旧 master (order-master) 所在的 fake agent
+	oldMasterAgent := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/instance/replicate" {
+			oldMasterReplicateCalled = true
+			json.NewDecoder(r.Body).Decode(&oldMasterReplicateReq)
+		}
+		json.NewEncoder(w).Encode(apitypes.APIResponse{Success: true})
+	}))
+	defer oldMasterAgent.Close()
+
+	s := newTestServer(t, "")
+	r := s.Router()
+
+	oldHost, oldPort := fakeAgentHostPort(oldMasterAgent.Listener.Addr().String())
+	newHost, newPort := fakeAgentHostPort(newMasterAgent.Listener.Addr().String())
+
+	s.state.WriteNode(&apitypes.NodeState{Servers: map[string]*apitypes.NodeServer{
+		"srv-old": {Endpoint: oldHost, AgentPort: oldPort, Status: "healthy"},
+		"srv-new": {Endpoint: newHost, AgentPort: newPort, Status: "healthy"},
+	}})
+	s.state.WriteInstances(&apitypes.InstancesState{
+		Groups: map[string]*apitypes.InstanceGroupState{
+			"order": {
+				Type:          "replication",
+				Engine:        "redis",
+				Category:      "cache",
+				CurrentMaster: "order-master",
+				Envoy:         &apitypes.EnvoyConfig{AutoPort: 16379, MasterPort: 16500},
+			},
+		},
+		Instances: map[string]*apitypes.Instance{
+			"order-master": {
+				Group: "order", Role: "master", Status: "running", Server: "srv-old", Port: 6379,
+			},
+			"order-replica": {
+				Group: "order", Role: "replica", Status: "running", Server: "srv-new", Port: 6380,
+				ReplicaOf: "order-master",
+			},
+		},
+	})
+
+	w := doRequest(r, "POST", "/instance/promote", map[string]string{"name": "order-replica"})
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	if !newMasterPromoteCalled {
+		t.Error("expected /instance/promote to be called on new master's agent")
+	}
+	if !oldMasterReplicateCalled {
+		t.Fatal("expected /instance/replicate to be called on old master's agent to avoid split-brain")
+	}
+	if oldMasterReplicateReq.Name != "order-master" {
+		t.Errorf("expected replicate request for order-master, got %q", oldMasterReplicateReq.Name)
+	}
+	wantAddr := newHost + ":6380"
+	if oldMasterReplicateReq.ReplicaOf != wantAddr {
+		t.Errorf("expected old master to replicate from %q, got %q", wantAddr, oldMasterReplicateReq.ReplicaOf)
+	}
+
+	instances, _ := s.state.ReadInstances()
+	if instances.Instances["order-replica"].Role != "master" {
+		t.Errorf("expected order-replica to become master")
+	}
+	if instances.Instances["order-master"].Role != "replica" {
+		t.Errorf("expected order-master to become replica")
+	}
+	if instances.Instances["order-master"].ReplicaOf != "order-replica" {
+		t.Errorf("expected order-master.ReplicaOf = order-replica, got %q", instances.Instances["order-master"].ReplicaOf)
+	}
+}
+
+// TestInstancePromote_OldMasterUnreachable 验证旧 master 不可达（故障转移的典型触发场景）
+// 时，promote 仍然能成功完成状态切换，不会卡在中间态。
+func TestInstancePromote_OldMasterUnreachable(t *testing.T) {
+	newMasterAgent := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(apitypes.APIResponse{Success: true})
+	}))
+	defer newMasterAgent.Close()
+
+	s := newTestServer(t, "")
+	r := s.Router()
+
+	newHost, newPort := fakeAgentHostPort(newMasterAgent.Listener.Addr().String())
+
+	s.state.WriteNode(&apitypes.NodeState{Servers: map[string]*apitypes.NodeServer{
+		// 旧 master 指向一个不可达端口，模拟旧 master 宕机/网络不可达。
+		"srv-old": {Endpoint: "127.0.0.1", AgentPort: 1, Status: "healthy"},
+		"srv-new": {Endpoint: newHost, AgentPort: newPort, Status: "healthy"},
+	}})
+	s.state.WriteInstances(&apitypes.InstancesState{
+		Groups: map[string]*apitypes.InstanceGroupState{
+			"order": {
+				Type:          "replication",
+				Engine:        "redis",
+				Category:      "cache",
+				CurrentMaster: "order-master",
+				Envoy:         &apitypes.EnvoyConfig{AutoPort: 16379, MasterPort: 16500},
+			},
+		},
+		Instances: map[string]*apitypes.Instance{
+			"order-master": {
+				Group: "order", Role: "master", Status: "failed", Server: "srv-old", Port: 6379,
+			},
+			"order-replica": {
+				Group: "order", Role: "replica", Status: "running", Server: "srv-new", Port: 6380,
+				ReplicaOf: "order-master",
+			},
+		},
+	})
+
+	w := doRequest(r, "POST", "/instance/promote", map[string]string{"name": "order-replica"})
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected promote to succeed even if old master is unreachable, got %d: %s", w.Code, w.Body.String())
+	}
+
+	instances, _ := s.state.ReadInstances()
+	if instances.Instances["order-replica"].Role != "master" {
+		t.Errorf("expected order-replica to become master despite old master being unreachable")
+	}
+}

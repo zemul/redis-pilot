@@ -422,8 +422,42 @@ func (a *Agent) instanceReplicate(c *gin.Context) {
 		fail(c, http.StatusBadRequest, "replica_of must be ip:port")
 		return
 	}
-	if _, err := redisCmd(req.Name, a.getPassword(req.Name), "REPLICAOF", parts[0], parts[1]); err != nil {
-		fail(c, http.StatusInternalServerError, err.Error())
+	password := a.getPassword(req.Name)
+	// 目标 master 大多率下与本实例使用同一份密码（Server 侧创建同组实例时会强制保持一致），
+	// 运行时切换复制目标必须显式 CONFIG SET masterauth，否则 REPLICAOF 握手会因为
+	// 目标 master 要求 AUTH 而失败（-NOAUTH Authentication required）。
+	if password != "" {
+		if _, err := redisCmd(req.Name, password, "CONFIG", "SET", "masterauth", password); err != nil {
+			fail(c, http.StatusInternalServerError, "failed to set masterauth before replicaof: "+err.Error())
+			return
+		}
+	}
+	// Kvrocks 在处理 SLAVEOF/REPLICAOF 时会拒绝把"当前仍连接着的自己的 slave"设为新 master
+	// （防止环形复制），错误为 "can't replicate your own replicas"。这种场景常见于故障转移场景：
+	// 旧 master 刚失去一个 slave（该 slave 被提升为新 master），旧 master 内部清理这条陈旧
+	// slave 记录是异步的（依赖心跳超时探测），存在短暂的时间窗口。这里做几次重试，
+	// 给旧 master 时间清理陈旧状态，避免故障转移后旧 master 永久停留在独立 master（脑裂）。
+	// 注意：redis-cli 即使收到 RESP 错误回复（-ERR ...），进程本身也以退出码 0 正常结束，
+	// 所以必须检查输出内容而不是 err，否则永远走不到重试分支。
+	var lastErr error
+	for attempt := 0; attempt < 5; attempt++ {
+		out, err := redisCmd(req.Name, password, "REPLICAOF", parts[0], parts[1])
+		if err != nil {
+			lastErr = err
+			break
+		}
+		if !isRedisErrReply(out) {
+			lastErr = nil
+			break
+		}
+		lastErr = fmt.Errorf("%s", out)
+		if !strings.Contains(out, "own replicas") {
+			break
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	if lastErr != nil {
+		fail(c, http.StatusInternalServerError, lastErr.Error())
 		return
 	}
 	ok(c, nil)

@@ -691,6 +691,56 @@ func (s *Server) instancePromote(c *gin.Context) {
 		return
 	}
 
+	// 找到当前 group 里被替换掉的旧 master，实际下发 REPLICAOF 让它追随新 master，
+	// 避免旧 master 停留在独立 master 状态造成脑裂（双写导致数据不一致）。
+	node, err := s.state.ReadNode()
+	if err != nil {
+		fail(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+	newMasterAddr := fmt.Sprintf("%s:%d", nodeEndpoint(node, inst.Server), inst.Port)
+	oldMasterName := ""
+	var oldMasterInst apitypes.Instance
+	var oldMasterSrv apitypes.NodeServer
+	hasOldMaster := false
+	if err := s.state.WithInstances(func(is *apitypes.InstancesState) error {
+		i := is.Instances[req.Name]
+		if i == nil {
+			return nil
+		}
+		group := is.Groups[i.Group]
+		if group != nil {
+			if om := is.Instances[group.CurrentMaster]; om != nil && om != i {
+				oldMasterName = group.CurrentMaster
+				oldMasterInst = *om
+				hasOldMaster = true
+			}
+		}
+		return nil
+	}); err != nil {
+		fail(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if hasOldMaster {
+		if s := node.Servers[oldMasterInst.Server]; s != nil {
+			oldMasterSrv = *s
+		} else {
+			fail(c, http.StatusInternalServerError, "server not found: "+oldMasterInst.Server)
+			return
+		}
+		oldClient := newAgentClient(&oldMasterSrv)
+		if _, err := oldClient.post("/instance/replicate", map[string]string{
+			"name":       oldMasterName,
+			"replica_of": newMasterAddr,
+		}); err != nil {
+			// 旧 master 可能因为故障（网络不可达/进程宕机）才触发了本次故障转移，
+			// 这种情况下无法阻塞 promote：新 master 已经完成提升，必须继续完成状态切换，
+			// 否则会卡在"新 master 已提升但状态未落地"的中间态。
+			// 仅记录警告，提示运维旧 master 需要人工确认/隔离，避免恢复后产生脑裂。
+			s.log.Errorf("instance promote: failed to demote old master %s (may be unreachable, needs manual check to avoid split-brain): %v", oldMasterName, err)
+		}
+	}
+
 	// 更新状态：角色变更 + group current_master 切换。
 	if err := s.state.WithInstances(func(is *apitypes.InstancesState) error {
 		i := is.Instances[req.Name]

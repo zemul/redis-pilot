@@ -231,6 +231,12 @@ func TestWriteKvrocksConfig(t *testing.T) {
 	if !strings.Contains(content, "requirepass kvpass") {
 		t.Error("expected requirepass")
 	}
+	if !strings.Contains(content, "slaveof 10.0.0.2 6666") {
+		t.Error("expected slaveof in config")
+	}
+	if !strings.Contains(content, "masterauth kvpass") {
+		t.Error("expected masterauth in kvrocks replica config so replication can authenticate against a password-protected master")
+	}
 	if !strings.Contains(content, "max-db-size 4294967296") {
 		t.Error("expected max-db-size")
 	}
@@ -485,6 +491,30 @@ func TestInstanceReplicate_InvalidFormat(t *testing.T) {
 	})
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400 for invalid replica_of format, got %d", w.Code)
+	}
+}
+
+// TestIsRedisErrReply 验证 RESP 错误回复的识别逻辑。
+// 回归背景：redis-cli 收到服务端 -ERR 错误回复时，进程本身仍以退出码 0 正常结束，
+// 错误只体现在输出内容里。曾经因为只检查 exec.Command 的 err 而非输出内容，
+// 导致 instanceReplicate 里 Kvrocks 返回 "ERR can't replicate your own replicas"
+// 时被误判为成功，旧 master 从未真正完成降级（脑裂）。
+func TestIsRedisErrReply(t *testing.T) {
+	cases := []struct {
+		out  string
+		want bool
+	}{
+		{"OK", false},
+		{"", false},
+		{"PONG", false},
+		{"ERR can't replicate your own replicas", true},
+		{"-ERR can't replicate your own replicas", true},
+		{"ERR wrong number of arguments", true},
+	}
+	for _, c := range cases {
+		if got := isRedisErrReply(c.out); got != c.want {
+			t.Errorf("isRedisErrReply(%q) = %v, want %v", c.out, got, c.want)
+		}
 	}
 }
 
