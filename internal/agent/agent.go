@@ -328,8 +328,9 @@ func (a *Agent) instanceConfig(c *gin.Context) {
 		dataDir := filepath.Join(a.cfg.DataDir, req.Name)
 		overrides := configOverridesString(req.ConfigOverrides)
 		minReplicas := minReplicasToWrite(req.Type, req.ReplicaOf)
+		var writeErr error
 		if req.Engine == "kvrocks" {
-			writeKvrocksConfig(dataDir, KvrocksConfigParams{
+			writeErr = writeKvrocksConfig(dataDir, KvrocksConfigParams{
 				Password:           req.Password,
 				Memory:             req.Memory,
 				ReplicaOf:          req.ReplicaOf,
@@ -347,7 +348,7 @@ func (a *Agent) instanceConfig(c *gin.Context) {
 			if req.Category == "cache" {
 				aof = "no"
 			}
-			writeRedisConfig(dataDir, RedisConfigParams{
+			writeErr = writeRedisConfig(dataDir, RedisConfigParams{
 				Password:           req.Password,
 				Memory:             req.Memory,
 				MaxmemoryPolicy:    policy,
@@ -359,8 +360,18 @@ func (a *Agent) instanceConfig(c *gin.Context) {
 				AnnouncePort:       req.Port,
 			})
 		}
-		a.runtime.Stop(containerName)
-		a.runtime.Start(containerName)
+		if writeErr != nil {
+			fail(c, http.StatusInternalServerError, "write config: "+writeErr.Error())
+			return
+		}
+		if err := a.runtime.Stop(containerName); err != nil {
+			fail(c, http.StatusInternalServerError, "stop container: "+err.Error())
+			return
+		}
+		if err := a.runtime.Start(containerName); err != nil {
+			fail(c, http.StatusInternalServerError, "start container after config update failed, instance may be down: "+err.Error())
+			return
+		}
 	} else {
 		// 热更新：通过 CONFIG SET 逐个设置
 		for k, v := range req.ConfigOverrides {
