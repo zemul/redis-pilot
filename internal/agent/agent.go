@@ -101,6 +101,7 @@ func (a *Agent) getPassword(instanceName string) string {
 func (a *Agent) Router() *gin.Engine {
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
+	r.Use(gin.Recovery())
 	r.Use(a.authMiddleware())
 
 	r.GET("/host/resources", a.hostResources)

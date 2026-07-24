@@ -75,6 +75,7 @@ func (s *Server) StartBackupScheduler() {
 func (s *Server) Router() *gin.Engine {
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
+	r.Use(gin.Recovery())
 	r.Use(s.requestLogger())
 
 	r.GET("/", s.dashboardIndex)

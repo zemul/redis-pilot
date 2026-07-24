@@ -6,9 +6,16 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"time"
 
 	"gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/pkg/apitypes"
 )
+
+// agentHTTPClient 是 Server 调用各节点 Agent 的共享 HTTP 客户端。
+// 必须设置超时：Agent 卡死或网络异常时，避免 handler 和状态锁被永久阻塞。
+var agentHTTPClient = &http.Client{
+	Timeout: 10 * time.Second,
+}
 
 type agentClient struct {
 	endpoint string
@@ -35,7 +42,7 @@ func (c *agentClient) post(path string, body interface{}) ([]byte, error) {
 	if c.token != "" {
 		req.Header.Set("Authorization", "Bearer "+c.token)
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := agentHTTPClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -55,7 +62,7 @@ func (c *agentClient) get(path string) ([]byte, error) {
 	if c.token != "" {
 		req.Header.Set("Authorization", "Bearer "+c.token)
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := agentHTTPClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
