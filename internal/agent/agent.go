@@ -475,18 +475,28 @@ func (a *Agent) instanceBackup(c *gin.Context) {
 	ts := time.Now().Format("2006-01-02T15:04:05")
 
 	if req.Engine == "kvrocks" {
-		// Kvrocks: RocksDB Checkpoint
-		if _, err := redisCmd(req.Name, a.getPassword(req.Name), "ROCKSDB.CHECKPOINT"); err != nil {
+		// Kvrocks: 官方推荐通过 BGSAVE 生成备份（不存在 ROCKSDB.CHECKPOINT 命令，
+		// 实测 kvrocks 2.15.0 返回 "ERR unknown command"）。BGSAVE 会将 RocksDB
+		// 数据文件写入容器内 /data/backup（即宿主机 dataDir/data/backup），
+		// 而不是 -v 挂载的 /backup（dataDir/backup）。
+		pw := a.getPassword(req.Name)
+		if _, err := redisCmd(req.Name, pw, "BGSAVE"); err != nil {
 			fail(c, http.StatusInternalServerError, err.Error())
 			return
 		}
-		src := filepath.Join(backupDir, "checkpoint")
+		for i := 0; i < 60; i++ {
+			info, _ := redisCmd(req.Name, pw, "INFO", "persistence")
+			if strings.Contains(info, "bgsave_in_progress:0") {
+				break
+			}
+			time.Sleep(time.Second)
+		}
+		src := filepath.Join(a.cfg.DataDir, req.Name, "data", "backup")
 		dst := filepath.Join(backupDir, ts+".checkpoint.tar.gz")
 		if _, err := runShell("tar", "-czf", dst, "-C", src, "."); err != nil {
 			fail(c, http.StatusInternalServerError, err.Error())
 			return
 		}
-		os.RemoveAll(src)
 	} else {
 		// Redis: 检查是否开启 AOF
 		pw := a.getPassword(req.Name)
@@ -588,10 +598,13 @@ func (a *Agent) instanceRestore(c *gin.Context) {
 	}
 
 	if req.Engine == "kvrocks" {
+		// 备份包内容是 BGSAVE 生成的 RocksDB 快照文件（SST/MANIFEST 等），
+		// 恢复时整体替换 data/db 目录，让 kvrocks 重启后从中加载。
 		src := filepath.Join(backupDir, req.BackupTs+".checkpoint.tar.gz")
-		os.RemoveAll(dataDir)
-		os.MkdirAll(dataDir, 0755)
-		if _, err := runShell("tar", "-xzf", src, "-C", dataDir); err != nil {
+		dbDir := filepath.Join(dataDir, "db")
+		os.RemoveAll(dbDir)
+		os.MkdirAll(dbDir, 0755)
+		if _, err := runShell("tar", "-xzf", src, "-C", dbDir); err != nil {
 			fail(c, http.StatusInternalServerError, err.Error())
 			return
 		}
