@@ -136,13 +136,17 @@ func (d *DB) migrate() error {
 			config_overrides TEXT NOT NULL DEFAULT '{}',  -- JSON: map[string]string
 			replica_of       TEXT NOT NULL DEFAULT '',
 			backup           TEXT NOT NULL DEFAULT 'null', -- JSON: BackupConfig|null
-			status           TEXT NOT NULL DEFAULT '',
+			-- 状态拆成意图与观测两列，各自只有一类写入者。
+			-- desired_state  仅用户操作可写（create/start → running, stop → stopped）
+			-- observed_status 仅观测通道可写（reconcile；空串表示尚未观测）
+			desired_state    TEXT NOT NULL DEFAULT 'running',
+			observed_status  TEXT NOT NULL DEFAULT '',
 			lock             TEXT NOT NULL DEFAULT 'null', -- JSON: Lock|null
 			created_at       TEXT NOT NULL DEFAULT ''
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_instances_grp ON instances(grp)`,
 		`CREATE INDEX IF NOT EXISTS idx_instances_server ON instances(server)`,
-		`CREATE INDEX IF NOT EXISTS idx_instances_status ON instances(status)`,
+		`CREATE INDEX IF NOT EXISTS idx_instances_observed_status ON instances(observed_status)`,
 
 		// ── 审计日志 ────────────────────────────────────────────────────────
 		`CREATE TABLE IF NOT EXISTS audit_log (

@@ -18,12 +18,12 @@ import (
 // 加回密码类字段也会被抓到。
 func TestInstanceView_OmitsPassword(t *testing.T) {
 	inst := &apitypes.Instance{
-		Group:     "order",
-		Role:      "master",
-		Server:    "srv-a",
-		Port:      6379,
-		Password:  "super-secret-password",
-		Status:    "running",
+		Group:        "order",
+		Role:         "master",
+		Server:       "srv-a",
+		Port:         6379,
+		Password:     "super-secret-password",
+		DesiredState: "running", ObservedStatus: "running",
 		Container: "redis-order-master",
 	}
 

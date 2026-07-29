@@ -48,7 +48,7 @@ func TestSelectServer_FilterInsufficientMemory(t *testing.T) {
 	})
 	instances := &apitypes.InstancesState{
 		Instances: map[string]*apitypes.Instance{
-			"big": {Server: "srv1", Memory: "30Gi", CPUs: 1, Status: "running"},
+			"big": {Server: "srv1", Memory: "30Gi", CPUs: 1, DesiredState: "running", ObservedStatus: "running"},
 		},
 	}
 	name, err := selectServer(node, instances, "4Gi", 2, "", "")
@@ -67,7 +67,7 @@ func TestSelectServer_FilterInsufficientCPU(t *testing.T) {
 	})
 	instances := &apitypes.InstancesState{
 		Instances: map[string]*apitypes.Instance{
-			"heavy": {Server: "srv1", Memory: "1Gi", CPUs: 3, Status: "running"},
+			"heavy": {Server: "srv1", Memory: "1Gi", CPUs: 3, DesiredState: "running", ObservedStatus: "running"},
 		},
 	}
 	name, err := selectServer(node, instances, "4Gi", 2, "", "")
@@ -140,7 +140,7 @@ func TestSelectServer_NoResourcesAvailable(t *testing.T) {
 	})
 	instances := &apitypes.InstancesState{
 		Instances: map[string]*apitypes.Instance{
-			"full": {Server: "srv1", Memory: "4Gi", CPUs: 2, Status: "running"},
+			"full": {Server: "srv1", Memory: "4Gi", CPUs: 2, DesiredState: "running", ObservedStatus: "running"},
 		},
 	}
 	_, err := selectServer(node, instances, "4Gi", 2, "", "")

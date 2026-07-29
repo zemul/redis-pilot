@@ -21,16 +21,16 @@ const (
 
 // Record 审计日志记录（与 store.AuditRecord 字段对齐）
 type Record struct {
-	ID         string                 `json:"id"`
-	Timestamp  string                 `json:"timestamp"`
-	Operator   string                 `json:"operator"`
-	Action     string                 `json:"action"`
-	Level      Level                  `json:"level"`
-	Target     map[string]interface{} `json:"target,omitempty"`
-	Params     map[string]interface{} `json:"params,omitempty"`
-	Result     string                 `json:"result"` // success | failed
-	Duration   int64                  `json:"duration_ms,omitempty"`
-	Detail     string                 `json:"detail,omitempty"`
+	ID        string                 `json:"id"`
+	Timestamp string                 `json:"timestamp"`
+	Operator  string                 `json:"operator"`
+	Action    string                 `json:"action"`
+	Level     Level                  `json:"level"`
+	Target    map[string]interface{} `json:"target,omitempty"`
+	Params    map[string]interface{} `json:"params,omitempty"`
+	Result    string                 `json:"result"` // success | failed
+	Duration  int64                  `json:"duration_ms,omitempty"`
+	Detail    string                 `json:"detail,omitempty"`
 }
 
 // Logger 审计日志写入器

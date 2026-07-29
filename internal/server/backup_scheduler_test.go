@@ -14,7 +14,7 @@ func TestSyncJobs_AddNewJob(t *testing.T) {
 		},
 		Instances: map[string]*apitypes.Instance{
 			"redis-1": {
-				Group: "redis-1", Status: "running",
+				Group: "redis-1", DesiredState: "running", ObservedStatus: "running",
 				Backup: &apitypes.BackupConfig{Schedule: "0 2 * * *"},
 			},
 		},
@@ -39,7 +39,7 @@ func TestSyncJobs_SkipStoppedInstance(t *testing.T) {
 		},
 		Instances: map[string]*apitypes.Instance{
 			"redis-1": {
-				Group: "redis-1", Status: "stopped",
+				Group: "redis-1", DesiredState: "stopped", ObservedStatus: "stopped",
 				Backup: &apitypes.BackupConfig{Schedule: "0 2 * * *"},
 			},
 		},
@@ -60,7 +60,7 @@ func TestSyncJobs_SkipNoSchedule(t *testing.T) {
 			"redis-1": testGroup("redis-1"),
 		},
 		Instances: map[string]*apitypes.Instance{
-			"redis-1": {Group: "redis-1", Status: "running"},
+			"redis-1": {Group: "redis-1", DesiredState: "running", ObservedStatus: "running"},
 		},
 	})
 
@@ -80,7 +80,7 @@ func TestSyncJobs_RemoveDeletedInstance(t *testing.T) {
 		},
 		Instances: map[string]*apitypes.Instance{
 			"redis-1": {
-				Group: "redis-1", Status: "running",
+				Group: "redis-1", DesiredState: "running", ObservedStatus: "running",
 				Backup: &apitypes.BackupConfig{Schedule: "0 2 * * *"},
 			},
 		},
@@ -112,7 +112,7 @@ func TestSyncJobs_UpdateSchedule(t *testing.T) {
 		},
 		Instances: map[string]*apitypes.Instance{
 			"redis-1": {
-				Group: "redis-1", Status: "running",
+				Group: "redis-1", DesiredState: "running", ObservedStatus: "running",
 				Backup: &apitypes.BackupConfig{Schedule: "0 2 * * *"},
 			},
 		},
@@ -130,7 +130,7 @@ func TestSyncJobs_UpdateSchedule(t *testing.T) {
 		},
 		Instances: map[string]*apitypes.Instance{
 			"redis-1": {
-				Group: "redis-1", Status: "running",
+				Group: "redis-1", DesiredState: "running", ObservedStatus: "running",
 				Backup: &apitypes.BackupConfig{Schedule: "0 3 * * *"},
 			},
 		},
@@ -156,7 +156,7 @@ func TestSyncJobs_InvalidCron(t *testing.T) {
 		},
 		Instances: map[string]*apitypes.Instance{
 			"redis-1": {
-				Group: "redis-1", Status: "running",
+				Group: "redis-1", DesiredState: "running", ObservedStatus: "running",
 				Backup: &apitypes.BackupConfig{Schedule: "invalid cron"},
 			},
 		},
@@ -180,15 +180,15 @@ func TestSyncJobs_MultipleInstances(t *testing.T) {
 		},
 		Instances: map[string]*apitypes.Instance{
 			"redis-1": {
-				Group: "redis-1", Status: "running",
+				Group: "redis-1", DesiredState: "running", ObservedStatus: "running",
 				Backup: &apitypes.BackupConfig{Schedule: "0 2 * * *"},
 			},
 			"redis-2": {
-				Group: "redis-2", Status: "running",
+				Group: "redis-2", DesiredState: "running", ObservedStatus: "running",
 				Backup: &apitypes.BackupConfig{Schedule: "0 4 * * *"},
 			},
 			"redis-3": {
-				Group: "redis-3", Status: "stopped",
+				Group: "redis-3", DesiredState: "stopped", ObservedStatus: "stopped",
 				Backup: &apitypes.BackupConfig{Schedule: "0 6 * * *"},
 			},
 		},

@@ -271,22 +271,22 @@ func TestInstanceList_FilterCommonFields(t *testing.T) {
 		},
 		Instances: map[string]*apitypes.Instance{
 			"order-master": {
-				Group:  "order",
-				Role:   "master",
-				Server: "redis01",
-				Status: "running",
+				Group:        "order",
+				Role:         "master",
+				Server:       "redis01",
+				DesiredState: "running", ObservedStatus: "running",
 			},
 			"order-replica": {
-				Group:  "order",
-				Role:   "replica",
-				Server: "redis02",
-				Status: "running",
+				Group:        "order",
+				Role:         "replica",
+				Server:       "redis02",
+				DesiredState: "running", ObservedStatus: "running",
 			},
 			"session-cache": {
-				Group:  "session",
-				Role:   "master",
-				Server: "redis02",
-				Status: "stopped",
+				Group:        "session",
+				Role:         "master",
+				Server:       "redis02",
+				DesiredState: "stopped", ObservedStatus: "stopped",
 			},
 		},
 	}); err != nil {
@@ -342,7 +342,7 @@ func TestInstanceCreate_DuplicateName(t *testing.T) {
 			"redis-1": testGroup("redis-1"),
 		},
 		Instances: map[string]*apitypes.Instance{
-			"redis-1": {Group: "redis-1", Status: "running"},
+			"redis-1": {Group: "redis-1", DesiredState: "running", ObservedStatus: "running"},
 		},
 	})
 
@@ -428,8 +428,8 @@ func TestInstanceCreate_WithFakeAgent(t *testing.T) {
 	if inst == nil {
 		t.Fatal("redis-1 should exist")
 	}
-	if inst.Status != "running" {
-		t.Fatalf("expected running, got %s", inst.Status)
+	if inst.Phase() != "running" {
+		t.Fatalf("expected running, got %s", inst.Phase())
 	}
 	if inst.Role != "master" {
 		t.Fatalf("expected role master, got %s", inst.Role)
@@ -534,7 +534,7 @@ func TestInstanceDelete_WithFakeAgent(t *testing.T) {
 			"redis-1": testGroup("redis-1"),
 		},
 		Instances: map[string]*apitypes.Instance{
-			"redis-1": {Group: "redis-1", Server: "srv1", Memory: "4Gi", CPUs: 2, Status: "running", Role: "master"},
+			"redis-1": {Group: "redis-1", Server: "srv1", Memory: "4Gi", CPUs: 2, DesiredState: "running", ObservedStatus: "running", Role: "master"},
 		},
 	})
 
@@ -584,7 +584,7 @@ func TestReconcile_AllConsistent(t *testing.T) {
 			"redis-1": testGroup("redis-1"),
 		},
 		Instances: map[string]*apitypes.Instance{
-			"redis-1": {Group: "redis-1", Server: "srv1", Container: "redis-redis-1", Status: "running"},
+			"redis-1": {Group: "redis-1", Server: "srv1", Container: "redis-redis-1", DesiredState: "running", ObservedStatus: "running"},
 		},
 	})
 
@@ -595,8 +595,8 @@ func TestReconcile_AllConsistent(t *testing.T) {
 
 	// 状态不应变化
 	instances, _ := s.state.ReadInstances()
-	if instances.Instances["redis-1"].Status != "running" {
-		t.Fatalf("expected running, got %s", instances.Instances["redis-1"].Status)
+	if instances.Instances["redis-1"].Phase() != "running" {
+		t.Fatalf("expected running, got %s", instances.Instances["redis-1"].Phase())
 	}
 }
 
@@ -618,15 +618,15 @@ func TestReconcile_CreatingButRunning(t *testing.T) {
 			"redis-1": testGroup("redis-1"),
 		},
 		Instances: map[string]*apitypes.Instance{
-			"redis-1": {Group: "redis-1", Server: "srv1", Container: "redis-redis-1", Status: "creating"},
+			"redis-1": {Group: "redis-1", Server: "srv1", Container: "redis-redis-1", DesiredState: "running", ObservedStatus: ""},
 		},
 	})
 
 	doRequest(s.Router(), "POST", "/reconcile", nil)
 
 	instances, _ := s.state.ReadInstances()
-	if instances.Instances["redis-1"].Status != "running" {
-		t.Fatalf("expected status updated to running, got %s", instances.Instances["redis-1"].Status)
+	if instances.Instances["redis-1"].Phase() != "running" {
+		t.Fatalf("expected status updated to running, got %s", instances.Instances["redis-1"].Phase())
 	}
 }
 
@@ -648,15 +648,15 @@ func TestReconcile_RunningButStopped(t *testing.T) {
 			"redis-1": testGroup("redis-1"),
 		},
 		Instances: map[string]*apitypes.Instance{
-			"redis-1": {Group: "redis-1", Server: "srv1", Container: "redis-redis-1", Status: "running"},
+			"redis-1": {Group: "redis-1", Server: "srv1", Container: "redis-redis-1", DesiredState: "running", ObservedStatus: "running"},
 		},
 	})
 
 	doRequest(s.Router(), "POST", "/reconcile", nil)
 
 	instances, _ := s.state.ReadInstances()
-	if instances.Instances["redis-1"].Status != "unexpected_stopped" {
-		t.Fatalf("expected unexpected_stopped, got %s", instances.Instances["redis-1"].Status)
+	if instances.Instances["redis-1"].Phase() != "unexpected_stopped" {
+		t.Fatalf("expected unexpected_stopped, got %s", instances.Instances["redis-1"].Phase())
 	}
 }
 
@@ -677,15 +677,15 @@ func TestReconcile_RunningButMissing(t *testing.T) {
 			"redis-1": testGroup("redis-1"),
 		},
 		Instances: map[string]*apitypes.Instance{
-			"redis-1": {Group: "redis-1", Server: "srv1", Container: "redis-redis-1", Status: "running"},
+			"redis-1": {Group: "redis-1", Server: "srv1", Container: "redis-redis-1", DesiredState: "running", ObservedStatus: "running"},
 		},
 	})
 
 	doRequest(s.Router(), "POST", "/reconcile", nil)
 
 	instances, _ := s.state.ReadInstances()
-	if instances.Instances["redis-1"].Status != "failed" {
-		t.Fatalf("expected failed, got %s", instances.Instances["redis-1"].Status)
+	if instances.Instances["redis-1"].Phase() != "failed" {
+		t.Fatalf("expected failed, got %s", instances.Instances["redis-1"].Phase())
 	}
 }
 
@@ -707,15 +707,15 @@ func TestReconcile_FailedButRunning(t *testing.T) {
 			"redis-1": testGroup("redis-1"),
 		},
 		Instances: map[string]*apitypes.Instance{
-			"redis-1": {Group: "redis-1", Server: "srv1", Container: "redis-redis-1", Status: "failed"},
+			"redis-1": {Group: "redis-1", Server: "srv1", Container: "redis-redis-1", DesiredState: "running", ObservedStatus: "missing"},
 		},
 	})
 
 	doRequest(s.Router(), "POST", "/reconcile", nil)
 
 	instances, _ := s.state.ReadInstances()
-	if instances.Instances["redis-1"].Status != "running" {
-		t.Fatalf("expected status corrected to running, got %s", instances.Instances["redis-1"].Status)
+	if instances.Instances["redis-1"].Phase() != "running" {
+		t.Fatalf("expected status corrected to running, got %s", instances.Instances["redis-1"].Phase())
 	}
 }
 
@@ -782,10 +782,10 @@ func TestInstanceFailover_DirectFallback_DemotesOldMaster(t *testing.T) {
 		},
 		Instances: map[string]*apitypes.Instance{
 			"order-master": {
-				Group: "order", Role: "master", Status: "running", Server: "srv-old", Port: 6379,
+				Group: "order", Role: "master", DesiredState: "running", ObservedStatus: "running", Server: "srv-old", Port: 6379,
 			},
 			"order-replica": {
-				Group: "order", Role: "replica", Status: "running", Server: "srv-new", Port: 6380,
+				Group: "order", Role: "replica", DesiredState: "running", ObservedStatus: "running", Server: "srv-new", Port: 6380,
 				ReplicaOf: "order-master",
 			},
 		},
@@ -853,10 +853,10 @@ func TestInstanceFailover_DirectFallback_OldMasterUnreachable(t *testing.T) {
 		},
 		Instances: map[string]*apitypes.Instance{
 			"order-master": {
-				Group: "order", Role: "master", Status: "failed", Server: "srv-old", Port: 6379,
+				Group: "order", Role: "master", DesiredState: "running", ObservedStatus: "missing", Server: "srv-old", Port: 6379,
 			},
 			"order-replica": {
-				Group: "order", Role: "replica", Status: "running", Server: "srv-new", Port: 6380,
+				Group: "order", Role: "replica", DesiredState: "running", ObservedStatus: "running", Server: "srv-new", Port: 6380,
 				ReplicaOf: "order-master",
 			},
 		},
@@ -1043,10 +1043,10 @@ func TestInstanceFailover_SentinelManaged_TriggersRealFailoverAndSyncsState(t *t
 		},
 		Instances: map[string]*apitypes.Instance{
 			"order-master": {
-				Group: "order", Role: "master", Status: "running", Server: "srv-old", Port: 7000,
+				Group: "order", Role: "master", DesiredState: "running", ObservedStatus: "running", Server: "srv-old", Port: 7000,
 			},
 			"order-replica": {
-				Group: "order", Role: "replica", Status: "running", Server: "srv-new", Port: 7001,
+				Group: "order", Role: "replica", DesiredState: "running", ObservedStatus: "running", Server: "srv-new", Port: 7001,
 				ReplicaOf: "order-master",
 			},
 		},
@@ -1103,10 +1103,10 @@ func TestInstanceReplicate_RejectedOnSentinelManagedGroup(t *testing.T) {
 		},
 		Instances: map[string]*apitypes.Instance{
 			"order-master": {
-				Group: "order", Role: "master", Status: "running", Server: "srv-old", Port: 6379,
+				Group: "order", Role: "master", DesiredState: "running", ObservedStatus: "running", Server: "srv-old", Port: 6379,
 			},
 			"order-replica": {
-				Group: "order", Role: "replica", Status: "running", Server: "srv-new", Port: 6380,
+				Group: "order", Role: "replica", DesiredState: "running", ObservedStatus: "running", Server: "srv-new", Port: 6380,
 				ReplicaOf: "order-master",
 			},
 		},

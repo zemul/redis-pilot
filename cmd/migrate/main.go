@@ -45,8 +45,8 @@ func main() {
 	log.Printf("实例组数: %d", len(instState.Groups))
 	log.Printf("实例数: %d", len(instState.Instances))
 	for name, inst := range instState.Instances {
-		log.Printf("  实例 %s  group=%s  role=%s  status=%s  server=%s",
-			name, inst.Group, inst.Role, inst.Status, inst.Server)
+		log.Printf("  实例 %s  group=%s  role=%s  desired=%s  observed=%s  server=%s",
+			name, inst.Group, inst.Role, inst.DesiredState, inst.ObservedStatus, inst.Server)
 	}
 
 	if *dryRun {

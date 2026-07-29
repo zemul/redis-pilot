@@ -29,7 +29,9 @@ func (s *Server) buildInstanceGroups(instances *apitypes.InstancesState, node *a
 			password:   "",
 		}
 		for name, inst := range instances.Instances {
-			if inst == nil || inst.Group != groupName || inst.Status != "running" {
+			// 只有观测到在跑的实例才能接业务流量。用意图判断会把流量
+			// 发给一个"应该在跑但实际已经挂了"的实例。
+			if inst == nil || inst.Group != groupName || !inst.IsServing() {
 				continue
 			}
 			srv := node.Servers[inst.Server]

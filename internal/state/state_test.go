@@ -97,22 +97,22 @@ func TestWriteInstances_ThenRead(t *testing.T) {
 		},
 		Instances: map[string]*apitypes.Instance{
 			"redis-1": {
-				Role:     "master",
-				Group:    "redis",
-				Server:   "srv1",
-				Port:     6379,
-				Memory:   "4Gi",
-				CPUs:     2,
-				Password: "secret",
-				Status:   "running",
+				Role:         "master",
+				Group:        "redis",
+				Server:       "srv1",
+				Port:         6379,
+				Memory:       "4Gi",
+				CPUs:         2,
+				Password:     "secret",
+				DesiredState: "running", ObservedStatus: "running",
 			},
 			"redis-1-rep": {
-				Role:      "replica",
-				Group:     "redis",
-				Server:    "srv2",
-				Port:      6380,
-				ReplicaOf: "redis-1",
-				Status:    "running",
+				Role:         "replica",
+				Group:        "redis",
+				Server:       "srv2",
+				Port:         6380,
+				ReplicaOf:    "redis-1",
+				DesiredState: "running", ObservedStatus: "running",
 			},
 		},
 	}
@@ -141,7 +141,7 @@ func TestWithInstances_Atomic(t *testing.T) {
 
 	err := m.WithInstances(func(st *apitypes.InstancesState) error {
 		st.Groups["g1"] = &apitypes.InstanceGroupState{Type: "standalone", Engine: "redis"}
-		st.Instances["inst1"] = &apitypes.Instance{Group: "g1", Role: "master", Status: "running"}
+		st.Instances["inst1"] = &apitypes.Instance{Group: "g1", Role: "master", DesiredState: "running", ObservedStatus: "running"}
 		return nil
 	})
 	if err != nil {
@@ -333,7 +333,7 @@ func TestRecalculateGroupTopology_StandaloneHealthyWithMasterOnly(t *testing.T) 
 			"cache": {Type: "standalone", CurrentMaster: "cache-1"},
 		},
 		Instances: map[string]*apitypes.Instance{
-			"cache-1": {Group: "cache", Role: "master", Status: "running"},
+			"cache-1": {Group: "cache", Role: "master", DesiredState: "running", ObservedStatus: "running"},
 		},
 	}
 	RecalculateGroupTopology(st, "cache")
@@ -348,7 +348,7 @@ func TestRecalculateGroupTopology_ReplicationDegradedWithoutReplica(t *testing.T
 			"order": {Type: "replication", CurrentMaster: "order-master"},
 		},
 		Instances: map[string]*apitypes.Instance{
-			"order-master": {Group: "order", Role: "master", Status: "running"},
+			"order-master": {Group: "order", Role: "master", DesiredState: "running", ObservedStatus: "running"},
 		},
 	}
 	RecalculateGroupTopology(st, "order")
@@ -363,8 +363,8 @@ func TestRecalculateGroupTopology_ReplicationHealthyWithReplica(t *testing.T) {
 			"order": {Type: "replication", CurrentMaster: "order-master"},
 		},
 		Instances: map[string]*apitypes.Instance{
-			"order-master":  {Group: "order", Role: "master", Status: "running"},
-			"order-replica": {Group: "order", Role: "replica", Status: "running", ReplicaOf: "order-master"},
+			"order-master":  {Group: "order", Role: "master", DesiredState: "running", ObservedStatus: "running"},
+			"order-replica": {Group: "order", Role: "replica", DesiredState: "running", ObservedStatus: "running", ReplicaOf: "order-master"},
 		},
 	}
 	RecalculateGroupTopology(st, "order")

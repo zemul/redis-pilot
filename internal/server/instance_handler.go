@@ -150,7 +150,8 @@ func instanceMatchesListFilters(inst *apitypes.Instance, group *apitypes.Instanc
 	if roleFilter != "" && inst.Role != roleFilter {
 		return false
 	}
-	if statusFilter != "" && inst.Status != statusFilter {
+	// 按派生状态过滤，保持 CLI 侧的词汇不变（running/stopped/failed/...）
+	if statusFilter != "" && inst.Phase() != statusFilter {
 		return false
 	}
 	if engineFilter != "" {
@@ -341,8 +342,10 @@ func (s *Server) instanceCreate(c *gin.Context) {
 			Persistence:     defaultPersistence(req.Engine, req.Category, req.ConfigOverrides),
 			ConfigOverrides: req.ConfigOverrides,
 			ReplicaOf:       masterName, // 存实例名而非 ip:port
-			Status:          "creating",
-			CreatedAt:       time.Now().Format(time.RFC3339),
+			// 只写意图。观测字段留空，Phase() 会推导为 "creating"——
+			// 语义是"要求它跑起来，但还没观测到"，比存一个 creating 字面值更准确
+			DesiredState: apitypes.DesiredRunning,
+			CreatedAt:    time.Now().Format(time.RFC3339),
 		}
 		instances.Instances[req.Name] = inst
 		state.RecalculateGroupTopology(instances, groupName)
@@ -371,7 +374,9 @@ func (s *Server) instanceCreate(c *gin.Context) {
 		// 标记实例为 failed，保留记录供排查
 		if markErr := s.state.WithInstances(func(instances *apitypes.InstancesState) error {
 			if i := instances.Instances[req.Name]; i != nil {
-				i.Status = "failed"
+				// 意图不变（用户仍然要这个实例），但已确认容器不存在。
+				// 这是观测而非意图：Phase() 会推导为 "failed"
+				i.ObservedStatus = apitypes.ObservedMissing
 				state.RecalculateGroupTopology(instances, i.Group)
 			}
 			return nil
@@ -387,14 +392,14 @@ func (s *Server) instanceCreate(c *gin.Context) {
 	// 更新状态为 running
 	if err := s.state.WithInstances(func(instances *apitypes.InstancesState) error {
 		if i := instances.Instances[req.Name]; i != nil {
-			i.Status = "running"
+			i.ObservedStatus = apitypes.ObservedRunning
 			state.RecalculateGroupTopology(instances, i.Group)
 		}
 		return nil
 	}); err != nil {
 		s.log.Errorf("instance create: failed to mark %s as running: %v", req.Name, err)
 	} else {
-		inst.Status = "running"
+		inst.ObservedStatus = apitypes.ObservedRunning
 	}
 
 	s.audit.Log(audit.Record{
@@ -581,7 +586,10 @@ func (s *Server) instanceStop(c *gin.Context) {
 
 	if err := s.state.WithInstances(func(is *apitypes.InstancesState) error {
 		if i, ok := is.Instances[req.Name]; ok {
-			i.Status = "stopped"
+			// 意图与观测一起更新：Agent 的 stop 调用成功返回本身就是一次观测。
+			// 只写意图会让 Phase() 在 reconcile 跑到之前一直显示 "stopping"。
+			i.DesiredState = apitypes.DesiredStopped
+			i.ObservedStatus = apitypes.ObservedStopped
 			state.RecalculateGroupTopology(is, i.Group)
 		}
 		return nil
@@ -1265,11 +1273,18 @@ func (s *Server) instanceSimpleOp(c *gin.Context, newStatus, agentPath, auditAct
 		return
 	}
 
-	statusMap := map[string]string{"start": "running", "stop": "stopped"}
+	// start/stop 同时更新意图与观测：Agent 调用成功返回即为一次观测。
+	// 其他操作（如 restart）不落状态，交给 reconcile 观测。
+	type stateChange struct{ desired, observed string }
+	stateMap := map[string]stateChange{
+		"start": {apitypes.DesiredRunning, apitypes.ObservedRunning},
+		"stop":  {apitypes.DesiredStopped, apitypes.ObservedStopped},
+	}
 	if err := s.state.WithInstances(func(is *apitypes.InstancesState) error {
 		if i, ok2 := is.Instances[req.Name]; ok2 {
-			if status, ok3 := statusMap[newStatus]; ok3 {
-				i.Status = status
+			if sc, ok3 := stateMap[newStatus]; ok3 {
+				i.DesiredState = sc.desired
+				i.ObservedStatus = sc.observed
 				state.RecalculateGroupTopology(is, i.Group)
 			}
 		}

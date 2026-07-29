@@ -46,8 +46,8 @@ func (n *NodeServer) ToView() *NodeServerView {
 // ResourceSpec 资源规格
 type ResourceSpec struct {
 	CPUCores float64 `yaml:"cpu_cores" json:"cpu_cores"`
-	Memory   string `yaml:"memory" json:"memory"`
-	Disk     string `yaml:"disk" json:"disk"`
+	Memory   string  `yaml:"memory" json:"memory"`
+	Disk     string  `yaml:"disk" json:"disk"`
 }
 
 // NodeState pool-state.yaml 根结构
@@ -151,9 +151,85 @@ type Instance struct {
 	ConfigOverrides map[string]string `yaml:"config_overrides,omitempty" json:"config_overrides,omitempty"`
 	ReplicaOf       string            `yaml:"replica_of,omitempty" json:"replica_of,omitempty"`
 	Backup          *BackupConfig     `yaml:"backup,omitempty" json:"backup,omitempty"`
-	Status          string            `yaml:"status" json:"status"`
-	Lock            *Lock             `yaml:"lock,omitempty" json:"lock,omitempty"`
-	CreatedAt       string            `yaml:"created_at" json:"created_at"`
+	// DesiredState 是人的意图：这个实例应该处于什么状态。
+	//
+	// 只有用户发起的操作可以写：create/start → running，stop → stopped。
+	// reconcile 与 Sentinel 事件处理**不得**写这个字段——它们观测到的是事实，
+	// 不是意图。取值见 DesiredState* 常量。
+	DesiredState string `yaml:"desired_state" json:"desired_state"`
+	// ObservedStatus 是最近一次观测到的实际状态。
+	//
+	// 只有观测通道可以写：runReconcile（问 Agent 容器在不在跑），以及
+	// handleSentinelFailover 对新 master 的那一次写入（Sentinel 能提升它，
+	// 说明 Sentinel 观测到它是健康的）。用户操作**不得**写这个字段——
+	// 用户表达的是意图，实例是否真的进入该状态要靠观测确认。
+	//
+	// 空串表示尚未观测过（实例刚创建，reconcile 还没跑过）。
+	// 取值见 Observed* 常量。
+	ObservedStatus string `yaml:"observed_status" json:"observed_status"`
+	Lock           *Lock  `yaml:"lock,omitempty" json:"lock,omitempty"`
+	CreatedAt      string `yaml:"created_at" json:"created_at"`
+}
+
+// DesiredState 的取值。意图只有两种：要么该跑，要么该停。
+const (
+	DesiredRunning = "running"
+	DesiredStopped = "stopped"
+)
+
+// ObservedStatus 的取值。
+const (
+	ObservedUnknown     = ""            // 尚未观测过
+	ObservedRunning     = "running"     // 容器存在且在跑
+	ObservedStopped     = "stopped"     // 容器存在但已停止
+	ObservedMissing     = "missing"     // 容器不存在
+	ObservedUnreachable = "unreachable" // Agent 不可达或响应异常，无法判断
+)
+
+// Phase 由 DesiredState 与 ObservedStatus 推导出供人阅读的综合状态。
+//
+// 刻意不存储这个值。此前 Status 单字段同时承担意图与观测，导致
+// "unexpected_stopped"（意图跑着但观测到停了）这类本质上是**两个字段的差值**的信息
+// 被塞进同一个字段，于是写入者和读取者对同一个值的理解出现分歧——
+// 这正是"故障转移时 down 掉的 replica 拓扑记录永久错误"那个 bug 的根源。
+//
+// 派生值只读不存，就不会出现"派生值与来源不一致"的第三种坏状态。
+func (i *Instance) Phase() string {
+	if i == nil {
+		return "unknown"
+	}
+	switch {
+	case i.DesiredState == DesiredStopped:
+		if i.ObservedStatus == ObservedStopped || i.ObservedStatus == ObservedMissing {
+			return "stopped"
+		}
+		// 已要求停止但还观测到在跑，或者还没观测过
+		return "stopping"
+
+	case i.ObservedStatus == ObservedUnknown:
+		// 意图是跑，但一次都还没观测到——刚创建
+		return "creating"
+
+	case i.ObservedStatus == ObservedRunning:
+		return "running"
+
+	case i.ObservedStatus == ObservedStopped:
+		// 意图是跑，实际停了：没人要求它停，它自己停了
+		return "unexpected_stopped"
+
+	case i.ObservedStatus == ObservedMissing:
+		return "failed"
+
+	case i.ObservedStatus == ObservedUnreachable:
+		return "unreachable"
+	}
+	return "unknown"
+}
+
+// IsServing 报告实例当前是否可以承接业务流量。
+// 判据是观测结果而非意图——Envoy 端点、备份调度这类决策必须基于事实。
+func (i *Instance) IsServing() bool {
+	return i != nil && i.ObservedStatus == ObservedRunning
 }
 
 // InstancesState instances-state.yaml 根结构
@@ -180,9 +256,14 @@ type InstanceView struct {
 	ConfigOverrides map[string]string `json:"config_overrides,omitempty"`
 	ReplicaOf       string            `json:"replica_of,omitempty"`
 	Backup          *BackupConfig     `json:"backup,omitempty"`
-	Status          string            `json:"status"`
-	Lock            *Lock             `json:"lock,omitempty"`
-	CreatedAt       string            `json:"created_at"`
+	// Status 是派生的综合状态（Phase()），保持对外词汇稳定：
+	// creating / running / stopped / stopping / unexpected_stopped / failed / unreachable
+	Status string `json:"status"`
+	// 同时暴露两个来源字段，让"为什么是这个状态"可以被直接看出来
+	DesiredState   string `json:"desired_state"`
+	ObservedStatus string `json:"observed_status"`
+	Lock           *Lock  `json:"lock,omitempty"`
+	CreatedAt      string `json:"created_at"`
 }
 
 // ToView 将 Instance 转换为不含明文密码的对外展示视图。
@@ -206,7 +287,9 @@ func (i *Instance) ToView() *InstanceView {
 		ConfigOverrides: i.ConfigOverrides,
 		ReplicaOf:       i.ReplicaOf,
 		Backup:          i.Backup,
-		Status:          i.Status,
+		Status:          i.Phase(),
+		DesiredState:    i.DesiredState,
+		ObservedStatus:  i.ObservedStatus,
 		Lock:            i.Lock,
 		CreatedAt:       i.CreatedAt,
 	}
@@ -263,12 +346,12 @@ type ServerInventoryItem struct {
 
 // ServerInstanceSummary 服务器上的实例摘要
 type ServerInstanceSummary struct {
-	Name          string `json:"name"`
-	Engine        string `json:"engine"`
-	ContainerPort int    `json:"container_port"`
-	Memory        string `json:"memory"`
+	Name          string  `json:"name"`
+	Engine        string  `json:"engine"`
+	ContainerPort int     `json:"container_port"`
+	Memory        string  `json:"memory"`
 	CPUs          float64 `json:"cpus"`
-	Status        string `json:"status"`
+	Status        string  `json:"status"`
 }
 
 // InventorySummary 全局摘要（视图 C）

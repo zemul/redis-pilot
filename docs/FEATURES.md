@@ -177,7 +177,7 @@
 4. 自动修复或告警:
    - `running` → `running`: 无操作
    - `creating/failed` → `running`: 更新为 `running`
-   - `running` → `stopped`: 告警 + 标记为 `unexpected_stopped`
+   - 意图 `running` + 观测 `stopped`: 告警（`Phase()` 推导为 `unexpected_stopped`）
    - `running` → `missing`: 告警 + 标记为 `failed`
 5. 检测并修正**角色漂移**（`detectRoleDrift` / `reconcileRoleDrift`）:
    - 比对 Agent 上报的 `configured_replica_of`（磁盘配置文件里的角色）与 Server 记录
@@ -477,7 +477,12 @@ redis-pilot-cli sentinel sync
 | config_path / data_path / backup_path | TEXT | 挂载路径 |
 | config_overrides | TEXT (JSON) | 配置覆盖项，如 `{"timeout":"300"}` |
 | backup | TEXT (JSON) | `{"schedule":"0 2 * * *","retention":7,"last_backup":"..."}` |
-| status | TEXT | creating / running / stopped / failed |
+| desired_state | TEXT | 意图，仅用户操作可写：`running` / `stopped` |
+| observed_status | TEXT | 观测，仅观测通道可写：`""`(未观测) / `running` / `stopped` / `missing` / `unreachable` |
+
+> 对外展示的 `status` 是由这两列推导出来的（`Instance.Phase()`），取值
+> `creating` / `running` / `stopped` / `stopping` / `unexpected_stopped` / `failed` / `unreachable`。
+> 派生值刻意不入库——存储派生值会产生"派生值与来源不一致"的第三种坏状态。
 | lock | TEXT (JSON) | 乐观锁，`{"held_by":"...","operation":"config","acquired_at":"...","timeout":300}` |
 | created_at | TEXT | 创建时间 |
 

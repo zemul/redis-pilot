@@ -146,10 +146,12 @@ func RecalculateGroupTopology(instances *apitypes.InstancesState, groupName stri
 		if inst == nil || inst.Group != groupName {
 			continue
 		}
-		if name == group.CurrentMaster && inst.Role == "master" && inst.Status == "running" {
+		// 组的拓扑健康度是一个观测结论，必须读 ObservedStatus 而不是意图。
+		// 用意图判断会得出"配置上应该是健康的"这种毫无用处的结论。
+		if name == group.CurrentMaster && inst.Role == "master" && inst.IsServing() {
 			hasRunningMaster = true
 		}
-		if inst.Role == "replica" && inst.Status == "running" {
+		if inst.Role == "replica" && inst.IsServing() {
 			hasRunningReplica = true
 		}
 	}

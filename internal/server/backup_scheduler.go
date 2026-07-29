@@ -51,7 +51,9 @@ func (bs *backupScheduler) syncJobs() {
 	desired := make(map[string]string) // name → schedule
 	if instances.Instances != nil {
 		for name, inst := range instances.Instances {
-			if inst.Status == "running" && inst.Backup != nil && inst.Backup.Schedule != "" {
+			// 判据必须是观测：对一个已经挂掉的实例发 BGSAVE 只会失败。
+			// 用意图（DesiredState）判断会给死实例排上备份任务。
+			if inst.IsServing() && inst.Backup != nil && inst.Backup.Schedule != "" {
 				desired[name] = inst.Backup.Schedule
 			}
 		}

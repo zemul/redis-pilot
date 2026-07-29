@@ -125,7 +125,7 @@ func (s *Server) buildServerView(instances *apitypes.InstancesState, node *apity
 			ContainerPort: inst.Port,
 			Memory:        inst.Memory,
 			CPUs:          inst.CPUs,
-			Status:        inst.Status,
+			Status:        inst.Phase(),
 		})
 		item.AllocatedCPU += inst.CPUs
 	}
@@ -176,7 +176,7 @@ func (s *Server) buildSummaryView(instances *apitypes.InstancesState, node *apit
 			Category:   group.Category,
 			EnvoyPorts: envoyPorts,
 			Server:     inst.Server,
-			Status:     inst.Status,
+			Status:     inst.Phase(),
 		})
 		servers[inst.Server] = true
 		totalCPU += inst.CPUs

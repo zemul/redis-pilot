@@ -55,11 +55,11 @@ func (f *sentinelRegressionFixture) writeOrderGroup(t *testing.T) {
 		},
 		Instances: map[string]*apitypes.Instance{
 			"order-master": {
-				Group: "order", Role: "master", Status: "running",
+				Group: "order", Role: "master", DesiredState: "running", ObservedStatus: "running",
 				Server: "srv1", Port: 7000, Container: "redis-order-master",
 			},
 			"order-replica": {
-				Group: "order", Role: "replica", Status: "running", ReplicaOf: "order-master",
+				Group: "order", Role: "replica", DesiredState: "running", ObservedStatus: "running", ReplicaOf: "order-master",
 				Server: "srv1", Port: 7001, Container: "redis-order-replica",
 			},
 		},
@@ -69,7 +69,7 @@ func (f *sentinelRegressionFixture) writeOrderGroup(t *testing.T) {
 // TestSyncSentinel_KeepsMonitoringWhenMasterCrashes 是本轮修复的核心回归测试。
 //
 // 回归背景（实测复现过的 P0）：buildSentinelMasters 曾经要求
-// inst.Role == "master" && inst.Status == "running" 才把组放进 desired，而
+// inst.Role == "master" && 观测状态为 running 才把组放进 desired，而
 // syncSentinelNode 会把「Sentinel 上存在但不在 desired 中」的组一律 SENTINEL REMOVE。
 // 于是这条链会静默摘掉故障转移能力：
 //
@@ -96,7 +96,7 @@ func TestSyncSentinel_KeepsMonitoringWhenMasterCrashes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := instances.Instances["order-master"].Status; got != "failed" {
+	if got := instances.Instances["order-master"].Phase(); got != "failed" {
 		t.Fatalf("前置条件不成立：期望 reconcile 把崩溃的 master 标为 failed，实际 %q", got)
 	}
 
@@ -152,9 +152,9 @@ func TestKnownSentinelGroups(t *testing.T) {
 			"no-master": {Type: "replication", CurrentMaster: ""},
 		},
 		Instances: map[string]*apitypes.Instance{
-			"healthy-master": {Group: "healthy", Role: "master", Status: "running"},
-			"crashed-master": {Group: "crashed", Role: "master", Status: "failed"},
-			"standalone-1":   {Group: "standalone", Role: "master", Status: "running"},
+			"healthy-master": {Group: "healthy", Role: "master", DesiredState: "running", ObservedStatus: "running"},
+			"crashed-master": {Group: "crashed", Role: "master", DesiredState: "running", ObservedStatus: "missing"},
+			"standalone-1":   {Group: "standalone", Role: "master", DesiredState: "running", ObservedStatus: "running"},
 		},
 	}
 
@@ -192,7 +192,7 @@ func TestBuildSentinelMasters_IncludesCrashedMaster(t *testing.T) {
 		},
 		Instances: map[string]*apitypes.Instance{
 			// 容器已崩溃，被 reconcile 标记为 failed
-			"order-master": {Group: "order", Role: "master", Status: "failed", Server: "srv-a", Port: 6379},
+			"order-master": {Group: "order", Role: "master", DesiredState: "running", ObservedStatus: "missing", Server: "srv-a", Port: 6379},
 		},
 	}
 

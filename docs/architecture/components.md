@@ -386,7 +386,8 @@ instances:
 
 #### 3.3.2 状态一致性规则
 
-- **创建前**：先写入 `instances` 表（status: creating），再调用 Agent
+- **创建前**：先写入 `instances` 表（`desired_state=running`，`observed_status` 留空，
+  `Phase()` 推导为 `creating`），再调用 Agent
 - **创建成功**：更新 status → running；服务器已分配资源由查询时从 `instances` 表实时汇总派生，无需单独更新 `servers` 表
 - **创建失败**：回滚 — 调用 Agent 清理已创建的资源，更新 status → failed
 - **每次操作**：先读状态，操作完成后更新状态
@@ -437,7 +438,8 @@ instances:
 - **差异处理**：
   - actual=running + desired=running → 无需操作
   - actual=running + desired=creating → 状态漂移，更新 YAML 为 running
-  - actual=stopped + desired=running → 异常，标记 status: unexpected_stopped，触发告警
+  - 观测 stopped + 意图 running → 异常，只写 `observed_status=stopped`，触发告警
+    （`Phase()` 推导为 `unexpected_stopped`，不入库）
   - actual=running + desired=failed → 状态漂移，更新 YAML 为 running
 - **校验范围**：实例状态 + 端口占用 + 资源分配
 

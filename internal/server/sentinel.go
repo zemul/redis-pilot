@@ -500,7 +500,9 @@ func (s *Server) handleSentinelFailover(group, newMasterAddr, source, operator s
 		if newMaster.Group != group {
 			return fmt.Errorf("new master %s belongs to group %s, not %s", newMasterName, newMaster.Group, group)
 		}
-		if groupState.CurrentMaster == newMasterName && newMaster.Role == "master" && newMaster.Status == "running" {
+		// 已经同步过了就跳过。这里读观测字段：判据是"新 master 确实在跑"，
+		// 是事实问题而非意图问题。
+		if groupState.CurrentMaster == newMasterName && newMaster.Role == "master" && newMaster.IsServing() {
 			noOp = true
 			return nil
 		}
@@ -508,12 +510,18 @@ func (s *Server) handleSentinelFailover(group, newMasterAddr, source, operator s
 		newMasterServer = newMaster.Server
 
 		oldMaster.Role = "replica"
-		oldMaster.Status = "failed"
 		oldMaster.ReplicaOf = newMasterName
+		// 刻意不写 oldMaster 的 ObservedStatus。故障转移的原因是未知的：
+		// Sentinel 自动触发时旧 master 通常确实挂了，但 instance failover 手动触发时
+		// 它可能完全健康。把它一律标成 failed 是在猜测而不是观测——交给 reconcile
+		// 在 30 秒内如实观测。
 
 		newMaster.Role = "master"
-		newMaster.Status = "running"
 		newMaster.ReplicaOf = ""
+		// 这一处写观测字段是有依据的：Sentinel 能把它选为新 master，说明 Sentinel
+		// 探测到它是健康的。不写的话，Envoy 要等到下一轮 reconcile 才会把写流量
+		// 指向新 master（proxy_group 只挂 IsServing() 的实例），白丢最多 30 秒写入。
+		newMaster.ObservedStatus = apitypes.ObservedRunning
 		groupState.CurrentMaster = newMasterName
 
 		for name, inst := range instances.Instances {
@@ -522,10 +530,20 @@ func (s *Server) handleSentinelFailover(group, newMasterAddr, source, operator s
 			}
 			if name == oldMasterName || containsString(groupNames, name) {
 				inst.Group = group
-				if inst.Status == "running" {
-					inst.Role = "replica"
-					inst.ReplicaOf = newMasterName
-				}
+				// 这里此前有一道 `if inst.Status == "running"` 门禁，导致故障转移发生时
+				// 恰好不 running 的 replica 的 Role/ReplicaOf 不被更新，永久停留在旧
+				// master 上（探针实证：三节点组里先崩一个 replica 再 failover，该 replica
+				// 的 ReplicaOf 一直指向已经降级的旧 master，形成一条 Sentinel 从未创建
+				// 过的级联复制，且没有任何自愈路径会纠正它——reconcileSentinelOnce 只比对
+				// master 地址，runReconcile 只管观测状态）。
+				//
+				// 门禁本身就是本次重构要消除的那类错误：Role/ReplicaOf 表达的是"这个实例
+				// 在组里应该扮演什么角色"，属于意图；而 Status 由 reconcile 按观测写入。
+				// 拿观测结果给意图写入把门，等于让"它现在活不活"决定"它应该是什么角色"。
+				// 一个挂掉的 replica 恢复后当然应该去复制新 master，而不是复制一个已经
+				// 降级的旧 master。
+				inst.Role = "replica"
+				inst.ReplicaOf = newMasterName
 			}
 		}
 		state.RecalculateGroupTopology(instances, group)

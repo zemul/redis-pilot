@@ -109,7 +109,9 @@ func nodeEndpoint(node *apitypes.NodeState, serverName string) string {
 
 func computeAllocated(instances *apitypes.InstancesState, serverName string) (memGi int, cpus float64, diskGi int) {
 	for _, inst := range instances.Instances {
-		if inst == nil || inst.Server != serverName || inst.Status == "failed" {
+		// 容器确实不存在的实例不占用资源。注意这里读观测而非意图：
+		// 一个"意图 running 但容器已消失"的实例不该继续占配额。
+		if inst == nil || inst.Server != serverName || inst.ObservedStatus == apitypes.ObservedMissing {
 			continue
 		}
 		memGi += parseMemoryGi(inst.Memory)

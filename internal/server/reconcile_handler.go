@@ -30,9 +30,26 @@ func (s *Server) reconcile(c *gin.Context) {
 }
 
 // statusPatch 记录 reconcile 发现的单个实例状态变更
+// statusPatch 是一次待应用的观测结果写入。
+// 只承载观测字段——reconcile 没有资格修改意图。
 type statusPatch struct {
-	name      string
-	newStatus string
+	name        string
+	newObserved string
+}
+
+// desiredMatchesObserved 报告观测结果是否符合意图。
+//
+//	意图 running → 只有观测到 running 才算符合
+//	意图 stopped → 观测到 stopped 或 missing 都算符合（用户要它停，容器被清掉也是停）
+//
+// 尚未观测（空串）不算符合，但也不是异常——调用方据此产生 "creating" 语义。
+func desiredMatchesObserved(desired, observed string) bool {
+	switch desired {
+	case apitypes.DesiredStopped:
+		return observed == apitypes.ObservedStopped || observed == apitypes.ObservedMissing
+	default: // DesiredRunning
+		return observed == apitypes.ObservedRunning
+	}
 }
 
 // runReconcile 执行状态校验，HTTP handler 和定时任务共用
@@ -63,7 +80,7 @@ func (s *Server) runReconcile() ([]ReconcileResult, error) {
 			for _, name := range instNames {
 				results = append(results, ReconcileResult{
 					Instance: name, Server: serverName,
-					Desired: instances.Instances[name].Status,
+					Desired: instances.Instances[name].DesiredState,
 					Actual:  "unknown",
 					Action:  "alert",
 				})
@@ -79,7 +96,7 @@ func (s *Server) runReconcile() ([]ReconcileResult, error) {
 			for _, name := range instNames {
 				results = append(results, ReconcileResult{
 					Instance: name, Server: serverName,
-					Desired: instances.Instances[name].Status,
+					Desired: instances.Instances[name].DesiredState,
 					Actual:  "unreachable",
 					Action:  "alert",
 				})
@@ -95,7 +112,7 @@ func (s *Server) runReconcile() ([]ReconcileResult, error) {
 			for _, name := range instNames {
 				results = append(results, ReconcileResult{
 					Instance: name, Server: serverName,
-					Desired: instances.Instances[name].Status,
+					Desired: instances.Instances[name].DesiredState,
 					Actual:  "unreachable",
 					Action:  "alert",
 				})
@@ -118,36 +135,35 @@ func (s *Server) runReconcile() ([]ReconcileResult, error) {
 				}
 			}
 
-			actual := "missing"
+			actual := apitypes.ObservedMissing
 			if status, exists := containerMap[containerName]; exists {
 				if status {
-					actual = "running"
+					actual = apitypes.ObservedRunning
 				} else {
-					actual = "stopped"
+					actual = apitypes.ObservedStopped
 				}
 			}
 
 			result := ReconcileResult{
 				Instance: name, Server: serverName,
-				Desired: inst.Status, Actual: actual,
+				Desired: inst.DesiredState, Actual: actual,
+			}
+
+			// reconcile 是观测通道：只写 ObservedStatus，绝不碰 DesiredState。
+			// 动作由"意图 vs 观测"的差值推导，而不是靠状态字段里塞一个
+			// unexpected_stopped 这类混合语义的值。
+			changed := actual != inst.ObservedStatus
+			if changed {
+				patches = append(patches, statusPatch{name: name, newObserved: actual})
 			}
 
 			switch {
-			case inst.Status == actual:
-				result.Action = "none"
-
-			case actual == "running" && (inst.Status == "creating" || inst.Status == "failed" || inst.Status == "unexpected_stopped"):
-				patches = append(patches, statusPatch{name: name, newStatus: "running"})
+			case !desiredMatchesObserved(inst.DesiredState, actual):
+				// 意图与观测不符：没人要求它停它却停了，或者容器不见了
+				result.Action = "alert"
+			case changed:
+				// 与意图一致，且观测记录本轮追上了现实
 				result.Action = "updated"
-
-			case actual == "stopped" && inst.Status == "running":
-				patches = append(patches, statusPatch{name: name, newStatus: "unexpected_stopped"})
-				result.Action = "alert"
-
-			case actual == "missing" && inst.Status == "running":
-				patches = append(patches, statusPatch{name: name, newStatus: "failed"})
-				result.Action = "alert"
-
 			default:
 				result.Action = "none"
 			}
@@ -162,7 +178,7 @@ func (s *Server) runReconcile() ([]ReconcileResult, error) {
 			affectedGroups := map[string]struct{}{}
 			for _, p := range patches {
 				if inst := st.Instances[p.name]; inst != nil {
-					inst.Status = p.newStatus
+					inst.ObservedStatus = p.newObserved
 					affectedGroups[inst.Group] = struct{}{}
 				}
 			}

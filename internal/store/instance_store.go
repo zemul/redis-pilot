@@ -62,7 +62,7 @@ func (d *DB) GetAllInstances() (map[string]*apitypes.Instance, error) {
 	rows, err := d.sql.Query(
 		`SELECT name, grp, role, server, container, port, memory, cpus, disk,
 		        password, config_path, data_path, backup_path,
-		        persistence, config_overrides, replica_of, backup, status, lock, created_at
+		        persistence, config_overrides, replica_of, backup, desired_state, observed_status, lock, created_at
 		 FROM instances`)
 	if err != nil {
 		return nil, err
@@ -81,8 +81,8 @@ func (d *DB) UpsertInstance(name string, inst *apitypes.Instance) error {
 	_, err := d.sql.Exec(`
 		INSERT INTO instances(name, grp, role, server, container, port, memory, cpus, disk,
 		    password, config_path, data_path, backup_path,
-		    persistence, config_overrides, replica_of, backup, status, lock, created_at)
-		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+		    persistence, config_overrides, replica_of, backup, desired_state, observed_status, lock, created_at)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 		ON CONFLICT(name) DO UPDATE SET
 			grp              = excluded.grp,
 			role             = excluded.role,
@@ -100,7 +100,8 @@ func (d *DB) UpsertInstance(name string, inst *apitypes.Instance) error {
 			config_overrides = excluded.config_overrides,
 			replica_of       = excluded.replica_of,
 			backup           = excluded.backup,
-			status           = excluded.status,
+			desired_state    = excluded.desired_state,
+			observed_status  = excluded.observed_status,
 			lock             = excluded.lock,
 			created_at       = excluded.created_at`,
 		name,
@@ -109,7 +110,7 @@ func (d *DB) UpsertInstance(name string, inst *apitypes.Instance) error {
 		inst.Password, inst.ConfigPath, inst.DataPath, inst.BackupPath,
 		string(persistenceJSON), string(overridesJSON),
 		inst.ReplicaOf, string(backupJSON),
-		inst.Status, string(lockJSON), inst.CreatedAt,
+		inst.DesiredState, inst.ObservedStatus, string(lockJSON), inst.CreatedAt,
 	)
 	return err
 }
@@ -125,7 +126,7 @@ func (d *DB) GetInstance(name string) (*apitypes.Instance, error) {
 	row := d.sql.QueryRow(
 		`SELECT name, grp, role, server, container, port, memory, cpus, disk,
 		        password, config_path, data_path, backup_path,
-		        persistence, config_overrides, replica_of, backup, status, lock, created_at
+		        persistence, config_overrides, replica_of, backup, desired_state, observed_status, lock, created_at
 		 FROM instances WHERE name = ?`, name)
 
 	inst, err := scanInstance(row)
@@ -191,15 +192,15 @@ func (d *DB) WithInstances(fn func(*apitypes.InstancesState) error) error {
 		if _, err := tx.Exec(`
 			INSERT INTO instances(name, grp, role, server, container, port, memory, cpus, disk,
 			    password, config_path, data_path, backup_path,
-			    persistence, config_overrides, replica_of, backup, status, lock, created_at)
-			VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+			    persistence, config_overrides, replica_of, backup, desired_state, observed_status, lock, created_at)
+			VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 			name,
 			inst.Group, inst.Role, inst.Server, inst.Container,
 			inst.Port, inst.Memory, inst.CPUs, inst.Disk,
 			inst.Password, inst.ConfigPath, inst.DataPath, inst.BackupPath,
 			string(persistenceJSON), string(overridesJSON),
 			inst.ReplicaOf, string(backupJSON),
-			inst.Status, string(lockJSON), inst.CreatedAt,
+			inst.DesiredState, inst.ObservedStatus, string(lockJSON), inst.CreatedAt,
 		); err != nil {
 			return fmt.Errorf("insert instance %s: %w", name, err)
 		}
@@ -261,7 +262,7 @@ func loadInstancesState(db *sql.DB) (*apitypes.InstancesState, error) {
 	iRows, err := db.Query(
 		`SELECT name, grp, role, server, container, port, memory, cpus, disk,
 		        password, config_path, data_path, backup_path,
-		        persistence, config_overrides, replica_of, backup, status, lock, created_at
+		        persistence, config_overrides, replica_of, backup, desired_state, observed_status, lock, created_at
 		 FROM instances`)
 	if err != nil {
 		return nil, err
@@ -296,7 +297,7 @@ func loadInstancesStateTx(tx *sql.Tx) (*apitypes.InstancesState, error) {
 	iRows, err := tx.Query(
 		`SELECT name, grp, role, server, container, port, memory, cpus, disk,
 		        password, config_path, data_path, backup_path,
-		        persistence, config_overrides, replica_of, backup, status, lock, created_at
+		        persistence, config_overrides, replica_of, backup, desired_state, observed_status, lock, created_at
 		 FROM instances`)
 	if err != nil {
 		return nil, err
@@ -323,11 +324,11 @@ func scanInstance(row rowScanner) (*apitypes.Instance, error) {
 		&inst.Password, &inst.ConfigPath, &inst.DataPath, &inst.BackupPath,
 		&persistenceJSON, &overridesJSON,
 		&inst.ReplicaOf, &backupJSON,
-		&inst.Status, &lockJSON, &inst.CreatedAt,
+		&inst.DesiredState, &inst.ObservedStatus, &lockJSON, &inst.CreatedAt,
 	); err != nil {
 		return nil, err
 	}
-	json.Unmarshal([]byte(persistenceJSON), &inst.Persistence)  //nolint:errcheck
+	json.Unmarshal([]byte(persistenceJSON), &inst.Persistence)   //nolint:errcheck
 	json.Unmarshal([]byte(overridesJSON), &inst.ConfigOverrides) //nolint:errcheck
 	json.Unmarshal([]byte(backupJSON), &inst.Backup)             //nolint:errcheck
 	json.Unmarshal([]byte(lockJSON), &inst.Lock)                 //nolint:errcheck
@@ -347,11 +348,11 @@ func scanInstances(rows *sql.Rows) (map[string]*apitypes.Instance, error) {
 			&inst.Password, &inst.ConfigPath, &inst.DataPath, &inst.BackupPath,
 			&persistenceJSON, &overridesJSON,
 			&inst.ReplicaOf, &backupJSON,
-			&inst.Status, &lockJSON, &inst.CreatedAt,
+			&inst.DesiredState, &inst.ObservedStatus, &lockJSON, &inst.CreatedAt,
 		); err != nil {
 			return nil, err
 		}
-		json.Unmarshal([]byte(persistenceJSON), &inst.Persistence)  //nolint:errcheck
+		json.Unmarshal([]byte(persistenceJSON), &inst.Persistence)   //nolint:errcheck
 		json.Unmarshal([]byte(overridesJSON), &inst.ConfigOverrides) //nolint:errcheck
 		json.Unmarshal([]byte(backupJSON), &inst.Backup)             //nolint:errcheck
 		json.Unmarshal([]byte(lockJSON), &inst.Lock)                 //nolint:errcheck

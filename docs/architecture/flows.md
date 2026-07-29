@@ -300,7 +300,7 @@ Kvrocks 场景复现明显（收尾阶段耗时更长，窗口期更长）；Red
 
 约束：**主库不健康恰恰是 Sentinel 最需要继续监控的时刻。** 健康状态只应影响"要不要重新 `MONITOR` 到新地址"，绝不能影响"要不要监控这个组"。`REMOVE` 只允许发生在组真正被删除或从 `replication` 改成 `standalone` 时——即只由 `known` 驱动。
 
-这条约束与 §4.2 的状态字段设计有关：`instances.status` 同时承担了"观测结果"（由 reconcile 写入 `failed`/`unexpected_stopped`）和"意图声明"（被其他代码读取用于判断该不该做某事）两种语义。读取该字段做拓扑决策时必须意识到它是观测值而非期望值。
+这条约束与状态字段设计有关。早期实现里 `instances.status` 单字段同时承担"观测结果"（由 reconcile 写入 `failed`/`unexpected_stopped`）和"意图声明"（被其他代码读取用于判断该不该做某事）两种语义，读取方无法知道拿到的是哪一种。该字段已按 §4.6 拆分为 `desired_state` 与 `observed_status`。
 
 #### 4.3.5 Agent 不得自主重启实例
 
@@ -466,7 +466,66 @@ Skill: redis-backup
 
 ---
 
+### 4.6 状态字段的写入者约束
+
+前面几节的多个问题（Sentinel 监控被静默摘除、故障转移时 down 掉的 replica 拓扑记录永久错误）有同一个根因：`instances.status` 单字段同时承担"意图"和"观测"两种语义，写入方表达一种意思，读取方理解成另一种。
+
+字段已拆成两个，各自只有一类写入者：
+
+| 字段 | 含义 | 允许的写入者 | 取值 |
+|------|------|-------------|------|
+| `desired_state` | 人的意图：这实例该不该在跑 | 仅用户发起的操作（create/start/stop） | `running` / `stopped` |
+| `observed_status` | 最近一次观测到的实际状态 | 仅观测通道（`runReconcile`；以及 Sentinel 提升新 master 时那一次） | `""`(未观测) / `running` / `stopped` / `missing` / `unreachable` |
+
+对外展示的 `status` 由两者推导（`Instance.Phase()`），**不入库**：
+
+| 意图 | 观测 | 派生状态 | 含义 |
+|------|------|---------|------|
+| running | `""` | `creating` | 要求它跑，但一次都还没观测到 |
+| running | running | `running` | 一致 |
+| running | stopped | `unexpected_stopped` | 没人要求它停，它自己停了 |
+| running | missing | `failed` | 容器不见了 |
+| running | unreachable | `unreachable` | 观测能力本身失效 |
+| stopped | stopped / missing | `stopped` | 一致（容器被清掉也算停） |
+| stopped | running / `""` | `stopping` | 已要求停止但还没观测到结果 |
+
+存储派生值会产生"派生值与来源不一致"的第三种坏状态，所以派生值只读不存。`unexpected_stopped` 本质上是两个字段的差值，此前把它塞进同一个字段正是问题形态本身。
+
+**三条硬约束**
+
+**a. 拓扑意图不得受观测状态门禁**
+
+`Role` / `ReplicaOf` / `CurrentMaster` 表达"这个实例在组里应该扮演什么角色"，与"它现在活不活"无关。
+
+`handleSentinelFailover` 此前有一道 `if inst.Status == "running"` 门禁，导致故障转移发生时恰好不 running 的 replica 的拓扑记录不被更新，永久停留在旧 master 上：三节点组 A(master)/B/C，C 先崩，Sentinel 把 B 提为 master，C 的 `ReplicaOf` 仍指向 A —— 而 A 此刻已是 B 的 replica，Server 于是相信一条 Sentinel 从未创建过的级联复制 C→A→B。
+
+危害在于**没有自愈路径**：`reconcileSentinelOnce` 只比对 master 地址，`runReconcile` 只管观测状态，两者都不会发现这处错误。而 §4.3.6 的角色落盘会拿着这份错误记录，持续把 `replicaof A` 写进 C 的配置文件。回归测试：`TestFailover_UpdatesTopologyOfDownReplica`。
+
+**b. 故障转移不猜测旧 master 的观测状态**
+
+`handleSentinelFailover` 同时服务 Sentinel 自动故障转移（旧 master 通常真的挂了）和用户手动 `instance failover`（旧 master 可能完全健康）。把它一律标成异常是猜测而非观测，交给 reconcile 在 30 秒内如实观测。
+
+新 master 的 `observed_status` 则会被写成 `running`：Sentinel 能把它选为新 master，说明 Sentinel 探测到它健康，这是有依据的观测。不写的话，Envoy 要等下一轮 reconcile 才会把写流量指向新 master（`proxy_group` 只挂 `IsServing()` 的实例），白丢最多 30 秒写入。
+
+**c. "Agent 不可达"不得写进实例的观测状态**
+
+Agent 不可达是对 **Agent** 的观测，不是对实例的观测。Agent 重启或网络抖动时，它名下的 Redis 实例通常完好无损。若把 `unreachable` 写进实例的 `observed_status`，`IsServing()` 会变成 false，`proxy_group` 就会把这些健康实例从 Envoy 端点里摘掉——一次 Agent 重启造成一次业务中断。
+
+所以 `runReconcile` 的三处 Agent 不可达分支只告警、不写观测字段。回归测试：`TestReconcile_AgentUnreachableDoesNotOverwriteObservedStatus`。
+
+**各读取点该读哪个字段**
+
+| 读取点 | 读哪个 | 为什么 |
+|--------|--------|--------|
+| `proxy_group` Envoy 端点 | 观测（`IsServing()`） | 不能把流量发给一个"应该在跑但已经挂了"的实例 |
+| `backup_scheduler` 排备份 | 观测（`IsServing()`） | 对挂掉的实例发 BGSAVE 只会失败 |
+| `scheduler` 容量计算 | 观测（`missing`） | 容器已消失的实例不该继续占配额 |
+| `RecalculateGroupTopology` | 观测 | 组健康度是事实结论，用意图判断只能得出"配置上应该是健康的" |
+| `runReconcile` 动作判定 | 两者的差值 | 告警的定义就是意图与观测不符 |
+| `instance list --status` 过滤 | 派生（`Phase()`） | 保持 CLI 词汇不变 |
+
 ## 5. Skills 设计
+
 
 ### 5.1 Skill 清单
 

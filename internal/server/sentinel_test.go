@@ -50,13 +50,13 @@ func TestBuildSentinelMasters(t *testing.T) {
 		},
 		Instances: map[string]*apitypes.Instance{
 			"order-master": {
-				Group: "order", Role: "master", Status: "running", Server: "srv-a", Port: 6379, Password: "secret",
+				Group: "order", Role: "master", DesiredState: "running", ObservedStatus: "running", Server: "srv-a", Port: 6379, Password: "secret",
 			},
 			"order-replica": {
-				Group: "order", Role: "replica", Status: "running", Server: "srv-b", Port: 6379,
+				Group: "order", Role: "replica", DesiredState: "running", ObservedStatus: "running", Server: "srv-b", Port: 6379,
 			},
 			"cache-1": {
-				Group: "cache", Role: "master", Status: "running", Server: "srv-a", Port: 6380,
+				Group: "cache", Role: "master", DesiredState: "running", ObservedStatus: "running", Server: "srv-a", Port: 6380,
 			},
 		},
 	}
@@ -126,10 +126,10 @@ func TestSentinelEventEndpoint(t *testing.T) {
 		},
 		Instances: map[string]*apitypes.Instance{
 			"order-master": {
-				Group: "order", Role: "master", Status: "running", Server: "srv-a", Port: 6379,
+				Group: "order", Role: "master", DesiredState: "running", ObservedStatus: "running", Server: "srv-a", Port: 6379,
 			},
 			"order-replica": {
-				Group: "order", Role: "replica", Status: "running", Server: "srv-b", Port: 6379,
+				Group: "order", Role: "replica", DesiredState: "running", ObservedStatus: "running", Server: "srv-b", Port: 6379,
 				ReplicaOf: "order-master",
 			},
 		},
@@ -164,14 +164,14 @@ func TestHandleSentinelFailover_UpdatesState(t *testing.T) {
 		},
 		Instances: map[string]*apitypes.Instance{
 			"order-master": {
-				Group: "order", Role: "master", Status: "running", Server: "srv-a", Port: 6379,
+				Group: "order", Role: "master", DesiredState: "running", ObservedStatus: "running", Server: "srv-a", Port: 6379,
 			},
 			"order-replica": {
-				Group: "order", Role: "replica", Status: "running", Server: "srv-b", Port: 6379,
+				Group: "order", Role: "replica", DesiredState: "running", ObservedStatus: "running", Server: "srv-b", Port: 6379,
 				ReplicaOf: "order-master",
 			},
 			"order-replica-2": {
-				Group: "order", Role: "replica", Status: "running", Server: "srv-c", Port: 6379,
+				Group: "order", Role: "replica", DesiredState: "running", ObservedStatus: "running", Server: "srv-c", Port: 6379,
 				ReplicaOf: "order-master",
 			},
 		},
@@ -186,7 +186,10 @@ func TestHandleSentinelFailover_UpdatesState(t *testing.T) {
 	oldMaster := state.Instances["order-master"]
 	newMaster := state.Instances["order-replica"]
 	otherReplica := state.Instances["order-replica-2"]
-	if oldMaster.Status != "failed" || oldMaster.Role != "replica" || oldMaster.ReplicaOf != "order-replica" {
+	// 注意：handleSentinelFailover 不再写 oldMaster 的观测状态——故障转移的原因是未知的
+	// （手动 failover 时旧 master 可能完全健康），交给 reconcile 如实观测。
+	// 这里只断言拓扑意图。
+	if oldMaster.Role != "replica" || oldMaster.ReplicaOf != "order-replica" {
 		t.Fatalf("old master not marked failed replica: %#v", oldMaster)
 	}
 	if newMaster.Role != "master" || newMaster.ReplicaOf != "" {
@@ -225,11 +228,11 @@ func TestHandleSentinelFailover_NoOpWhenAlreadySynchronized(t *testing.T) {
 		},
 		Instances: map[string]*apitypes.Instance{
 			"order-master": {
-				Group: "order", Role: "replica", Status: "failed", Server: "srv-a", Port: 6379,
+				Group: "order", Role: "replica", DesiredState: "running", ObservedStatus: "missing", Server: "srv-a", Port: 6379,
 				ReplicaOf: "order-replica",
 			},
 			"order-replica": {
-				Group: "order", Role: "master", Status: "running", Server: "srv-b", Port: 6379,
+				Group: "order", Role: "master", DesiredState: "running", ObservedStatus: "running", Server: "srv-b", Port: 6379,
 			},
 		},
 	})
@@ -243,7 +246,7 @@ func TestHandleSentinelFailover_NoOpWhenAlreadySynchronized(t *testing.T) {
 	if state.Groups["order"].CurrentMaster != "order-replica" {
 		t.Fatalf("current master changed unexpectedly: %#v", state.Groups["order"])
 	}
-	if state.Instances["order-master"].Status != "failed" || state.Instances["order-master"].ReplicaOf != "order-replica" {
+	if state.Instances["order-master"].Role != "replica" || state.Instances["order-master"].ReplicaOf != "order-replica" {
 		t.Fatalf("old master was mutated unexpectedly: %#v", state.Instances["order-master"])
 	}
 }
