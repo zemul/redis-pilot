@@ -130,14 +130,17 @@ CLI Token 优先级（从高到低）：`--token` 参数 > `REDIS_SERVER_TOKEN` 
   POST /instance/start         启动实例
   POST /instance/stop          停止实例
   POST /instance/delete        删除实例（需确认数据清理）
-  POST /instance/config        更新配置（热更新 or 重启）
+  POST /instance/config        更新配置。三种互斥模式：
+                               rewrite_config_only 只重写磁盘配置文件（角色落盘，不碰容器）、
+                               restart 重写并重启、都不传则 CONFIG SET 热更新
   POST /instance/promote       从库提升为主库（REPLICAOF NO ONE）——底层原语，Server 仅在
                                 Sentinel 未启用的组上调用；Sentinel 托管的组由 Sentinel 自己
                                 直接对节点下发 REPLICAOF，不经过这个接口
   POST /instance/replicate     设置复制目标（REPLICAOF host port）——同上，仅无 Sentinel 托管
                                 的组或 Sentinel 自身触发的降级会用到
 
-  GET  /instance/list          列出本机所有实例
+  GET  /instance/list          列出本机所有实例，并附带各实例磁盘配置文件里的
+                               replicaof（configured_replica_of），供 Server 检测角色漂移
   GET  /instance/status        实例详细状态（含 INFO 解析）
 
 备份管理

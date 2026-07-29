@@ -54,6 +54,7 @@ func (s *Server) runReconcile() ([]ReconcileResult, error) {
 
 	var results []ReconcileResult
 	var patches []statusPatch
+	var roleDrifts []roleDrift
 
 	for serverName, instNames := range serverInstances {
 		srv := node.Servers[serverName]
@@ -102,6 +103,10 @@ func (s *Server) runReconcile() ([]ReconcileResult, error) {
 			continue
 		}
 		containerMap := parseContainerMap(apiResp.Data)
+		// Agent 同时上报了各实例磁盘配置文件里的角色，用于检测角色漂移。
+		configuredReplicaOf := parseConfiguredReplicaOf(apiResp.Data)
+		roleDrifts = append(roleDrifts,
+			detectRoleDrift(node, instances, serverName, instNames, configuredReplicaOf)...)
 
 		// 逐个对比
 		for _, name := range instNames {
@@ -168,6 +173,27 @@ func (s *Server) runReconcile() ([]ReconcileResult, error) {
 		})
 	}
 
+	// 修正角色漂移：磁盘配置文件里的 replicaof 与 Server 记录不一致时补推一次配置重写。
+	// 这一步不重启容器，只让"重启后会读到的角色"与 Sentinel 的决定保持一致。
+	// 放在状态补丁之后，是为了让漂移判定基于本轮已经修正过的状态。
+	if len(roleDrifts) > 0 {
+		s.reconcileRoleDrift(node, instances, roleDrifts)
+		for _, d := range roleDrifts {
+			s.audit.Log(audit.Record{
+				Operator: "system",
+				Action:   "reconcile.role_drift",
+				Level:    audit.LevelImportant,
+				Result:   "corrected",
+				Target:   map[string]interface{}{"instance": d.Instance, "server": d.Server},
+				Params: map[string]interface{}{
+					"configured_replica_of": d.Configured,
+					"expected_replica_of":   d.Expected,
+				},
+				Detail: "config file role did not match server record; rewrote config so a container restart will not roll the role back",
+			})
+		}
+	}
+
 	// 记录有异常的审计日志
 	for _, r := range results {
 		if r.Action == "alert" || r.Action == "updated" {
@@ -186,6 +212,29 @@ func (s *Server) runReconcile() ([]ReconcileResult, error) {
 }
 
 // parseContainerMap 从 Agent 返回的 data 中提取容器名→运行状态映射
+// parseConfiguredReplicaOf 从 Agent /instance/list 的响应里取出各实例磁盘配置文件中的
+// replicaof（归一化为 ip:port，空串表示配置为 master）。
+//
+// 字段缺失时返回空 map 而不是 nil 语义上的"全部为 master"——detectRoleDrift 只检查
+// map 中存在的实例，所以旧版本 Agent（不上报该字段）不会被误判为全组漂移。
+func parseConfiguredReplicaOf(data interface{}) map[string]string {
+	result := make(map[string]string)
+	m, ok := data.(map[string]interface{})
+	if !ok {
+		return result
+	}
+	raw, ok := m["configured_replica_of"].(map[string]interface{})
+	if !ok {
+		return result
+	}
+	for name, v := range raw {
+		if s, ok := v.(string); ok {
+			result[name] = s
+		}
+	}
+	return result
+}
+
 func parseContainerMap(data interface{}) map[string]bool {
 	result := make(map[string]bool)
 	if data == nil {

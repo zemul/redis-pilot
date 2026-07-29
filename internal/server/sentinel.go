@@ -566,6 +566,10 @@ func (s *Server) handleSentinelFailover(group, newMasterAddr, source, operator s
 		Params: map[string]interface{}{"source": source},
 		Detail: detail,
 	})
+	// 把新角色写进各实例的磁盘配置文件。运行时角色已由 Sentinel 改好，这里修正的是
+	// 磁盘上那份，避免容器重启（podman --restart on-failure:5）后角色回退。
+	// 失败不回滚故障转移——reconcileRoleDrift 会在下一轮 reconcile 补推。
+	s.persistGroupRoles(group)
 	s.syncSentinel()
 	return nil
 }

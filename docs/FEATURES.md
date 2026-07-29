@@ -179,6 +179,13 @@
    - `creating/failed` → `running`: 更新为 `running`
    - `running` → `stopped`: 告警 + 标记为 `unexpected_stopped`
    - `running` → `missing`: 告警 + 标记为 `failed`
+5. 检测并修正**角色漂移**（`detectRoleDrift` / `reconcileRoleDrift`）:
+   - 比对 Agent 上报的 `configured_replica_of`（磁盘配置文件里的角色）与 Server 记录
+   - 不一致时用 `rewrite_config_only` 模式补推一次配置重写，**不重启容器**
+   - 目的是让"容器重启后读到的角色"与 Sentinel 的决定一致，消除角色回退
+   - 记审计 `reconcile.role_drift`
+   - 保守跳过三种情况：非 `replication` 组、Agent 未上报该实例、期望地址解析失败
+   - 详见 [architecture/flows.md §4.3.6](architecture/flows.md)
 
 **返回结果**:
 ```json
@@ -215,7 +222,7 @@
 
 | API 路径 | 方法 | 功能 | 实现函数 |
 |---------|------|------|---------|
-| `/instance/list` | GET | 列出所有容器及运行状态 | `instanceList()` |
+| `/instance/list` | GET | 列出所有容器及运行状态，附带 `configured_replica_of`（磁盘配置文件里的角色） | `instanceList()` |
 | `/instance/status` | GET | 获取实例详细信息（实时 INFO） | `instanceStatus()` |
 | `/instance/create` | POST | 创建容器并启动 | `instanceCreate()` |
 | `/instance/start` | POST | 启动容器 | `instanceStart()` |
@@ -240,7 +247,7 @@
 
 | API 路径 | 方法 | 功能 | 实现函数 |
 |---------|------|------|---------|
-| `/instance/config` | POST | 更新实例配置 | `instanceConfig()` |
+| `/instance/config` | POST | 更新实例配置。`rewrite_config_only` 只重写磁盘配置文件不碰容器（角色落盘）；`restart` 重写并重启；都不传则 `CONFIG SET` 热更新 | `instanceConfig()` |
 
 **支持两种更新模式**:
 - **热更新** (`restart: false`): 通过 `CONFIG SET` 逐个设置参数

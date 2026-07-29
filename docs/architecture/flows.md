@@ -313,7 +313,7 @@ Kvrocks 场景复现明显（收尾阶段耗时更长，窗口期更长）；Red
 | Agent `runHealthCheck` | ~~`podman restart`~~（已删除） | 本机单次 `PING` | 不知道 |
 | podman `--restart on-failure:5` | 容器自动重启 | 进程退出码 | 不知道 |
 
-后两个不直接写角色，但**通过重启容器让角色回退到配置文件里固化的旧值**，从而间接推翻 Sentinel 的决策（配置文件只在创建和 `instance config --restart` 时写入，`promote`/`replicate` 与 Sentinel 自己发的 `REPLICAOF` 都不落盘）。
+后两个不直接写角色，但**通过重启容器让角色回退到配置文件里固化的旧值**，从而间接推翻 Sentinel 的决策。这条路径已由 §4.3.6 的角色落盘机制堵住。
 
 **Agent 自主重启已删除**，理由：
 
@@ -345,6 +345,53 @@ Kvrocks 场景复现明显（收尾阶段耗时更长，窗口期更长）；Red
 | 容器在跑但实例无响应 | Agent 分类上报 → `/instance/status` 的 `health` 字段 → Server/运维决策 |
 
 最后一行补上了一个此前的观测盲区：容器 reconcile 只问 podman"容器在不在跑"，看不到"容器活着但实例 hang 住 / 正在 loading / 认证不一致"。`tcpPing` 现在返回分类结果而非无区分的 error，这个信息被记录并暴露出来，但 Agent 自己不据此采取任何动作。
+
+#### 4.3.6 角色落盘：配置文件的角色必须跟随 Sentinel 的决定
+
+删掉 Agent 自主重启只解决了角色回退的一半。剩下的一半是：
+
+Sentinel 用 `REPLICAOF` 改变角色，这个变更**只存在于 Redis 进程内存中**。磁盘配置文件里还写着旧的 `replicaof`，而 podman 的 `--restart on-failure:5`（`podman.go:48,63`）会在进程异常退出时自动重启容器。重启后实例按旧配置起来，角色就回退了 —— Sentinel 认为 A 是 master，A 自己却又变回了 B 的 replica。
+
+**为什么不用 `CONFIG REWRITE`**
+
+看起来最直接的做法是让 Redis 自己把运行时角色写回配置文件。但配置文件在本项目里由 Go 模板生成（`config_template.go` 的 `writeConfig` → `os.WriteFile`，整体覆盖），而 `instance config --restart` 会用 Server 记录的 `ReplicaOf` 重新渲染整个文件。所以 `CONFIG REWRITE` 会让 Redis 成为配置文件的第二个写入者，且注定输给模板 —— 下一次任何配置变更都会把它写的内容抹掉。附带问题是 `CONFIG REWRITE` 重排格式、丢掉模板注释，文件会在两种形态之间来回翻。
+
+这等于在配置文件内容上再加一个决策者，与本节要解决的问题同类。因此保持**模板是配置文件的唯一写入者**，由 Server 把角色推进去。
+
+**机制**
+
+| 环节 | 实现 | 作用 |
+|------|------|------|
+| Agent 新增 `rewrite_config_only` 模式 | `agent.go` `instanceConfig` | 只重写磁盘配置文件，**不重启容器、不做 `CONFIG SET`** |
+| 角色变化后立即推送 | `sentinel.go` `handleSentinelFailover` → `persistGroupRoles(group)` | 故障转移同步完成后把组内所有实例的新角色写进各自配置文件 |
+| Agent 上报磁盘角色 | `agent.go` `instanceList` 响应新增 `configured_replica_of` | 让 Server 能看到"磁盘上写的角色" |
+| reconcile 检测并补推 | `reconcile_handler.go` → `detectRoleDrift` / `reconcileRoleDrift` | 磁盘配置与 Server 记录不一致时补推一次重写 |
+
+`rewrite_config_only` 刻意不重启容器：重启本身就是要避免的动作，而且此时运行时角色已经是对的，需要修正的只有磁盘上那份。
+
+**为什么 reconcile 那一步是关键**
+
+只做"角色变化后立即推送"是不够的。Sentinel 事件一旦丢失（Server 重启、Server 与 Sentinel 之间网络分区），配置文件就停在旧角色上，回退窗口依然存在。周期性比对让这套机制**收敛到期望状态**，而不是依赖事件可靠投递 —— 与 §4.3.4 中"是否监控只由拓扑意图决定"用的是同一个思路：按期望状态收敛，不按事件驱动。
+
+漂移修正会记审计 `reconcile.role_drift`，带上 `configured_replica_of` 与 `expected_replica_of`，便于事后判断丢了多少事件。
+
+**判定上的保守取舍**
+
+`detectRoleDrift` 在三种情况下**不判定漂移**，避免把一个正常实例改坏：
+
+- 实例所属组不是 `replication` 类型 —— standalone 没有角色概念
+- Agent 没有上报该实例的 `configured_replica_of` —— 配置文件缺失说明实例刚创建或已删除；旧版本 Agent 不上报该字段时也不会被误判为全组漂移
+- 期望地址解析失败 —— 否则会拿一个空地址去覆盖配置文件，把 replica 错误地改写成 master
+
+**顺带修复的一个既有 bug**
+
+`inst.ReplicaOf` 在 `pilot.db` 里存的是**实例名**（`instance_handler.go:343`、`:1002`），而配置模板期待 `ip:port`（`config_template.go:157` 把冒号替换成空格拼进 `replicaof` 指令）。`instanceConfig` 此前直接把 `inst.ReplicaOf` 传给 Agent，导致对 replica 执行 `instance config --restart` 时配置文件被写成 `replicaof order-master` —— 缺少端口，Redis 启动时报 `wrong number of arguments`，而容器已经被 Stop，**实例起不来**。
+
+现在统一经 `resolveReplicaOfAddr` 解析。它与用于校验用户输入的 `resolveReplicaOf` 的区别是**不断言目标必须是 master**：角色落盘发生在故障转移前后，组内角色可能正处于中间状态，此时需要如实写出 Server 的记录，而不是校验这份记录是否合理。
+
+**保留的已知窗口**
+
+配置文件仍然是"重启后读到的角色"的来源，所以从"Sentinel 改变角色"到"Server 把新角色写进配置文件"之间存在一个窗口。窗口内如果容器恰好重启，角色仍会回退一次，随后由下一轮 reconcile（30 秒）纠正。彻底消除需要让配置文件完全不表达角色，但那会引入"重启瞬间出现一个独立 master"的新问题，且 kvrocks 模板没有 `min-replicas-to-write` 这类写保护（`config_template.go:79` 只在 Redis 模板内），因此没有采纳。
 
 ### 4.4 实例迁移
 

@@ -296,19 +296,78 @@ func (a *Agent) instanceDelete(c *gin.Context) {
 	ok(c, nil)
 }
 
-func (a *Agent) instanceConfig(c *gin.Context) {
-	var req struct {
-		Name            string            `json:"name" binding:"required"`
-		Engine          string            `json:"engine" binding:"required"`
-		Type            string            `json:"type"`
-		ConfigOverrides map[string]string `json:"config_overrides" binding:"required"`
-		Restart         bool              `json:"restart"`
-		Password        string            `json:"password"`
-		Memory          string            `json:"memory"`
-		Category        string            `json:"category"`
-		ReplicaOf       string            `json:"replica_of"`
-		Port            int               `json:"port"`
+// instanceConfigRequest 是 Server 下发的配置变更载荷。
+//
+// 三种互斥的作用模式：
+//   - RewriteConfigOnly=true：只重写磁盘配置文件，不碰运行中的容器
+//   - Restart=true：重写磁盘配置文件并重启容器（配置项需要重启才生效时用）
+//   - 两者都为 false：热更新，逐项 CONFIG SET，不动磁盘配置文件
+type instanceConfigRequest struct {
+	Name   string `json:"name" binding:"required"`
+	Engine string `json:"engine" binding:"required"`
+	Type   string `json:"type"`
+	// 注意：这里不加 binding:"required"。RewriteConfigOnly 模式下（角色落盘）
+	// 实例可能本来就没有任何 config_overrides，空 map 是合法输入。
+	// 面向用户的 config 变更由 Server 侧校验非空。
+	ConfigOverrides map[string]string `json:"config_overrides"`
+	Restart         bool              `json:"restart"`
+	// RewriteConfigOnly 只把磁盘配置文件重写成与请求一致，不重启容器、也不做 CONFIG SET。
+	//
+	// 用途是角色落盘。Sentinel 在运行时用 REPLICAOF 改变实例角色，这个变更只存在于进程
+	// 内存中；磁盘配置文件里还写着旧的 replicaof。容器一旦重启（podman 的
+	// --restart on-failure:5 会在进程异常退出时自动重启），实例就按旧配置回退到旧角色，
+	// 与 Sentinel 的认知产生分歧。Server 在角色变化后调用本模式把新角色写进配置文件，
+	// 使"重启后读到的角色"与"Sentinel 决定的角色"一致。
+	//
+	// 刻意不重启容器：重启本身就是要避免的动作，而且此时运行时角色已经是对的，
+	// 需要修正的只有磁盘上那份。
+	RewriteConfigOnly bool   `json:"rewrite_config_only"`
+	Password          string `json:"password"`
+	Memory            string `json:"memory"`
+	Category          string `json:"category"`
+	ReplicaOf         string `json:"replica_of"`
+	Port              int    `json:"port"`
+}
+
+// writeInstanceConfig 按请求参数渲染并落盘实例配置文件。
+func (a *Agent) writeInstanceConfig(req *instanceConfigRequest) error {
+	dataDir := filepath.Join(a.cfg.DataDir, req.Name)
+	overrides := configOverridesString(req.ConfigOverrides)
+	minReplicas := minReplicasToWrite(req.Type, req.ReplicaOf)
+	if req.Engine == "kvrocks" {
+		return writeKvrocksConfig(dataDir, KvrocksConfigParams{
+			Password:           req.Password,
+			Memory:             req.Memory,
+			ReplicaOf:          req.ReplicaOf,
+			ConfigOverrides:    overrides,
+			MinReplicasToWrite: minReplicas,
+			AnnounceIP:         a.cfg.AnnounceIP,
+			AnnouncePort:       req.Port,
+		})
 	}
+	policy := "allkeys-lru"
+	if req.Category == "persistent" {
+		policy = "noeviction"
+	}
+	aof := "yes"
+	if req.Category == "cache" {
+		aof = "no"
+	}
+	return writeRedisConfig(dataDir, RedisConfigParams{
+		Password:           req.Password,
+		Memory:             req.Memory,
+		MaxmemoryPolicy:    policy,
+		Appendonly:         aof,
+		ReplicaOf:          req.ReplicaOf,
+		ConfigOverrides:    overrides,
+		MinReplicasToWrite: minReplicas,
+		AnnounceIP:         a.cfg.AnnounceIP,
+		AnnouncePort:       req.Port,
+	})
+}
+
+func (a *Agent) instanceConfig(c *gin.Context) {
+	var req instanceConfigRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		fail(c, http.StatusBadRequest, err.Error())
 		return
@@ -323,45 +382,18 @@ func (a *Agent) instanceConfig(c *gin.Context) {
 		a.passwords.Store(req.Name, req.Password)
 	}
 
-	if req.Restart {
-		// 重写配置文件并重启容器
-		dataDir := filepath.Join(a.cfg.DataDir, req.Name)
-		overrides := configOverridesString(req.ConfigOverrides)
-		minReplicas := minReplicasToWrite(req.Type, req.ReplicaOf)
-		var writeErr error
-		if req.Engine == "kvrocks" {
-			writeErr = writeKvrocksConfig(dataDir, KvrocksConfigParams{
-				Password:           req.Password,
-				Memory:             req.Memory,
-				ReplicaOf:          req.ReplicaOf,
-				ConfigOverrides:    overrides,
-				MinReplicasToWrite: minReplicas,
-				AnnounceIP:         a.cfg.AnnounceIP,
-				AnnouncePort:       req.Port,
-			})
-		} else {
-			policy := "allkeys-lru"
-			if req.Category == "persistent" {
-				policy = "noeviction"
-			}
-			aof := "yes"
-			if req.Category == "cache" {
-				aof = "no"
-			}
-			writeErr = writeRedisConfig(dataDir, RedisConfigParams{
-				Password:           req.Password,
-				Memory:             req.Memory,
-				MaxmemoryPolicy:    policy,
-				Appendonly:         aof,
-				ReplicaOf:          req.ReplicaOf,
-				ConfigOverrides:    overrides,
-				MinReplicasToWrite: minReplicas,
-				AnnounceIP:         a.cfg.AnnounceIP,
-				AnnouncePort:       req.Port,
-			})
+	switch {
+	case req.RewriteConfigOnly:
+		// 角色落盘：只同步磁盘配置文件，运行中的实例完全不受影响。
+		if err := a.writeInstanceConfig(&req); err != nil {
+			fail(c, http.StatusInternalServerError, "write config: "+err.Error())
+			return
 		}
-		if writeErr != nil {
-			fail(c, http.StatusInternalServerError, "write config: "+writeErr.Error())
+
+	case req.Restart:
+		// 重写配置文件并重启容器
+		if err := a.writeInstanceConfig(&req); err != nil {
+			fail(c, http.StatusInternalServerError, "write config: "+err.Error())
 			return
 		}
 		if err := a.runtime.Stop(containerName); err != nil {
@@ -372,7 +404,8 @@ func (a *Agent) instanceConfig(c *gin.Context) {
 			fail(c, http.StatusInternalServerError, "start container after config update failed, instance may be down: "+err.Error())
 			return
 		}
-	} else {
+
+	default:
 		// 热更新：通过 CONFIG SET 逐个设置
 		for k, v := range req.ConfigOverrides {
 			if _, err := redisCmd(req.Name, a.getPassword(req.Name), "CONFIG", "SET", k, v); err != nil {
@@ -463,13 +496,90 @@ func (a *Agent) instanceReplicate(c *gin.Context) {
 	ok(c, nil)
 }
 
+// ---------------------------------------------------------------------------
+// 磁盘配置文件中的角色
+//
+// 角色回退问题的根源：Sentinel 在运行时用 REPLICAOF 改变实例角色，这个变更只在进程
+// 内存里；磁盘配置文件仍写着旧的 replicaof。容器重启（podman --restart on-failure:5
+// 会在进程异常退出时自动重启）后实例按旧配置起来，角色就回退了。
+//
+// Server 需要能看到"磁盘上写的角色"才能发现这种漂移并补推重写。这里刻意读配置文件
+// 而不是查运行时角色：要修的就是磁盘那份，直接比对它最贴合问题本身，而且只需一次
+// 文件读取，不用对每个实例 exec redis-cli。
+// ---------------------------------------------------------------------------
+
+// readConfiguredReplicaOf 从实例的磁盘配置文件中读出 replicaof/slaveof 的目标，
+// 归一化为 "ip:port"。配置文件里没有该指令（即配置为 master）时返回空串。
+//
+// 配置文件不存在时返回空串且不报错——实例可能刚创建完还没写配置，或已被删除，
+// 这不是需要 Server 介入的漂移。
+func readConfiguredReplicaOf(dataDir, instanceName string) (string, error) {
+	confDir := filepath.Join(dataDir, instanceName, "conf")
+	for _, filename := range []string{"redis.conf", "kvrocks.conf"} {
+		data, err := os.ReadFile(filepath.Join(confDir, filename))
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return "", err
+		}
+		return parseReplicaOfDirective(string(data)), nil
+	}
+	return "", nil
+}
+
+// parseReplicaOfDirective 从配置文件内容里提取 replicaof/slaveof 的目标地址。
+// 配置文件中的形式是 "replicaof <ip> <port>"（模板把 ip:port 中的冒号换成了空格），
+// 这里归一化回 "ip:port" 以便与 Server 侧解析出的地址直接比较。
+func parseReplicaOfDirective(content string) string {
+	for _, line := range strings.Split(content, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+		directive := strings.ToLower(fields[0])
+		if directive != "replicaof" && directive != "slaveof" {
+			continue
+		}
+		// "replicaof no one" 表示显式声明为 master
+		if len(fields) == 3 && strings.EqualFold(fields[1], "no") && strings.EqualFold(fields[2], "one") {
+			return ""
+		}
+		if len(fields) >= 3 {
+			return fields[1] + ":" + fields[2]
+		}
+		// 只有一个参数的畸形配置（例如误把实例名当地址写入），原样返回让 Server 判定为漂移
+		return fields[1]
+	}
+	return ""
+}
+
 func (a *Agent) instanceList(c *gin.Context) {
 	containers, err := a.runtime.ListAll()
 	if err != nil {
 		fail(c, http.StatusInternalServerError, err.Error())
 		return
 	}
-	ok(c, gin.H{"containers": containers})
+	// 附带每个实例磁盘配置文件里的角色，让 Server 的 reconcile 能发现角色漂移。
+	// 与 containers 一起返回是为了让 reconcile 保持"每台服务器一次调用"。
+	configured := make(map[string]string)
+	for _, ct := range containers {
+		instName := trimPrefix(ct.Name)
+		if instName == "" {
+			continue
+		}
+		replicaOf, err := readConfiguredReplicaOf(a.cfg.DataDir, instName)
+		if err != nil {
+			a.log.Errorf("read configured replicaof for %s: %v", instName, err)
+			continue
+		}
+		configured[instName] = replicaOf
+	}
+	ok(c, gin.H{"containers": containers, "configured_replica_of": configured})
 }
 
 func (a *Agent) instanceStatus(c *gin.Context) {

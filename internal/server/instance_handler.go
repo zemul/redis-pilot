@@ -624,6 +624,16 @@ func (s *Server) instanceConfig(c *gin.Context) {
 		return
 	}
 	client := newAgentClient(srv)
+	// inst.ReplicaOf 存的是实例名（见 :343 与 :1002 的注释），而配置模板期待 ip:port
+	// （config_template.go:157 把冒号替换成空格拼进 replicaof 指令）。此处此前直接传
+	// inst.ReplicaOf，导致对 replica 执行 config --restart 时配置文件被写成
+	// "replicaof order-master"——缺少端口，Redis 启动时报 wrong number of arguments，
+	// 而容器已经被 Stop，实例起不来。必须先解析成地址。
+	replicaOfAddr, err := s.resolveReplicaOfAddrFor(req.Name)
+	if err != nil {
+		fail(c, http.StatusInternalServerError, "resolve replica_of: "+err.Error())
+		return
+	}
 	if _, err := client.post("/instance/config", map[string]interface{}{
 		"name":             req.Name,
 		"engine":           groupState.Engine,
@@ -633,7 +643,7 @@ func (s *Server) instanceConfig(c *gin.Context) {
 		"password":         inst.Password,
 		"memory":           inst.Memory,
 		"category":         groupState.Category,
-		"replica_of":       inst.ReplicaOf,
+		"replica_of":       replicaOfAddr,
 		"port":             inst.Port,
 	}); err != nil {
 		fail(c, http.StatusInternalServerError, "agent config failed: "+err.Error())
