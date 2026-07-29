@@ -24,9 +24,9 @@ description: 跨服务器迁移 Redis/Kvrocks 实例
    ```
    确认 replication 状态为 connected，master_sync_in_progress=0
 
-3. 提升新从库为主库
+3. 触发故障转移，提升新从库为主库（Sentinel 托管组：不保证提升的就是这个实例）
    ```
-   redis-pilot-cli instance promote <name>-new
+   redis-pilot-cli instance failover <name>-new
    ```
 
 4. 更新其他从库的复制目标

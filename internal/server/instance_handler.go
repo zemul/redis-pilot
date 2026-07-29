@@ -409,7 +409,9 @@ func (s *Server) instanceCreate(c *gin.Context) {
 
 	s.log.Infof("instance created: %s on %s", req.Name, req.Server)
 	s.syncSentinel()
-	ok(c, inst)
+	// 用 ToView() 剥离密码字段。此前直接返回 inst，创建接口的响应体里带着 Redis 明文密码，
+	// 会被 HTTP 访问日志、反向代理、CLI 调试输出等环节捕获。
+	ok(c, inst.ToView())
 }
 
 func (s *Server) instanceDelete(c *gin.Context) {
@@ -664,7 +666,21 @@ func (s *Server) instanceConfig(c *gin.Context) {
 	ok(c, nil)
 }
 
-func (s *Server) instancePromote(c *gin.Context) {
+// instanceFailover 触发一次故障转移。
+//
+// 语义说明：若该实例所在的复制组由 Sentinel 托管（sentinel.enabled=true 且组类型为
+// replication），本操作只是"请求对这个组做一次故障转移"，不保证 req.Name 对应的实例
+// 一定会成为新 master —— 具体提升哪个 replica，由 Sentinel 自己的选举算法决定（复制
+// 进度、replica-priority 等），这是 SENTINEL FAILOVER 命令本身的语义，不是本实现的限制。
+// req.Name 在这种场景下只是用来定位"操作哪个复制组"的入口。真正的角色变更（新 master
+// 提升、旧 master 降级）完全交给 Sentinel 执行，Server 只是等待并被动同步结果，不再向
+// 任意节点直接下发 REPLICAOF——避免 Server 和 Sentinel 两个独立的决策者同时操作同一份
+// 拓扑，产生冲突或状态不一致（这正是脑裂问题的根源之一）。
+//
+// 若该组未被 Sentinel 托管（Sentinel 未启用，或该组不是 replication 类型），退回原有的
+// 直接操作方式：调用新 master 所在 Agent 执行 REPLICAOF NO ONE，并尝试让旧 master 追随
+// 新 master——这是没有 Sentinel 可用时唯一的手段。
+func (s *Server) instanceFailover(c *gin.Context) {
 	start := time.Now()
 	var req struct {
 		Name string `json:"name" binding:"required"`
@@ -674,7 +690,127 @@ func (s *Server) instancePromote(c *gin.Context) {
 		return
 	}
 
-	inst, srv, unlock, err := s.resolveAndLock(c, req.Name, "promote")
+	instances, err := s.state.ReadInstances()
+	if err != nil {
+		fail(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+	inst := instances.Instances[req.Name]
+	if inst == nil {
+		fail(c, http.StatusNotFound, "instance not found: "+req.Name)
+		return
+	}
+	group := instances.Groups[inst.Group]
+	if group == nil || group.Type != "replication" {
+		fail(c, http.StatusBadRequest, "instance is not part of a replication group: "+req.Name)
+		return
+	}
+
+	if s.cfg.Sentinel.Enabled {
+		s.sentinelFailover(c, start, inst.Group, req.Name)
+		return
+	}
+	s.directFailover(c, start, req.Name)
+}
+
+// sentinelFailover 通过 SENTINEL FAILOVER 触发故障转移，并等待 Sentinel 完成后
+// 把结果同步到 Server 自己的状态记录（复用 handleSentinelFailover，不重复写状态更新逻辑）。
+func (s *Server) sentinelFailover(c *gin.Context, start time.Time, group, requestedName string) {
+	node, err := s.state.ReadNode()
+	if err != nil {
+		fail(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+	nodes := s.selectSentinelNodes(node)
+	if !validSentinelNodeCount(len(nodes)) {
+		fail(c, http.StatusInternalServerError, fmt.Sprintf("sentinel misconfigured: need exactly 3 or 5 sentinel.nodes, got %d", len(nodes)))
+		return
+	}
+
+	beforeAddr, err := s.querySentinelMaster(node, nodes, group)
+	if err != nil {
+		s.log.Errorf("instance failover: query current sentinel master for group %s failed: %v", group, err)
+	}
+
+	var lastErr error
+	triggered := false
+	for _, name := range nodes {
+		srv := node.Servers[name]
+		if srv == nil || srv.Endpoint == "" {
+			continue
+		}
+		addr := fmt.Sprintf("%s:%d", srv.Endpoint, s.sentinelPort())
+		if _, err := sentinelCommand(addr, "SENTINEL", "FAILOVER", group); err != nil {
+			lastErr = err
+			continue
+		}
+		triggered = true
+		break
+	}
+	if !triggered {
+		fail(c, http.StatusInternalServerError, "failed to trigger sentinel failover: "+errString(lastErr))
+		return
+	}
+
+	// SENTINEL FAILOVER 是异步的：轮询 GET-MASTER-ADDR-BY-NAME 等待 Sentinel 完成切换。
+	// 超时时间参考 sentinel.failover_timeout 配置（默认场景下留出足够余量）。
+	timeout := time.Duration(s.cfg.Sentinel.FailoverTimeout) * time.Millisecond
+	if timeout <= 0 {
+		timeout = 30 * time.Second
+	}
+	deadline := time.Now().Add(timeout)
+	var newAddr string
+	for time.Now().Before(deadline) {
+		time.Sleep(1 * time.Second)
+		addr, err := s.querySentinelMaster(node, nodes, group)
+		if err != nil {
+			continue
+		}
+		if addr != "" && addr != beforeAddr {
+			newAddr = addr
+			break
+		}
+	}
+	if newAddr == "" {
+		fail(c, http.StatusGatewayTimeout, fmt.Sprintf("sentinel failover for group %s did not complete within %s", group, timeout))
+		return
+	}
+
+	// GET-MASTER-ADDR-BY-NAME 在 failover 状态机走到 reconf-slaves 阶段就已经会返回新地址，
+	// 但 Sentinel 内部还需要几百毫秒完成 failover-end/switch-master 事件、把旧 master
+	// "虚拟加入"新 master 的 slave 列表（这是 Sentinel 后续自动纠正旧 master 角色的依据）。
+	// 如果这个时候立刻调用 syncSentinel（REMOVE+MONITOR 该组以确保配置一致），会打断 Sentinel
+	// 还没走完的收尾流程，抹掉它刚要建立的旧 master 追踪记录，导致旧 master 永远不会被自动
+	// 降级——这是实测踩到的真实竞态（Kvrocks 复现明显，Redis 复现窗口更短但原理相同）。
+	// 用一个保守的安全等待期，让 Sentinel 自己完成收尾后再触碰它的配置。
+	time.Sleep(3 * time.Second)
+
+	if err := s.handleSentinelFailover(group, newAddr, "manual", operatorFrom(c)); err != nil {
+		fail(c, http.StatusInternalServerError, "failover triggered but failed to sync state: "+err.Error())
+		return
+	}
+
+	instances, err := s.state.ReadInstances()
+	newMasterName := requestedName
+	if err == nil {
+		if name := findInstanceByAddress(node, instances, newAddr); name != "" {
+			newMasterName = name
+		}
+	}
+
+	ok(c, map[string]interface{}{
+		"group":       group,
+		"new_master":  newMasterName,
+		"requested":   requestedName,
+		"matched":     newMasterName == requestedName,
+		"duration_ms": time.Since(start).Milliseconds(),
+	})
+}
+
+// directFailover 是 Sentinel 未启用时的 fallback：直接对新旧 master 下发 REPLICAOF，
+// 语义上等价于原来的 instancePromote 实现，保证指定的 req.Name 一定会成为新 master。
+func (s *Server) directFailover(c *gin.Context, start time.Time, name string) {
+	inst, srv, unlock, err := s.resolveAndLock(c, name, "failover")
 	if err != nil {
 		return
 	}
@@ -686,7 +822,7 @@ func (s *Server) instancePromote(c *gin.Context) {
 	}
 
 	client := newAgentClient(srv)
-	if _, err := client.post("/instance/promote", map[string]string{"name": req.Name}); err != nil {
+	if _, err := client.post("/instance/promote", map[string]string{"name": name}); err != nil {
 		fail(c, http.StatusInternalServerError, "agent promote failed: "+err.Error())
 		return
 	}
@@ -704,7 +840,7 @@ func (s *Server) instancePromote(c *gin.Context) {
 	var oldMasterSrv apitypes.NodeServer
 	hasOldMaster := false
 	if err := s.state.WithInstances(func(is *apitypes.InstancesState) error {
-		i := is.Instances[req.Name]
+		i := is.Instances[name]
 		if i == nil {
 			return nil
 		}
@@ -737,13 +873,13 @@ func (s *Server) instancePromote(c *gin.Context) {
 			// 这种情况下无法阻塞 promote：新 master 已经完成提升，必须继续完成状态切换，
 			// 否则会卡在"新 master 已提升但状态未落地"的中间态。
 			// 仅记录警告，提示运维旧 master 需要人工确认/隔离，避免恢复后产生脑裂。
-			s.log.Errorf("instance promote: failed to demote old master %s (may be unreachable, needs manual check to avoid split-brain): %v", oldMasterName, err)
+			s.log.Errorf("instance failover: failed to demote old master %s (may be unreachable, needs manual check to avoid split-brain): %v", oldMasterName, err)
 		}
 	}
 
 	// 更新状态：角色变更 + group current_master 切换。
 	if err := s.state.WithInstances(func(is *apitypes.InstancesState) error {
-		i := is.Instances[req.Name]
+		i := is.Instances[name]
 		if i == nil {
 			return nil
 		}
@@ -751,9 +887,9 @@ func (s *Server) instancePromote(c *gin.Context) {
 		if group != nil {
 			if oldMaster := is.Instances[group.CurrentMaster]; oldMaster != nil && oldMaster != i {
 				oldMaster.Role = "replica"
-				oldMaster.ReplicaOf = req.Name
+				oldMaster.ReplicaOf = name
 			}
-			group.CurrentMaster = req.Name
+			group.CurrentMaster = name
 			group.Type = "replication"
 		}
 		i.Role = "master"
@@ -761,7 +897,7 @@ func (s *Server) instancePromote(c *gin.Context) {
 		state.RecalculateGroupTopology(is, i.Group)
 		return nil
 	}); err != nil {
-		s.log.Errorf("instance promote: failed to persist role change for %s: %v", req.Name, err)
+		s.log.Errorf("instance failover: failed to persist role change for %s: %v", name, err)
 		fail(c, http.StatusInternalServerError, "promote state update failed: "+err.Error())
 		return
 	}
@@ -770,11 +906,22 @@ func (s *Server) instancePromote(c *gin.Context) {
 		Operator: operatorFrom(c),
 		Action:   "topology.failover", Level: audit.LevelCritical, Result: "success",
 		Duration: time.Since(start).Milliseconds(),
-		Target:   map[string]interface{}{"instance": req.Name, "server": inst.Server},
+		Target:   map[string]interface{}{"instance": name, "server": inst.Server},
 	})
 
 	s.syncSentinel()
-	ok(c, nil)
+	ok(c, map[string]interface{}{
+		"new_master": name,
+		"requested":  name,
+		"matched":    true,
+	})
+}
+
+func errString(err error) string {
+	if err == nil {
+		return "unknown error"
+	}
+	return err.Error()
 }
 
 func (s *Server) instanceReplicate(c *gin.Context) {
@@ -799,6 +946,19 @@ func (s *Server) instanceReplicate(c *gin.Context) {
 	if masterName == "" {
 		fail(c, http.StatusBadRequest, "replica_of must reference an existing managed master instance")
 		return
+	}
+
+	// 手动指定复制目标与 Sentinel 的自动化管理直接冲突：Sentinel 会持续监控该组的
+	// master/replica 拓扑，绕过它直接下发 REPLICAOF 可能在下一次 Sentinel 探测/failover
+	// 时被覆盖或产生冲突判断。该组一旦被 Sentinel 托管，只允许通过 instance failover
+	// 触发变更。
+	if s.cfg.Sentinel.Enabled {
+		if master := instances.Instances[masterName]; master != nil {
+			if group := instances.Groups[master.Group]; group != nil && group.Type == "replication" {
+				fail(c, http.StatusConflict, fmt.Sprintf("group %q is managed by Sentinel; use 'instance failover' to change replication topology instead of setting it directly", master.Group))
+				return
+			}
+		}
 	}
 
 	inst, srv, unlock, err := s.resolveAndLock(c, req.Name, "replicate")

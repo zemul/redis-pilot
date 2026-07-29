@@ -102,7 +102,7 @@ func (s *Server) Router() *gin.Engine {
 		instance.POST("/start", s.instanceStart)
 		instance.POST("/stop", s.instanceStop)
 		instance.POST("/config", s.instanceConfig)
-		instance.POST("/promote", s.instancePromote)
+		instance.POST("/failover", s.instanceFailover)
 		instance.POST("/replicate", s.instanceReplicate)
 	}
 

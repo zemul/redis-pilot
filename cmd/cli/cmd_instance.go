@@ -172,7 +172,7 @@ var instanceStopCmd = &cobra.Command{
 	Long: `Gracefully stop a running instance. Data is preserved.
 
 Stopping the current master of a replication group will remove Sentinel monitoring.
-Use "instance promote <replica>" first for a safe switchover, or pass --force to override.`,
+Use "instance failover <replica>" first for a safe switchover, or pass --force to override.`,
 	Example: `  redis-pilot-cli instance stop order-master
   redis-pilot-cli instance stop order-master --force`,
 	Args: cobra.ExactArgs(1),
@@ -207,22 +207,36 @@ Use --restart to restart the instance when the parameter requires it (e.g. bind,
 	},
 }
 
-var instancePromoteCmd = &cobra.Command{
-	Use:   "promote <name>",
-	Short: "Promote replica to master",
-	Long: `Promote a replica instance to master. The replica will stop replicating and become writable.
-Typically used during failover or planned switchover.`,
-	Example: `  redis-pilot-cli instance promote order-replica`,
+var instanceFailoverCmd = &cobra.Command{
+	Use:   "failover <name>",
+	Short: "Trigger failover for the replication group",
+	Long: `Trigger a failover for the replication group that <name> belongs to.
+
+<name> is only used to locate the group; it does NOT guarantee that this
+specific instance becomes the new master. If the group is managed by Sentinel
+(sentinel.enabled=true), the actual promotion decision is made by Sentinel's
+own election (based on replication progress, replica-priority, etc.) via
+SENTINEL FAILOVER. The response reports which instance actually became the
+new master — check "new_master" vs "requested" to see if they match.
+
+If the group is not managed by Sentinel, this falls back to directly
+promoting <name> (which must currently be a replica) and demoting the old
+master, guaranteeing <name> becomes the new master.`,
+	Example: `  redis-pilot-cli instance failover order-replica`,
 	Args:    cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return checkResp(client.Post("/instance/promote", map[string]string{"name": args[0]}))
+		return checkResp(client.Post("/instance/failover", map[string]string{"name": args[0]}))
 	},
 }
 
 var instanceReplicateCmd = &cobra.Command{
-	Use:     "replicate <name>",
-	Short:   "Set replication target",
-	Long:    "Make an instance replicate from a master. The instance will sync data from the specified master.",
+	Use:   "replicate <name>",
+	Short: "Set replication target",
+	Long: `Make an instance replicate from a master. The instance will sync data from the specified master.
+
+If the target group is managed by Sentinel, this command is rejected — use
+"instance failover" instead. Manually setting a replication target on a
+Sentinel-managed group would conflict with Sentinel's own topology management.`,
 	Example: `  redis-pilot-cli instance replicate order-replica --replica-of order-master`,
 	Args:    cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -244,7 +258,7 @@ func init() {
 		instanceStartCmd,
 		instanceStopCmd,
 		instanceReplicateCmd,
-		instancePromoteCmd,
+		instanceFailoverCmd,
 		instanceDeleteCmd,
 	)
 

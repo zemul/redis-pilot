@@ -114,32 +114,49 @@ Skill: redis-create
 
 ### 4.3 故障转移
 
-#### 4.3.1 手动/Agent 上报触发
+**权威模型**：故障转移的唯一决策者是 Redis Sentinel（角色变更由 `SENTINEL FAILOVER` 触发或 Sentinel 自动探测触发），Server 只负责被动同步 Sentinel 已经做出的决策，不直接向任何节点下发 `REPLICAOF`。这样避免 Server 和 Sentinel 两个独立的决策者同时操作同一份拓扑产生冲突或脑裂（详见 §4.3.4）。
+
+只有当 `sentinel.enabled=false`（未部署 Sentinel）时，Server 才会退回直接操作 Agent 的方式，作为唯一手段。
+
+#### 4.3.1 用户主动触发（`instance failover`）
 
 ```
-触发: Agent 上报 server-a 实例不可用 / 用户手动触发
+用户: "把 order-replica 提升为主库" / "手动切换 order 组的主库"
 
-Skill: redis-failover
+CLI: redis-pilot-cli instance failover order-replica
+
+Server: instanceFailover(name="order-replica")
   │
-  ├─1. 识别故障实例
-  │   → order-master (server-a) 不可用
-  │   → order-replica (server-b) 存活
+  ├─1. 解析 name 找到所属实例组 order 及其类型
   │
-  ├─2. 提升从库为主库
-  │   agent_exec(server-b, "instance/promote", { name: "order-replica" })
-  │   → Agent: 执行 REPLICAOF NO ONE
+  ├─2a. 若该组由 Sentinel 托管（sentinel.enabled=true && group.type=replication）：
+  │    │
+  │    ├─ 向已配置的 Sentinel 节点发送 SENTINEL FAILOVER order
+  │    │  注意：SENTINEL FAILOVER 是异步的，且不能指定提升哪个从库——
+  │    │  最终提升哪个由 Sentinel 自己的选举算法决定（复制进度、
+  │    │  replica-priority、Run ID）。name 只用于定位"操作哪个组"，
+  │    │  不保证 name 对应的实例一定成为新主库。
+  │    │
+  │    ├─ 轮询 SENTINEL GET-MASTER-ADDR-BY-NAME order 等待地址变化
+  │    │  （超时 = sentinel.failover_timeout，默认 30s）
+  │    │
+  │    ├─ 检测到地址变化后，等待 3 秒安全边际，再确认地址仍然是同一个新值
+  │    │  （GET-MASTER-ADDR-BY-NAME 在 failover 状态机走到 reconf-slaves
+  │    │  阶段就已经会返回新地址，但 Sentinel 内部收尾——switch-master 事件、
+  │    │  把旧主库"虚拟加入"新主库的从库列表——还没完成。如果这时立刻同步
+  │    │  Server 自己的 Sentinel 配置会打断 Sentinel 的收尾，见 §4.3.4）
+  │    │
+  │    ├─ 调用 handleSentinelFailover 把结果同步到状态库（§4.3.2 的编排步骤）
+  │    │
+  │    └─ 返回 { group, new_master, requested, matched }
+  │       matched=false 表示 Sentinel 最终选择的不是 name 对应的实例
   │
-  ├─3. 更新状态（xDS 自动推送新路由到 Envoy）
-  │   state_update(instances, order, current_master=order-replica,
-  │       master=server-b:6379, replicas=healthy_replicas)
-  │
-  ├─4. 更新状态
-  │   state_update(instances, order, current_master=order-replica)
-  │   state_update(instances, order-master, status=failed, server=server-a)
-  │   state_update(instances, order-replica, role=master, server=server-b)
-  │
-  └─5. 通知: "故障转移完成，主库已切换到 server-b"
+  └─2b. 若该组未被 Sentinel 托管：直接向新主库所在 Agent 下发
+       REPLICAOF NO ONE，并尝试让旧主库追随新主库（fallback，保证
+       name 对应的实例一定成为新主库）
 ```
+
+`instance replicate`（手动指定复制目标）在 Sentinel 托管的组上会被拒绝（409），因为它与 Sentinel 的自动拓扑管理直接冲突；未托管的组仍可使用。
 
 #### 4.3.2 Sentinel 自动检测（推荐）
 
@@ -239,6 +256,96 @@ Skill: redis-failover
 > - 没有锁保护时，多个编排流程并发执行会造成 Envoy 路由混乱、状态文件冲突和重复告警
 > - 编排锁确保同一实例组同一时刻只有一个故障转移编排流程在执行
 
+#### 4.3.4 Sentinel 唯一权威模型下的四个关键实现约束
+
+以下四点是实机验证（反复触发 failover + 重启旧主库容器）与代码审计踩到的真实竞态/缺口，均已修复，记录约束原因以避免回归：
+
+**a. 同步 Sentinel 配置时禁止无条件 `REMOVE`+`MONITOR`**
+
+Redis Sentinel 官方机制：failover 完成后，旧主库会被 Sentinel"虚拟加入"新主库的从库列表（即使它当前不可达），这样它重新上线时会被自动探测并降级为从库——这是 Sentinel 自愈脑裂的核心依据。
+
+`SENTINEL REMOVE <group>` 会清空 Sentinel 对该组的**全部**历史状态，包括这条刚建立的追踪记录。因此 Server 同步 Sentinel 配置（`syncSentinelNode`）时，只有当 Sentinel 当前认知的主库地址与期望地址**不一致**时才执行 `REMOVE`+`MONITOR`；地址已经一致时只允许用 `SENTINEL SET` 调整不影响拓扑追踪状态的参数（`down-after-milliseconds`、`failover-timeout` 等）。
+
+**b. 主库创建时配置文件也必须写 `masterauth`，不能只在从库分支写**
+
+在 Sentinel 唯一权威模型下，任何当前是主库的实例都可能在未来被 Sentinel 自动降级为从库，且 Sentinel 只会对它发 `REPLICAOF`，不会代为设置认证信息。如果 `masterauth` 只写在"创建时指定了 `--replica-of`"的分支里，一个从创建起就是主库的实例，配置文件永远没有 `masterauth`，一旦被降级会因为 `NOAUTH` 无法与新主库建立复制连接（`master_link_status` 长期 `down`）。
+
+因此配置模板中 `masterauth` 与 `requirepass` 同级：只要设置了密码就总是写入，不依赖当前角色。
+
+**c. 检测到主库地址变化后必须等待收尾，不能立即同步**
+
+`SENTINEL GET-MASTER-ADDR-BY-NAME` 在 failover 状态机走到 `reconf-slaves` 阶段就已经会返回新地址，但此时 Sentinel 还没有触发 `failover-end`/`switch-master` 事件、也还没有把旧主库"虚拟加入"新主库的从库列表（即 a 所述的追踪记录）。如果 Server 检测到地址变化后立刻同步 Sentinel 配置，会打断 Sentinel 还没走完的收尾流程，抹掉刚要建立的追踪记录，导致旧主库永远不会被自动纠正。
+
+Kvrocks 场景复现明显（收尾阶段耗时更长，窗口期更长）；Redis 理论上存在同样的窗口但更短，实测未必稳定复现。缓解方式：检测到地址变化后，等待一个安全边际（≥3 秒）并二次确认地址未变，才认为 failover 真正收尾完成，再触碰 Sentinel 配置。
+
+**d. "是否监控某个组"只能由拓扑意图决定，不能由主库健康状态决定**
+
+`syncSentinelNode` 需要两个独立的输入，不能混为一谈：
+
+| 输入 | 含义 | 用途 | 是否看健康状态 |
+|------|------|------|----------------|
+| `known`（`knownSentinelGroups`） | Server 认识的全部 replication 组 | 判断 Sentinel 上哪些组已不该存在，决定 `REMOVE` | **否** |
+| `desired`（`buildSentinelMasters`） | 需要下发 `MONITOR`/`SET` 配置的组及其地址 | 决定配置下发 | 否，但需要地址可解析 |
+
+早期实现只有 `desired` 一个集合，且 `buildSentinelMasters` 要求主库 `Role == "master" && Status == "running"`，`REMOVE` 又是"凡不在 `desired` 中的组一律删除"。两者叠加会静默摘除故障转移能力：
+
+```
+主库容器崩溃（Agent 仍存活，只是容器不在了）
+  → 30s 容器 reconcile 把主库标为 failed（§4.2，无需任何人为操作）
+  → 之后任意一次与该组无关的管理操作（instance create / delete）调用 syncSentinel
+  → 该组被剔出 desired → SENTINEL REMOVE → Sentinel 彻底忘记这个组
+```
+
+结果是恰好在最需要 failover 的时刻，Sentinel 被告知不再监控该组，且全程无告警、无审计。此后即使从库健康、即使旧主库恢复，也不会有任何自动切换。
+
+约束：**主库不健康恰恰是 Sentinel 最需要继续监控的时刻。** 健康状态只应影响"要不要重新 `MONITOR` 到新地址"，绝不能影响"要不要监控这个组"。`REMOVE` 只允许发生在组真正被删除或从 `replication` 改成 `standalone` 时——即只由 `known` 驱动。
+
+这条约束与 §4.2 的状态字段设计有关：`instances.status` 同时承担了"观测结果"（由 reconcile 写入 `failed`/`unexpected_stopped`）和"意图声明"（被其他代码读取用于判断该不该做某事）两种语义。读取该字段做拓扑决策时必须意识到它是观测值而非期望值。
+
+#### 4.3.5 Agent 不得自主重启实例
+
+"Sentinel 唯一权威"只约束了 Server，但系统里实际存在四个能影响拓扑的决策者。前两个是设计中承认的，后两个曾经不在视野里：
+
+| 决策者 | 能改什么 | 决策依据 | 是否知道其他决策者 |
+|--------|----------|----------|-------------------|
+| Server | 容器生命周期、配置、状态记账、Envoy 路由 | `pilot.db` + Agent 上报 | 知道 Sentinel |
+| Sentinel | 节点角色（`REPLICAOF`） | 自己探测 + 多数派选举 | 不知道 |
+| Agent `runHealthCheck` | ~~`podman restart`~~（已删除） | 本机单次 `PING` | 不知道 |
+| podman `--restart on-failure:5` | 容器自动重启 | 进程退出码 | 不知道 |
+
+后两个不直接写角色，但**通过重启容器让角色回退到配置文件里固化的旧值**，从而间接推翻 Sentinel 的决策（配置文件只在创建和 `instance config --restart` 时写入，`promote`/`replicate` 与 Sentinel 自己发的 `REPLICAOF` 都不落盘）。
+
+**Agent 自主重启已删除**，理由：
+
+**a. 一个 bit 的信息量撑不起破坏性决策**
+
+`PING` 失败可能意味着：实例真的死了（重启有用）、正在 load 大数据集（重启导致永远起不来）、正在 fork/AOF rewrite 短暂阻塞（重启可能丢数据）、密码不一致（重启无用，问题在配置）、负载高只是慢（重启把"慢"变成"挂"）、正在被 Sentinel failover（重启打断编排）。Agent 无法区分，却对全部六种情况采取同一个动作。
+
+而重启一个 Redis/Kvrocks 实例的代价是：断开所有客户端连接、丢失未落盘数据、按配置文件旧角色启动、可能触发一次本不必要的 failover、replica 可能需要全量重同步打满网络。
+
+**b. 判定门槛比 Sentinel 更低，总会抢在正确机制之前动手**
+
+`tcpPing` 的超时是 3 秒，而 Sentinel 的 `down-after-milliseconds` 默认 5000ms。一个响应慢到 3~5 秒之间的主库，Sentinel 认为它还活着，Agent 已经把它重启了——**Agent 自己制造了本来不存在的故障**，然后 Sentinel 才被迫 failover。
+
+**c. 主从架构里自愈的正确层次是切流量，不是修实例**
+
+切流量无损、可逆、秒级（Sentinel failover + Envoy 路由更新）；重启有损、不可逆、慢。Agent 用错了工具。
+
+**d. 静默重启会掩盖问题**
+
+`podmanRestart` 连返回值都不检查，日志只有一行。一个每 30 秒被重启一次的实例，在监控上会看起来"大部分时间是 running"。而 `--restart on-failure:5` 的上限语义是"重启 5 次后放弃"——放弃是**期望行为**：容器停住，reconcile 检测到并告警，人来看。Agent 无限重启把这个上限绕过了。
+
+**各层职责划分（修复后）**：
+
+| 情况 | 负责人 |
+|------|--------|
+| 进程真正退出 | podman `--restart on-failure:5`（响应确定事实，无推断） |
+| 超过重启上限后容器停住 | Server 容器 reconcile 检测 → 告警 → 人工介入 |
+| 主从组内实例不健康 | Sentinel failover 切走流量 |
+| 容器在跑但实例无响应 | Agent 分类上报 → `/instance/status` 的 `health` 字段 → Server/运维决策 |
+
+最后一行补上了一个此前的观测盲区：容器 reconcile 只问 podman"容器在不在跑"，看不到"容器活着但实例 hang 住 / 正在 loading / 认证不一致"。`tcpPing` 现在返回分类结果而非无区分的 error，这个信息被记录并暴露出来，但 Agent 自己不据此采取任何动作。
+
 ### 4.4 实例迁移
 
 ```
@@ -257,9 +364,13 @@ Skill: redis-migrate
   │   health_check → INFO replication: master_sync_in_progress=0
   │
   ├─3. 提升新从库为主库
-  │   agent_exec(server-c, "instance/promote", { name: "order-master-new" })
+  │   redis-pilot-cli instance failover order-master-new
+  │   → 若该组由 Sentinel 托管：Server 发送 SENTINEL FAILOVER，等待并同步结果
+  │   → 若未托管：Server 直接向 Agent 下发 REPLICAOF NO ONE（fallback）
   │
   ├─4. 更新旧从库的复制目标
+  │   若该组由 Sentinel 托管：Sentinel 会在下一轮探测中自动将旧从库/旧主库
+  │   重新指向新主库，无需手动调用；仅在未托管的组才需要手动调用：
   │   agent_exec(server-b, "instance/replicate", {
   │       name: "order-replica",
   │       replica_of: "10.0.1.12:6379"   // 新主库
@@ -295,7 +406,7 @@ Skill: redis-backup
   ├─2. agent_exec(server-b, "instance/backup", {
   │       name: "order-replica",
   │   })
-  │   → Agent: BGSAVE → 等待完成 → 复制 dump.rdb 到 backup/ 目录
+  │   → Agent: BGSAVE → 等待完成（失败/超时即报错）→ 校验产物 → 复制 dump.rdb 到 backup/ 目录
   │
   ├─3. 轮转清理
   │   agent_exec(server-b, "instance/backups/cleanup", {
@@ -320,7 +431,7 @@ Skill: redis-backup
 | `redis-scale` | "加从库 / 扩容" | 加从库：创建从库 → 同步 → 注册代理；扩容：调整内存/CPU |
 | `redis-migrate` | "迁移 Redis" | 新从库 → 同步 → 提升 → 更新拓扑 → 清理旧实例 |
 | `redis-failover` | "故障转移" / 自动触发 | 检测故障 → 提升从库 → 创建新从库 → 更新路由 |
-| `redis-backup` | "备份 / 恢复 Redis" | 备份：BGSAVE → 复制 → 轮转；恢复：停止 → 替换 RDB → 启动 |
+| `redis-backup` | "备份 / 恢复 Redis" | 备份：BGSAVE → 校验产物 → 复制 → 轮转；恢复：停止 → 暂存并校验 → 原子替换（原数据保留）→ 启动 |
 | `redis-diagnose` | "Redis 有问题" | 采集 INFO/SLOWLOG/MEMORY → AI 分析 → 建议 |
 | `redis-status` | "查看 Redis 状态" | 池状态 / 实例状态 / 主从同步状态 |
 | `redis-envoy` | "代理管理" | 查看路由 / 更新配置 / 重载 Envoy |

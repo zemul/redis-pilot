@@ -270,8 +270,20 @@ func (s *Server) reconcileSentinelOnce() error {
 			continue
 		}
 		if current != "" && current != expected {
-			if err := s.handleSentinelFailover(groupName, current, "reconcile", "system"); err != nil {
-				s.log.Errorf("handle sentinel failover group=%s new=%s failed: %v", groupName, current, err)
+			// GET-MASTER-ADDR-BY-NAME 在 Sentinel 的 failover 状态机走到 reconf-slaves
+			// 阶段就已经会返回新地址，但此时 Sentinel 内部还没有完成 failover-end/
+			// switch-master 事件，也还没有把旧 master"虚拟加入"新 master 的 slave 列表
+			// （Sentinel 依赖这条记录在旧 master 重新可达时自动将其降级，这是它自愈机制的
+			// 核心）。如果这时立刻调用 handleSentinelFailover（进而 syncSentinel 触发
+			// REMOVE+MONITOR），会打断 Sentinel 还没走完的收尾流程，抹掉这条追踪记录，
+			// 导致旧 master 永远不会被自动纠正——这是实测复现的真实竞态。用短暂的二次
+			// 确认代替立即处理：只有间隔之后地址依然是同一个新值，才认为 failover 真正
+			// 收尾完成，可以安全同步。
+			time.Sleep(3 * time.Second)
+			if confirmed, err := s.querySentinelMaster(node, nodes, groupName); err == nil && confirmed == current {
+				if err := s.handleSentinelFailover(groupName, current, "reconcile", "system"); err != nil {
+					s.log.Errorf("handle sentinel failover group=%s new=%s failed: %v", groupName, current, err)
+				}
 			}
 		}
 	}
@@ -609,6 +621,7 @@ func (s *Server) syncSentinelMasters() error {
 	}
 
 	masters := s.buildSentinelMasters(node, instances)
+	known := knownSentinelGroups(instances)
 
 	var firstErr error
 	success := 0
@@ -618,7 +631,7 @@ func (s *Server) syncSentinelMasters() error {
 			continue
 		}
 		addr := fmt.Sprintf("%s:%d", srv.Endpoint, s.sentinelPort())
-		if err := syncSentinelNode(addr, masters, s.sentinelQuorum()); err != nil {
+		if err := syncSentinelNode(addr, masters, known, s.sentinelQuorum()); err != nil {
 			s.log.Errorf("sentinel sync failed on %s: %v", name, err)
 			if firstErr == nil {
 				firstErr = err
@@ -654,7 +667,13 @@ func (s *Server) removeSentinelMaster(group string) {
 	}
 }
 
-func syncSentinelNode(addr string, desired []apitypes.SentinelMaster, quorum int) error {
+// syncSentinelNode 把期望配置同步到单个 Sentinel 节点。
+//
+// desired 是"需要下发 MONITOR/SET 配置"的组；known 是"Server 认识的全部 replication
+// 组"，用于判断 Sentinel 上的哪些组已经不该存在。两者必须分开：
+// desired 会因为 master 暂时不健康、地址暂时解析不出来而缺项，而这类缺项绝不能被理解成
+// "该组应当从 Sentinel 上删除"。只有 known 里没有的组才是真正被删除/改类型的组。
+func syncSentinelNode(addr string, desired []apitypes.SentinelMaster, known map[string]struct{}, quorum int) error {
 	reply, err := sentinelCommand(addr, "SENTINEL", "MASTERS")
 	if err != nil {
 		return err
@@ -664,16 +683,30 @@ func syncSentinelNode(addr string, desired []apitypes.SentinelMaster, quorum int
 		desiredByGroup[master.Group] = master
 	}
 	for _, group := range sentinelMasterNames(reply) {
-		if _, ok := desiredByGroup[group]; !ok {
+		if _, ok := known[group]; !ok {
 			if _, err := sentinelCommand(addr, "SENTINEL", "REMOVE", group); err != nil {
 				return err
 			}
 		}
 	}
 	for _, master := range desired {
-		_, _ = sentinelCommand(addr, "SENTINEL", "REMOVE", master.Group)
-		if _, err := sentinelCommand(addr, "SENTINEL", "MONITOR", master.Group, master.Host, fmt.Sprintf("%d", master.Port), fmt.Sprintf("%d", quorum)); err != nil {
-			return err
+		// 仅当 Sentinel 当前认知的 master 地址与期望地址不一致（组未注册，或地址真的变了，
+		// 例如手工修复配置错误）时才 REMOVE + 重新 MONITOR。
+		//
+		// 关键：REMOVE 会清空 Sentinel 对该组的全部历史状态，包括 failover 完成后
+		// Sentinel 自己"虚拟加入"的旧 master 记录（Sentinel 依赖这条记录在旧 master
+		// 重新可达时自动把它降级为 replica，这是官方文档描述的核心自愈机制）。如果每次
+		// syncSentinel 都无条件 REMOVE+MONITOR，就会在 failover 刚完成、Sentinel 刚建立
+		// 这条追踪记录时立刻把它抹掉，导致旧 master 永远不会被自动纠正——这是本函数曾经
+		// 的实现方式，也是脑裂 bug 的直接原因之一。
+		// 当地址已经一致时，只允许通过 SENTINEL SET 调整不影响拓扑追踪状态的参数。
+		currentAddr, hasCurrentAddr := sentinelCurrentAddr(reply, master.Group)
+		wantAddr := fmt.Sprintf("%s:%d", master.Host, master.Port)
+		if !hasCurrentAddr || currentAddr != wantAddr {
+			_, _ = sentinelCommand(addr, "SENTINEL", "REMOVE", master.Group)
+			if _, err := sentinelCommand(addr, "SENTINEL", "MONITOR", master.Group, master.Host, fmt.Sprintf("%d", master.Port), fmt.Sprintf("%d", quorum)); err != nil {
+				return err
+			}
 		}
 		if master.Password != "" {
 			if _, err := sentinelCommand(addr, "SENTINEL", "SET", master.Group, "auth-pass", master.Password); err != nil {
@@ -693,14 +726,71 @@ func syncSentinelNode(addr string, desired []apitypes.SentinelMaster, quorum int
 	return nil
 }
 
+// sentinelCurrentAddr 从 SENTINEL MASTERS 的回复中提取指定 group 当前的 master 地址。
+func sentinelCurrentAddr(reply interface{}, group string) (string, bool) {
+	masters, ok := reply.([]interface{})
+	if !ok {
+		return "", false
+	}
+	for _, rawMaster := range masters {
+		fields, ok := rawMaster.([]interface{})
+		if !ok {
+			continue
+		}
+		m := map[string]string{}
+		for i := 0; i+1 < len(fields); i += 2 {
+			key, _ := fields[i].(string)
+			val, _ := fields[i+1].(string)
+			m[key] = val
+		}
+		if m["name"] != group {
+			continue
+		}
+		if m["ip"] == "" || m["port"] == "" {
+			return "", false
+		}
+		return m["ip"] + ":" + m["port"], true
+	}
+	return "", false
+}
+
+// knownSentinelGroups 返回"按拓扑意图应当由 Sentinel 监控"的组名集合。
+//
+// 关键：这里刻意不看 master 的健康状态（Status/Role）。是否需要监控是一个拓扑意图，
+// 只在建组/删组/改组类型时变化；而 master 是否健康是随时在变的瞬时观测。master 不健康
+// 恰恰是 Sentinel 最需要继续监控、准备发起 failover 的时刻，绝不能因此撤掉监控。
+//
+// 这个集合专门用于回答"哪些组允许从 Sentinel 上 REMOVE"，与 buildSentinelMasters
+// 返回的"需要下发 MONITOR/SET 配置的组"是两件不同的事：后者需要能解析出具体地址，
+// 前者不需要。地址暂时解析不出来只意味着"这一轮没法下发配置"，不意味着"该删掉监控"。
+func knownSentinelGroups(instances *apitypes.InstancesState) map[string]struct{} {
+	groups := map[string]struct{}{}
+	if instances == nil {
+		return groups
+	}
+	for name, group := range instances.Groups {
+		if group == nil || group.Type != "replication" || group.CurrentMaster == "" {
+			continue
+		}
+		groups[name] = struct{}{}
+	}
+	return groups
+}
+
 func (s *Server) buildSentinelMasters(node *apitypes.NodeState, instances *apitypes.InstancesState) []apitypes.SentinelMaster {
 	var masters []apitypes.SentinelMaster
 	for groupName, group := range instances.Groups {
-		if group == nil || group.Type != "replication" {
+		if group == nil || group.Type != "replication" || group.CurrentMaster == "" {
 			continue
 		}
+		// 只要求 CurrentMaster 记录存在且地址可解析，不要求它当前健康。
+		// 曾经这里额外要求 inst.Role == "master" && inst.Status == "running"，
+		// 导致 master 容器崩溃（reconcile 把 Status 改成 failed）后该组被剔出 desired，
+		// 再经 syncSentinelNode 的清理逻辑被 SENTINEL REMOVE——恰好在最需要故障转移的
+		// 时刻摘掉了故障转移能力。健康状态只应影响"要不要重新 MONITOR 到新地址"，
+		// 不应影响"要不要监控这个组"。
 		inst := instances.Instances[group.CurrentMaster]
-		if inst == nil || inst.Role != "master" || inst.Status != "running" {
+		if inst == nil {
 			continue
 		}
 		endpoint := nodeEndpoint(node, inst.Server)

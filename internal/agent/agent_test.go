@@ -770,3 +770,54 @@ func TestInstanceList_FullFlow(t *testing.T) {
 		t.Fatalf("expected success: %s", resp.Error)
 	}
 }
+
+// TestWriteRedisConfig_MasterAlsoGetsMasterAuth 验证即使实例当前创建为 master
+// （没有 ReplicaOf），只要设置了密码，配置文件也应该写入 masterauth。
+//
+// 回归背景：在"Sentinel 唯一权威"的故障转移模型下，任何当前是 master 的实例都可能
+// 在未来的 failover 中被 Sentinel 自动降级为 replica（Sentinel 会直接对它下发
+// REPLICAOF，不会主动帮它设置认证信息）。此前 masterauth 只写在 ReplicaOf 分支里，
+// 导致这种"master 创建时从未想到自己以后可能变成 replica"的实例，配置文件永远没有
+// masterauth，一旦被降级，运行时 CONFIG SET masterauth 也没有被设置（Sentinel 不管
+// 这件事），复制握手会因为 NOAUTH 失败，旧 master 表面上执行了 REPLICAOF 但实际上
+// 永远同步不上数据（master_link_status 长期 down）。
+func TestWriteRedisConfig_MasterAlsoGetsMasterAuth(t *testing.T) {
+	dir := t.TempDir()
+	err := writeRedisConfig(dir, RedisConfigParams{
+		Password:        "pass",
+		Memory:          "8Gi",
+		MaxmemoryPolicy: "noeviction",
+		Appendonly:      "yes",
+		// 注意：没有设置 ReplicaOf，模拟这个实例当前是 master。
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, _ := os.ReadFile(filepath.Join(dir, "conf", "redis.conf"))
+	content := string(data)
+	if strings.Contains(content, "replicaof") {
+		t.Error("master config should not contain replicaof")
+	}
+	if !strings.Contains(content, "masterauth pass") {
+		t.Error("expected masterauth to be present even for a master instance, so it can later be safely demoted by Sentinel without an auth gap")
+	}
+}
+
+func TestWriteKvrocksConfig_MasterAlsoGetsMasterAuth(t *testing.T) {
+	dir := t.TempDir()
+	err := writeKvrocksConfig(dir, KvrocksConfigParams{
+		Password: "kvpass",
+		Memory:   "4Gi",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, _ := os.ReadFile(filepath.Join(dir, "conf", "kvrocks.conf"))
+	content := string(data)
+	if strings.Contains(content, "slaveof") {
+		t.Error("master config should not contain slaveof")
+	}
+	if !strings.Contains(content, "masterauth kvpass") {
+		t.Error("expected masterauth to be present even for a master instance, so it can later be safely demoted by Sentinel without an auth gap")
+	}
+}

@@ -53,8 +53,8 @@
 
 | API 路径 | 方法 | 功能 | 实现函数 |
 |---------|------|------|---------|
-| `/instance/promote` | POST | 从库提升为主库（REPLICAOF NO ONE） | `instancePromote()` |
-| `/instance/replicate` | POST | 设置复制关系（从库指向新主库） | `instanceReplicate()` |
+| `/instance/failover` | POST | 触发故障转移。Sentinel 托管组：转发 `SENTINEL FAILOVER` 并等待/同步结果（不保证提升指定的实例）；未托管组：直接 `REPLICAOF NO ONE`（等价于旧版 promote，保证提升指定实例） | `instanceFailover()` |
+| `/instance/replicate` | POST | 设置复制关系（从库指向新主库）。Sentinel 托管组上拒绝（409），避免与自动拓扑管理冲突 | `instanceReplicate()` |
 
 **拓扑变更特性**:
 - 自动维护主库的 `Replicas` 列表
@@ -108,16 +108,37 @@
 
 **备份特性**:
 - **Redis 备份**:
-  - 仅 RDB: `BGSAVE` → 等待完成 → 复制 `dump.rdb`
-  - RDB+AOF: `BGSAVE` + `BGREWRITEAOF` → 同时备份 RDB 和 AOF 文件
+  - 仅 RDB: `BGSAVE` → 等待完成 → 校验产物 → 复制 `dump.rdb`
+  - RDB+AOF: `BGSAVE` + `BGREWRITEAOF` → 写入 `<ts>.incomplete` 暂存目录 → 全部成功后 `rename` 到 `<ts>`
   - 支持 AOF 目录模式（`appendonlydir/`）和单文件模式（`appendonly.aof`）
 
 - **Kvrocks 备份**:
-  - `ROCKSDB.CHECKPOINT` → 压缩为 `.checkpoint.tar.gz`
+  - `BGSAVE` → 校验产物 → 压缩为 `.checkpoint.tar.gz`
+  - 不使用 `ROCKSDB.CHECKPOINT`：kvrocks 2.15.0 不存在该命令，实测返回 `ERR unknown command`
+  - `BGSAVE` 把 RocksDB 数据文件写入容器内 `/data/backup`（宿主机 `dataDir/data/backup`），
+    而不是 `-v` 挂载的 `/backup`（`dataDir/backup`）
 
-- **轮转清理**: 支持 `retention` 参数限制备份份数
+- **完整性保证**（不产出静默损坏的备份包）:
+  - `BGSAVE`/`BGREWRITEAOF` 的回复经 `redisCmdChecked` 检查 RESP 错误——redis-cli 收到
+    服务端 `-ERR` 时进程仍以退出码 0 结束，必须检查输出内容才能感知失败
+  - 等待持久化完成用 `waitForPersistenceDone`：`INFO persistence` 的错误不再被丢弃，
+    连续失败 3 次即快速失败；轮询超时返回错误而不是继续打包
+  - 打包/复制前校验产物：必须非空，且 mtime 不早于本次 `BGSAVE` 发起时刻。仅校验非空
+    不足以区分「本次生成」和「上一次失败留下的残留」——后者会产出一个格式完全有效、
+    时间戳崭新、内容却是旧快照的备份包，比没有备份更危险
+
+- **轮转清理**: 支持 `retention` 参数限制备份份数。中间态产物（`.incomplete` 后缀、
+  点开头的暂存目录）不计入份数，避免把真正的备份挤出保留窗口
 
 - **恢复优先级**: AOF > RDB（若存在 AOF 则优先恢复）
+
+- **恢复原子性**（失败时原数据完好）:
+  - 三条恢复路径（kvrocks / Redis AOF 联合 / Redis 仅 RDB）统一为
+    **暂存 → 校验 → 原子替换 → 保留原数据**
+  - 新数据先准备到 `data/.restore-staging/` 并校验，任一步失败都不触碰现有数据
+  - 替换用 `os.Rename`（同文件系统内原子）；原数据不删除，而是改名保留为
+    `<path>.before-restore-<ts>`，便于误恢复后回退
+  - 恢复前校验备份包存在且非空——空包是上次备份中途失败的残骸，用它覆盖现有数据是纯粹的数据损失
 
 ---
 
@@ -231,8 +252,8 @@
 
 | API 路径 | 方法 | 功能 | 实现函数 |
 |---------|------|------|---------|
-| `/instance/promote` | POST | 从库提升为主库 | `instancePromote()` |
-| `/instance/replicate` | POST | 设置复制关系 | `instanceReplicate()` |
+| `/instance/failover` | POST | 触发故障转移（Sentinel 托管组走 `SENTINEL FAILOVER`，未托管组直接操作 Agent） | `instanceFailover()` |
+| `/instance/replicate` | POST | 设置复制关系（Sentinel 托管组上拒绝） | `instanceReplicate()` |
 
 **实现方式**:
 - 提升: `REPLICAOF NO ONE`
@@ -277,9 +298,13 @@
 - **周期**: 30 秒
 - **功能**: 
   - 列出所有运行中的容器
-  - 对每个容器执行 `PING` 命令
-  - 若失败，自动重启容器
+  - 对每个容器通过 RESP 直连执行 `AUTH` + `PING`（`tcpPing`）
+  - 把结果分类记录到 monitor：`healthy` / `loading` / `auth_failed` / `repl_link_error` / `unreachable` / `unexpected`
+  - 分类结果通过 `/instance/status` 的 `health` 字段暴露给 Server
   - 记录错误日志
+- **明确不做**: 不自主重启实例。`-LOADING`（正在加载数据集）和 `auth_failed`（密码不一致）
+  都不是实例故障，重启会分别导致「永远起不来」和「健康实例被反复重启」。容器级自动重启
+  由 `podman --restart on-failure:5` 承担，详见 [architecture/flows.md §4.3.5](architecture/flows.md)
 
 #### 2.6.2 指标采集 (`runMetricsCollect`)
 - **周期**: 60 秒
@@ -357,8 +382,8 @@ redis-pilot-cli instance config redis-1 \
   --restart
   # 更新配置
 
-redis-pilot-cli instance promote replica-1
-  # 从库提升为主库
+redis-pilot-cli instance failover replica-1
+  # 触发故障转移（Sentinel 托管组：不保证提升的就是 replica-1）
 
 redis-pilot-cli instance replicate replica-1 --replica-of redis-1
   # 设置复制关系

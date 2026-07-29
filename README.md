@@ -223,8 +223,10 @@ redis-pilot-cli instance delete <name> [--clean-data]
 redis-pilot-cli instance start <name>
 redis-pilot-cli instance stop <name>
 redis-pilot-cli instance config <name> --set key=value[,key=value] [--restart]
-redis-pilot-cli instance promote <name>
 redis-pilot-cli instance replicate <replica> --replica-of <master>
+
+# 故障转移（Sentinel 唯一权威：不保证提升指定的那个实例，最终由 Sentinel 选举决定）
+redis-pilot-cli instance failover <name>
 
 # 备份
 redis-pilot-cli backup exec <instance>

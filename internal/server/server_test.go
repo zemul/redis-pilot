@@ -1,13 +1,19 @@
 package server
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
+	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/pkg/apitypes"
 )
@@ -721,12 +727,13 @@ func fakeAgentHostPort(addr string) (string, int) {
 	return host, port
 }
 
-// TestInstancePromote_DemotesOldMaster 验证 promote 会真正向旧 master 所在 Agent
-// 下发 REPLICAOF，让它追随新 master，而不仅仅是更新状态存储里的角色标记。
+// TestInstanceFailover_DirectFallback_DemotesOldMaster 验证 Sentinel 未启用时的
+// fallback 路径（directFailover）会真正向旧 master 所在 Agent 下发 REPLICAOF，
+// 让它追随新 master，而不仅仅是更新状态存储里的角色标记。
 // 回归背景：此前 instancePromote 只调用了新 master 的 /instance/promote，
 // 没有调用旧 master 的 /instance/replicate，导致旧 master 在运行时仍然是
 // 独立 master（脑裂风险），即使状态存储显示它已经是 replica。
-func TestInstancePromote_DemotesOldMaster(t *testing.T) {
+func TestInstanceFailover_DirectFallback_DemotesOldMaster(t *testing.T) {
 	var newMasterPromoteCalled bool
 	var oldMasterReplicateReq struct {
 		Name      string `json:"name"`
@@ -784,7 +791,7 @@ func TestInstancePromote_DemotesOldMaster(t *testing.T) {
 		},
 	})
 
-	w := doRequest(r, "POST", "/instance/promote", map[string]string{"name": "order-replica"})
+	w := doRequest(r, "POST", "/instance/failover", map[string]string{"name": "order-replica"})
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
 	}
@@ -815,9 +822,10 @@ func TestInstancePromote_DemotesOldMaster(t *testing.T) {
 	}
 }
 
-// TestInstancePromote_OldMasterUnreachable 验证旧 master 不可达（故障转移的典型触发场景）
-// 时，promote 仍然能成功完成状态切换，不会卡在中间态。
-func TestInstancePromote_OldMasterUnreachable(t *testing.T) {
+// TestInstanceFailover_DirectFallback_OldMasterUnreachable 验证 Sentinel 未启用时，
+// 旧 master 不可达（故障转移的典型触发场景）时，failover 仍然能成功完成状态切换，
+// 不会卡在中间态。
+func TestInstanceFailover_DirectFallback_OldMasterUnreachable(t *testing.T) {
 	newMasterAgent := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(apitypes.APIResponse{Success: true})
 	}))
@@ -854,7 +862,7 @@ func TestInstancePromote_OldMasterUnreachable(t *testing.T) {
 		},
 	})
 
-	w := doRequest(r, "POST", "/instance/promote", map[string]string{"name": "order-replica"})
+	w := doRequest(r, "POST", "/instance/failover", map[string]string{"name": "order-replica"})
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected promote to succeed even if old master is unreachable, got %d: %s", w.Code, w.Body.String())
 	}
@@ -862,5 +870,254 @@ func TestInstancePromote_OldMasterUnreachable(t *testing.T) {
 	instances, _ := s.state.ReadInstances()
 	if instances.Instances["order-replica"].Role != "master" {
 		t.Errorf("expected order-replica to become master despite old master being unreachable")
+	}
+}
+
+// fakeSentinel 是一个极简的 RESP 协议 mock，只处理测试需要的两条命令：
+// SENTINEL FAILOVER <group> 和 SENTINEL GET-MASTER-ADDR-BY-NAME <group>。
+// masterAddr 用 atomic 存储，模拟 failover 完成后地址发生变化。
+type fakeSentinel struct {
+	listener      net.Listener
+	masterAddr    atomic.Value // string, "host:port"
+	failoverCalls atomic.Int32
+	// failoverEffect 在收到 FAILOVER 命令时执行，用于模拟"过一会儿地址才变化"。
+	failoverEffect func(fs *fakeSentinel)
+
+	// masters 记录 SENTINEL MASTERS/MONITOR/REMOVE 维护的 group -> "host:port"。
+	// 用于测试 syncSentinelNode 的行为。
+	masters      sync.Map
+	monitorCalls atomic.Int32
+	removeCalls  atomic.Int32
+	setCalls     atomic.Int32
+}
+
+// newFakeSentinelWithMasters 创建一个预置了若干 group -> "host:port" 映射的 fake sentinel，
+// 用于测试 syncSentinelNode 是否会保留/重置这些映射。
+func newFakeSentinelWithMasters(t *testing.T, initial map[string]string) *fakeSentinel {
+	t.Helper()
+	fs := newFakeSentinel(t, "")
+	for group, addr := range initial {
+		fs.masters.Store(group, addr)
+	}
+	return fs
+}
+
+func newFakeSentinel(t *testing.T, initialAddr string) *fakeSentinel {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("fake sentinel listen: %v", err)
+	}
+	fs := &fakeSentinel{listener: ln}
+	fs.masterAddr.Store(initialAddr)
+	go fs.serve()
+	t.Cleanup(func() { ln.Close() })
+	return fs
+}
+
+func (fs *fakeSentinel) addr() string {
+	return fs.listener.Addr().String()
+}
+
+func (fs *fakeSentinel) serve() {
+	for {
+		conn, err := fs.listener.Accept()
+		if err != nil {
+			return
+		}
+		go fs.handleConn(conn)
+	}
+}
+
+func (fs *fakeSentinel) handleConn(conn net.Conn) {
+	defer conn.Close()
+	r := bufio.NewReader(conn)
+	for {
+		reply, err := readRESP(r)
+		if err != nil {
+			return
+		}
+		args, _ := reply.([]interface{})
+		// rawArgs 保留原始大小写（组名、host 等大小写敏感），strArgs 仅用于命令动词匹配。
+		rawArgs := make([]string, 0, len(args))
+		strArgs := make([]string, 0, len(args))
+		for _, a := range args {
+			if s, ok := a.(string); ok {
+				rawArgs = append(rawArgs, s)
+				strArgs = append(strArgs, strings.ToUpper(s))
+			}
+		}
+		if len(strArgs) >= 2 && strArgs[0] == "SENTINEL" && strArgs[1] == "FAILOVER" {
+			fs.failoverCalls.Add(1)
+			if fs.failoverEffect != nil {
+				fs.failoverEffect(fs)
+			}
+			fmt.Fprintf(conn, "+OK\r\n")
+			continue
+		}
+		if len(strArgs) >= 2 && strArgs[0] == "SENTINEL" && strArgs[1] == "GET-MASTER-ADDR-BY-NAME" {
+			addr, _ := fs.masterAddr.Load().(string)
+			host, port, _ := net.SplitHostPort(addr)
+			fmt.Fprintf(conn, "*2\r\n$%d\r\n%s\r\n$%d\r\n%s\r\n", len(host), host, len(port), port)
+			continue
+		}
+		if len(strArgs) >= 2 && strArgs[0] == "SENTINEL" && strArgs[1] == "MASTERS" {
+			var groups []string
+			fs.masters.Range(func(k, v interface{}) bool {
+				groups = append(groups, k.(string))
+				return true
+			})
+			fmt.Fprintf(conn, "*%d\r\n", len(groups))
+			for _, g := range groups {
+				addr, _ := fs.masters.Load(g)
+				host, port, _ := net.SplitHostPort(addr.(string))
+				fmt.Fprintf(conn, "*6\r\n$4\r\nname\r\n$%d\r\n%s\r\n$2\r\nip\r\n$%d\r\n%s\r\n$4\r\nport\r\n$%d\r\n%s\r\n",
+					len(g), g, len(host), host, len(port), port)
+			}
+			continue
+		}
+		if len(strArgs) >= 3 && strArgs[0] == "SENTINEL" && strArgs[1] == "MONITOR" {
+			fs.monitorCalls.Add(1)
+			fs.masters.Store(rawArgs[2], rawArgs[3]+":"+rawArgs[4])
+			fmt.Fprintf(conn, "+OK\r\n")
+			continue
+		}
+		if len(strArgs) >= 3 && strArgs[0] == "SENTINEL" && strArgs[1] == "REMOVE" {
+			fs.removeCalls.Add(1)
+			fs.masters.Delete(rawArgs[2])
+			fmt.Fprintf(conn, "+OK\r\n")
+			continue
+		}
+		if len(strArgs) >= 3 && strArgs[0] == "SENTINEL" && strArgs[1] == "SET" {
+			fs.setCalls.Add(1)
+			fmt.Fprintf(conn, "+OK\r\n")
+			continue
+		}
+		fmt.Fprintf(conn, "+OK\r\n")
+	}
+}
+
+// TestInstanceFailover_SentinelManaged_TriggersRealFailoverAndSyncsState 验证
+// Sentinel 托管的组上，instance failover 会真正发送 SENTINEL FAILOVER 命令，
+// 而不是直接向节点下发 REPLICAOF；等待 Sentinel 完成切换后，再把结果被动同步到
+// Server 自己的状态记录（复用 handleSentinelFailover）。
+// 回归背景：Server 自动同步 Sentinel 的 failover 通知（handleSentinelFailover）只
+// 更新状态，从不驱动节点；而 instancePromote 又绕开 Sentinel 直接操作节点——两个
+// 独立的决策者可能同时改变同一份拓扑。方案改为 Sentinel 唯一权威：Server 主动请求
+// 时也通过 SENTINEL FAILOVER，不再自己发 REPLICAOF。
+func TestInstanceFailover_SentinelManaged_TriggersRealFailoverAndSyncsState(t *testing.T) {
+	newMasterAddr := "127.0.0.1:7001"
+	fs := newFakeSentinel(t, "127.0.0.1:7000") // 初始地址对应 order-master
+	fs.failoverEffect = func(fs *fakeSentinel) {
+		go func() {
+			time.Sleep(50 * time.Millisecond)
+			fs.masterAddr.Store(newMasterAddr)
+		}()
+	}
+	sentinelHost, sentinelPortStr, _ := net.SplitHostPort(fs.addr())
+	sentinelPort, _ := strconv.Atoi(sentinelPortStr)
+
+	s := newTestServer(t, "")
+	s.cfg.Sentinel = SentinelConfig{
+		Enabled: true,
+		Nodes:   []string{"srv-sentinel-a", "srv-sentinel-b", "srv-sentinel-c"},
+		Quorum:  2,
+		Port:    sentinelPort,
+	}
+	s.state.WriteNode(&apitypes.NodeState{Servers: map[string]*apitypes.NodeServer{
+		"srv-sentinel-a": {Endpoint: sentinelHost, Status: "healthy"},
+		"srv-sentinel-b": {Endpoint: sentinelHost, Status: "healthy"},
+		"srv-sentinel-c": {Endpoint: sentinelHost, Status: "healthy"},
+		"srv-old":        {Endpoint: "127.0.0.1", Status: "healthy"},
+		"srv-new":        {Endpoint: "127.0.0.1", Status: "healthy"},
+	}})
+	s.state.WriteInstances(&apitypes.InstancesState{
+		Groups: map[string]*apitypes.InstanceGroupState{
+			"order": {
+				Type:          "replication",
+				Engine:        "redis",
+				Category:      "cache",
+				CurrentMaster: "order-master",
+				Envoy:         &apitypes.EnvoyConfig{AutoPort: 16379, MasterPort: 16500},
+			},
+		},
+		Instances: map[string]*apitypes.Instance{
+			"order-master": {
+				Group: "order", Role: "master", Status: "running", Server: "srv-old", Port: 7000,
+			},
+			"order-replica": {
+				Group: "order", Role: "replica", Status: "running", Server: "srv-new", Port: 7001,
+				ReplicaOf: "order-master",
+			},
+		},
+	})
+
+	r := s.Router()
+	w := doRequest(r, "POST", "/instance/failover", map[string]string{"name": "order-replica"})
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if fs.failoverCalls.Load() == 0 {
+		t.Fatal("expected SENTINEL FAILOVER to be sent to the sentinel node")
+	}
+
+	var resp apitypes.APIResponse
+	json.NewDecoder(w.Body).Decode(&resp)
+	data, _ := resp.Data.(map[string]interface{})
+	if data["new_master"] != "order-replica" {
+		t.Errorf("expected new_master=order-replica in response, got %#v", data)
+	}
+
+	instances, err := s.state.ReadInstances()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if instances.Instances["order-replica"].Role != "master" {
+		t.Errorf("expected order-replica to become master in state, got %#v", instances.Instances["order-replica"])
+	}
+	if instances.Instances["order-master"].Role != "replica" {
+		t.Errorf("expected order-master to become replica in state, got %#v", instances.Instances["order-master"])
+	}
+	if instances.Groups["order"].CurrentMaster != "order-replica" {
+		t.Errorf("expected group current master to be order-replica, got %q", instances.Groups["order"].CurrentMaster)
+	}
+}
+
+// TestInstanceReplicate_RejectedOnSentinelManagedGroup 验证手动指定复制目标
+// 在 Sentinel 托管的组上会被拒绝，避免与 Sentinel 的自动拓扑管理冲突。
+func TestInstanceReplicate_RejectedOnSentinelManagedGroup(t *testing.T) {
+	s := newTestServer(t, "")
+	s.cfg.Sentinel = SentinelConfig{Enabled: true, Nodes: []string{"a", "b", "c"}, Quorum: 2}
+	s.state.WriteNode(&apitypes.NodeState{Servers: map[string]*apitypes.NodeServer{
+		"srv-old": {Endpoint: "127.0.0.1", Status: "healthy"},
+		"srv-new": {Endpoint: "127.0.0.1", Status: "healthy"},
+	}})
+	s.state.WriteInstances(&apitypes.InstancesState{
+		Groups: map[string]*apitypes.InstanceGroupState{
+			"order": {
+				Type:          "replication",
+				Engine:        "redis",
+				Category:      "cache",
+				CurrentMaster: "order-master",
+			},
+		},
+		Instances: map[string]*apitypes.Instance{
+			"order-master": {
+				Group: "order", Role: "master", Status: "running", Server: "srv-old", Port: 6379,
+			},
+			"order-replica": {
+				Group: "order", Role: "replica", Status: "running", Server: "srv-new", Port: 6380,
+				ReplicaOf: "order-master",
+			},
+		},
+	})
+
+	r := s.Router()
+	w := doRequest(r, "POST", "/instance/replicate", map[string]string{
+		"name":       "order-replica",
+		"replica_of": "order-master",
+	})
+	if w.Code != http.StatusConflict {
+		t.Fatalf("expected 409 Conflict when group is Sentinel-managed, got %d: %s", w.Code, w.Body.String())
 	}
 }

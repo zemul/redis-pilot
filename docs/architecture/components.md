@@ -34,8 +34,8 @@
   POST /instance/start          启动实例
   POST /instance/stop           停止实例
   POST /instance/config         更新配置
-  POST /instance/promote        从库提升为主库
-  POST /instance/replicate      设置复制目标
+  POST /instance/failover       触发故障转移（Sentinel 托管组：转发 SENTINEL FAILOVER；未托管组：直接操作 Agent，等价于旧版 promote）
+  POST /instance/replicate      设置复制目标（Sentinel 托管组上拒绝，避免与自动拓扑管理冲突）
   GET  /instance/list           列出所有实例
   GET  /instance/status         实例详细状态
 
@@ -104,17 +104,21 @@ CLI Token 优先级（从高到低）：`--token` 参数 > `REDIS_SERVER_TOKEN` 
 | 资源采集 | CPU / 内存 / 磁盘使用率，定时上报 |
 | 配置管理 | 生成 redis.conf，挂载到容器 |
 | 持久化目录管理 | 创建 / 清理 conf 和 data 目录 |
-| 备份执行 | 本地执行 BGSAVE / RDB 文件复制 |
-| 健康检查 | 定期 ping 实例，检测进程存活 |
-| 故障自愈 | 检测到实例挂掉，自动重启 |
+| 备份执行 | 本地执行 BGSAVE，校验产物非空且确为本次生成后再打包；恢复采用暂存 + 原子替换，原数据保留为 `.before-restore-<ts>` |
+| 健康检查 | 定期 ping 实例，把结果**分类上报**（healthy / loading / auth_failed / repl_link_error / unreachable / unexpected），自身不采取任何恢复动作 |
 | 指标采集 | INFO 命令解析，内存 / 连接 / 命令统计 |
+
+> **Agent 不做故障自愈。** 这是一条明确的架构约束，理由见 [flows.md §4.3.5](flows.md)。
+> 容器级自动重启由 `podman --restart on-failure:5` 承担（响应的是进程退出这个确定事实）；
+> 主从组内实例不健康由 Sentinel failover 把流量切走；超过重启上限后容器停住，由 Server
+> 的容器 reconcile 检测并告警。
 
 #### 3.1.2 技术选型
 
 **推荐方案：轻量 Python/Go 守护进程**
 
 - 暴露 HTTP API，供 Server 层远程调用
-- 内置健康检查循环，异常时自动重启实例
+- 内置健康检查循环，探测结果通过 `/instance/status` 的 `health` 字段暴露，**不自主重启实例**
 - 使用 Podman API（libpod）管理容器，避免 shell 拼接
 - 可选：结合 Podman Quadlet（systemd 单元文件）管理容器生命周期
 
@@ -127,8 +131,11 @@ CLI Token 优先级（从高到低）：`--token` 参数 > `REDIS_SERVER_TOKEN` 
   POST /instance/stop          停止实例
   POST /instance/delete        删除实例（需确认数据清理）
   POST /instance/config        更新配置（热更新 or 重启）
-  POST /instance/promote       从库提升为主库
-  POST /instance/replicate     设置复制目标
+  POST /instance/promote       从库提升为主库（REPLICAOF NO ONE）——底层原语，Server 仅在
+                                Sentinel 未启用的组上调用；Sentinel 托管的组由 Sentinel 自己
+                                直接对节点下发 REPLICAOF，不经过这个接口
+  POST /instance/replicate     设置复制目标（REPLICAOF host port）——同上，仅无 Sentinel 托管
+                                的组或 Sentinel 自身触发的降级会用到
 
   GET  /instance/list          列出本机所有实例
   GET  /instance/status        实例详细状态（含 INFO 解析）
@@ -576,7 +583,7 @@ Kvrocks 基于 RocksDB 存储，数据天然持久化到磁盘，无需 RDB/AOF�
 
 - **Redis 实例（engine: redis）：**
   - 避免对主库性能影响
-  - 从库执行 `BGSAVE`，完成后复制 RDB 文件到 backup 目录
+  - 从库执行 `BGSAVE`，等待完成并校验产物后，复制 RDB 文件到 backup 目录
   - 无从库的单点实例，在主库执行（安排在低峰期）
   - **如果开启了 AOF（appendonly: yes），备份时必须同时保存 AOF 文件**：
     1. 先执行 `BGREWRITEAOF` 生成精简 AOF

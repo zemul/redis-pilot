@@ -45,9 +45,9 @@ description: 扩容 Redis 实例（加从库或提升配置）
    redis-pilot-cli instance status <new-name>
    ```
 
-3. 提升新实例为主库
+3. 触发故障转移，提升新实例为主库（Sentinel 托管组：不保证提升的就是这个实例，最终由 Sentinel 选举决定）
    ```
-   redis-pilot-cli instance promote <new-name>
+   redis-pilot-cli instance failover <new-name>
    ```
 
 4. 其他从库改复制目标

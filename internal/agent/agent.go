@@ -487,7 +487,18 @@ func (a *Agent) instanceStatus(c *gin.Context) {
 		fail(c, http.StatusInternalServerError, err.Error())
 		return
 	}
-	ok(c, gin.H{"info": info, "timestamp": time.Now().Format(time.RFC3339)})
+	resp := gin.H{"info": info, "timestamp": time.Now().Format(time.RFC3339)}
+	// 附带最近一次健康探测的分类结果。容器 reconcile 只能看到「容器在不在跑」，
+	// 看不到「容器活着但实例无响应 / 正在 loading / 认证不一致」，这里把该信息暴露出来
+	// 供 Server 和运维判断（Agent 自己不再据此采取任何动作，见 runHealthCheck 注释）。
+	if h := a.mon.getHealth(name); h != nil {
+		resp["health"] = gin.H{
+			"state":      string(h.Health),
+			"detail":     h.Detail,
+			"checked_at": h.UpdatedAt.Format(time.RFC3339),
+		}
+	}
+	ok(c, resp)
 }
 
 func (a *Agent) instanceBackup(c *gin.Context) {
@@ -507,6 +518,10 @@ func (a *Agent) instanceBackup(c *gin.Context) {
 
 	backupDir := filepath.Join(a.cfg.DataDir, req.Name, "backup")
 	ts := time.Now().Format("2006-01-02T15:04:05")
+	// 记录发起时刻，用于校验持久化产物确实是本次生成的（而非上一次的残留）。
+	startedAt := time.Now()
+	// 备份等待超时。之前是硬编码的 60 次 1 秒轮询，且耗尽后不报错。
+	const persistenceTimeout = 60 * time.Second
 
 	if req.Engine == "kvrocks" {
 		// Kvrocks: 官方推荐通过 BGSAVE 生成备份（不存在 ROCKSDB.CHECKPOINT 命令，
@@ -514,81 +529,102 @@ func (a *Agent) instanceBackup(c *gin.Context) {
 		// 数据文件写入容器内 /data/backup（即宿主机 dataDir/data/backup），
 		// 而不是 -v 挂载的 /backup（dataDir/backup）。
 		pw := a.getPassword(req.Name)
-		if _, err := redisCmd(req.Name, pw, "BGSAVE"); err != nil {
-			fail(c, http.StatusInternalServerError, err.Error())
+		if _, err := redisCmdChecked(req.Name, pw, "BGSAVE"); err != nil {
+			fail(c, http.StatusInternalServerError, "BGSAVE failed: "+err.Error())
 			return
 		}
-		for i := 0; i < 60; i++ {
-			info, _ := redisCmd(req.Name, pw, "INFO", "persistence")
-			if strings.Contains(info, "bgsave_in_progress:0") {
-				break
-			}
-			time.Sleep(time.Second)
+		if err := waitForPersistenceDone(req.Name, pw, "bgsave_in_progress:0", persistenceTimeout); err != nil {
+			fail(c, http.StatusInternalServerError, "BGSAVE did not complete: "+err.Error())
+			return
 		}
 		src := filepath.Join(a.cfg.DataDir, req.Name, "data", "backup")
+		// 打包前校验产物：目录必须存在、非空，且至少有一个文件是本次 BGSAVE 之后写入的。
+		// 否则会打包出一个「格式有效但内容是上次快照 / 甚至完全为空」的备份包，
+		// 而时间戳是崭新的——运维看到备份列表里有今天的记录，直到真正需要恢复时才发现问题。
+		if err := verifyBackupSource(src, startedAt); err != nil {
+			fail(c, http.StatusInternalServerError, "BGSAVE produced no usable snapshot: "+err.Error())
+			return
+		}
 		dst := filepath.Join(backupDir, ts+".checkpoint.tar.gz")
 		if _, err := runShell("tar", "-czf", dst, "-C", src, "."); err != nil {
+			os.Remove(dst) // 不留下半个包被后续误当成有效备份
 			fail(c, http.StatusInternalServerError, err.Error())
 			return
 		}
 	} else {
 		// Redis: 检查是否开启 AOF
 		pw := a.getPassword(req.Name)
-		info, _ := redisCmd(req.Name, pw, "INFO", "persistence")
+		info, err := redisCmd(req.Name, pw, "INFO", "persistence")
+		if err != nil {
+			fail(c, http.StatusInternalServerError, "read persistence info failed: "+err.Error())
+			return
+		}
 		hasAOF := strings.Contains(info, "aof_enabled:1")
 
 		// 执行 BGSAVE
-		if _, err := redisCmd(req.Name, pw, "BGSAVE"); err != nil {
-			fail(c, http.StatusInternalServerError, err.Error())
+		if _, err := redisCmdChecked(req.Name, pw, "BGSAVE"); err != nil {
+			fail(c, http.StatusInternalServerError, "BGSAVE failed: "+err.Error())
 			return
 		}
-		for i := 0; i < 60; i++ {
-			info, _ := redisCmd(req.Name, pw, "INFO", "persistence")
-			if strings.Contains(info, "rdb_bgsave_in_progress:0") {
-				break
-			}
-			time.Sleep(time.Second)
+		if err := waitForPersistenceDone(req.Name, pw, "rdb_bgsave_in_progress:0", persistenceTimeout); err != nil {
+			fail(c, http.StatusInternalServerError, "BGSAVE did not complete: "+err.Error())
+			return
+		}
+		rdbPath := filepath.Join(a.cfg.DataDir, req.Name, "data", "dump.rdb")
+		if err := verifyBackupFile(rdbPath, startedAt); err != nil {
+			fail(c, http.StatusInternalServerError, "BGSAVE produced no usable dump.rdb: "+err.Error())
+			return
 		}
 
 		if hasAOF {
 			// AOF 联合备份：BGREWRITEAOF + 同时备份 RDB+AOF
-			if _, err := redisCmd(req.Name, pw, "BGREWRITEAOF"); err != nil {
+			if _, err := redisCmdChecked(req.Name, pw, "BGREWRITEAOF"); err != nil {
 				fail(c, http.StatusInternalServerError, "BGREWRITEAOF failed: "+err.Error())
 				return
 			}
-			for i := 0; i < 60; i++ {
-				info, _ := redisCmd(req.Name, pw, "INFO", "persistence")
-				if strings.Contains(info, "aof_rewrite_in_progress:0") {
-					break
-				}
-				time.Sleep(time.Second)
+			if err := waitForPersistenceDone(req.Name, pw, "aof_rewrite_in_progress:0", persistenceTimeout); err != nil {
+				fail(c, http.StatusInternalServerError, "AOF rewrite did not complete: "+err.Error())
+				return
 			}
-			// 创建目录备份集
+			// 创建目录备份集。先写到临时目录，全部成功后再改名到最终位置，避免中途失败
+			// 留下一个内容不全的备份集被 cleanupBackups 和恢复流程当成有效备份。
 			dstDir := filepath.Join(backupDir, ts)
-			os.MkdirAll(dstDir, 0755)
-			if err := copyFile(filepath.Join(a.cfg.DataDir, req.Name, "data", "dump.rdb"), filepath.Join(dstDir, "dump.rdb")); err != nil {
+			stageDir := dstDir + ".incomplete"
+			os.RemoveAll(stageDir)
+			if err := os.MkdirAll(stageDir, 0o755); err != nil {
+				fail(c, http.StatusInternalServerError, "create backup staging dir failed: "+err.Error())
+				return
+			}
+			defer os.RemoveAll(stageDir) // 成功改名后这里是 no-op
+
+			if err := copyFile(rdbPath, filepath.Join(stageDir, "dump.rdb")); err != nil {
 				fail(c, http.StatusInternalServerError, "backup dump.rdb failed: "+err.Error())
 				return
 			}
 			// AOF 文件可能在 appendonlydir/ 或直接是 appendonly.aof
 			aofDir := filepath.Join(a.cfg.DataDir, req.Name, "data", "appendonlydir")
 			if _, err := os.Stat(aofDir); err == nil {
-				if _, err := runShell("cp", "-r", aofDir, filepath.Join(dstDir, "appendonlydir")); err != nil {
+				if _, err := runShell("cp", "-r", aofDir, filepath.Join(stageDir, "appendonlydir")); err != nil {
 					fail(c, http.StatusInternalServerError, "backup AOF dir failed: "+err.Error())
 					return
 				}
 			} else {
 				aofFile := filepath.Join(a.cfg.DataDir, req.Name, "data", "appendonly.aof")
-				if err := copyFile(aofFile, filepath.Join(dstDir, "appendonly.aof")); err != nil {
+				if err := copyFile(aofFile, filepath.Join(stageDir, "appendonly.aof")); err != nil {
 					fail(c, http.StatusInternalServerError, "backup AOF file failed: "+err.Error())
 					return
 				}
 			}
+			os.RemoveAll(dstDir)
+			if err := os.Rename(stageDir, dstDir); err != nil {
+				fail(c, http.StatusInternalServerError, "finalize backup set failed: "+err.Error())
+				return
+			}
 		} else {
 			// 仅 RDB 备份
-			src := filepath.Join(a.cfg.DataDir, req.Name, "data", "dump.rdb")
 			dst := filepath.Join(backupDir, ts+".rdb")
-			if err := copyFile(src, dst); err != nil {
+			if err := copyFile(rdbPath, dst); err != nil {
+				os.Remove(dst)
 				fail(c, http.StatusInternalServerError, err.Error())
 				return
 			}
@@ -631,14 +667,42 @@ func (a *Agent) instanceRestore(c *gin.Context) {
 		return
 	}
 
+	// 恢复的通用原则：先把新数据准备到暂存位置并校验，再原子替换，且原数据不删除而是
+	// 改名保留到 .before-restore-<ts>。早期实现是「先 RemoveAll 目标再解压/复制」，
+	// 备份包损坏或磁盘写满就会导致原数据和备份双双丢失，实例以空库启动。
+	stageRoot := filepath.Join(dataDir, ".restore-staging")
+	os.RemoveAll(stageRoot)
+	if err := os.MkdirAll(stageRoot, 0o755); err != nil {
+		fail(c, http.StatusInternalServerError, "create restore staging dir failed: "+err.Error())
+		return
+	}
+	// 失败时清掉暂存目录；成功路径下里面的内容已经被 rename 移走，这里是 no-op。
+	defer os.RemoveAll(stageRoot)
+
 	if req.Engine == "kvrocks" {
 		// 备份包内容是 BGSAVE 生成的 RocksDB 快照文件（SST/MANIFEST 等），
 		// 恢复时整体替换 data/db 目录，让 kvrocks 重启后从中加载。
 		src := filepath.Join(backupDir, req.BackupTs+".checkpoint.tar.gz")
+		if err := verifyBackupArchiveExists(src); err != nil {
+			fail(c, http.StatusBadRequest, err.Error())
+			return
+		}
+		stagedDB := filepath.Join(stageRoot, "db")
+		if err := os.MkdirAll(stagedDB, 0o755); err != nil {
+			fail(c, http.StatusInternalServerError, err.Error())
+			return
+		}
+		if _, err := runShell("tar", "-xzf", src, "-C", stagedDB); err != nil {
+			fail(c, http.StatusInternalServerError, "extract backup failed (original data untouched): "+err.Error())
+			return
+		}
+		if nonEmpty, err := dirHasEntries(stagedDB); err != nil || !nonEmpty {
+			fail(c, http.StatusInternalServerError,
+				"backup archive extracted to an empty dataset, refusing to replace existing data")
+			return
+		}
 		dbDir := filepath.Join(dataDir, "db")
-		os.RemoveAll(dbDir)
-		os.MkdirAll(dbDir, 0755)
-		if _, err := runShell("tar", "-xzf", src, "-C", dbDir); err != nil {
+		if err := swapInPath(stagedDB, dbDir, restorePreservePath(dbDir)); err != nil {
 			fail(c, http.StatusInternalServerError, err.Error())
 			return
 		}
@@ -646,32 +710,79 @@ func (a *Agent) instanceRestore(c *gin.Context) {
 		// 优先 AOF 恢复
 		jointDir := filepath.Join(backupDir, req.BackupTs)
 		if info, err := os.Stat(jointDir); err == nil && info.IsDir() {
-			if err := copyFile(filepath.Join(jointDir, "dump.rdb"), filepath.Join(dataDir, "dump.rdb")); err != nil {
-				fail(c, http.StatusInternalServerError, "restore dump.rdb failed: "+err.Error())
+			// 先把 RDB + AOF 全部准备到暂存目录，任一失败都不触碰现有数据。
+			stagedRDB := filepath.Join(stageRoot, "dump.rdb")
+			if err := copyFile(filepath.Join(jointDir, "dump.rdb"), stagedRDB); err != nil {
+				fail(c, http.StatusInternalServerError, "stage dump.rdb failed (original data untouched): "+err.Error())
 				return
 			}
 			aofSrcDir := filepath.Join(jointDir, "appendonlydir")
-			aofDstDir := filepath.Join(dataDir, "appendonlydir")
+			stagedAOFDir := filepath.Join(stageRoot, "appendonlydir")
+			stagedAOFFile := filepath.Join(stageRoot, "appendonly.aof")
+			useAOFDir := false
 			if _, err := os.Stat(aofSrcDir); err == nil {
-				os.RemoveAll(aofDstDir)
-				if _, err := runShell("cp", "-r", aofSrcDir, aofDstDir); err != nil {
-					fail(c, http.StatusInternalServerError, "restore AOF dir failed: "+err.Error())
+				if _, err := runShell("cp", "-r", aofSrcDir, stagedAOFDir); err != nil {
+					fail(c, http.StatusInternalServerError, "stage AOF dir failed (original data untouched): "+err.Error())
 					return
 				}
+				useAOFDir = true
 			} else {
-				if err := copyFile(filepath.Join(jointDir, "appendonly.aof"), filepath.Join(dataDir, "appendonly.aof")); err != nil {
-					fail(c, http.StatusInternalServerError, "restore AOF file failed: "+err.Error())
+				if err := copyFile(filepath.Join(jointDir, "appendonly.aof"), stagedAOFFile); err != nil {
+					fail(c, http.StatusInternalServerError, "stage AOF file failed (original data untouched): "+err.Error())
+					return
+				}
+			}
+
+			// 暂存完成，开始替换。
+			rdbDst := filepath.Join(dataDir, "dump.rdb")
+			if err := swapInPath(stagedRDB, rdbDst, restorePreservePath(rdbDst)); err != nil {
+				fail(c, http.StatusInternalServerError, err.Error())
+				return
+			}
+			if useAOFDir {
+				aofDst := filepath.Join(dataDir, "appendonlydir")
+				if err := swapInPath(stagedAOFDir, aofDst, restorePreservePath(aofDst)); err != nil {
+					fail(c, http.StatusInternalServerError, err.Error())
+					return
+				}
+				os.Remove(filepath.Join(dataDir, "appendonly.aof"))
+			} else {
+				aofDst := filepath.Join(dataDir, "appendonly.aof")
+				if err := swapInPath(stagedAOFFile, aofDst, restorePreservePath(aofDst)); err != nil {
+					fail(c, http.StatusInternalServerError, err.Error())
 					return
 				}
 			}
 		} else {
 			src := filepath.Join(backupDir, req.BackupTs+".rdb")
-			if err := copyFile(src, filepath.Join(dataDir, "dump.rdb")); err != nil {
+			if err := verifyBackupArchiveExists(src); err != nil {
+				fail(c, http.StatusBadRequest, err.Error())
+				return
+			}
+			stagedRDB := filepath.Join(stageRoot, "dump.rdb")
+			if err := copyFile(src, stagedRDB); err != nil {
+				fail(c, http.StatusInternalServerError, "stage dump.rdb failed (original data untouched): "+err.Error())
+				return
+			}
+			rdbDst := filepath.Join(dataDir, "dump.rdb")
+			if err := swapInPath(stagedRDB, rdbDst, restorePreservePath(rdbDst)); err != nil {
 				fail(c, http.StatusInternalServerError, err.Error())
 				return
 			}
-			os.RemoveAll(filepath.Join(dataDir, "appendonlydir"))
-			os.Remove(filepath.Join(dataDir, "appendonly.aof"))
+			// 纯 RDB 恢复：现有 AOF 与恢复点不一致，必须移走，否则 Redis 会优先加载 AOF
+			// 而忽略刚恢复的 RDB。同样保留而不是直接删除。
+			for _, aofPath := range []string{
+				filepath.Join(dataDir, "appendonlydir"),
+				filepath.Join(dataDir, "appendonly.aof"),
+			} {
+				if _, err := os.Lstat(aofPath); err == nil {
+					if err := os.Rename(aofPath, restorePreservePath(aofPath)); err != nil {
+						fail(c, http.StatusInternalServerError,
+							"move stale AOF aside failed: "+err.Error())
+						return
+					}
+				}
+			}
 		}
 	}
 

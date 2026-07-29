@@ -43,6 +43,7 @@ var redisTmpl = template.Must(template.New("redis").Parse(`
 port 6379
 bind 0.0.0.0
 {{ if .Password }}requirepass {{ .Password }}
+masterauth {{ .Password }}
 {{ end }}timeout 300
 tcp-keepalive 60
 loglevel notice
@@ -67,8 +68,6 @@ auto-aof-rewrite-min-size 64mb
 
 {{ if .ReplicaOf }}
 replicaof {{ .ReplicaOf }}
-{{ if .Password }}masterauth {{ .Password }}
-{{ end }}
 replica-read-only yes
 replica-serve-stale-data no
 replica-priority 100
@@ -95,6 +94,7 @@ var kvrocksTmpl = template.Must(template.New("kvrocks").Parse(`
 bind 0.0.0.0
 port 6379
 {{ if .Password }}requirepass {{ .Password }}
+masterauth {{ .Password }}
 {{ end }}timeout 300
 log-level info
 
@@ -116,8 +116,6 @@ rocksdb.max_subcompactions 2
 
 {{ if .ReplicaOf }}
 slaveof {{ .ReplicaOf }}
-{{ if .Password }}masterauth {{ .Password }}
-{{ end }}
 slave-read-only yes
 slave-priority 100
 {{ end }}
