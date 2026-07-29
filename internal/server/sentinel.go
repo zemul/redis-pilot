@@ -250,6 +250,21 @@ func (s *Server) reconcileSentinelOnce() error {
 	if len(nodes) < s.sentinelQuorum() {
 		return fmt.Errorf("not enough configured sentinel nodes: have=%d quorum=%d", len(nodes), s.sentinelQuorum())
 	}
+	// 分两趟：先把所有认知不一致的组收集起来，再统一做一次二次确认。
+	//
+	// 早期实现是在组循环里就地 time.Sleep(3s)，于是耗时是 3 秒 × 不一致的组数。
+	// sentinel reconcile 的间隔是 10 秒（server.go），4 个组同时不一致就会让单轮
+	// 超过间隔，后续轮次持续挤压；组数再多就变成整个 reconcile 通道被拖垮，
+	// 连带那些本来一致、只是排在后面的组也迟迟得不到处理。
+	//
+	// 二次确认的语义是"隔一段时间后地址仍是同一个新值"，它只要求两次观测之间有间隔，
+	// 并不要求每组各睡一次。所以一次 sleep 覆盖全部待确认的组即可，总耗时恒定 3 秒。
+	type pendingFailover struct {
+		group string
+		addr  string
+	}
+	var pending []pendingFailover
+
 	// 遍历所有 replication group，不依赖 master 是否 running
 	for groupName, group := range instances.Groups {
 		if group == nil || group.Type != "replication" || group.CurrentMaster == "" {
@@ -270,21 +285,38 @@ func (s *Server) reconcileSentinelOnce() error {
 			continue
 		}
 		if current != "" && current != expected {
-			// GET-MASTER-ADDR-BY-NAME 在 Sentinel 的 failover 状态机走到 reconf-slaves
-			// 阶段就已经会返回新地址，但此时 Sentinel 内部还没有完成 failover-end/
-			// switch-master 事件，也还没有把旧 master"虚拟加入"新 master 的 slave 列表
-			// （Sentinel 依赖这条记录在旧 master 重新可达时自动将其降级，这是它自愈机制的
-			// 核心）。如果这时立刻调用 handleSentinelFailover（进而 syncSentinel 触发
-			// REMOVE+MONITOR），会打断 Sentinel 还没走完的收尾流程，抹掉这条追踪记录，
-			// 导致旧 master 永远不会被自动纠正——这是实测复现的真实竞态。用短暂的二次
-			// 确认代替立即处理：只有间隔之后地址依然是同一个新值，才认为 failover 真正
-			// 收尾完成，可以安全同步。
-			time.Sleep(3 * time.Second)
-			if confirmed, err := s.querySentinelMaster(node, nodes, groupName); err == nil && confirmed == current {
-				if err := s.handleSentinelFailover(groupName, current, "reconcile", "system"); err != nil {
-					s.log.Errorf("handle sentinel failover group=%s new=%s failed: %v", groupName, current, err)
-				}
-			}
+			pending = append(pending, pendingFailover{group: groupName, addr: current})
+		}
+	}
+	if len(pending) == 0 {
+		return nil
+	}
+
+	// GET-MASTER-ADDR-BY-NAME 在 Sentinel 的 failover 状态机走到 reconf-slaves
+	// 阶段就已经会返回新地址，但此时 Sentinel 内部还没有完成 failover-end/
+	// switch-master 事件，也还没有把旧 master"虚拟加入"新 master 的 slave 列表
+	// （Sentinel 依赖这条记录在旧 master 重新可达时自动将其降级，这是它自愈机制的
+	// 核心）。如果这时立刻调用 handleSentinelFailover（进而 syncSentinel 触发
+	// REMOVE+MONITOR），会打断 Sentinel 还没走完的收尾流程，抹掉这条追踪记录，
+	// 导致旧 master 永远不会被自动纠正——这是实测复现的真实竞态。用短暂的二次
+	// 确认代替立即处理：只有间隔之后地址依然是同一个新值，才认为 failover 真正
+	// 收尾完成，可以安全同步。
+	time.Sleep(3 * time.Second)
+
+	for _, p := range pending {
+		confirmed, err := s.querySentinelMaster(node, nodes, p.group)
+		if err != nil {
+			s.log.Errorf("confirm sentinel master %s failed: %v", p.group, err)
+			continue
+		}
+		if confirmed != p.addr {
+			// 地址还在变，说明 failover 尚未收尾，交给下一轮
+			s.log.Infof("sentinel failover still settling: group=%s observed=%s now=%s",
+				p.group, p.addr, confirmed)
+			continue
+		}
+		if err := s.handleSentinelFailover(p.group, p.addr, "reconcile", "system"); err != nil {
+			s.log.Errorf("handle sentinel failover group=%s new=%s failed: %v", p.group, p.addr, err)
 		}
 	}
 	return nil
@@ -373,7 +405,35 @@ func writeRESPCommand(w io.Writer, args ...string) error {
 	return nil
 }
 
+// RESP 解析的资源上限。
+//
+// 不设上限时，回复里的长度字段直接决定分配多少内存、递归多深，而这些数字来自网络。
+// 三种具体的崩法：
+//
+//   - `$9223372036854775807`：make([]byte, n+2) 里 n+2 溢出成负数，make 直接 panic。
+//   - `*1000000000`：一次要求预分配十亿个元素。
+//   - `*1\r\n*1\r\n*1\r\n...` 无限嵌套：递归耗尽 goroutine 栈，Go 的栈溢出是
+//     不可恢复的 fatal error，recover 接不住。
+//
+// 后果不止于一个请求失败：watchSentinelNode 跑在裸 goroutine 里，这里 panic 会带走
+// 整个 Server 进程。输入虽然来自运维配置的 Sentinel 地址（不是任意攻击者），但端口
+// 配错指到别的服务上就足以触发，代价与防护成本完全不对称。
+//
+// 上限按实际用途留足余量：SENTINEL MASTERS 的回复是"数组套数组套字符串"，深度 2。
+const (
+	maxRESPBulkLen  = 64 << 20 // 单个 bulk string 最大 64MiB
+	maxRESPArrayLen = 1 << 20  // 单个数组最大 1M 个元素
+	maxRESPDepth    = 8        // 最大嵌套深度
+)
+
 func readRESP(r *bufio.Reader) (interface{}, error) {
+	return readRESPDepth(r, 0)
+}
+
+func readRESPDepth(r *bufio.Reader, depth int) (interface{}, error) {
+	if depth > maxRESPDepth {
+		return nil, fmt.Errorf("RESP nesting too deep: exceeds %d", maxRESPDepth)
+	}
 	line, err := r.ReadString('\n')
 	if err != nil {
 		return nil, err
@@ -397,6 +457,10 @@ func readRESP(r *bufio.Reader) (interface{}, error) {
 		if n < 0 {
 			return "", nil
 		}
+		// 必须在 n+2 之前判上限，否则加法本身就可能溢出
+		if n > maxRESPBulkLen {
+			return nil, fmt.Errorf("RESP bulk string too large: %d exceeds %d", n, maxRESPBulkLen)
+		}
 		buf := make([]byte, n+2)
 		if _, err := io.ReadFull(r, buf); err != nil {
 			return nil, err
@@ -410,13 +474,22 @@ func readRESP(r *bufio.Reader) (interface{}, error) {
 		if count < 0 {
 			return []interface{}(nil), nil
 		}
-		values := make([]interface{}, 0, count)
+		if count > maxRESPArrayLen {
+			return nil, fmt.Errorf("RESP array too long: %d exceeds %d", count, maxRESPArrayLen)
+		}
+		// 刻意不按 count 预分配容量：count 是对方声称的数字，声称一百万却只发两个
+		// 元素时，预分配就白占了内存。让 append 按实际读到的数量增长，读不够自然在
+		// 下一次 readRESPDepth 拿到 EOF。
+		var values []interface{}
 		for i := 0; i < count; i++ {
-			value, err := readRESP(r)
+			value, err := readRESPDepth(r, depth+1)
 			if err != nil {
 				return nil, err
 			}
 			values = append(values, value)
+		}
+		if values == nil {
+			values = []interface{}{}
 		}
 		return values, nil
 	default:
@@ -452,6 +525,13 @@ func sentinelMasterNames(reply interface{}) []string {
 }
 
 func (s *Server) handleSentinelFailover(group, newMasterAddr, source, operator string) error {
+	// 全程持编排锁：本函数是"改状态 → 写磁盘配置 → 下发 Sentinel"的复合序列，
+	// 三步都完成之前不能让另一次故障转移插进来（原因见 Server.topologyMu 的注释）。
+	// 四条触发路径都会走到这里：Sentinel 事件回调、watcher 协程、周期 reconcile、
+	// 用户手动 failover，它们彼此完全并发。
+	s.topologyMu.Lock()
+	defer s.topologyMu.Unlock()
+
 	sessionID := fmt.Sprintf("sentinel-%s-%d", group, time.Now().UnixNano())
 	start := time.Now()
 	var oldMasterName, oldMasterServer, newMasterName, newMasterServer string
@@ -587,8 +667,11 @@ func (s *Server) handleSentinelFailover(group, newMasterAddr, source, operator s
 	// 把新角色写进各实例的磁盘配置文件。运行时角色已由 Sentinel 改好，这里修正的是
 	// 磁盘上那份，避免容器重启（podman --restart on-failure:5）后角色回退。
 	// 失败不回滚故障转移——reconcileRoleDrift 会在下一轮 reconcile 补推。
-	s.persistGroupRoles(group)
-	s.syncSentinel()
+	s.persistGroupRolesLocked(group)
+	// 调不加锁变体：本函数已持 topologyMu，Go 的 Mutex 不可重入。
+	if err := s.syncSentinelMastersLocked(); err != nil {
+		s.log.Errorf("sentinel sync failed: %v", err)
+	}
 	return nil
 }
 
@@ -624,7 +707,19 @@ func (s *Server) syncSentinel() {
 	}
 }
 
+// syncSentinelMasters 是给未持锁的调用方用的入口。已持 topologyMu 的调用方
+// （目前只有 handleSentinelFailover）必须直接调 syncSentinelMastersLocked。
 func (s *Server) syncSentinelMasters() error {
+	s.topologyMu.Lock()
+	defer s.topologyMu.Unlock()
+	return s.syncSentinelMastersLocked()
+}
+
+// syncSentinelMastersLocked 要求调用方已持有 topologyMu。
+//
+// 锁必须覆盖"读状态快照"到"下发完成"的整段，而不只是下发动作：只锁下发的话，
+// 两个协程仍可能各自读到不同快照，然后按快照顺序错乱地下发。
+func (s *Server) syncSentinelMastersLocked() error {
 	if !s.cfg.Sentinel.Enabled {
 		return nil
 	}
@@ -672,6 +767,10 @@ func (s *Server) removeSentinelMaster(group string) {
 	if !s.cfg.Sentinel.Enabled || group == "" {
 		return
 	}
+	// 与 syncSentinelMasters 互斥：否则删组的 REMOVE 可能夹在另一次同步的
+	// REMOVE+MONITOR 之间，把刚建立的监控又删掉。
+	s.topologyMu.Lock()
+	defer s.topologyMu.Unlock()
 	node, err := s.state.ReadNode()
 	if err != nil {
 		s.log.Errorf("sentinel remove read node: %v", err)
@@ -704,10 +803,22 @@ func syncSentinelNode(addr string, desired []apitypes.SentinelMaster, known map[
 	for _, master := range desired {
 		desiredByGroup[master.Group] = master
 	}
+
+	// 逐组独立处理，单组失败不影响其余组。
+	//
+	// 早期实现在组循环里直接 return err，于是任意一组出问题（比如某组的密码设置失败），
+	// 排在它后面的组这一轮就完全不会被配置。最坏的一种：REMOVE 已经执行、MONITOR 失败
+	// 时直接返回，该组在 Sentinel 上处于"已删除且未重建"的无监控状态，同时后面的组也
+	// 没被处理——一次局部故障扩散成整个节点的配置停滞。
+	var errs []string
+	fail := func(group string, err error) {
+		errs = append(errs, fmt.Sprintf("%s: %v", group, err))
+	}
+
 	for _, group := range sentinelMasterNames(reply) {
 		if _, ok := known[group]; !ok {
 			if _, err := sentinelCommand(addr, "SENTINEL", "REMOVE", group); err != nil {
-				return err
+				fail(group, fmt.Errorf("remove stale group: %w", err))
 			}
 		}
 	}
@@ -727,23 +838,32 @@ func syncSentinelNode(addr string, desired []apitypes.SentinelMaster, known map[
 		if !hasCurrentAddr || currentAddr != wantAddr {
 			_, _ = sentinelCommand(addr, "SENTINEL", "REMOVE", master.Group)
 			if _, err := sentinelCommand(addr, "SENTINEL", "MONITOR", master.Group, master.Host, fmt.Sprintf("%d", master.Port), fmt.Sprintf("%d", quorum)); err != nil {
-				return err
+				// 这一条格外严重：REMOVE 已经执行完，MONITOR 又失败，该组此刻在这个
+				// Sentinel 节点上完全没有监控，失去故障转移能力，直到下一轮同步补上。
+				// 不 return，让其余组照常配置——它们的监控还是好的，没必要一起牺牲。
+				fail(master.Group, fmt.Errorf("MONITOR failed after REMOVE, group is left unmonitored on this node: %w", err))
+				continue
 			}
 		}
 		if master.Password != "" {
 			if _, err := sentinelCommand(addr, "SENTINEL", "SET", master.Group, "auth-pass", master.Password); err != nil {
-				return err
+				fail(master.Group, fmt.Errorf("SET auth-pass: %w", err))
+				continue
 			}
 		}
-		if _, err := sentinelCommand(addr, "SENTINEL", "SET", master.Group, "down-after-milliseconds", fmt.Sprintf("%d", master.DownAfterMilliseconds)); err != nil {
-			return err
+		for _, kv := range [][2]string{
+			{"down-after-milliseconds", fmt.Sprintf("%d", master.DownAfterMilliseconds)},
+			{"failover-timeout", fmt.Sprintf("%d", master.FailoverTimeout)},
+			{"parallel-syncs", fmt.Sprintf("%d", master.ParallelSyncs)},
+		} {
+			if _, err := sentinelCommand(addr, "SENTINEL", "SET", master.Group, kv[0], kv[1]); err != nil {
+				fail(master.Group, fmt.Errorf("SET %s: %w", kv[0], err))
+				break
+			}
 		}
-		if _, err := sentinelCommand(addr, "SENTINEL", "SET", master.Group, "failover-timeout", fmt.Sprintf("%d", master.FailoverTimeout)); err != nil {
-			return err
-		}
-		if _, err := sentinelCommand(addr, "SENTINEL", "SET", master.Group, "parallel-syncs", fmt.Sprintf("%d", master.ParallelSyncs)); err != nil {
-			return err
-		}
+	}
+	if len(errs) > 0 {
+		return fmt.Errorf("%d group(s) failed: %s", len(errs), strings.Join(errs, "; "))
 	}
 	return nil
 }

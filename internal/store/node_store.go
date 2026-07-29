@@ -52,7 +52,7 @@ func (d *DB) UpsertServer(name string, srv *apitypes.NodeServer) error {
 	capacityJSON, _ := json.Marshal(srv.Capacity)
 	instancesJSON, _ := json.Marshal(srv.Instances)
 
-	_, err := d.sql.Exec(`
+	return d.execWrite(`
 		INSERT INTO servers(name, endpoint, agent_port, agent_token, labels, capacity, instances, status, last_heartbeat)
 		VALUES(?,?,?,?,?,?,?,?,?)
 		ON CONFLICT(name) DO UPDATE SET
@@ -69,13 +69,11 @@ func (d *DB) UpsertServer(name string, srv *apitypes.NodeServer) error {
 		string(labelsJSON), string(capacityJSON), string(instancesJSON),
 		srv.Status, srv.LastHeartbeat,
 	)
-	return err
 }
 
 // DeleteServer 删除节点。
 func (d *DB) DeleteServer(name string) error {
-	_, err := d.sql.Exec(`DELETE FROM servers WHERE name = ?`, name)
-	return err
+	return d.execWrite(`DELETE FROM servers WHERE name = ?`, name)
 }
 
 // GetServer 读取单个节点，不存在时返回 nil, nil。
@@ -153,7 +151,11 @@ func (d *DB) WithServers(fn func(map[string]*apitypes.NodeServer) error) error {
 			return fmt.Errorf("insert server %s: %w", name, err)
 		}
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	d.bumpGeneration()
+	return nil
 }
 
 func (d *DB) getAllServersInTx(tx *sql.Tx) (map[string]*apitypes.NodeServer, error) {

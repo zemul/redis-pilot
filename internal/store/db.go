@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
+	"sync/atomic"
 
 	_ "modernc.org/sqlite"
 )
@@ -22,6 +24,41 @@ import (
 type DB struct {
 	sql *sql.DB
 	mu  sync.Mutex
+
+	// generation 在每次拓扑状态写入成功后自增，供上层判断"自某个时刻起状态有没有动过"。
+	//
+	// 放在 store 层而不是各个 handler 里，是因为这里是所有状态写入的唯一收口点：
+	// 全部 9 个写方法都在本包内，改动时一眼能看全。如果改成在业务代码里逐处发通知，
+	// 漏掉任何一处的后果是 Envoy 的配置永久停留在旧值——一个不会报错、只会静默错下去
+	// 的故障，比多几次无用的重算糟糕得多。
+	//
+	// 语义刻意做弱：generation 变了只说明"有写入发生"，不保证代理配置真的变了
+	// （比如更新备份时间戳也会自增）。调用方据此重算并比对内容哈希，弱信号 + 强比对
+	// 的组合不会漏、也不会误报。
+	generation atomic.Uint64
+}
+
+// Generation 返回当前的状态代际。
+func (d *DB) Generation() uint64 {
+	return d.generation.Load()
+}
+
+// bumpGeneration 在写入成功后调用。
+func (d *DB) bumpGeneration() {
+	d.generation.Add(1)
+}
+
+// execWrite 执行一条写 SQL，成功后自增代际。
+//
+// 所有非事务的写操作都走这里，而不是各自 d.sql.Exec + return err：把自增和写入绑在
+// 同一个函数里，新增写方法时漏掉自增的可能性就小得多。事务型写入（WithInstances /
+// WithServers）在各自的 Commit 成功后自增。
+func (d *DB) execWrite(query string, args ...interface{}) error {
+	if _, err := d.sql.Exec(query, args...); err != nil {
+		return err
+	}
+	d.bumpGeneration()
+	return nil
 }
 
 // Open 打开（或创建）dataDir/pilot.db，执行建表迁移后返回。
@@ -146,7 +183,6 @@ func (d *DB) migrate() error {
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_instances_grp ON instances(grp)`,
 		`CREATE INDEX IF NOT EXISTS idx_instances_server ON instances(server)`,
-		`CREATE INDEX IF NOT EXISTS idx_instances_observed_status ON instances(observed_status)`,
 
 		// ── 审计日志 ────────────────────────────────────────────────────────
 		`CREATE TABLE IF NOT EXISTS audit_log (
@@ -205,5 +241,51 @@ func (d *DB) migrate() error {
 			return fmt.Errorf("exec DDL: %w\nSQL: %s", err, s)
 		}
 	}
+
+	// ── 增量迁移：instances 表从单列 status 拆分为 desired_state + observed_status ──
+	// CREATE TABLE IF NOT EXISTS 不会更新已有表的 schema，需要 ALTER TABLE。
+	// SQLite 的 ALTER TABLE ADD COLUMN 是幂等安全的——列已存在时报错，我们忽略即可。
+	alterMigrations := []struct {
+		sql     string
+		postSQL string // 列添加成功后的后续操作（如数据迁移），可为空
+	}{
+		{
+			sql:     `ALTER TABLE instances ADD COLUMN desired_state TEXT NOT NULL DEFAULT 'running'`,
+			postSQL: `UPDATE instances SET desired_state = CASE WHEN status IN ('stopped','deleting') THEN status ELSE 'running' END WHERE desired_state = 'running' AND status != ''`,
+		},
+		{
+			sql:     `ALTER TABLE instances ADD COLUMN observed_status TEXT NOT NULL DEFAULT ''`,
+			postSQL: `UPDATE instances SET observed_status = status WHERE observed_status = '' AND status != ''`,
+		},
+	}
+	for _, m := range alterMigrations {
+		if _, err := tx.Exec(m.sql); err != nil {
+			// "duplicate column name" 说明列已存在，跳过
+			if !isDuplicateColumnError(err) {
+				return fmt.Errorf("exec DDL: %w\nSQL: %s", err, m.sql)
+			}
+		} else if m.postSQL != "" {
+			// 列刚加上，执行数据迁移
+			if _, err := tx.Exec(m.postSQL); err != nil {
+				return fmt.Errorf("exec migration: %w\nSQL: %s", err, m.postSQL)
+			}
+		}
+	}
+
+	// ALTER TABLE 之后才能安全创建依赖新列的索引
+	postAlterIndexes := []string{
+		`CREATE INDEX IF NOT EXISTS idx_instances_observed_status ON instances(observed_status)`,
+	}
+	for _, s := range postAlterIndexes {
+		if _, err := tx.Exec(s); err != nil {
+			return fmt.Errorf("exec DDL: %w\nSQL: %s", err, s)
+		}
+	}
+
 	return tx.Commit()
+}
+
+// isDuplicateColumnError 判断 ALTER TABLE ADD COLUMN 报错是否因为列已存在。
+func isDuplicateColumnError(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "duplicate column name")
 }

@@ -26,7 +26,7 @@ func (d *DB) GetAllGroups() (map[string]*apitypes.InstanceGroupState, error) {
 // UpsertGroup 新增或更新实例组。
 func (d *DB) UpsertGroup(name string, g *apitypes.InstanceGroupState) error {
 	envoyJSON, _ := json.Marshal(g.Envoy)
-	_, err := d.sql.Exec(`
+	return d.execWrite(`
 		INSERT INTO instance_groups(name, type, engine, engine_version, category,
 		    current_master, topology_status, failover_conflict, envoy, created_at, updated_at)
 		VALUES(?,?,?,?,?,?,?,?,?,?,?)
@@ -46,13 +46,11 @@ func (d *DB) UpsertGroup(name string, g *apitypes.InstanceGroupState) error {
 		g.CurrentMaster, g.TopologyStatus, boolToInt(g.FailoverConflict),
 		string(envoyJSON), g.CreatedAt, g.UpdatedAt,
 	)
-	return err
 }
 
 // DeleteGroup 删除实例组。
 func (d *DB) DeleteGroup(name string) error {
-	_, err := d.sql.Exec(`DELETE FROM instance_groups WHERE name = ?`, name)
-	return err
+	return d.execWrite(`DELETE FROM instance_groups WHERE name = ?`, name)
 }
 
 // ── 实例 (instances 表) ──────────────────────────────────────────────────────
@@ -78,7 +76,7 @@ func (d *DB) UpsertInstance(name string, inst *apitypes.Instance) error {
 	backupJSON, _ := json.Marshal(inst.Backup)
 	lockJSON, _ := json.Marshal(inst.Lock)
 
-	_, err := d.sql.Exec(`
+	return d.execWrite(`
 		INSERT INTO instances(name, grp, role, server, container, port, memory, cpus, disk,
 		    password, config_path, data_path, backup_path,
 		    persistence, config_overrides, replica_of, backup, desired_state, observed_status, lock, created_at)
@@ -112,13 +110,11 @@ func (d *DB) UpsertInstance(name string, inst *apitypes.Instance) error {
 		inst.ReplicaOf, string(backupJSON),
 		inst.DesiredState, inst.ObservedStatus, string(lockJSON), inst.CreatedAt,
 	)
-	return err
 }
 
 // DeleteInstance 删除实例。
 func (d *DB) DeleteInstance(name string) error {
-	_, err := d.sql.Exec(`DELETE FROM instances WHERE name = ?`, name)
-	return err
+	return d.execWrite(`DELETE FROM instances WHERE name = ?`, name)
 }
 
 // GetInstance 读取单个实例，不存在时返回 nil, nil。
@@ -205,7 +201,11 @@ func (d *DB) WithInstances(fn func(*apitypes.InstancesState) error) error {
 			return fmt.Errorf("insert instance %s: %w", name, err)
 		}
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	d.bumpGeneration()
+	return nil
 }
 
 // ReadInstances 读取完整 InstancesState 快照（只读，无锁）。

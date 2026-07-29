@@ -94,7 +94,9 @@
 - `cpus`: CPU 核数
 - `password`: 访问密码
 - `replica_of`: 主库地址（仅从库，格式 "ip:port"）
-- `config_overrides`: 配置覆盖（键值对）
+- `config_overrides`: 配置覆盖（键值对）。平台管理的配置项（`replicaof` / `requirepass` /
+  `dir` / `min-replicas-to-write` / `rename-command` 等）不允许覆盖，值中不得含换行或 `#`；
+  规则见 `pkg/redisconf/validate.go`，Server 与 Agent 共用同一份清单，违规返回 400
 
 ---
 

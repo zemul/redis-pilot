@@ -220,3 +220,52 @@ func TestInstanceList_ReportsConfiguredReplicaOf(t *testing.T) {
 		t.Errorf("order-replica = %v, want 10.0.1.10:6379", got)
 	}
 }
+
+// TestInstanceConfig_RejectsInjectedDirective 端到端验证注入到不了配置文件。
+//
+// 攻击载荷 "replicaof <外部地址>" 是这条路径里危害最大的一个：Redis 收到
+// replicaof 后会清空自己的数据集去同步对方，一条指令抹掉整个实例。而它能生效是因为
+// config_overrides 渲染在模板最末尾，后出现的指令覆盖先出现的。
+func TestInstanceConfig_RejectsInjectedDirective(t *testing.T) {
+	a := newTestAgent(t)
+	r := a.Router()
+
+	// 先落一份正常配置，作为"注入失败后原文件应保持不变"的基线
+	if err := a.writeInstanceConfig(&instanceConfigRequest{
+		Name: "order-a", Engine: "redis", Type: "replication",
+		ConfigOverrides: map[string]string{"hz": "100"},
+		Port:            6379,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	confPath := filepath.Join(a.cfg.DataDir, "order-a", "conf", "redis.conf")
+	before, err := os.ReadFile(confPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	w := doAgentRequest(r, "POST", "/instance/config", map[string]interface{}{
+		"name":                "order-a",
+		"engine":              "redis",
+		"type":                "replication",
+		"rewrite_config_only": true,
+		"port":                6379,
+		"config_overrides": map[string]string{
+			"hz": "100\nreplicaof 203.0.113.1 6379",
+		},
+	})
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("期望 400，实际 %d：%s", w.Code, w.Body.String())
+	}
+
+	after, err := os.ReadFile(confPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(before) {
+		t.Error("配置文件被改动了，校验应当在写文件之前发生")
+	}
+	if strings.Contains(string(after), "203.0.113.1") {
+		t.Error("注入的 replicaof 指令进入了配置文件")
+	}
+}

@@ -524,7 +524,104 @@ Agent 不可达是对 **Agent** 的观测，不是对实例的观测。Agent 重
 | `runReconcile` 动作判定 | 两者的差值 | 告警的定义就是意图与观测不符 |
 | `instance list --status` 过滤 | 派生（`Phase()`） | 保持 CLI 词汇不变 |
 
+### 4.7 并发与输入边界
+
+**编排锁（`Server.topologyMu`）**
+
+`state.WithInstances` 自身持数据库互斥锁，所以状态变更是原子的。但故障转移在事务提交之后还有两步在锁外：`persistGroupRoles`（把新角色写进各实例的磁盘配置文件）和 `syncSentinel`（把新 master 地址下发给 Sentinel）。
+
+四条路径会并发触发故障转移：Sentinel 事件回调（`sentinel.go` 的 `/sentinel/event`）、watcher 协程、周期 reconcile、用户手动 `instance failover`。
+
+缺锁的具体后果：连续两次转移 A→B、B→C 产生两个同步协程，各自读到不同的状态快照。若后者先把 Sentinel 的 MONITOR 指向 C、前者随后改回 B，Sentinel 就被指向了一个已经降级的实例。接着 `reconcileSentinelOnce` 发现 Sentinel 与 Server 认知不一致，而 Sentinel 是设计上的权威，于是把 Server 的 `CurrentMaster` 也改回 B —— 一次来回震荡，两边都错。磁盘配置文件同理：两个 `persistGroupRoles` 交错可能把过期的 `replicaof` 写进去，容器下次重启就按错的角色启动（即 §4.3.6 要消除的角色回退，换了个成因）。
+
+锁必须覆盖"读快照 → 下发"整段而不只是下发动作，否则两个协程仍可能各自读到不同快照再错序下发。因此拆出 `*Locked` 变体：
+
+| 函数 | 加锁 | 说明 |
+|------|------|------|
+| `handleSentinelFailover` | 取锁 | 全程持有，覆盖改状态 + 落盘 + 下发 |
+| `syncSentinelMasters` | 取锁 | 给未持锁的调用方（建组/删组/`/sentinel/sync`） |
+| `syncSentinelMastersLocked` | 要求已持锁 | 供 `handleSentinelFailover` 调用 |
+| `persistGroupRoles` / `persistGroupRolesLocked` | 同上 | |
+| `removeSentinelMaster` | 取锁 | 否则删组的 REMOVE 可能夹在另一次同步的 REMOVE+MONITOR 之间 |
+| `reconcileRoleDrift` | 取锁 | 同样往磁盘写 `replicaof` |
+
+Go 的 `Mutex` 不可重入，持锁路径调错变体会当场卡死整个 Server，`TestSyncSentinel_NoDeadlockFromFailoverPath` 守这一点。
+
+**`syncSentinelNode` 的单组失败隔离**
+
+早期实现在组循环里直接 `return err`：任意一组出问题，排在它后面的组这一轮完全不会被配置。最坏的一种是 REMOVE 已执行、MONITOR 失败时返回——该组在这个 Sentinel 节点上处于"已删除且未重建"的无监控状态，失去故障转移能力，同时后面的组也没被处理，一次局部故障扩散成整个节点的配置停滞。现在逐组独立处理，错误汇总后一并返回。
+
+**节点增删改的原子性**
+
+`node add` / `node remove` / `node update` 此前都是 `ReadNode` → 检查 → `WriteNode`，检查与写入之间无互斥：两个同名的并发 `node add` 会双双通过存在性检查，后写的静默覆盖先写的；`node remove` 与 `node update` 并发时，update 可能用过期快照把已删除的节点写回来。三者已改用 `WithNode`（内部走 `store.WithServers`，在数据库互斥锁内完成读-改-写）。
+
+**`config_overrides` 的输入边界**
+
+渲染出的配置覆盖项位于配置模板的**最末尾**（`config_template.go` 的 `{{ .ConfigOverrides }}`），而 Redis 配置文件是后出现的指令覆盖先出现的。这意味着这里是用户输入唯一能改变实例语义的入口，且改动在配置文件开头完全看不出来。
+
+两类拦截，规则在 `pkg/redisconf` 由 Server 与 Agent 共用一份（分成两份清单迟早会漂移）：
+
+- **值不得含换行**。`value = "100\nreplicaof 203.0.113.1 6379"` 会让实例去同步外部地址，而同步的第一步是清空本地数据集——一条指令抹掉整个实例。同时拒绝 `#`（注释掉行尾）、NUL 和空值。空格是合法的（`save 3600 1 300 100`），不能一并禁掉。
+- **保留字不得覆盖**。`replicaof`/`slaveof`、`requirepass`/`masterauth`、`dir`/`dbfilename`/`appendfilename`、`port`/`bind`、`replica-announce-*`、`min-replicas-to-write`/`min-replicas-max-lag`、`rename-command`、`daemonize` 等由平台管理，覆盖它们会破坏复制拓扑、认证、备份路径或防脑裂保护。完整清单与逐项理由见 `pkg/redisconf/validate.go`。
+
+校验放在 `configOverridesString` 内部（该函数因此返回 `error`），调用方想拿到渲染结果就必须先通过校验，没有"忘记校验"的可能。热更新路径（`CONFIG SET`）不经过配置文件渲染、也没有换行注入问题（`redisCmd` 用 argv 数组调用 podman），但同样做保留字校验——运行时把 `replicaof` 改掉的破坏力与写进配置文件一样。
+
+渲染输出按 key 排序：`map` 迭代顺序随机会让同样的输入每次渲染出不同的文件，既让 diff 失去意义，也让"配置文件是否需要更新"无法靠比较内容判断。
+
+**RESP 解析的资源上限**
+
+`readRESP` 的长度字段来自网络，此前直接用于分配内存和递归。三种崩法都会带走整个 Server 进程（`watchSentinelNode` 跑在裸 goroutine 里没有 recover，栈溢出更是不可恢复的 fatal error）：
+
+| 输入 | 后果 |
+|------|------|
+| `$9223372036854775807` | `make([]byte, n+2)` 的 `n+2` 溢出成负数，`make` panic |
+| `*1000000000` | 一次要求预分配十亿个元素 |
+| `*1\r\n` 无限嵌套 | 递归耗尽 goroutine 栈 |
+
+现在限制 bulk 64MiB、数组 1M 元素、嵌套深度 8（`SENTINEL MASTERS` 的回复深度为 2）。数组刻意不按声称的 `count` 预分配容量——声称一百万却只发两个元素时预分配就白占内存。
+
+**Token 比较**
+
+Server / Agent / xDS 三处 Bearer Token 校验改用 `subtle.ConstantTimeCompare`。字符串比较在首个不同字节处短路，耗时随匹配前缀长度变化。这条路径的可利用性很低（网络抖动远大于纳秒级差异），改动成本也极低，按纵深防御处理。
+
+**`reconcileSentinelOnce` 的二次确认耗时**
+
+检测到 Sentinel 与 Server 认知不一致时，不能立刻同步——`GET-MASTER-ADDR-BY-NAME` 在 Sentinel 的 failover 状态机走到 `reconf-slaves` 阶段就会返回新地址，但此时 Sentinel 还没走完收尾（详见 §4.3 的说明），立刻 REMOVE+MONITOR 会抹掉它刚建立的旧 master 追踪记录。所以要隔一段时间再确认地址仍是同一个新值。
+
+早期实现是在组循环里就地 `time.Sleep(3s)`，耗时是 3 秒 × 不一致的组数。sentinel reconcile 的间隔是 10 秒，4 个组同时不一致就会让单轮超过间隔，后续轮次持续被挤压；组数再多就变成整个 reconcile 通道被拖垮，连带那些本来一致、只是排在后面的组也迟迟得不到处理。
+
+二次确认的语义只要求两次观测之间有间隔，并不要求每组各睡一次。现在改为两趟：先收集全部不一致的组，再统一 sleep 一次，然后逐个确认。总耗时恒定 3 秒，与组数无关。
+
+**xDS 配置下发的延迟（长轮询）**
+
+`/proxy/snapshot` 支持两个可选查询参数，不带时行为与原来完全一致：
+
+| 参数 | 含义 |
+|------|------|
+| `known_version` | 调用方已持有的快照版本 |
+| `wait` | 最长挂起时长，服务端上限 30s |
+
+版本相同时请求挂起直到版本变化或超时，超时返回 `304 Not Modified`。收益有两条：故障转移传播到 Envoy 的延迟从"最多一个轮询周期"降到接近即时——在这段窗口里 Envoy 还把写流量发给已经挂掉的旧 master，写请求直接失败，缩短窗口就是缩短写不可用时间；另外快照里含 Redis 明文密码（Envoy 需要它连后端），原来每 2 秒完整传输一次，现在只在真正变化时传输。
+
+**关键设计：等的是代际计数器，不是重复重算快照。**
+
+`store.DB` 维护一个 `generation` 原子计数器，每次拓扑写入成功后自增，`Generation()` 对外暴露。挂起期间每 100ms 检查这个内存计数器，只有它变了才重算快照并比对版本。
+
+若改成每 100ms 重算快照来检测变化，要读数据库 + 算 SHA256，反而比原来 2 秒轮询一次更耗资源——那样"优化"就成了负优化。
+
+计数器放在 store 层而不是各个 handler 里发通知，是因为 store 是所有状态写入的唯一收口点，9 个写方法都在同一个包内，改动时一眼能看全。非事务写入统一走 `execWrite`（写成功后自增），事务写入在 `Commit` 成功后自增。漏掉任何一处的后果是 Envoy 配置永久停在旧值——一个不报错、只静默错下去的故障，比多几次无用重算糟糕得多。`TestGeneration_EveryMutatingMethodBumps` 逐个方法验证，不抽样。
+
+计数器的语义刻意做弱：变了只说明"有写入发生"，不保证代理配置真的变了（例如只更新备份时间戳）。所以变了之后仍要重算并比对内容哈希——弱信号 + 强比对，既不会漏也不会误报。审计日志写入刻意不自增：它不影响代理配置，而写入很频繁，自增会让每条日志都唤醒一次无谓的重算。
+
+两道保护：
+
+- **服务端超时上限（30s）**。意义不是省资源，而是保证这条路径永远会结束。任何"等待唤醒"的机制都有漏唤醒的可能，没有超时就会让 Envoy 配置永久停在旧值且不报错；有了上限，最坏情况退化成原来的定期轮询。
+- **客户端最小间隔（`Poll.Interval`）**。长轮询模式下拿到"版本未变"后会立刻发起下一次请求，因为正常情况服务端已挂起了 `Wait`。但服务端若不认识这两个参数（版本不匹配的旧 Server，或中间代理吃掉了查询串），会立即返回相同版本的完整快照——没有下限就变成不停打 Server 的忙循环。客户端按实际耗时补足到 `Poll.Interval`，`TestPoll_DoesNotBusyLoopWhenServerIgnoresLongPollParams` 守这一点。
+
+xDS 侧 `http.Client` 刻意不设 `Timeout`（它会连正常挂起一起掐断），每次请求的超时由 `refresh` 用 context 按 `Wait + Timeout` 单独设定。`Poll.Timeout` 的含义因此变成"网络往返余量"，默认从 1s 调到 5s。首次拉取还没有版本可比，不进长轮询，避免启动时白等一个 `Wait`。
+
 ## 5. Skills 设计
+
 
 
 ### 5.1 Skill 清单

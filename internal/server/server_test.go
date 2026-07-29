@@ -889,6 +889,64 @@ type fakeSentinel struct {
 	monitorCalls atomic.Int32
 	removeCalls  atomic.Int32
 	setCalls     atomic.Int32
+
+	// cmdLog 记录收到的每条命令（原始大小写，空格连接），用于断言某条命令是否执行过。
+	cmdMu  sync.Mutex
+	cmdLog []string
+	// failing 里的键形如 "MONITOR order" 或 "SET order auth-pass"，命中则回 -ERR。
+	failing map[string]bool
+}
+
+// failCommand 让匹配的命令回复 -ERR，用于验证失败被正确隔离而不是中断整轮。
+// parts 依次匹配命令动词之后的各个参数，例如 failCommand("MONITOR", "group-bad")。
+func (fs *fakeSentinel) failCommand(parts ...string) {
+	fs.cmdMu.Lock()
+	defer fs.cmdMu.Unlock()
+	if fs.failing == nil {
+		fs.failing = map[string]bool{}
+	}
+	fs.failing[strings.Join(parts, " ")] = true
+}
+
+// sawCommand 判断是否收到过含全部 parts 的命令。
+func (fs *fakeSentinel) sawCommand(parts ...string) bool {
+	fs.cmdMu.Lock()
+	defer fs.cmdMu.Unlock()
+	for _, line := range fs.cmdLog {
+		all := true
+		for _, p := range parts {
+			if !strings.Contains(line, p) {
+				all = false
+				break
+			}
+		}
+		if all {
+			return true
+		}
+	}
+	return false
+}
+
+// shouldFail 记录命令并判断是否该注入失败。rawArgs 已去掉 "SENTINEL" 前缀。
+func (fs *fakeSentinel) shouldFail(rawArgs []string) bool {
+	line := strings.Join(rawArgs, " ")
+	fs.cmdMu.Lock()
+	defer fs.cmdMu.Unlock()
+	fs.cmdLog = append(fs.cmdLog, line)
+	for key := range fs.failing {
+		parts := strings.Split(key, " ")
+		all := true
+		for _, p := range parts {
+			if !strings.Contains(line, p) {
+				all = false
+				break
+			}
+		}
+		if all {
+			return true
+		}
+	}
+	return false
 }
 
 // newFakeSentinelWithMasters 创建一个预置了若干 group -> "host:port" 映射的 fake sentinel，
@@ -977,18 +1035,30 @@ func (fs *fakeSentinel) handleConn(conn net.Conn) {
 			continue
 		}
 		if len(strArgs) >= 3 && strArgs[0] == "SENTINEL" && strArgs[1] == "MONITOR" {
+			if fs.shouldFail(rawArgs[1:]) {
+				fmt.Fprintf(conn, "-ERR injected failure\r\n")
+				continue
+			}
 			fs.monitorCalls.Add(1)
 			fs.masters.Store(rawArgs[2], rawArgs[3]+":"+rawArgs[4])
 			fmt.Fprintf(conn, "+OK\r\n")
 			continue
 		}
 		if len(strArgs) >= 3 && strArgs[0] == "SENTINEL" && strArgs[1] == "REMOVE" {
+			if fs.shouldFail(rawArgs[1:]) {
+				fmt.Fprintf(conn, "-ERR injected failure\r\n")
+				continue
+			}
 			fs.removeCalls.Add(1)
 			fs.masters.Delete(rawArgs[2])
 			fmt.Fprintf(conn, "+OK\r\n")
 			continue
 		}
 		if len(strArgs) >= 3 && strArgs[0] == "SENTINEL" && strArgs[1] == "SET" {
+			if fs.shouldFail(rawArgs[1:]) {
+				fmt.Fprintf(conn, "-ERR injected failure\r\n")
+				continue
+			}
 			fs.setCalls.Add(1)
 			fmt.Fprintf(conn, "+OK\r\n")
 			continue

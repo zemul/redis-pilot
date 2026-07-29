@@ -132,6 +132,7 @@ redis-pilot-cli instance status my-cache
 │   ├── podman/          # Podman API 封装
 │   └── logger/          # 日志
 ├── pkg/apitypes/        # Server ↔ Agent 共享类型
+├── pkg/redisconf/       # config_overrides 校验规则（Server/Agent 共用）
 ├── configs/             # 配置文件示例
 └── docs/                # 文档
 ```
@@ -173,8 +174,9 @@ server:
   endpoint: http://127.0.0.1:8080
   token: ""
 poll:
-  interval: 2s
-  timeout: 1s
+  interval: 2s          # 两次请求的最小间隔（长轮询下仅作下限）
+  timeout: 5s           # 网络往返余量，不含服务端挂起时长
+  wait: 20s             # 长轮询挂起上限，0 关闭长轮询退回定期轮询
 envoy:
   node_ids:
     - redis-pilot-envoy
@@ -223,6 +225,8 @@ redis-pilot-cli instance delete <name> [--clean-data]
 redis-pilot-cli instance start <name>
 redis-pilot-cli instance stop <name>
 redis-pilot-cli instance config <name> --set key=value[,key=value] [--restart]
+# 注：replicaof / requirepass / dir / min-replicas-to-write / rename-command 等
+# 由平台管理的配置项不允许覆盖，会返回 400。完整清单见 pkg/redisconf/validate.go
 redis-pilot-cli instance replicate <replica> --replica-of <master>
 
 # 故障转移（Sentinel 唯一权威：不保证提升指定的那个实例，最终由 Sentinel 选举决定）

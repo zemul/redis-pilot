@@ -332,8 +332,9 @@ server:
   token: "your-secret-token"         # 与 server.yaml 中的 token 一致
 
 poll:
-  interval: 2s
-  timeout: 1s
+  interval: 2s          # 两次请求的最小间隔（长轮询下仅作下限）
+  timeout: 5s           # 网络往返余量，不含服务端挂起时长
+  wait: 20s             # 长轮询挂起上限，0 关闭长轮询退回定期轮询
 
 envoy:
   node_ids:
@@ -399,8 +400,9 @@ server:
   token: "your-secret-token"         # 与 server.yaml 中的 token 一致
 
 poll:
-  interval: 2s
-  timeout: 1s
+  interval: 2s          # 两次请求的最小间隔（长轮询下仅作下限）
+  timeout: 5s           # 网络往返余量，不含服务端挂起时长
+  wait: 20s             # 长轮询挂起上限，0 关闭长轮询退回定期轮询
 
 envoy:
   node_ids:

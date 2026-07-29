@@ -95,6 +95,17 @@ func (s *Server) pushConfigRewrite(
 // 保证），只是磁盘那份还没跟上；reconcileRoleDrift 会在下一轮补推，所以这里对单个实例的
 // 失败只记日志、继续处理其余实例。
 func (s *Server) persistGroupRoles(groupName string) {
+	s.topologyMu.Lock()
+	defer s.topologyMu.Unlock()
+	s.persistGroupRolesLocked(groupName)
+}
+
+// persistGroupRolesLocked 要求调用方已持有 topologyMu。
+//
+// 锁要覆盖"读快照 → 推给 Agent"整段：两个并发的落盘各自读到不同快照时，后完成的那个
+// 可能把过期的 replicaof 写进配置文件，容器下次重启就按错的角色起来——这正是上一个
+// commit 要消除的角色回退，只是换了个成因。
+func (s *Server) persistGroupRolesLocked(groupName string) {
 	instances, err := s.state.ReadInstances()
 	if err != nil {
 		s.log.Errorf("persist group roles: read instances: %v", err)
@@ -184,11 +195,21 @@ func detectRoleDrift(
 }
 
 // reconcileRoleDrift 对检测到的角色漂移补推配置重写。
+// reconcileRoleDrift 补推检测到的角色漂移。
+//
+// 持编排锁的原因与 persistGroupRolesLocked 相同：它同样往实例的磁盘配置文件写
+// replicaof。若与一次正在进行的故障转移并发，reconcile 手里的快照可能已经过期，
+// 会把刚被 failover 改对的角色又按旧值写回去。
 func (s *Server) reconcileRoleDrift(
 	node *apitypes.NodeState,
 	instances *apitypes.InstancesState,
 	drifts []roleDrift,
 ) {
+	if len(drifts) == 0 {
+		return
+	}
+	s.topologyMu.Lock()
+	defer s.topologyMu.Unlock()
 	for _, d := range drifts {
 		inst := instances.Instances[d.Instance]
 		if inst == nil {

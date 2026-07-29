@@ -1,9 +1,11 @@
 package server
 
 import (
+	"crypto/subtle"
 	"fmt"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -20,6 +22,24 @@ type Server struct {
 	log       *logger.Logger
 	audit     *audit.Logger
 	scheduler *backupScheduler
+
+	// topologyMu 串行化"读取拓扑状态 → 把它推给 Sentinel / 推给 Agent 写配置文件"
+	// 这个复合序列。
+	//
+	// state.WithInstances 自身持数据库互斥锁，所以状态变更是原子的；但故障转移在事务
+	// 提交之后还要做两件事——persistGroupRoles（把新角色写进各实例的磁盘配置文件）和
+	// syncSentinel（把新 master 地址下发给 Sentinel）——这两步在事务外，没有任何互斥。
+	//
+	// 缺这把锁的具体后果：连续两次故障转移 A→B、B→C 会产生两个同步协程，各自读到不同
+	// 的状态快照（一个读到 CurrentMaster=B，一个读到 C）。若后者先把 MONITOR 指向 C、
+	// 前者随后把 MONITOR 改回 B，Sentinel 就被指向了一个已经降级的实例。接着
+	// reconcileSentinelOnce 会发现 Sentinel 与 Server 认知不一致，而 Sentinel 是设计上
+	// 的权威，于是把 Server 的 CurrentMaster 也改回 B —— 一次来回震荡，两边都错。
+	// 磁盘配置文件同理：两个 persistGroupRoles 交错，可能把过期的 replicaof 写进去，
+	// 容器下次重启就按错的角色启动。
+	//
+	// 加锁后，"读快照 → 下发"整体互斥，最后一次下发用的一定是它自己在锁内读到的快照。
+	topologyMu sync.Mutex
 }
 
 func New(cfg *Config) (*Server, error) {
@@ -149,7 +169,10 @@ func (s *Server) authMiddleware() gin.HandlerFunc {
 		}
 		auth := c.GetHeader("Authorization")
 		token := strings.TrimPrefix(auth, "Bearer ")
-		if token != s.cfg.Token {
+		// 用 subtle.ConstantTimeCompare 而非 !=：字符串比较在首个不同字节处短路，
+		// 耗时随匹配前缀长度变化。这条路径的可利用性很低（网络抖动远大于纳秒级差异），
+		// 改动成本也极低，按纵深防御处理。
+		if subtle.ConstantTimeCompare([]byte(token), []byte(s.cfg.Token)) != 1 {
 			c.AbortWithStatusJSON(http.StatusUnauthorized, apitypes.APIResponse{Error: "unauthorized"})
 			return
 		}

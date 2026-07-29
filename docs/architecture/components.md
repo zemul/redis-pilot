@@ -183,6 +183,10 @@ master/standalone 必须显式传 group；replica 不需要传 group，会从 re
   }
 }
 
+> `config_overrides` 渲染在配置模板最末尾，而 Redis 配置是后者覆盖前者，
+> 因此它是用户输入唯一能改变实例语义的入口。平台管理的配置项不允许覆盖，
+> 值中不得含换行（否则可注入任意指令）。规则见 §4.7 与 `pkg/redisconf/validate.go`。
+
 响应体：
 {
   "success": true,

@@ -160,6 +160,11 @@ func copyFile(src, dst string) error {
 // 为什么"非空"不够：一次失败的 BGSAVE 会把上一次的快照文件留在目录里。仅校验非空的话，
 // tar 会打包出一个格式完全有效、时间戳崭新、但内容是旧快照的备份包。这种备份包比没有
 // 备份更危险——运维会以为数据受保护。
+//
+// 判据是"至少有一个新文件"而不是"所有文件都是新的"：Kvrocks 的 checkpoint 对未变更的
+// SST 用硬链接共享旧文件，它们的 mtime 本来就是旧的，要求全新会把正常备份全部误拒。
+// 依赖的是 RocksDB 每次 checkpoint 都会重写 MANIFEST/CURRENT。这一点已在实机验证：
+// 对 Kvrocks master 执行 backup exec 正常产出 checkpoint.tar.gz，未触发本函数的误拒。
 func verifyBackupSource(dir string, startedAt time.Time) error {
 	nonEmpty, err := dirHasEntries(dir)
 	if err != nil {

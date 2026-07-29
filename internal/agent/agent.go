@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"crypto/subtle"
 	"fmt"
 	"net/http"
 	"os"
@@ -15,6 +16,7 @@ import (
 	"gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/internal/logger"
 	"gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/internal/podman"
 	"gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/pkg/apitypes"
+	"gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/pkg/redisconf"
 )
 
 // validInstanceName 限制实例名只能包含字母、数字、下划线、中横线，长度 1-64，且不能以 "-" 开头。
@@ -141,7 +143,10 @@ func (a *Agent) authMiddleware() gin.HandlerFunc {
 			return
 		}
 		token := strings.TrimPrefix(c.GetHeader("Authorization"), "Bearer ")
-		if token != a.cfg.Token {
+		// 用 subtle.ConstantTimeCompare 而非 !=：字符串比较在首个不同字节处短路，
+		// 耗时随匹配前缀长度变化。这条路径的可利用性很低（网络抖动远大于纳秒级差异），
+		// 改动成本也极低，按纵深防御处理。
+		if subtle.ConstantTimeCompare([]byte(token), []byte(a.cfg.Token)) != 1 {
 			c.AbortWithStatusJSON(http.StatusUnauthorized, apitypes.APIResponse{Error: "unauthorized"})
 			return
 		}
@@ -174,7 +179,11 @@ func (a *Agent) instanceCreate(c *gin.Context) {
 	}
 
 	// 渲染配置文件
-	overrides := configOverridesString(req.ConfigOverrides)
+	overrides, err := configOverridesString(req.ConfigOverrides)
+	if err != nil {
+		fail(c, http.StatusBadRequest, err.Error())
+		return
+	}
 	minReplicas := minReplicasToWrite(req.Type, req.ReplicaOf)
 	var createErr error
 	if req.Engine == "kvrocks" {
@@ -332,7 +341,10 @@ type instanceConfigRequest struct {
 // writeInstanceConfig 按请求参数渲染并落盘实例配置文件。
 func (a *Agent) writeInstanceConfig(req *instanceConfigRequest) error {
 	dataDir := filepath.Join(a.cfg.DataDir, req.Name)
-	overrides := configOverridesString(req.ConfigOverrides)
+	overrides, err := configOverridesString(req.ConfigOverrides)
+	if err != nil {
+		return err
+	}
 	minReplicas := minReplicasToWrite(req.Type, req.ReplicaOf)
 	if req.Engine == "kvrocks" {
 		return writeKvrocksConfig(dataDir, KvrocksConfigParams{
@@ -376,6 +388,13 @@ func (a *Agent) instanceConfig(c *gin.Context) {
 		fail(c, http.StatusBadRequest, err.Error())
 		return
 	}
+	// 在入口统一校验，让三种模式（rewrite_config_only / restart / 热更新）都对非法输入
+	// 返回 400。若只在各分支内部依赖 writeInstanceConfig 返回的 error，客户端输入问题
+	// 会被报成 500，看起来像是 Agent 自己出了故障。
+	if err := redisconf.ValidateOverrides(req.ConfigOverrides); err != nil {
+		fail(c, http.StatusBadRequest, err.Error())
+		return
+	}
 
 	containerName := req.Engine + "-" + req.Name
 	if req.Password != "" {
@@ -406,9 +425,17 @@ func (a *Agent) instanceConfig(c *gin.Context) {
 		}
 
 	default:
-		// 热更新：通过 CONFIG SET 逐个设置
-		for k, v := range req.ConfigOverrides {
-			if _, err := redisCmd(req.Name, a.getPassword(req.Name), "CONFIG", "SET", k, v); err != nil {
+		// 热更新：通过 CONFIG SET 逐个设置。
+		//
+		// 这条路径不经过配置文件渲染，没有换行注入问题（redisCmd 用 argv 数组调用
+		// podman，值作为独立参数传递），但保留字校验同样必要——运行时把 replicaof
+		// 或 requirepass 改掉，破坏力与写进配置文件一样，只是不会在重启后留存。
+		// 校验已在本函数入口统一做过。
+		//
+		// 按 key 排序执行，让失败位置可复现：map 随机序下同一请求可能停在不同的项上，
+		// 留下不同的中间状态。
+		for _, k := range redisconf.SortedKeys(req.ConfigOverrides) {
+			if _, err := redisCmdChecked(req.Name, a.getPassword(req.Name), "CONFIG", "SET", k, req.ConfigOverrides[k]); err != nil {
 				fail(c, http.StatusInternalServerError, "CONFIG SET "+k+": "+err.Error())
 				return
 			}
@@ -950,10 +977,23 @@ func minReplicasToWrite(instType, replicaOf string) int {
 	return 0
 }
 
-func configOverridesString(overrides map[string]string) string {
-	var sb strings.Builder
-	for k, v := range overrides {
-		sb.WriteString(k + " " + v + "\n")
+// configOverridesString 把配置覆盖项渲染成配置文件片段。
+//
+// 返回 error 而不是只返回字符串，是刻意的：渲染结果会被追加到配置模板的末尾，
+// 而 Redis 配置是后者覆盖前者，所以这里是用户输入唯一能改变实例语义的入口。
+// 把校验放在渲染函数内部，调用方就没有"忘记校验"的可能——想拿到字符串就必须
+// 先通过校验。校验规则见 validateConfigOverrides。
+//
+// 输出按 key 排序，让同样的输入总是渲染出同样的文件。map 迭代顺序随机会导致
+// 每次重写配置文件内容都不同，既让 diff 失去意义，也让"配置文件是否需要更新"
+// 这类判断无法靠比较内容做出。
+func configOverridesString(overrides map[string]string) (string, error) {
+	if err := redisconf.ValidateOverrides(overrides); err != nil {
+		return "", err
 	}
-	return sb.String()
+	var sb strings.Builder
+	for _, k := range redisconf.SortedKeys(overrides) {
+		sb.WriteString(k + " " + overrides[k] + "\n")
+	}
+	return sb.String(), nil
 }

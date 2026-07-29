@@ -13,6 +13,7 @@ import (
 	"gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/internal/audit"
 	"gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/internal/state"
 	"gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/pkg/apitypes"
+	"gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/pkg/redisconf"
 )
 
 // resolveReplicaOf 将 replica_of 参数解析为 ip:port 和主库实例名。
@@ -211,6 +212,14 @@ func (s *Server) instanceCreate(c *gin.Context) {
 	}
 	req.EngineVersion = resolvedVersion
 	req.EngineImage = engineImage
+
+	// 与 instanceConfig 同理：在调度和写库之前拦下非法的配置覆盖项。创建路径尤其
+	// 需要提前拦，因为一旦走到后面，Agent 拒绝时 Server 已经写了 creating 记录、
+	// 分配了端口，要走一遍回滚。
+	if err := redisconf.ValidateOverrides(req.ConfigOverrides); err != nil {
+		fail(c, http.StatusBadRequest, err.Error())
+		return
+	}
 
 	// 查找目标服务器（需要在原子操作外读 node，因为调度需要 instances 快照）
 	node, err := s.state.ReadNode()
@@ -616,6 +625,14 @@ func (s *Server) instanceConfig(c *gin.Context) {
 		Restart         bool              `json:"restart"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
+		fail(c, http.StatusBadRequest, err.Error())
+		return
+	}
+	// 在动任何状态之前先校验。Agent 侧也会校验（它才是真正写配置文件的那一端，
+	// 且 Agent API 可被直接访问，不能只依赖 Server 把门），这里提前拦一次是为了
+	// 让用户拿到 400 和明确原因，而不是一个来自 Agent 的 500。
+	// 两端共用 pkg/redisconf 的同一份规则，不存在放行标准不一致的可能。
+	if err := redisconf.ValidateOverrides(req.ConfigOverrides); err != nil {
 		fail(c, http.StatusBadRequest, err.Error())
 		return
 	}

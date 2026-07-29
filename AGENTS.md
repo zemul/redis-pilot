@@ -37,7 +37,8 @@ redis-pilot/
   │   ├── audit/    # 审计日志（底层委托给 internal/store，对外接口与原 JSONL 版本保持一致）
   │   └── podman/   # Podman API 封装
   └── pkg/
-      └── apitypes/ # Server ↔ Agent 共享请求/响应结构体
+      ├── apitypes/ # Server ↔ Agent 共享请求/响应结构体
+      └── redisconf/ # 配置覆盖项校验规则（Server 与 Agent 共用同一份保留字清单）
 ```
 
 ## 配置文件

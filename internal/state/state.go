@@ -30,6 +30,12 @@ func (m *Manager) Close() error {
 }
 
 // DB 返回底层 store.DB，供需要直接访问 store 的模块使用（如 audit.Logger）。
+// Generation 返回状态代际，每次写入后自增。用于判断"自某个时刻起状态有没有动过"，
+// 无需重新读取和比较全量状态。
+func (m *Manager) Generation() uint64 {
+	return m.db.Generation()
+}
+
 func (m *Manager) DB() *store.DB {
 	return m.db
 }

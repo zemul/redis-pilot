@@ -333,10 +333,57 @@ func TestCopyFile(t *testing.T) {
 }
 
 func TestConfigOverridesString(t *testing.T) {
-	m := map[string]string{"hz": "100", "timeout": "0"}
-	s := configOverridesString(m)
-	if !strings.Contains(s, "hz 100") || !strings.Contains(s, "timeout 0") {
-		t.Errorf("unexpected output: %s", s)
+	m := map[string]string{"timeout": "0", "hz": "100"}
+	s, err := configOverridesString(m)
+	if err != nil {
+		t.Fatalf("configOverridesString: %v", err)
+	}
+	// 按 key 排序输出：同样的输入必须渲染出同样的文件，否则每次重写配置都是一份新内容
+	if s != "hz 100\ntimeout 0\n" {
+		t.Errorf("期望按 key 排序的确定性输出，实际得到 %q", s)
+	}
+}
+
+// TestConfigOverridesString_RejectsInjection 验证渲染函数本身就是校验的收口点。
+//
+// 值里的换行会在配置文件中另起一行，而 config_overrides 渲染在模板最末尾，
+// Redis 配置又是后者覆盖前者——注入的指令因此能推翻平台设定的任何一项。
+func TestConfigOverridesString_RejectsInjection(t *testing.T) {
+	cases := []struct {
+		name      string
+		overrides map[string]string
+	}{
+		{"换行注入 replicaof", map[string]string{"hz": "100\nreplicaof 203.0.113.1 6379"}},
+		{"回车注入", map[string]string{"hz": "100\rreplicaof 203.0.113.1 6379"}},
+		{"注释掉行尾", map[string]string{"hz": "100 # x"}},
+		{"保留字 replicaof", map[string]string{"replicaof": "203.0.113.1 6379"}},
+		{"保留字 requirepass", map[string]string{"requirepass": "hacked"}},
+		{"保留字 dir", map[string]string{"dir": "/etc"}},
+		{"保留字 min-replicas-to-write", map[string]string{"min-replicas-to-write": "0"}},
+		{"保留字 rename-command", map[string]string{"rename-command": "FLUSHALL FLUSHALL"}},
+		{"非法 key 字符", map[string]string{"hz\nreplicaof 1.2.3.4 6379": "100"}},
+		{"空值", map[string]string{"hz": "  "}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if _, err := configOverridesString(c.overrides); err == nil {
+				t.Errorf("应当被拒绝，实际通过了：%v", c.overrides)
+			}
+		})
+	}
+}
+
+func TestConfigOverridesString_AcceptsLegitimateValues(t *testing.T) {
+	// 带空格的值是合法的，不能因为要防注入就一并禁掉
+	ok := map[string]string{
+		"save":                      "3600 1 300 100",
+		"maxmemory-policy":          "allkeys-lru",
+		"hz":                        "100",
+		"appendfsync":               "everysec",
+		"auto-aof-rewrite-min-size": "64mb",
+	}
+	if _, err := configOverridesString(ok); err != nil {
+		t.Errorf("合法配置被拒绝：%v", err)
 	}
 }
 

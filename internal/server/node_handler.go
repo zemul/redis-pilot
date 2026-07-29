@@ -1,6 +1,7 @@
 package server
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 
@@ -43,22 +44,34 @@ func (s *Server) nodeAdd(c *gin.Context) {
 		return
 	}
 
-	node, err := s.state.ReadNode()
-	if err != nil {
-		fail(c, http.StatusInternalServerError, err.Error())
-		return
-	}
-	if _, exists := node.Servers[req.Name]; exists {
-		fail(c, http.StatusConflict, "server already exists: "+req.Name)
-		return
-	}
-	node.Servers[req.Name] = req.Server
-	if err := s.state.WriteNode(node); err != nil {
+	// 用 WithNode 而非 ReadNode+WriteNode：后者的"检查是否已存在"和"写入"之间没有互斥，
+	// 两个并发的 node add 同名请求会双双通过存在性检查，后写的静默覆盖先写的，
+	// 冲突检查形同虚设。WithNode 在数据库互斥锁内完成读-改-写。
+	var conflict bool
+	if err := s.state.WithNode(func(node *apitypes.NodeState) error {
+		if _, exists := node.Servers[req.Name]; exists {
+			conflict = true
+			return errNodeConflict
+		}
+		node.Servers[req.Name] = req.Server
+		return nil
+	}); err != nil {
+		if conflict {
+			fail(c, http.StatusConflict, "server already exists: "+req.Name)
+			return
+		}
 		fail(c, http.StatusInternalServerError, err.Error())
 		return
 	}
 	ok(c, nil)
 }
+
+// errNodeConflict / errNodeNotFound 只用于把 WithNode 回调里的判定结果带出来，
+// 让 HTTP 状态码能区分冲突、不存在和真正的存储错误。不会返回给调用方。
+var (
+	errNodeConflict = errors.New("node already exists")
+	errNodeNotFound = errors.New("node not found")
+)
 
 func (s *Server) nodeRemove(c *gin.Context) {
 	var req struct {
@@ -69,17 +82,22 @@ func (s *Server) nodeRemove(c *gin.Context) {
 		return
 	}
 
-	node, err := s.state.ReadNode()
-	if err != nil {
-		fail(c, http.StatusInternalServerError, err.Error())
-		return
-	}
-	if _, exists := node.Servers[req.Name]; !exists {
-		fail(c, http.StatusNotFound, "server not found: "+req.Name)
-		return
-	}
-	delete(node.Servers, req.Name)
-	if err := s.state.WriteNode(node); err != nil {
+	// 同 nodeAdd 用 WithNode。这里的竞态后果更实际：并发的 node remove 与 node update
+	// 若各自读到同一份快照，remove 先写、update 后写，被删掉的节点会被 update 重新写回来，
+	// 表现为"删除成功但节点还在"。
+	var notFound bool
+	if err := s.state.WithNode(func(node *apitypes.NodeState) error {
+		if _, exists := node.Servers[req.Name]; !exists {
+			notFound = true
+			return errNodeNotFound
+		}
+		delete(node.Servers, req.Name)
+		return nil
+	}); err != nil {
+		if notFound {
+			fail(c, http.StatusNotFound, "server not found: "+req.Name)
+			return
+		}
 		fail(c, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -96,17 +114,20 @@ func (s *Server) nodeUpdate(c *gin.Context) {
 		return
 	}
 
-	node, err := s.state.ReadNode()
-	if err != nil {
-		fail(c, http.StatusInternalServerError, err.Error())
-		return
-	}
-	if _, exists := node.Servers[req.Name]; !exists {
-		fail(c, http.StatusNotFound, "server not found: "+req.Name)
-		return
-	}
-	node.Servers[req.Name] = req.Server
-	if err := s.state.WriteNode(node); err != nil {
+	// 同 nodeAdd 用 WithNode：避免 update 用一份过期快照把已被删除的节点写回来。
+	var notFound bool
+	if err := s.state.WithNode(func(node *apitypes.NodeState) error {
+		if _, exists := node.Servers[req.Name]; !exists {
+			notFound = true
+			return errNodeNotFound
+		}
+		node.Servers[req.Name] = req.Server
+		return nil
+	}); err != nil {
+		if notFound {
+			fail(c, http.StatusNotFound, "server not found: "+req.Name)
+			return
+		}
 		fail(c, http.StatusInternalServerError, err.Error())
 		return
 	}
