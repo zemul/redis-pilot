@@ -174,7 +174,7 @@ func (s *Server) runReconcile() ([]ReconcileResult, error) {
 
 	// 在写锁内原子应用状态变更，避免覆盖并发写入
 	if len(patches) > 0 {
-		s.state.WithInstances(func(st *apitypes.InstancesState) error {
+		if err := s.state.WithInstances(func(st *apitypes.InstancesState) error {
 			affectedGroups := map[string]struct{}{}
 			for _, p := range patches {
 				if inst := st.Instances[p.name]; inst != nil {
@@ -186,7 +186,9 @@ func (s *Server) runReconcile() ([]ReconcileResult, error) {
 				state.RecalculateGroupTopology(st, g)
 			}
 			return nil
-		})
+		}); err != nil {
+			s.log.Errorf("reconcile: failed to persist status updates: %v", err)
+		}
 	}
 
 	// 修正角色漂移：磁盘配置文件里的 replicaof 与 Server 记录不一致时补推一次配置重写。

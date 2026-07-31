@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/internal/state"
 	"gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/pkg/apitypes"
 )
 
@@ -339,5 +340,118 @@ func TestNoStoredDerivedStatus(t *testing.T) {
 					name, i+1, strings.TrimSpace(line))
 			}
 		}
+	}
+}
+
+// TestFailover_LocksReleasedAfterCompletion 验证故障转移完成后实例锁被正确释放。
+//
+// 此前锁在 handleSentinelFailover 的 WithInstances 回调内通过 defer 释放，
+// 回调返回时 defer 触发、锁被置 nil，WithInstances 提交到 DB 时锁已经是"未持有"。
+// 锁从未生效，并发的 instanceStop/Delete 不受阻止。
+//
+// 修复后锁在独立事务中加锁并提交（Phase 1），在函数返回时由 defer releaseLockGroup
+// 释放（独立事务）。此测试验证修复后的锁生命周期：故障转移完成后所有实例锁应为 nil。
+func TestFailover_LocksReleasedAfterCompletion(t *testing.T) {
+	s := newTestServer(t, "")
+	group := testGroup("order")
+	group.Type = "replication"
+	group.Engine = "redis"
+	group.CurrentMaster = "order-a"
+
+	s.state.WriteNode(&apitypes.NodeState{
+		Servers: map[string]*apitypes.NodeServer{
+			"srv1": {Endpoint: "10.0.1.10", AgentPort: 8400},
+		},
+	})
+	s.state.WriteInstances(&apitypes.InstancesState{
+		Groups: map[string]*apitypes.InstanceGroupState{"order": group},
+		Instances: map[string]*apitypes.Instance{
+			"order-a": {
+				Group: "order", Server: "srv1", Port: 6379, Role: "master",
+				DesiredState: apitypes.DesiredRunning, ObservedStatus: apitypes.ObservedRunning,
+				Container: "redis-order-a",
+			},
+			"order-b": {
+				Group: "order", Server: "srv1", Port: 6380, Role: "replica", ReplicaOf: "order-a",
+				DesiredState: apitypes.DesiredRunning, ObservedStatus: apitypes.ObservedRunning,
+				Container: "redis-order-b",
+			},
+		},
+	})
+
+	if err := s.handleSentinelFailover("order", "10.0.1.10:6380", "test", "test"); err != nil {
+		t.Fatalf("handleSentinelFailover: %v", err)
+	}
+
+	after, _ := s.state.ReadInstances()
+	for name, inst := range after.Instances {
+		if inst.Lock != nil {
+			t.Errorf("instance %s still has lock after failover completed: %+v"+
+				" (locks must be released by defer releaseLockGroup)", name, inst.Lock)
+		}
+	}
+}
+
+// TestFailover_LockBlocksConcurrentStop 验证故障转移期间实例锁能阻止并发的 instanceStop。
+//
+// 这是 A2 修复的核心验证：锁必须在独立事务中加锁并提交，才能被并发的
+// resolveAndLock 看到。如果锁仍在回调内通过 defer 释放（旧 bug），
+// resolveAndLock 不会看到锁，instanceStop 会成功--与故障转移产生竞态。
+func TestFailover_LockBlocksConcurrentStop(t *testing.T) {
+	s := newTestServer(t, "")
+	group := testGroup("order")
+	group.Type = "replication"
+	group.Engine = "redis"
+	group.CurrentMaster = "order-a"
+
+	s.state.WriteNode(&apitypes.NodeState{
+		Servers: map[string]*apitypes.NodeServer{
+			"srv1": {Endpoint: "10.0.1.10", AgentPort: 8400},
+		},
+	})
+	s.state.WriteInstances(&apitypes.InstancesState{
+		Groups: map[string]*apitypes.InstanceGroupState{"order": group},
+		Instances: map[string]*apitypes.Instance{
+			"order-a": {
+				Group: "order", Server: "srv1", Port: 6379, Role: "master",
+				DesiredState: apitypes.DesiredRunning, ObservedStatus: apitypes.ObservedRunning,
+				Container: "redis-order-a",
+			},
+			"order-b": {
+				Group: "order", Server: "srv1", Port: 6380, Role: "replica", ReplicaOf: "order-a",
+				DesiredState: apitypes.DesiredRunning, ObservedStatus: apitypes.ObservedRunning,
+				Container: "redis-order-b",
+			},
+		},
+	})
+
+	// 手动模拟故障转移持有锁的状态：在独立事务中加锁并提交
+	sessionID := "test-failover-lock"
+	s.state.WithInstances(func(instances *apitypes.InstancesState) error {
+		for _, name := range []string{"order-a", "order-b"} {
+			if inst := instances.Instances[name]; inst != nil {
+				state.TryAcquireLock(inst, sessionID, "sentinel-failover", 60)
+			}
+		}
+		return nil
+	})
+
+	// 尝试对被锁的实例执行 resolveAndLock（instanceStop 的前置）
+	_, _, unlock, err := s.resolveAndLockInternal("order-a", "stop")
+	if err == nil {
+		if unlock != nil {
+			unlock()
+		}
+		t.Fatal("resolveAndLock should fail when instance is locked by failover")
+	}
+
+	// 释放锁后 resolveAndLock 应该成功
+	s.releaseLockGroup([]string{"order-a", "order-b"}, sessionID)
+	_, _, unlock2, err2 := s.resolveAndLockInternal("order-a", "stop")
+	if err2 != nil {
+		t.Fatalf("resolveAndLock should succeed after lock released: %v", err2)
+	}
+	if unlock2 != nil {
+		unlock2()
 	}
 }

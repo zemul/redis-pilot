@@ -740,11 +740,16 @@ func TestInstanceFailover_DirectFallback_DemotesOldMaster(t *testing.T) {
 		ReplicaOf string `json:"replica_of"`
 	}
 	var oldMasterReplicateCalled bool
+	var newMasterConfigCalled bool
+	var oldMasterConfigCalled bool
 
 	// 新 master (order-replica) 所在的 fake agent
 	newMasterAgent := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/instance/promote" {
 			newMasterPromoteCalled = true
+		}
+		if r.URL.Path == "/instance/config" {
+			newMasterConfigCalled = true
 		}
 		json.NewEncoder(w).Encode(apitypes.APIResponse{Success: true})
 	}))
@@ -755,6 +760,9 @@ func TestInstanceFailover_DirectFallback_DemotesOldMaster(t *testing.T) {
 		if r.URL.Path == "/instance/replicate" {
 			oldMasterReplicateCalled = true
 			json.NewDecoder(r.Body).Decode(&oldMasterReplicateReq)
+		}
+		if r.URL.Path == "/instance/config" {
+			oldMasterConfigCalled = true
 		}
 		json.NewEncoder(w).Encode(apitypes.APIResponse{Success: true})
 	}))
@@ -819,6 +827,14 @@ func TestInstanceFailover_DirectFallback_DemotesOldMaster(t *testing.T) {
 	}
 	if instances.Instances["order-master"].ReplicaOf != "order-replica" {
 		t.Errorf("expected order-master.ReplicaOf = order-replica, got %q", instances.Instances["order-master"].ReplicaOf)
+	}
+
+	// directFailover 必须把新角色推到磁盘配置文件，避免容器重启后角色回退（脑裂）。
+	if !newMasterConfigCalled {
+		t.Error("expected /instance/config to be called on new master's agent (persistGroupRoles)")
+	}
+	if !oldMasterConfigCalled {
+		t.Error("expected /instance/config to be called on old master's agent (persistGroupRoles)")
 	}
 }
 

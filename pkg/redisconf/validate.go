@@ -61,6 +61,9 @@ var reservedConfigKeys = map[string]string{
 	"pidfile":               "容器化部署下改动会导致容器启动即退出",
 	"logfile":               "日志输出由平台管理",
 	"cluster-enabled":       "本平台按主从模型管理，不支持集群模式",
+	"loadmodule":            "加载外部模块可执行任意代码，由平台统一管理",
+	"protected-mode":        "Redis 内置安全防护由平台管理，关闭会使未认证实例暴露",
+	"aclfile":               "ACL 规则文件由平台管理，指向外部文件可绕过密码管理",
 }
 
 // ValidateOverrides 校验用户提供的配置覆盖项。

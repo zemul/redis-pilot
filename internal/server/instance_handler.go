@@ -944,6 +944,8 @@ func (s *Server) directFailover(c *gin.Context, start time.Time, name string) {
 		Target:   map[string]interface{}{"instance": name, "server": inst.Server},
 	})
 
+	// 把新角色写进各实例的磁盘配置文件，避免容器重启后角色回退（与 Sentinel 路径一致）。
+	s.persistGroupRoles(inst.Group)
 	s.syncSentinel()
 	ok(c, map[string]interface{}{
 		"new_master": name,

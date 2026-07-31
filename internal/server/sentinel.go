@@ -538,18 +538,23 @@ func (s *Server) handleSentinelFailover(group, newMasterAddr, source, operator s
 	var oldMasterFound bool
 	var noOp bool
 
+	// Phase 1: 在独立事务中加锁并提交，让并发的 instanceStop/Delete 能看到锁。
+	// 此前锁在同一个 WithInstances 回调里通过 defer 释放：回调返回时 defer 触发、
+	// 锁被置 nil，WithInstances 提交到 DB 时锁已经是"未持有"--锁从未生效。
+	var groupNames []string
 	err := s.state.WithInstances(func(instances *apitypes.InstancesState) error {
 		groupState := instances.Groups[group]
 		if groupState == nil || groupState.Type != "replication" {
 			return fmt.Errorf("replication group not found: %s", group)
 		}
-		groupNames := instanceNamesByGroup(instances, group)
 		oldMasterName = groupState.CurrentMaster
 		oldMaster := instances.Instances[oldMasterName]
 		if oldMaster == nil {
 			return fmt.Errorf("old master not found for group %s", group)
 		}
 		oldMasterFound = true
+		oldMasterServer = oldMaster.Server
+		groupNames = instanceNamesByGroup(instances, group)
 		for _, name := range groupNames {
 			if inst := instances.Instances[name]; inst != nil {
 				if err := state.TryAcquireLock(inst, sessionID, "sentinel-failover", 60); err != nil {
@@ -557,17 +562,40 @@ func (s *Server) handleSentinelFailover(group, newMasterAddr, source, operator s
 				}
 			}
 		}
-		defer func() {
-			for _, name := range groupNames {
-				if inst := instances.Instances[name]; inst != nil {
-					state.ReleaseLock(inst, sessionID)
-				}
-			}
-		}()
+		return nil
+	})
+	if err != nil {
+		s.audit.Log(audit.Record{
+			Operator: operator,
+			Action:   "topology.failover", Level: audit.LevelCritical, Result: "failed",
+			Duration: time.Since(start).Milliseconds(),
+			Target:   map[string]interface{}{"instance_group": group, "new_master": newMasterAddr},
+			Params:   map[string]interface{}{"source": source},
+			Detail:   err.Error(),
+		})
+		return err
+	}
+	// 在函数返回时释放锁（独立事务，与 resolveAndLock 的模式一致）
+	defer s.releaseLockGroup(groupNames, sessionID)
 
-		node, err := s.state.ReadNode()
-		if err != nil {
-			return err
+	// Phase 2: 解析新 master 地址 + 修改角色
+	node, err := s.state.ReadNode()
+	if err != nil {
+		s.audit.Log(audit.Record{
+			Operator: operator,
+			Action:   "topology.failover", Level: audit.LevelCritical, Result: "failed",
+			Duration: time.Since(start).Milliseconds(),
+			Target:   map[string]interface{}{"instance_group": group, "new_master": newMasterAddr},
+			Params:   map[string]interface{}{"source": source},
+			Detail:   err.Error(),
+		})
+		return err
+	}
+
+	err = s.state.WithInstances(func(instances *apitypes.InstancesState) error {
+		groupState := instances.Groups[group]
+		if groupState == nil {
+			return fmt.Errorf("group not found: %s", group)
 		}
 		newMasterName = findInstanceByAddress(node, instances, newMasterAddr)
 		if newMasterName == "" {
@@ -586,15 +614,17 @@ func (s *Server) handleSentinelFailover(group, newMasterAddr, source, operator s
 			noOp = true
 			return nil
 		}
-		oldMasterServer = oldMaster.Server
 		newMasterServer = newMaster.Server
 
-		oldMaster.Role = "replica"
-		oldMaster.ReplicaOf = newMasterName
-		// 刻意不写 oldMaster 的 ObservedStatus。故障转移的原因是未知的：
-		// Sentinel 自动触发时旧 master 通常确实挂了，但 instance failover 手动触发时
-		// 它可能完全健康。把它一律标成 failed 是在猜测而不是观测——交给 reconcile
-		// 在 30 秒内如实观测。
+		oldMaster := instances.Instances[oldMasterName]
+		if oldMaster != nil {
+			oldMaster.Role = "replica"
+			oldMaster.ReplicaOf = newMasterName
+			// 刻意不写 oldMaster 的 ObservedStatus。故障转移的原因是未知的：
+			// Sentinel 自动触发时旧 master 通常确实挂了，但 instance failover 手动触发时
+			// 它可能完全健康。把它一律标成 failed 是在猜测而不是观测--交给 reconcile
+			// 在 30 秒内如实观测。
+		}
 
 		newMaster.Role = "master"
 		newMaster.ReplicaOf = ""
@@ -614,7 +644,7 @@ func (s *Server) handleSentinelFailover(group, newMasterAddr, source, operator s
 				// 恰好不 running 的 replica 的 Role/ReplicaOf 不被更新，永久停留在旧
 				// master 上（探针实证：三节点组里先崩一个 replica 再 failover，该 replica
 				// 的 ReplicaOf 一直指向已经降级的旧 master，形成一条 Sentinel 从未创建
-				// 过的级联复制，且没有任何自愈路径会纠正它——reconcileSentinelOnce 只比对
+				// 过的级联复制，且没有任何自愈路径会纠正它--reconcileSentinelOnce 只比对
 				// master 地址，runReconcile 只管观测状态）。
 				//
 				// 门禁本身就是本次重构要消除的那类错误：Role/ReplicaOf 表达的是"这个实例
@@ -666,7 +696,7 @@ func (s *Server) handleSentinelFailover(group, newMasterAddr, source, operator s
 	})
 	// 把新角色写进各实例的磁盘配置文件。运行时角色已由 Sentinel 改好，这里修正的是
 	// 磁盘上那份，避免容器重启（podman --restart on-failure:5）后角色回退。
-	// 失败不回滚故障转移——reconcileRoleDrift 会在下一轮 reconcile 补推。
+	// 失败不回滚故障转移--reconcileRoleDrift 会在下一轮 reconcile 补推。
 	s.persistGroupRolesLocked(group)
 	// 调不加锁变体：本函数已持 topologyMu，Go 的 Mutex 不可重入。
 	if err := s.syncSentinelMastersLocked(); err != nil {
