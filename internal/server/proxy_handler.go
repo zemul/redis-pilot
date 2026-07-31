@@ -152,7 +152,15 @@ func (s *Server) buildProxySnapshot() (*apitypes.ProxySnapshot, error) {
 			})
 		}
 
-		if g.autoPort > 0 && len(g.masterEndpoints) > 0 && len(g.replicaEndpoints) > 0 {
+		// auto listener（读写分离）：有 master 就保留。replica 全挂时读降级到
+		// master（ReadCluster 留空，Envoy 不设 ReadCommandPolicy，所有命令都走
+		// Cluster 指向的 master），不中断服务。replica 恢复后下一轮快照自动恢复
+		// 读写分离。
+		if g.autoPort > 0 && len(g.masterEndpoints) > 0 {
+			readCluster := replicaClusterName
+			if len(g.replicaEndpoints) == 0 {
+				readCluster = "" // 无 replica，读也走 master
+			}
 			snapshot.Listeners = append(snapshot.Listeners, apitypes.ProxyListener{
 				Name:        "redis-" + groupName + "-auto",
 				Group:       groupName,
@@ -161,7 +169,7 @@ func (s *Server) buildProxySnapshot() (*apitypes.ProxySnapshot, error) {
 				Port:        g.autoPort,
 				StatPrefix:  statPrefix + "_auto",
 				Cluster:     masterClusterName,
-				ReadCluster: replicaClusterName,
+				ReadCluster: readCluster,
 				Password:    g.password,
 				ReadPolicy:  "MASTER",
 			})
