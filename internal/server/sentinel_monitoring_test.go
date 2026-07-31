@@ -34,7 +34,7 @@ func newSentinelRegressionFixture(t *testing.T, containers []map[string]interfac
 		Quorum:  2,
 		Port:    sentinelPort,
 	}
-	s.state.WriteNode(&apitypes.NodeState{Servers: map[string]*apitypes.NodeServer{
+	s.db.WriteNode(&apitypes.NodeState{Servers: map[string]*apitypes.NodeServer{
 		"srv1": {Endpoint: agentHost, AgentPort: agentPort, Status: "healthy"},
 		"sn1":  {Endpoint: sentinelHost, Status: "healthy"},
 		"sn2":  {Endpoint: sentinelHost, Status: "healthy"},
@@ -46,7 +46,7 @@ func newSentinelRegressionFixture(t *testing.T, containers []map[string]interfac
 // writeOrderGroup 写入一个标准的 order 主从组：master 在 7000，replica 在 7001。
 func (f *sentinelRegressionFixture) writeOrderGroup(t *testing.T) {
 	t.Helper()
-	f.s.state.WriteInstances(&apitypes.InstancesState{
+	f.s.db.WriteInstances(&apitypes.InstancesState{
 		Groups: map[string]*apitypes.InstanceGroupState{
 			"order": {
 				Type: "replication", Engine: "redis", Category: "cache",
@@ -92,7 +92,7 @@ func TestSyncSentinel_KeepsMonitoringWhenMasterCrashes(t *testing.T) {
 	if _, err := f.s.runReconcile(); err != nil {
 		t.Fatal(err)
 	}
-	instances, err := f.s.state.ReadInstances()
+	instances, err := f.s.db.ReadInstances()
 	if err != nil {
 		t.Fatal(err)
 	}

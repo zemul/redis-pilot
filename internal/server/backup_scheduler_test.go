@@ -8,7 +8,7 @@ import (
 
 func TestSyncJobs_AddNewJob(t *testing.T) {
 	s := newTestServer(t, "")
-	s.state.WriteInstances(&apitypes.InstancesState{
+	s.db.WriteInstances(&apitypes.InstancesState{
 		Groups: map[string]*apitypes.InstanceGroupState{
 			"redis-1": testGroup("redis-1"),
 		},
@@ -33,7 +33,7 @@ func TestSyncJobs_AddNewJob(t *testing.T) {
 
 func TestSyncJobs_SkipStoppedInstance(t *testing.T) {
 	s := newTestServer(t, "")
-	s.state.WriteInstances(&apitypes.InstancesState{
+	s.db.WriteInstances(&apitypes.InstancesState{
 		Groups: map[string]*apitypes.InstanceGroupState{
 			"redis-1": testGroup("redis-1"),
 		},
@@ -55,7 +55,7 @@ func TestSyncJobs_SkipStoppedInstance(t *testing.T) {
 
 func TestSyncJobs_SkipNoSchedule(t *testing.T) {
 	s := newTestServer(t, "")
-	s.state.WriteInstances(&apitypes.InstancesState{
+	s.db.WriteInstances(&apitypes.InstancesState{
 		Groups: map[string]*apitypes.InstanceGroupState{
 			"redis-1": testGroup("redis-1"),
 		},
@@ -74,7 +74,7 @@ func TestSyncJobs_SkipNoSchedule(t *testing.T) {
 
 func TestSyncJobs_RemoveDeletedInstance(t *testing.T) {
 	s := newTestServer(t, "")
-	s.state.WriteInstances(&apitypes.InstancesState{
+	s.db.WriteInstances(&apitypes.InstancesState{
 		Groups: map[string]*apitypes.InstanceGroupState{
 			"redis-1": testGroup("redis-1"),
 		},
@@ -94,7 +94,7 @@ func TestSyncJobs_RemoveDeletedInstance(t *testing.T) {
 	}
 
 	// 删除实例
-	s.state.WriteInstances(&apitypes.InstancesState{
+	s.db.WriteInstances(&apitypes.InstancesState{
 		Instances: map[string]*apitypes.Instance{},
 	})
 	bs.syncJobs()
@@ -106,7 +106,7 @@ func TestSyncJobs_RemoveDeletedInstance(t *testing.T) {
 
 func TestSyncJobs_UpdateSchedule(t *testing.T) {
 	s := newTestServer(t, "")
-	s.state.WriteInstances(&apitypes.InstancesState{
+	s.db.WriteInstances(&apitypes.InstancesState{
 		Groups: map[string]*apitypes.InstanceGroupState{
 			"redis-1": testGroup("redis-1"),
 		},
@@ -124,7 +124,7 @@ func TestSyncJobs_UpdateSchedule(t *testing.T) {
 	oldEntryID := bs.jobs["redis-1"].entryID
 
 	// 更新 schedule
-	s.state.WriteInstances(&apitypes.InstancesState{
+	s.db.WriteInstances(&apitypes.InstancesState{
 		Groups: map[string]*apitypes.InstanceGroupState{
 			"redis-1": testGroup("redis-1"),
 		},
@@ -150,7 +150,7 @@ func TestSyncJobs_UpdateSchedule(t *testing.T) {
 
 func TestSyncJobs_InvalidCron(t *testing.T) {
 	s := newTestServer(t, "")
-	s.state.WriteInstances(&apitypes.InstancesState{
+	s.db.WriteInstances(&apitypes.InstancesState{
 		Groups: map[string]*apitypes.InstanceGroupState{
 			"redis-1": testGroup("redis-1"),
 		},
@@ -172,7 +172,7 @@ func TestSyncJobs_InvalidCron(t *testing.T) {
 
 func TestSyncJobs_MultipleInstances(t *testing.T) {
 	s := newTestServer(t, "")
-	s.state.WriteInstances(&apitypes.InstancesState{
+	s.db.WriteInstances(&apitypes.InstancesState{
 		Groups: map[string]*apitypes.InstanceGroupState{
 			"redis-1": testGroup("redis-1"),
 			"redis-2": testGroup("redis-2"),

@@ -61,7 +61,7 @@ func (s *Server) proxySnapshot(c *gin.Context) {
 	}
 
 	deadline := time.Now().Add(wait)
-	lastGen := s.state.Generation()
+	lastGen := s.db.Generation()
 	ticker := time.NewTicker(proxySnapshotPollInterval)
 	defer ticker.Stop()
 
@@ -72,7 +72,7 @@ func (s *Server) proxySnapshot(c *gin.Context) {
 			return
 		case <-ticker.C:
 		}
-		if gen := s.state.Generation(); gen != lastGen {
+		if gen := s.db.Generation(); gen != lastGen {
 			lastGen = gen
 			fresh, err := s.buildProxySnapshot()
 			if err != nil {
@@ -107,11 +107,11 @@ func parseProxySnapshotWait(raw string) time.Duration {
 }
 
 func (s *Server) buildProxySnapshot() (*apitypes.ProxySnapshot, error) {
-	instances, err := s.state.ReadInstances()
+	instances, err := s.db.ReadInstances()
 	if err != nil {
 		return nil, err
 	}
-	node, err := s.state.ReadNode()
+	node, err := s.db.ReadNode()
 	if err != nil {
 		return nil, err
 	}

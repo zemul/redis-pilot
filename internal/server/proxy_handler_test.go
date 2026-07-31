@@ -11,13 +11,13 @@ func TestProxySnapshot(t *testing.T) {
 	// 主场景：master + replica 都在跑，auto listener 有读写分离
 	t.Run("master_and_replica_running", func(t *testing.T) {
 		s := newTestServer(t, "")
-		s.state.WriteNode(&apitypes.NodeState{
+		s.db.WriteNode(&apitypes.NodeState{
 			Servers: map[string]*apitypes.NodeServer{
 				"srv1": {Endpoint: "10.0.0.1"},
 				"srv2": {Endpoint: "10.0.0.2"},
 			},
 		})
-		s.state.WriteInstances(&apitypes.InstancesState{
+		s.db.WriteInstances(&apitypes.InstancesState{
 			Groups: map[string]*apitypes.InstanceGroupState{
 				"cache": {
 					Type:          "replication",
@@ -66,13 +66,13 @@ func TestProxySnapshot(t *testing.T) {
 	// 读请求降级到 master，不中断服务。
 	t.Run("all_replicas_stopped_degrades_to_master", func(t *testing.T) {
 		s := newTestServer(t, "")
-		s.state.WriteNode(&apitypes.NodeState{
+		s.db.WriteNode(&apitypes.NodeState{
 			Servers: map[string]*apitypes.NodeServer{
 				"srv1": {Endpoint: "10.0.0.1"},
 				"srv2": {Endpoint: "10.0.0.2"},
 			},
 		})
-		s.state.WriteInstances(&apitypes.InstancesState{
+		s.db.WriteInstances(&apitypes.InstancesState{
 			Groups: map[string]*apitypes.InstanceGroupState{
 				"cache": {
 					Type:          "replication",
@@ -131,12 +131,12 @@ func TestProxySnapshot(t *testing.T) {
 	// HTTP 端点冒烟
 	t.Run("http_endpoint", func(t *testing.T) {
 		s := newTestServer(t, "")
-		s.state.WriteNode(&apitypes.NodeState{
+		s.db.WriteNode(&apitypes.NodeState{
 			Servers: map[string]*apitypes.NodeServer{
 				"srv1": {Endpoint: "10.0.0.1"},
 			},
 		})
-		s.state.WriteInstances(&apitypes.InstancesState{
+		s.db.WriteInstances(&apitypes.InstancesState{
 			Groups: map[string]*apitypes.InstanceGroupState{
 				"cache": {
 					Type:          "standalone",

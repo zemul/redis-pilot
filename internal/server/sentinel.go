@@ -15,6 +15,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/internal/audit"
+	"gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/internal/store"
 	"gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/internal/state"
 	"gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/pkg/apitypes"
 )
@@ -60,7 +61,7 @@ type sentinelClusterStatus struct {
 }
 
 func (s *Server) sentinelStatus(c *gin.Context) {
-	nodeState, err := s.state.ReadNode()
+	nodeState, err := s.db.ReadNode()
 	if err != nil {
 		fail(c, http.StatusInternalServerError, err.Error())
 		return
@@ -157,7 +158,7 @@ func (s *Server) watchSentinelNode(node string) {
 }
 
 func (s *Server) sentinelNodeAddress(node string) (string, error) {
-	nodeState, err := s.state.ReadNode()
+	nodeState, err := s.db.ReadNode()
 	if err != nil {
 		return "", err
 	}
@@ -210,7 +211,7 @@ func parseSwitchMasterMessage(reply interface{}) (string, bool) {
 }
 
 func (s *Server) confirmSentinelMaster(group string) (string, error) {
-	node, err := s.state.ReadNode()
+	node, err := s.db.ReadNode()
 	if err != nil {
 		return "", err
 	}
@@ -231,11 +232,11 @@ func (s *Server) reconcileSentinelOnce() error {
 	if !s.cfg.Sentinel.Enabled {
 		return nil
 	}
-	node, err := s.state.ReadNode()
+	node, err := s.db.ReadNode()
 	if err != nil {
 		return err
 	}
-	instances, err := s.state.ReadInstances()
+	instances, err := s.db.ReadInstances()
 	if err != nil {
 		return err
 	}
@@ -542,7 +543,7 @@ func (s *Server) handleSentinelFailover(group, newMasterAddr, source, operator s
 	// 此前锁在同一个 WithInstances 回调里通过 defer 释放：回调返回时 defer 触发、
 	// 锁被置 nil，WithInstances 提交到 DB 时锁已经是"未持有"--锁从未生效。
 	var groupNames []string
-	err := s.state.WithInstances(func(instances *apitypes.InstancesState) error {
+	err := s.db.WithInstances(func(instances *apitypes.InstancesState) error {
 		groupState := instances.Groups[group]
 		if groupState == nil || groupState.Type != "replication" {
 			return fmt.Errorf("replication group not found: %s", group)
@@ -565,10 +566,10 @@ func (s *Server) handleSentinelFailover(group, newMasterAddr, source, operator s
 		return nil
 	})
 	if err != nil {
-		s.audit.Log(audit.Record{
+		s.audit.Log(store.AuditRecord{
 			Operator: operator,
 			Action:   "topology.failover", Level: audit.LevelCritical, Result: "failed",
-			Duration: time.Since(start).Milliseconds(),
+			DurationMs: time.Since(start).Milliseconds(),
 			Target:   map[string]interface{}{"instance_group": group, "new_master": newMasterAddr},
 			Params:   map[string]interface{}{"source": source},
 			Detail:   err.Error(),
@@ -579,12 +580,12 @@ func (s *Server) handleSentinelFailover(group, newMasterAddr, source, operator s
 	defer s.releaseLockGroup(groupNames, sessionID)
 
 	// Phase 2: 解析新 master 地址 + 修改角色
-	node, err := s.state.ReadNode()
+	node, err := s.db.ReadNode()
 	if err != nil {
-		s.audit.Log(audit.Record{
+		s.audit.Log(store.AuditRecord{
 			Operator: operator,
 			Action:   "topology.failover", Level: audit.LevelCritical, Result: "failed",
-			Duration: time.Since(start).Milliseconds(),
+			DurationMs: time.Since(start).Milliseconds(),
 			Target:   map[string]interface{}{"instance_group": group, "new_master": newMasterAddr},
 			Params:   map[string]interface{}{"source": source},
 			Detail:   err.Error(),
@@ -592,7 +593,7 @@ func (s *Server) handleSentinelFailover(group, newMasterAddr, source, operator s
 		return err
 	}
 
-	err = s.state.WithInstances(func(instances *apitypes.InstancesState) error {
+	err = s.db.WithInstances(func(instances *apitypes.InstancesState) error {
 		groupState := instances.Groups[group]
 		if groupState == nil {
 			return fmt.Errorf("group not found: %s", group)
@@ -660,10 +661,10 @@ func (s *Server) handleSentinelFailover(group, newMasterAddr, source, operator s
 		return nil
 	})
 	if err != nil {
-		s.audit.Log(audit.Record{
+		s.audit.Log(store.AuditRecord{
 			Operator: operator,
 			Action:   "topology.failover", Level: audit.LevelCritical, Result: "failed",
-			Duration: time.Since(start).Milliseconds(),
+			DurationMs: time.Since(start).Milliseconds(),
 			Target:   map[string]interface{}{"instance_group": group, "new_master": newMasterAddr},
 			Params:   map[string]interface{}{"source": source},
 			Detail:   err.Error(),
@@ -680,10 +681,10 @@ func (s *Server) handleSentinelFailover(group, newMasterAddr, source, operator s
 
 	result := "success"
 	detail := "sentinel failover synchronized"
-	s.audit.Log(audit.Record{
+	s.audit.Log(store.AuditRecord{
 		Operator: operator,
 		Action:   "topology.failover", Level: audit.LevelCritical, Result: result,
-		Duration: time.Since(start).Milliseconds(),
+		DurationMs: time.Since(start).Milliseconds(),
 		Target: map[string]interface{}{
 			"instance_group":    group,
 			"old_master_server": oldMasterServer,
@@ -753,11 +754,11 @@ func (s *Server) syncSentinelMastersLocked() error {
 	if !s.cfg.Sentinel.Enabled {
 		return nil
 	}
-	node, err := s.state.ReadNode()
+	node, err := s.db.ReadNode()
 	if err != nil {
 		return err
 	}
-	instances, err := s.state.ReadInstances()
+	instances, err := s.db.ReadInstances()
 	if err != nil {
 		return err
 	}
@@ -801,7 +802,7 @@ func (s *Server) removeSentinelMaster(group string) {
 	// REMOVE+MONITOR 之间，把刚建立的监控又删掉。
 	s.topologyMu.Lock()
 	defer s.topologyMu.Unlock()
-	node, err := s.state.ReadNode()
+	node, err := s.db.ReadNode()
 	if err != nil {
 		s.log.Errorf("sentinel remove read node: %v", err)
 		return

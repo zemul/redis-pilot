@@ -1,85 +1,13 @@
-// Package state 提供全局状态管理，底层委托给 internal/store (SQLite)。
-// 对外接口与原 YAML 版本保持一致，上层 handler 无需改动。
+// Package state 提供状态管理辅助函数（锁、拓扑计算等纯函数）。
+// 状态读写直接使用 internal/store.DB。
 package state
 
 import (
 	"fmt"
 	"time"
 
-	"gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/internal/store"
 	"gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/pkg/apitypes"
 )
-
-// Manager 封装所有状态读写，底层使用 SQLite。
-type Manager struct {
-	db *store.DB
-}
-
-// NewManager 打开（或创建）dataDir/pilot.db 并返回 Manager。
-func NewManager(dataDir string) (*Manager, error) {
-	db, err := store.Open(dataDir)
-	if err != nil {
-		return nil, fmt.Errorf("state: open store: %w", err)
-	}
-	return &Manager{db: db}, nil
-}
-
-// Close 关闭底层数据库连接。
-func (m *Manager) Close() error {
-	return m.db.Close()
-}
-
-// DB 返回底层 store.DB，供需要直接访问 store 的模块使用（如 audit.Logger）。
-// Generation 返回状态代际，每次写入后自增。用于判断"自某个时刻起状态有没有动过"，
-// 无需重新读取和比较全量状态。
-func (m *Manager) Generation() uint64 {
-	return m.db.Generation()
-}
-
-func (m *Manager) DB() *store.DB {
-	return m.db
-}
-
-// ── 节点 ──────────────────────────────────────────────────────────────────────
-
-// ReadNode 返回当前节点状态快照（只读）。
-func (m *Manager) ReadNode() (*apitypes.NodeState, error) {
-	return m.db.ReadNodeState()
-}
-
-// WriteNode 覆写全量节点状态。
-func (m *Manager) WriteNode(state *apitypes.NodeState) error {
-	return m.db.WriteNodeState(state)
-}
-
-// WithNode 在事务中原子执行 read → fn → write。
-func (m *Manager) WithNode(fn func(*apitypes.NodeState) error) error {
-	return m.db.WithServers(func(servers map[string]*apitypes.NodeServer) error {
-		st := &apitypes.NodeState{Servers: servers}
-		return fn(st)
-	})
-}
-
-// ── 实例 ──────────────────────────────────────────────────────────────────────
-
-// ReadInstances 返回当前实例状态快照（只读）。
-func (m *Manager) ReadInstances() (*apitypes.InstancesState, error) {
-	return m.db.ReadInstances()
-}
-
-// WriteInstances 覆写全量实例状态。
-func (m *Manager) WriteInstances(state *apitypes.InstancesState) error {
-	return m.db.WithInstances(func(st *apitypes.InstancesState) error {
-		st.Groups = state.Groups
-		st.Instances = state.Instances
-		return nil
-	})
-}
-
-// WithInstances 在事务中原子执行 read → fn → write。
-func (m *Manager) WithInstances(fn func(*apitypes.InstancesState) error) error {
-	return m.db.WithInstances(fn)
-}
 
 // ── 锁 ────────────────────────────────────────────────────────────────────────
 

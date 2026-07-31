@@ -12,13 +12,13 @@ import (
 
 	"gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/internal/audit"
 	"gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/internal/logger"
-	"gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/internal/state"
+	"gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/internal/store"
 	"gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/pkg/apitypes"
 )
 
 type Server struct {
 	cfg       *Config
-	state     *state.Manager
+	db        *store.DB
 	log       *logger.Logger
 	audit     *audit.Logger
 	scheduler *backupScheduler
@@ -54,16 +54,16 @@ func New(cfg *Config) (*Server, error) {
 		cfg.Ports.EnvoyMaster = PortRange{Start: 16500, End: 16619}
 	}
 
-	st, err := state.NewManager(cfg.DataDir)
+	db, err := store.Open(cfg.DataDir)
 	if err != nil {
-		return nil, fmt.Errorf("server: init state: %w", err)
+		return nil, fmt.Errorf("server: init store: %w", err)
 	}
 
 	s := &Server{
 		cfg:   cfg,
-		state: st,
+		db:    db,
 		log:   logger.New(cfg.Log.Dir, cfg.Log.Stdout),
-		audit: audit.New(st.DB()),
+		audit: audit.New(db),
 	}
 	s.scheduler = newBackupScheduler(s)
 	return s, nil

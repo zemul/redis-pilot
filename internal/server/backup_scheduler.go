@@ -41,7 +41,7 @@ func (bs *backupScheduler) Start() {
 
 // syncJobs 读取实例状态，对比当前 jobs，增删变更的 cron 任务。
 func (bs *backupScheduler) syncJobs() {
-	instances, err := bs.s.state.ReadInstances()
+	instances, err := bs.s.db.ReadInstances()
 	if err != nil {
 		bs.s.log.Errorf("backup scheduler: read instances: %v", err)
 		return

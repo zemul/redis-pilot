@@ -5,25 +5,26 @@ import (
 	"testing"
 	"time"
 
+	"gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/internal/store"
 	"gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/pkg/apitypes"
 )
 
-// newTestManager 创建一个使用临时目录的 Manager（测试辅助）
-func newTestManager(t *testing.T) *Manager {
+// newTestDB 创建一个使用临时目录的 store.DB（测试辅助）
+func newTestDB(t *testing.T) *store.DB {
 	t.Helper()
-	m, err := NewManager(t.TempDir())
+	db, err := store.Open(t.TempDir())
 	if err != nil {
-		t.Fatalf("NewManager: %v", err)
+		t.Fatalf("store.Open: %v", err)
 	}
-	t.Cleanup(func() { m.Close() })
-	return m
+	t.Cleanup(func() { db.Close() })
+	return db
 }
 
 // ---------- Manager 读写测试 ----------
 
 func TestReadNode_Empty(t *testing.T) {
-	m := newTestManager(t)
-	ps, err := m.ReadNode()
+	db := newTestDB(t)
+	ps, err := db.ReadNode()
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -36,7 +37,7 @@ func TestReadNode_Empty(t *testing.T) {
 }
 
 func TestWriteNode_ThenRead(t *testing.T) {
-	m := newTestManager(t)
+	db := newTestDB(t)
 	want := &apitypes.NodeState{
 		Servers: map[string]*apitypes.NodeServer{
 			"srv1": {
@@ -48,10 +49,10 @@ func TestWriteNode_ThenRead(t *testing.T) {
 			},
 		},
 	}
-	if err := m.WriteNode(want); err != nil {
+	if err := db.WriteNode(want); err != nil {
 		t.Fatalf("write error: %v", err)
 	}
-	got, err := m.ReadNode()
+	got, err := db.ReadNode()
 	if err != nil {
 		t.Fatalf("read error: %v", err)
 	}
@@ -71,8 +72,8 @@ func TestWriteNode_ThenRead(t *testing.T) {
 }
 
 func TestReadInstances_Empty(t *testing.T) {
-	m := newTestManager(t)
-	is, err := m.ReadInstances()
+	db := newTestDB(t)
+	is, err := db.ReadInstances()
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -85,7 +86,7 @@ func TestReadInstances_Empty(t *testing.T) {
 }
 
 func TestWriteInstances_ThenRead(t *testing.T) {
-	m := newTestManager(t)
+	db := newTestDB(t)
 	want := &apitypes.InstancesState{
 		Groups: map[string]*apitypes.InstanceGroupState{
 			"redis": {
@@ -116,10 +117,10 @@ func TestWriteInstances_ThenRead(t *testing.T) {
 			},
 		},
 	}
-	if err := m.WriteInstances(want); err != nil {
+	if err := db.WriteInstances(want); err != nil {
 		t.Fatalf("write error: %v", err)
 	}
-	got, err := m.ReadInstances()
+	got, err := db.ReadInstances()
 	if err != nil {
 		t.Fatalf("read error: %v", err)
 	}
@@ -137,9 +138,9 @@ func TestWriteInstances_ThenRead(t *testing.T) {
 }
 
 func TestWithInstances_Atomic(t *testing.T) {
-	m := newTestManager(t)
+	db := newTestDB(t)
 
-	err := m.WithInstances(func(st *apitypes.InstancesState) error {
+	err := db.WithInstances(func(st *apitypes.InstancesState) error {
 		st.Groups["g1"] = &apitypes.InstanceGroupState{Type: "standalone", Engine: "redis"}
 		st.Instances["inst1"] = &apitypes.Instance{Group: "g1", Role: "master", DesiredState: "running", ObservedStatus: "running"}
 		return nil
@@ -147,7 +148,7 @@ func TestWithInstances_Atomic(t *testing.T) {
 	if err != nil {
 		t.Fatalf("WithInstances: %v", err)
 	}
-	got, _ := m.ReadInstances()
+	got, _ := db.ReadInstances()
 	if got.Instances["inst1"] == nil {
 		t.Fatal("inst1 should exist after WithInstances")
 	}

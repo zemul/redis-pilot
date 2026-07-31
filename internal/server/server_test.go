@@ -32,7 +32,7 @@ func newTestServer(t *testing.T, token string) *Server {
 	if err != nil {
 		t.Fatalf("server.New: %v", err)
 	}
-	t.Cleanup(func() { s.state.Close() })
+	t.Cleanup(func() { s.db.Close() })
 	return s
 }
 
@@ -250,7 +250,7 @@ func TestInstanceList_Empty(t *testing.T) {
 
 func TestInstanceList_FilterCommonFields(t *testing.T) {
 	s := newTestServer(t, "")
-	if err := s.state.WriteInstances(&apitypes.InstancesState{
+	if err := s.db.WriteInstances(&apitypes.InstancesState{
 		Groups: map[string]*apitypes.InstanceGroupState{
 			"order": {
 				Type:           "replication",
@@ -337,7 +337,7 @@ func TestInstanceCreate_DuplicateName(t *testing.T) {
 	r := s.Router()
 
 	// 先写入一个已有实例
-	s.state.WriteInstances(&apitypes.InstancesState{
+	s.db.WriteInstances(&apitypes.InstancesState{
 		Groups: map[string]*apitypes.InstanceGroupState{
 			"redis-1": testGroup("redis-1"),
 		},
@@ -396,7 +396,7 @@ func TestInstanceCreate_WithFakeAgent(t *testing.T) {
 	agentHost, agentPort := fakeAgentHostPort(fakeAgent.Listener.Addr().String())
 
 	// 添加 server 到 node，指向 fake agent
-	s.state.WriteNode(&apitypes.NodeState{
+	s.db.WriteNode(&apitypes.NodeState{
 		Servers: map[string]*apitypes.NodeServer{
 			"srv1": {
 				Endpoint:  agentHost,
@@ -423,7 +423,7 @@ func TestInstanceCreate_WithFakeAgent(t *testing.T) {
 	}
 
 	// 验证实例状态
-	instances, _ := s.state.ReadInstances()
+	instances, _ := s.db.ReadInstances()
 	inst := instances.Instances["redis-1"]
 	if inst == nil {
 		t.Fatal("redis-1 should exist")
@@ -452,7 +452,7 @@ func TestInstanceCreate_RoleMaster(t *testing.T) {
 	defer fakeAgent.Close()
 	s := newTestServer(t, "")
 	agentHost, agentPort := fakeAgentHostPort(fakeAgent.Listener.Addr().String())
-	s.state.WriteNode(&apitypes.NodeState{
+	s.db.WriteNode(&apitypes.NodeState{
 		Servers: map[string]*apitypes.NodeServer{
 			"srv1": {Endpoint: agentHost, AgentPort: agentPort, Status: "healthy"},
 		},
@@ -461,7 +461,7 @@ func TestInstanceCreate_RoleMaster(t *testing.T) {
 		Name: "redis-m", Category: "persistent", Group: "redis", Engine: "redis", EngineVersion: "6.2", Type: "replication",
 		Server: "srv1", Port: 6379, Memory: "4Gi", CPUs: 2,
 	})
-	instances, _ := s.state.ReadInstances()
+	instances, _ := s.db.ReadInstances()
 	if instances.Instances["redis-m"].Role != "master" {
 		t.Fatalf("expected role master, got %s", instances.Instances["redis-m"].Role)
 	}
@@ -474,7 +474,7 @@ func TestInstanceCreate_RoleReplica(t *testing.T) {
 	defer fakeAgent.Close()
 	s := newTestServer(t, "")
 	agentHost, agentPort := fakeAgentHostPort(fakeAgent.Listener.Addr().String())
-	s.state.WriteNode(&apitypes.NodeState{
+	s.db.WriteNode(&apitypes.NodeState{
 		Servers: map[string]*apitypes.NodeServer{
 			"srv1": {Endpoint: agentHost, AgentPort: agentPort, Status: "healthy"},
 		},
@@ -487,7 +487,7 @@ func TestInstanceCreate_RoleReplica(t *testing.T) {
 		Name: "redis-r", Category: "persistent", Engine: "redis", Type: "replication",
 		Server: "srv1", Port: 6380, Memory: "4Gi", CPUs: 2, ReplicaOf: "redis-m",
 	})
-	instances, _ := s.state.ReadInstances()
+	instances, _ := s.db.ReadInstances()
 	if instances.Instances["redis-r"].Role != "replica" {
 		t.Fatalf("expected role replica, got %s", instances.Instances["redis-r"].Role)
 	}
@@ -518,7 +518,7 @@ func TestInstanceDelete_WithFakeAgent(t *testing.T) {
 	r := s.Router()
 
 	agentHost, agentPort := fakeAgentHostPort(fakeAgent.Listener.Addr().String())
-	s.state.WriteNode(&apitypes.NodeState{
+	s.db.WriteNode(&apitypes.NodeState{
 		Servers: map[string]*apitypes.NodeServer{
 			"srv1": {
 				Endpoint:  agentHost,
@@ -529,7 +529,7 @@ func TestInstanceDelete_WithFakeAgent(t *testing.T) {
 			},
 		},
 	})
-	s.state.WriteInstances(&apitypes.InstancesState{
+	s.db.WriteInstances(&apitypes.InstancesState{
 		Groups: map[string]*apitypes.InstanceGroupState{
 			"redis-1": testGroup("redis-1"),
 		},
@@ -544,7 +544,7 @@ func TestInstanceDelete_WithFakeAgent(t *testing.T) {
 	}
 
 	// 验证实例已删除
-	instances, _ := s.state.ReadInstances()
+	instances, _ := s.db.ReadInstances()
 	if _, exists := instances.Instances["redis-1"]; exists {
 		t.Fatal("redis-1 should be deleted")
 	}
@@ -574,12 +574,12 @@ func TestReconcile_AllConsistent(t *testing.T) {
 
 	s := newTestServer(t, "")
 	agentHost, agentPort := fakeAgentHostPort(agent.Listener.Addr().String())
-	s.state.WriteNode(&apitypes.NodeState{
+	s.db.WriteNode(&apitypes.NodeState{
 		Servers: map[string]*apitypes.NodeServer{
 			"srv1": {Endpoint: agentHost, AgentPort: agentPort},
 		},
 	})
-	s.state.WriteInstances(&apitypes.InstancesState{
+	s.db.WriteInstances(&apitypes.InstancesState{
 		Groups: map[string]*apitypes.InstanceGroupState{
 			"redis-1": testGroup("redis-1"),
 		},
@@ -594,7 +594,7 @@ func TestReconcile_AllConsistent(t *testing.T) {
 	}
 
 	// 状态不应变化
-	instances, _ := s.state.ReadInstances()
+	instances, _ := s.db.ReadInstances()
 	if instances.Instances["redis-1"].Phase() != "running" {
 		t.Fatalf("expected running, got %s", instances.Instances["redis-1"].Phase())
 	}
@@ -608,12 +608,12 @@ func TestReconcile_CreatingButRunning(t *testing.T) {
 
 	s := newTestServer(t, "")
 	agentHost, agentPort := fakeAgentHostPort(agent.Listener.Addr().String())
-	s.state.WriteNode(&apitypes.NodeState{
+	s.db.WriteNode(&apitypes.NodeState{
 		Servers: map[string]*apitypes.NodeServer{
 			"srv1": {Endpoint: agentHost, AgentPort: agentPort},
 		},
 	})
-	s.state.WriteInstances(&apitypes.InstancesState{
+	s.db.WriteInstances(&apitypes.InstancesState{
 		Groups: map[string]*apitypes.InstanceGroupState{
 			"redis-1": testGroup("redis-1"),
 		},
@@ -624,7 +624,7 @@ func TestReconcile_CreatingButRunning(t *testing.T) {
 
 	doRequest(s.Router(), "POST", "/reconcile", nil)
 
-	instances, _ := s.state.ReadInstances()
+	instances, _ := s.db.ReadInstances()
 	if instances.Instances["redis-1"].Phase() != "running" {
 		t.Fatalf("expected status updated to running, got %s", instances.Instances["redis-1"].Phase())
 	}
@@ -638,12 +638,12 @@ func TestReconcile_RunningButStopped(t *testing.T) {
 
 	s := newTestServer(t, "")
 	agentHost, agentPort := fakeAgentHostPort(agent.Listener.Addr().String())
-	s.state.WriteNode(&apitypes.NodeState{
+	s.db.WriteNode(&apitypes.NodeState{
 		Servers: map[string]*apitypes.NodeServer{
 			"srv1": {Endpoint: agentHost, AgentPort: agentPort},
 		},
 	})
-	s.state.WriteInstances(&apitypes.InstancesState{
+	s.db.WriteInstances(&apitypes.InstancesState{
 		Groups: map[string]*apitypes.InstanceGroupState{
 			"redis-1": testGroup("redis-1"),
 		},
@@ -654,7 +654,7 @@ func TestReconcile_RunningButStopped(t *testing.T) {
 
 	doRequest(s.Router(), "POST", "/reconcile", nil)
 
-	instances, _ := s.state.ReadInstances()
+	instances, _ := s.db.ReadInstances()
 	if instances.Instances["redis-1"].Phase() != "unexpected_stopped" {
 		t.Fatalf("expected unexpected_stopped, got %s", instances.Instances["redis-1"].Phase())
 	}
@@ -667,12 +667,12 @@ func TestReconcile_RunningButMissing(t *testing.T) {
 
 	s := newTestServer(t, "")
 	agentHost, agentPort := fakeAgentHostPort(agent.Listener.Addr().String())
-	s.state.WriteNode(&apitypes.NodeState{
+	s.db.WriteNode(&apitypes.NodeState{
 		Servers: map[string]*apitypes.NodeServer{
 			"srv1": {Endpoint: agentHost, AgentPort: agentPort},
 		},
 	})
-	s.state.WriteInstances(&apitypes.InstancesState{
+	s.db.WriteInstances(&apitypes.InstancesState{
 		Groups: map[string]*apitypes.InstanceGroupState{
 			"redis-1": testGroup("redis-1"),
 		},
@@ -683,7 +683,7 @@ func TestReconcile_RunningButMissing(t *testing.T) {
 
 	doRequest(s.Router(), "POST", "/reconcile", nil)
 
-	instances, _ := s.state.ReadInstances()
+	instances, _ := s.db.ReadInstances()
 	if instances.Instances["redis-1"].Phase() != "failed" {
 		t.Fatalf("expected failed, got %s", instances.Instances["redis-1"].Phase())
 	}
@@ -697,12 +697,12 @@ func TestReconcile_FailedButRunning(t *testing.T) {
 
 	s := newTestServer(t, "")
 	agentHost, agentPort := fakeAgentHostPort(agent.Listener.Addr().String())
-	s.state.WriteNode(&apitypes.NodeState{
+	s.db.WriteNode(&apitypes.NodeState{
 		Servers: map[string]*apitypes.NodeServer{
 			"srv1": {Endpoint: agentHost, AgentPort: agentPort},
 		},
 	})
-	s.state.WriteInstances(&apitypes.InstancesState{
+	s.db.WriteInstances(&apitypes.InstancesState{
 		Groups: map[string]*apitypes.InstanceGroupState{
 			"redis-1": testGroup("redis-1"),
 		},
@@ -713,7 +713,7 @@ func TestReconcile_FailedButRunning(t *testing.T) {
 
 	doRequest(s.Router(), "POST", "/reconcile", nil)
 
-	instances, _ := s.state.ReadInstances()
+	instances, _ := s.db.ReadInstances()
 	if instances.Instances["redis-1"].Phase() != "running" {
 		t.Fatalf("expected status corrected to running, got %s", instances.Instances["redis-1"].Phase())
 	}
@@ -774,11 +774,11 @@ func TestInstanceFailover_DirectFallback_DemotesOldMaster(t *testing.T) {
 	oldHost, oldPort := fakeAgentHostPort(oldMasterAgent.Listener.Addr().String())
 	newHost, newPort := fakeAgentHostPort(newMasterAgent.Listener.Addr().String())
 
-	s.state.WriteNode(&apitypes.NodeState{Servers: map[string]*apitypes.NodeServer{
+	s.db.WriteNode(&apitypes.NodeState{Servers: map[string]*apitypes.NodeServer{
 		"srv-old": {Endpoint: oldHost, AgentPort: oldPort, Status: "healthy"},
 		"srv-new": {Endpoint: newHost, AgentPort: newPort, Status: "healthy"},
 	}})
-	s.state.WriteInstances(&apitypes.InstancesState{
+	s.db.WriteInstances(&apitypes.InstancesState{
 		Groups: map[string]*apitypes.InstanceGroupState{
 			"order": {
 				Type:          "replication",
@@ -818,7 +818,7 @@ func TestInstanceFailover_DirectFallback_DemotesOldMaster(t *testing.T) {
 		t.Errorf("expected old master to replicate from %q, got %q", wantAddr, oldMasterReplicateReq.ReplicaOf)
 	}
 
-	instances, _ := s.state.ReadInstances()
+	instances, _ := s.db.ReadInstances()
 	if instances.Instances["order-replica"].Role != "master" {
 		t.Errorf("expected order-replica to become master")
 	}
@@ -852,12 +852,12 @@ func TestInstanceFailover_DirectFallback_OldMasterUnreachable(t *testing.T) {
 
 	newHost, newPort := fakeAgentHostPort(newMasterAgent.Listener.Addr().String())
 
-	s.state.WriteNode(&apitypes.NodeState{Servers: map[string]*apitypes.NodeServer{
+	s.db.WriteNode(&apitypes.NodeState{Servers: map[string]*apitypes.NodeServer{
 		// 旧 master 指向一个不可达端口，模拟旧 master 宕机/网络不可达。
 		"srv-old": {Endpoint: "127.0.0.1", AgentPort: 1, Status: "healthy"},
 		"srv-new": {Endpoint: newHost, AgentPort: newPort, Status: "healthy"},
 	}})
-	s.state.WriteInstances(&apitypes.InstancesState{
+	s.db.WriteInstances(&apitypes.InstancesState{
 		Groups: map[string]*apitypes.InstanceGroupState{
 			"order": {
 				Type:          "replication",
@@ -883,7 +883,7 @@ func TestInstanceFailover_DirectFallback_OldMasterUnreachable(t *testing.T) {
 		t.Fatalf("expected promote to succeed even if old master is unreachable, got %d: %s", w.Code, w.Body.String())
 	}
 
-	instances, _ := s.state.ReadInstances()
+	instances, _ := s.db.ReadInstances()
 	if instances.Instances["order-replica"].Role != "master" {
 		t.Errorf("expected order-replica to become master despite old master being unreachable")
 	}
@@ -1110,14 +1110,14 @@ func TestInstanceFailover_SentinelManaged_TriggersRealFailoverAndSyncsState(t *t
 		Quorum:  2,
 		Port:    sentinelPort,
 	}
-	s.state.WriteNode(&apitypes.NodeState{Servers: map[string]*apitypes.NodeServer{
+	s.db.WriteNode(&apitypes.NodeState{Servers: map[string]*apitypes.NodeServer{
 		"srv-sentinel-a": {Endpoint: sentinelHost, Status: "healthy"},
 		"srv-sentinel-b": {Endpoint: sentinelHost, Status: "healthy"},
 		"srv-sentinel-c": {Endpoint: sentinelHost, Status: "healthy"},
 		"srv-old":        {Endpoint: "127.0.0.1", Status: "healthy"},
 		"srv-new":        {Endpoint: "127.0.0.1", Status: "healthy"},
 	}})
-	s.state.WriteInstances(&apitypes.InstancesState{
+	s.db.WriteInstances(&apitypes.InstancesState{
 		Groups: map[string]*apitypes.InstanceGroupState{
 			"order": {
 				Type:          "replication",
@@ -1154,7 +1154,7 @@ func TestInstanceFailover_SentinelManaged_TriggersRealFailoverAndSyncsState(t *t
 		t.Errorf("expected new_master=order-replica in response, got %#v", data)
 	}
 
-	instances, err := s.state.ReadInstances()
+	instances, err := s.db.ReadInstances()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1174,11 +1174,11 @@ func TestInstanceFailover_SentinelManaged_TriggersRealFailoverAndSyncsState(t *t
 func TestInstanceReplicate_RejectedOnSentinelManagedGroup(t *testing.T) {
 	s := newTestServer(t, "")
 	s.cfg.Sentinel = SentinelConfig{Enabled: true, Nodes: []string{"a", "b", "c"}, Quorum: 2}
-	s.state.WriteNode(&apitypes.NodeState{Servers: map[string]*apitypes.NodeServer{
+	s.db.WriteNode(&apitypes.NodeState{Servers: map[string]*apitypes.NodeServer{
 		"srv-old": {Endpoint: "127.0.0.1", Status: "healthy"},
 		"srv-new": {Endpoint: "127.0.0.1", Status: "healthy"},
 	}})
-	s.state.WriteInstances(&apitypes.InstancesState{
+	s.db.WriteInstances(&apitypes.InstancesState{
 		Groups: map[string]*apitypes.InstanceGroupState{
 			"order": {
 				Type:          "replication",

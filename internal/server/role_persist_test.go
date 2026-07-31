@@ -67,7 +67,7 @@ func (ra *recordingAgent) callFor(name string) map[string]interface{} {
 func setupReplicationGroup(t *testing.T, s *Server, agentAddr string, currentMaster string) string {
 	t.Helper()
 	agentHost, agentPort := fakeAgentHostPort(agentAddr)
-	if err := s.state.WriteNode(&apitypes.NodeState{
+	if err := s.db.WriteNode(&apitypes.NodeState{
 		Servers: map[string]*apitypes.NodeServer{
 			"srv1": {Endpoint: agentHost, AgentPort: agentPort},
 		},
@@ -78,7 +78,7 @@ func setupReplicationGroup(t *testing.T, s *Server, agentAddr string, currentMas
 	group.Type = "replication"
 	group.Engine = "redis"
 	group.CurrentMaster = currentMaster
-	if err := s.state.WriteInstances(&apitypes.InstancesState{
+	if err := s.db.WriteInstances(&apitypes.InstancesState{
 		Groups: map[string]*apitypes.InstanceGroupState{"order": group},
 		Instances: map[string]*apitypes.Instance{
 			"order-master": {

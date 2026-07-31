@@ -35,14 +35,14 @@ func TestFailover_UpdatesTopologyOfDownReplica(t *testing.T) {
 	group.Engine = "redis"
 	group.CurrentMaster = "order-a"
 
-	if err := s.state.WriteNode(&apitypes.NodeState{
+	if err := s.db.WriteNode(&apitypes.NodeState{
 		Servers: map[string]*apitypes.NodeServer{
 			"srv1": {Endpoint: "10.0.1.10", AgentPort: 8400},
 		},
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.state.WriteInstances(&apitypes.InstancesState{
+	if err := s.db.WriteInstances(&apitypes.InstancesState{
 		Groups: map[string]*apitypes.InstanceGroupState{"order": group},
 		Instances: map[string]*apitypes.Instance{
 			"order-a": {
@@ -67,7 +67,7 @@ func TestFailover_UpdatesTopologyOfDownReplica(t *testing.T) {
 	}
 
 	// 前置确认：order-c 此刻的派生状态确实是 failed，即命中了原 bug 的触发条件
-	before, _ := s.state.ReadInstances()
+	before, _ := s.db.ReadInstances()
 	if got := before.Instances["order-c"].Phase(); got != "failed" {
 		t.Fatalf("前置条件不成立：order-c 的 Phase = %q，期望 failed", got)
 	}
@@ -77,7 +77,7 @@ func TestFailover_UpdatesTopologyOfDownReplica(t *testing.T) {
 		t.Fatalf("handleSentinelFailover: %v", err)
 	}
 
-	after, err := s.state.ReadInstances()
+	after, err := s.db.ReadInstances()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -121,12 +121,12 @@ func TestFailover_DoesNotGuessOldMasterObservedStatus(t *testing.T) {
 	group.Engine = "redis"
 	group.CurrentMaster = "order-a"
 
-	if err := s.state.WriteNode(&apitypes.NodeState{
+	if err := s.db.WriteNode(&apitypes.NodeState{
 		Servers: map[string]*apitypes.NodeServer{"srv1": {Endpoint: "10.0.1.10", AgentPort: 8400}},
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.state.WriteInstances(&apitypes.InstancesState{
+	if err := s.db.WriteInstances(&apitypes.InstancesState{
 		Groups: map[string]*apitypes.InstanceGroupState{"order": group},
 		Instances: map[string]*apitypes.Instance{
 			"order-a": {Group: "order", Server: "srv1", Port: 6379, Role: "master",
@@ -144,7 +144,7 @@ func TestFailover_DoesNotGuessOldMasterObservedStatus(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	after, _ := s.state.ReadInstances()
+	after, _ := s.db.ReadInstances()
 	a := after.Instances["order-a"]
 	if a.ObservedStatus != apitypes.ObservedRunning {
 		t.Errorf("order-a.ObservedStatus = %q，故障转移不应猜测旧 master 的观测状态"+
@@ -167,12 +167,12 @@ func TestReconcile_NeverWritesDesiredState(t *testing.T) {
 
 	s := newTestServer(t, "")
 	agentHost, agentPort := fakeAgentHostPort(agent.Listener.Addr().String())
-	if err := s.state.WriteNode(&apitypes.NodeState{
+	if err := s.db.WriteNode(&apitypes.NodeState{
 		Servers: map[string]*apitypes.NodeServer{"srv1": {Endpoint: agentHost, AgentPort: agentPort}},
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.state.WriteInstances(&apitypes.InstancesState{
+	if err := s.db.WriteInstances(&apitypes.InstancesState{
 		Groups: map[string]*apitypes.InstanceGroupState{"cache": testGroup("cache")},
 		Instances: map[string]*apitypes.Instance{
 			"cache-1": {
@@ -190,7 +190,7 @@ func TestReconcile_NeverWritesDesiredState(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	after, _ := s.state.ReadInstances()
+	after, _ := s.db.ReadInstances()
 	inst := after.Instances["cache-1"]
 	if inst.DesiredState != apitypes.DesiredStopped {
 		t.Errorf("DesiredState = %q，reconcile 不得修改意图", inst.DesiredState)
@@ -221,12 +221,12 @@ func TestReconcile_NeverWritesDesiredState(t *testing.T) {
 func TestReconcile_AgentUnreachableDoesNotOverwriteObservedStatus(t *testing.T) {
 	s := newTestServer(t, "")
 	// 指向一个没人监听的地址，制造 Agent 不可达
-	if err := s.state.WriteNode(&apitypes.NodeState{
+	if err := s.db.WriteNode(&apitypes.NodeState{
 		Servers: map[string]*apitypes.NodeServer{"srv1": {Endpoint: "127.0.0.1", AgentPort: 1}},
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.state.WriteInstances(&apitypes.InstancesState{
+	if err := s.db.WriteInstances(&apitypes.InstancesState{
 		Groups: map[string]*apitypes.InstanceGroupState{"cache": testGroup("cache")},
 		Instances: map[string]*apitypes.Instance{
 			"cache-1": {
@@ -244,7 +244,7 @@ func TestReconcile_AgentUnreachableDoesNotOverwriteObservedStatus(t *testing.T) 
 		t.Fatal(err)
 	}
 
-	after, _ := s.state.ReadInstances()
+	after, _ := s.db.ReadInstances()
 	inst := after.Instances["cache-1"]
 	if inst.ObservedStatus != apitypes.ObservedRunning {
 		t.Errorf("ObservedStatus = %q。Agent 不可达是对 Agent 的观测，不是对实例的观测；"+
@@ -268,12 +268,12 @@ func TestReconcile_DetectsUnexpectedStop(t *testing.T) {
 
 	s := newTestServer(t, "")
 	agentHost, agentPort := fakeAgentHostPort(agent.Listener.Addr().String())
-	if err := s.state.WriteNode(&apitypes.NodeState{
+	if err := s.db.WriteNode(&apitypes.NodeState{
 		Servers: map[string]*apitypes.NodeServer{"srv1": {Endpoint: agentHost, AgentPort: agentPort}},
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.state.WriteInstances(&apitypes.InstancesState{
+	if err := s.db.WriteInstances(&apitypes.InstancesState{
 		Groups: map[string]*apitypes.InstanceGroupState{"cache": testGroup("cache")},
 		Instances: map[string]*apitypes.Instance{
 			"cache-1": {
@@ -294,7 +294,7 @@ func TestReconcile_DetectsUnexpectedStop(t *testing.T) {
 		t.Fatalf("没人要求它停它却停了，应当告警：%+v", results)
 	}
 
-	after, _ := s.state.ReadInstances()
+	after, _ := s.db.ReadInstances()
 	inst := after.Instances["cache-1"]
 	if inst.DesiredState != apitypes.DesiredRunning {
 		t.Errorf("DesiredState = %q，意图不该变", inst.DesiredState)
@@ -358,12 +358,12 @@ func TestFailover_LocksReleasedAfterCompletion(t *testing.T) {
 	group.Engine = "redis"
 	group.CurrentMaster = "order-a"
 
-	s.state.WriteNode(&apitypes.NodeState{
+	s.db.WriteNode(&apitypes.NodeState{
 		Servers: map[string]*apitypes.NodeServer{
 			"srv1": {Endpoint: "10.0.1.10", AgentPort: 8400},
 		},
 	})
-	s.state.WriteInstances(&apitypes.InstancesState{
+	s.db.WriteInstances(&apitypes.InstancesState{
 		Groups: map[string]*apitypes.InstanceGroupState{"order": group},
 		Instances: map[string]*apitypes.Instance{
 			"order-a": {
@@ -383,7 +383,7 @@ func TestFailover_LocksReleasedAfterCompletion(t *testing.T) {
 		t.Fatalf("handleSentinelFailover: %v", err)
 	}
 
-	after, _ := s.state.ReadInstances()
+	after, _ := s.db.ReadInstances()
 	for name, inst := range after.Instances {
 		if inst.Lock != nil {
 			t.Errorf("instance %s still has lock after failover completed: %+v"+
@@ -404,12 +404,12 @@ func TestFailover_LockBlocksConcurrentStop(t *testing.T) {
 	group.Engine = "redis"
 	group.CurrentMaster = "order-a"
 
-	s.state.WriteNode(&apitypes.NodeState{
+	s.db.WriteNode(&apitypes.NodeState{
 		Servers: map[string]*apitypes.NodeServer{
 			"srv1": {Endpoint: "10.0.1.10", AgentPort: 8400},
 		},
 	})
-	s.state.WriteInstances(&apitypes.InstancesState{
+	s.db.WriteInstances(&apitypes.InstancesState{
 		Groups: map[string]*apitypes.InstanceGroupState{"order": group},
 		Instances: map[string]*apitypes.Instance{
 			"order-a": {
@@ -427,7 +427,7 @@ func TestFailover_LockBlocksConcurrentStop(t *testing.T) {
 
 	// 手动模拟故障转移持有锁的状态：在独立事务中加锁并提交
 	sessionID := "test-failover-lock"
-	s.state.WithInstances(func(instances *apitypes.InstancesState) error {
+	s.db.WithInstances(func(instances *apitypes.InstancesState) error {
 		for _, name := range []string{"order-a", "order-b"} {
 			if inst := instances.Instances[name]; inst != nil {
 				state.TryAcquireLock(inst, sessionID, "sentinel-failover", 60)

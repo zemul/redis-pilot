@@ -11,6 +11,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/internal/audit"
+	"gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/internal/store"
 	"gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/internal/state"
 	"gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/pkg/apitypes"
 	"gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/pkg/redisconf"
@@ -95,7 +96,7 @@ func (s *Server) resolveEngineImage(engine, version string) (resolvedVersion, im
 }
 
 func (s *Server) instanceList(c *gin.Context) {
-	state, err := s.state.ReadInstances()
+	state, err := s.db.ReadInstances()
 	if err != nil {
 		fail(c, http.StatusInternalServerError, err.Error())
 		return
@@ -179,7 +180,7 @@ func (s *Server) instanceStatus(c *gin.Context) {
 		fail(c, http.StatusBadRequest, "name is required")
 		return
 	}
-	instances, err := s.state.ReadInstances()
+	instances, err := s.db.ReadInstances()
 	if err != nil {
 		fail(c, http.StatusInternalServerError, err.Error())
 		return
@@ -222,7 +223,7 @@ func (s *Server) instanceCreate(c *gin.Context) {
 	}
 
 	// 查找目标服务器（需要在原子操作外读 node，因为调度需要 instances 快照）
-	node, err := s.state.ReadNode()
+	node, err := s.db.ReadNode()
 	if err != nil {
 		fail(c, http.StatusInternalServerError, err.Error())
 		return
@@ -242,7 +243,7 @@ func (s *Server) instanceCreate(c *gin.Context) {
 
 	// 原子操作：检查冲突 → 调度 → 分配端口 → 写入 creating 状态
 	var resolvedAddr string // replica_of 解析后的 ip:port，用于 Agent 调用
-	err = s.state.WithInstances(func(instances *apitypes.InstancesState) error {
+	err = s.db.WithInstances(func(instances *apitypes.InstancesState) error {
 		if _, exists := instances.Instances[req.Name]; exists {
 			return fmt.Errorf("conflict: instance already exists: %s", req.Name)
 		}
@@ -381,7 +382,7 @@ func (s *Server) instanceCreate(c *gin.Context) {
 			"clean_data": true,
 		})
 		// 标记实例为 failed，保留记录供排查
-		if markErr := s.state.WithInstances(func(instances *apitypes.InstancesState) error {
+		if markErr := s.db.WithInstances(func(instances *apitypes.InstancesState) error {
 			if i := instances.Instances[req.Name]; i != nil {
 				// 意图不变（用户仍然要这个实例），但已确认容器不存在。
 				// 这是观测而非意图：Phase() 会推导为 "failed"
@@ -392,14 +393,14 @@ func (s *Server) instanceCreate(c *gin.Context) {
 		}); markErr != nil {
 			s.log.Errorf("instance create: failed to mark %s as failed: %v", req.Name, markErr)
 		}
-		s.audit.Log(audit.Record{Operator: operatorFrom(c), Action: "instance.create", Level: audit.LevelImportant, Result: "failed", Detail: err.Error(),
+		s.audit.Log(store.AuditRecord{Operator: operatorFrom(c), Action: "instance.create", Level: audit.LevelImportant, Result: "failed", Detail: err.Error(),
 			Target: map[string]interface{}{"instance": req.Name, "server": req.Server}})
 		fail(c, http.StatusInternalServerError, "agent create failed: "+err.Error())
 		return
 	}
 
 	// 更新状态为 running
-	if err := s.state.WithInstances(func(instances *apitypes.InstancesState) error {
+	if err := s.db.WithInstances(func(instances *apitypes.InstancesState) error {
 		if i := instances.Instances[req.Name]; i != nil {
 			i.ObservedStatus = apitypes.ObservedRunning
 			state.RecalculateGroupTopology(instances, i.Group)
@@ -411,12 +412,12 @@ func (s *Server) instanceCreate(c *gin.Context) {
 		inst.ObservedStatus = apitypes.ObservedRunning
 	}
 
-	s.audit.Log(audit.Record{
+	s.audit.Log(store.AuditRecord{
 		Operator: operatorFrom(c),
 		Action:   "instance.create",
 		Level:    audit.LevelImportant,
 		Result:   "success",
-		Duration: time.Since(start).Milliseconds(),
+		DurationMs: time.Since(start).Milliseconds(),
 		Target:   map[string]interface{}{"instance": req.Name, "group": groupName, "engine": req.Engine, "server": req.Server},
 		Params:   map[string]interface{}{"memory": req.Memory, "cpus": req.CPUs, "category": req.Category, "engine_version": req.EngineVersion},
 	})
@@ -447,7 +448,7 @@ func (s *Server) instanceDelete(c *gin.Context) {
 	var inst apitypes.Instance // 拷贝一份，避免后续引用过期
 	var groupState apitypes.InstanceGroupState
 	var group []string
-	err := s.state.WithInstances(func(is *apitypes.InstancesState) error {
+	err := s.db.WithInstances(func(is *apitypes.InstancesState) error {
 		i, exists := is.Instances[req.Name]
 		if !exists {
 			return fmt.Errorf("not found: %s", req.Name)
@@ -481,7 +482,7 @@ func (s *Server) instanceDelete(c *gin.Context) {
 	}
 	defer s.releaseLockGroup(group, sessionID)
 
-	node, err := s.state.ReadNode()
+	node, err := s.db.ReadNode()
 	if err != nil {
 		fail(c, http.StatusInternalServerError, err.Error())
 		return
@@ -503,7 +504,7 @@ func (s *Server) instanceDelete(c *gin.Context) {
 	}
 
 	// 原子删除实例记录
-	if err := s.state.WithInstances(func(is *apitypes.InstancesState) error {
+	if err := s.db.WithInstances(func(is *apitypes.InstancesState) error {
 		groupName := inst.Group
 		delete(is.Instances, req.Name)
 		if len(state.InstanceGroup(is, req.Name)) == 1 && is.Instances[req.Name] == nil {
@@ -526,10 +527,10 @@ func (s *Server) instanceDelete(c *gin.Context) {
 		return
 	}
 
-	s.audit.Log(audit.Record{
+	s.audit.Log(store.AuditRecord{
 		Operator: operatorFrom(c),
 		Action:   "instance.delete", Level: audit.LevelCritical, Result: "success",
-		Duration: time.Since(start).Milliseconds(),
+		DurationMs: time.Since(start).Milliseconds(),
 		Target:   map[string]interface{}{"instance": req.Name, "server": inst.Server},
 	})
 
@@ -559,7 +560,7 @@ func (s *Server) instanceStop(c *gin.Context) {
 
 	// 如果是主从组的 master，且未传 force，拒绝并给出提示
 	if !req.Force {
-		instances, err := s.state.ReadInstances()
+		instances, err := s.db.ReadInstances()
 		if err != nil {
 			fail(c, http.StatusInternalServerError, err.Error())
 			return
@@ -593,7 +594,7 @@ func (s *Server) instanceStop(c *gin.Context) {
 		return
 	}
 
-	if err := s.state.WithInstances(func(is *apitypes.InstancesState) error {
+	if err := s.db.WithInstances(func(is *apitypes.InstancesState) error {
 		if i, ok := is.Instances[req.Name]; ok {
 			// 意图与观测一起更新：Agent 的 stop 调用成功返回本身就是一次观测。
 			// 只写意图会让 Phase() 在 reconcile 跑到之前一直显示 "stopping"。
@@ -606,10 +607,10 @@ func (s *Server) instanceStop(c *gin.Context) {
 		s.log.Errorf("instance stop: failed to mark %s as stopped: %v", req.Name, err)
 	}
 
-	s.audit.Log(audit.Record{
+	s.audit.Log(store.AuditRecord{
 		Operator: operatorFrom(c),
 		Action:   "instance.stop", Level: audit.LevelImportant, Result: "success",
-		Duration: time.Since(start).Milliseconds(),
+		DurationMs: time.Since(start).Milliseconds(),
 		Target:   map[string]interface{}{"instance": req.Name, "server": inst.Server},
 	})
 
@@ -676,7 +677,7 @@ func (s *Server) instanceConfig(c *gin.Context) {
 	}
 
 	// 更新 instances-state 中的 config_overrides
-	if err := s.state.WithInstances(func(is *apitypes.InstancesState) error {
+	if err := s.db.WithInstances(func(is *apitypes.InstancesState) error {
 		if i, ok2 := is.Instances[req.Name]; ok2 {
 			if i.ConfigOverrides == nil {
 				i.ConfigOverrides = make(map[string]string)
@@ -690,10 +691,10 @@ func (s *Server) instanceConfig(c *gin.Context) {
 		s.log.Errorf("instance config: failed to persist config_overrides for %s: %v", req.Name, err)
 	}
 
-	s.audit.Log(audit.Record{
+	s.audit.Log(store.AuditRecord{
 		Operator: operatorFrom(c),
 		Action:   "config.update", Level: audit.LevelImportant, Result: "success",
-		Duration: time.Since(start).Milliseconds(),
+		DurationMs: time.Since(start).Milliseconds(),
 		Target:   map[string]interface{}{"instance": req.Name, "server": inst.Server},
 		Params:   toMap(req.ConfigOverrides),
 	})
@@ -725,7 +726,7 @@ func (s *Server) instanceFailover(c *gin.Context) {
 		return
 	}
 
-	instances, err := s.state.ReadInstances()
+	instances, err := s.db.ReadInstances()
 	if err != nil {
 		fail(c, http.StatusInternalServerError, err.Error())
 		return
@@ -751,7 +752,7 @@ func (s *Server) instanceFailover(c *gin.Context) {
 // sentinelFailover 通过 SENTINEL FAILOVER 触发故障转移，并等待 Sentinel 完成后
 // 把结果同步到 Server 自己的状态记录（复用 handleSentinelFailover，不重复写状态更新逻辑）。
 func (s *Server) sentinelFailover(c *gin.Context, start time.Time, group, requestedName string) {
-	node, err := s.state.ReadNode()
+	node, err := s.db.ReadNode()
 	if err != nil {
 		fail(c, http.StatusInternalServerError, err.Error())
 		return
@@ -825,7 +826,7 @@ func (s *Server) sentinelFailover(c *gin.Context, start time.Time, group, reques
 		return
 	}
 
-	instances, err := s.state.ReadInstances()
+	instances, err := s.db.ReadInstances()
 	newMasterName := requestedName
 	if err == nil {
 		if name := findInstanceByAddress(node, instances, newAddr); name != "" {
@@ -864,7 +865,7 @@ func (s *Server) directFailover(c *gin.Context, start time.Time, name string) {
 
 	// 找到当前 group 里被替换掉的旧 master，实际下发 REPLICAOF 让它追随新 master，
 	// 避免旧 master 停留在独立 master 状态造成脑裂（双写导致数据不一致）。
-	node, err := s.state.ReadNode()
+	node, err := s.db.ReadNode()
 	if err != nil {
 		fail(c, http.StatusInternalServerError, err.Error())
 		return
@@ -874,7 +875,7 @@ func (s *Server) directFailover(c *gin.Context, start time.Time, name string) {
 	var oldMasterInst apitypes.Instance
 	var oldMasterSrv apitypes.NodeServer
 	hasOldMaster := false
-	if err := s.state.WithInstances(func(is *apitypes.InstancesState) error {
+	if err := s.db.WithInstances(func(is *apitypes.InstancesState) error {
 		i := is.Instances[name]
 		if i == nil {
 			return nil
@@ -913,7 +914,7 @@ func (s *Server) directFailover(c *gin.Context, start time.Time, name string) {
 	}
 
 	// 更新状态：角色变更 + group current_master 切换。
-	if err := s.state.WithInstances(func(is *apitypes.InstancesState) error {
+	if err := s.db.WithInstances(func(is *apitypes.InstancesState) error {
 		i := is.Instances[name]
 		if i == nil {
 			return nil
@@ -937,10 +938,10 @@ func (s *Server) directFailover(c *gin.Context, start time.Time, name string) {
 		return
 	}
 
-	s.audit.Log(audit.Record{
+	s.audit.Log(store.AuditRecord{
 		Operator: operatorFrom(c),
 		Action:   "topology.failover", Level: audit.LevelCritical, Result: "success",
-		Duration: time.Since(start).Milliseconds(),
+		DurationMs: time.Since(start).Milliseconds(),
 		Target:   map[string]interface{}{"instance": name, "server": inst.Server},
 	})
 
@@ -973,8 +974,8 @@ func (s *Server) instanceReplicate(c *gin.Context) {
 	}
 
 	// 解析 replica_of：支持实例名或 ip:port
-	node, _ := s.state.ReadNode()
-	instances, _ := s.state.ReadInstances()
+	node, _ := s.db.ReadNode()
+	instances, _ := s.db.ReadInstances()
 	resolvedAddr, masterName, err := resolveReplicaOf(node, instances, req.ReplicaOf)
 	if err != nil {
 		fail(c, http.StatusBadRequest, err.Error())
@@ -1014,7 +1015,7 @@ func (s *Server) instanceReplicate(c *gin.Context) {
 	}
 
 	// 更新状态：角色变更 + 归入目标 group。
-	if err := s.state.WithInstances(func(is *apitypes.InstancesState) error {
+	if err := s.db.WithInstances(func(is *apitypes.InstancesState) error {
 		i := is.Instances[req.Name]
 		if i == nil {
 			return nil
@@ -1049,10 +1050,10 @@ func (s *Server) instanceReplicate(c *gin.Context) {
 		return
 	}
 
-	s.audit.Log(audit.Record{
+	s.audit.Log(store.AuditRecord{
 		Operator: operatorFrom(c),
 		Action:   "topology.replicate", Level: audit.LevelImportant, Result: "success",
-		Duration: time.Since(start).Milliseconds(),
+		DurationMs: time.Since(start).Milliseconds(),
 		Target:   map[string]interface{}{"instance": req.Name, "server": inst.Server},
 		Params:   map[string]interface{}{"replica_of": req.ReplicaOf},
 	})
@@ -1108,7 +1109,7 @@ func (s *Server) execBackup(name, operator string) error {
 	}
 
 	// 更新 last_backup
-	if err := s.state.WithInstances(func(is *apitypes.InstancesState) error {
+	if err := s.db.WithInstances(func(is *apitypes.InstancesState) error {
 		if i, ok2 := is.Instances[name]; ok2 {
 			if i.Backup == nil {
 				i.Backup = &apitypes.BackupConfig{}
@@ -1120,10 +1121,10 @@ func (s *Server) execBackup(name, operator string) error {
 		s.log.Errorf("backup exec: failed to persist last_backup for %s: %v", name, err)
 	}
 
-	s.audit.Log(audit.Record{
+	s.audit.Log(store.AuditRecord{
 		Operator: operator,
 		Action:   "backup.create", Level: audit.LevelNormal, Result: "success",
-		Duration: time.Since(start).Milliseconds(),
+		DurationMs: time.Since(start).Milliseconds(),
 		Target:   map[string]interface{}{"instance": name, "server": inst.Server},
 	})
 	return nil
@@ -1161,10 +1162,10 @@ func (s *Server) backupRestore(c *gin.Context) {
 		return
 	}
 
-	s.audit.Log(audit.Record{
+	s.audit.Log(store.AuditRecord{
 		Operator: operatorFrom(c),
 		Action:   "backup.restore", Level: audit.LevelCritical, Result: "success",
-		Duration: time.Since(start).Milliseconds(),
+		DurationMs: time.Since(start).Milliseconds(),
 		Target:   map[string]interface{}{"instance": req.Name, "server": inst.Server},
 		Params:   map[string]interface{}{"backup_ts": req.BackupTs},
 	})
@@ -1203,7 +1204,7 @@ func (s *Server) backupGetSchedule(c *gin.Context) {
 		fail(c, http.StatusBadRequest, "name is required")
 		return
 	}
-	instances, err := s.state.ReadInstances()
+	instances, err := s.db.ReadInstances()
 	if err != nil {
 		fail(c, http.StatusInternalServerError, err.Error())
 		return
@@ -1234,7 +1235,7 @@ func (s *Server) backupSetSchedule(c *gin.Context) {
 		fail(c, http.StatusBadRequest, err.Error())
 		return
 	}
-	err := s.state.WithInstances(func(instances *apitypes.InstancesState) error {
+	err := s.db.WithInstances(func(instances *apitypes.InstancesState) error {
 		inst, ok2 := instances.Instances[req.Name]
 		if !ok2 {
 			return fmt.Errorf("instance not found")
@@ -1262,7 +1263,7 @@ func (s *Server) backupSetSchedule(c *gin.Context) {
 // --- 辅助方法 ---
 
 // instanceSimpleOp 处理 start/stop 这类只需要转发给 Agent 的操作
-func (s *Server) instanceSimpleOp(c *gin.Context, newStatus, agentPath, auditAction string, level audit.Level) {
+func (s *Server) instanceSimpleOp(c *gin.Context, newStatus, agentPath, auditAction string, level string) {
 	start := time.Now()
 	var req struct {
 		Name string `json:"name" binding:"required"`
@@ -1299,7 +1300,7 @@ func (s *Server) instanceSimpleOp(c *gin.Context, newStatus, agentPath, auditAct
 		"start": {apitypes.DesiredRunning, apitypes.ObservedRunning},
 		"stop":  {apitypes.DesiredStopped, apitypes.ObservedStopped},
 	}
-	if err := s.state.WithInstances(func(is *apitypes.InstancesState) error {
+	if err := s.db.WithInstances(func(is *apitypes.InstancesState) error {
 		if i, ok2 := is.Instances[req.Name]; ok2 {
 			if sc, ok3 := stateMap[newStatus]; ok3 {
 				i.DesiredState = sc.desired
@@ -1312,10 +1313,10 @@ func (s *Server) instanceSimpleOp(c *gin.Context, newStatus, agentPath, auditAct
 		s.log.Errorf("instance %s: failed to persist status for %s: %v", newStatus, req.Name, err)
 	}
 
-	s.audit.Log(audit.Record{
+	s.audit.Log(store.AuditRecord{
 		Operator: operatorFrom(c),
 		Action:   auditAction, Level: level, Result: "success",
-		Duration: time.Since(start).Milliseconds(),
+		DurationMs: time.Since(start).Milliseconds(),
 		Target:   map[string]interface{}{"instance": req.Name, "server": inst.Server},
 	})
 
@@ -1324,7 +1325,7 @@ func (s *Server) instanceSimpleOp(c *gin.Context, newStatus, agentPath, auditAct
 
 // resolveInstance 查找实例及其所在服务器（只读操作用）
 func (s *Server) resolveInstance(c *gin.Context, name string) (*apitypes.Instance, *apitypes.NodeServer, error) {
-	instances, err := s.state.ReadInstances()
+	instances, err := s.db.ReadInstances()
 	if err != nil {
 		fail(c, http.StatusInternalServerError, err.Error())
 		return nil, nil, err
@@ -1335,7 +1336,7 @@ func (s *Server) resolveInstance(c *gin.Context, name string) (*apitypes.Instanc
 		return nil, nil, fmt.Errorf("instance not found: %s", name)
 	}
 
-	node, err := s.state.ReadNode()
+	node, err := s.db.ReadNode()
 	if err != nil {
 		fail(c, http.StatusInternalServerError, err.Error())
 		return nil, nil, err
@@ -1359,7 +1360,7 @@ func (s *Server) resolveAndLock(c *gin.Context, name, operation string) (*apityp
 	var group []string
 
 	// 原子操作：read → 加锁 → write
-	err := s.state.WithInstances(func(instances *apitypes.InstancesState) error {
+	err := s.db.WithInstances(func(instances *apitypes.InstancesState) error {
 		var exists bool
 		inst, exists = instances.Instances[name]
 		if !exists {
@@ -1385,7 +1386,7 @@ func (s *Server) resolveAndLock(c *gin.Context, name, operation string) (*apityp
 	}
 
 	// 加锁成功后查找服务器，失败时释放锁
-	node, err := s.state.ReadNode()
+	node, err := s.db.ReadNode()
 	if err != nil {
 		s.releaseLockGroup(group, sessionID)
 		fail(c, http.StatusInternalServerError, err.Error())
@@ -1403,7 +1404,7 @@ func (s *Server) resolveAndLock(c *gin.Context, name, operation string) (*apityp
 }
 
 func (s *Server) groupForInstance(name string) (*apitypes.InstanceGroupState, error) {
-	instances, err := s.state.ReadInstances()
+	instances, err := s.db.ReadInstances()
 	if err != nil {
 		return nil, err
 	}
@@ -1425,7 +1426,7 @@ func (s *Server) resolveAndLockInternal(name, operation string) (*apitypes.Insta
 	var inst *apitypes.Instance
 	var group []string
 
-	err := s.state.WithInstances(func(instances *apitypes.InstancesState) error {
+	err := s.db.WithInstances(func(instances *apitypes.InstancesState) error {
 		var exists bool
 		inst, exists = instances.Instances[name]
 		if !exists {
@@ -1445,7 +1446,7 @@ func (s *Server) resolveAndLockInternal(name, operation string) (*apitypes.Insta
 		return nil, nil, nil, err
 	}
 
-	node, err := s.state.ReadNode()
+	node, err := s.db.ReadNode()
 	if err != nil {
 		s.releaseLockGroup(group, sessionID)
 		return nil, nil, nil, err
@@ -1462,7 +1463,7 @@ func (s *Server) resolveAndLockInternal(name, operation string) (*apitypes.Insta
 
 // releaseLockGroup 原子释放实例组的操作锁。
 func (s *Server) releaseLockGroup(group []string, sessionID string) {
-	if err := s.state.WithInstances(func(instances *apitypes.InstancesState) error {
+	if err := s.db.WithInstances(func(instances *apitypes.InstancesState) error {
 		for _, n := range group {
 			if i, ok := instances.Instances[n]; ok {
 				state.ReleaseLock(i, sessionID)

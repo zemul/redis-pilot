@@ -110,11 +110,11 @@ func TestParseSwitchMasterMessage(t *testing.T) {
 
 func TestSentinelEventEndpoint(t *testing.T) {
 	s := newTestServer(t, "")
-	s.state.WriteNode(&apitypes.NodeState{Servers: map[string]*apitypes.NodeServer{
+	s.db.WriteNode(&apitypes.NodeState{Servers: map[string]*apitypes.NodeServer{
 		"srv-a": {Endpoint: "10.0.1.10"},
 		"srv-b": {Endpoint: "10.0.1.11"},
 	}})
-	s.state.WriteInstances(&apitypes.InstancesState{
+	s.db.WriteInstances(&apitypes.InstancesState{
 		Groups: map[string]*apitypes.InstanceGroupState{
 			"order": {
 				Type:          "replication",
@@ -147,12 +147,12 @@ func TestSentinelEventEndpoint(t *testing.T) {
 
 func TestHandleSentinelFailover_UpdatesState(t *testing.T) {
 	s := newTestServer(t, "")
-	s.state.WriteNode(&apitypes.NodeState{Servers: map[string]*apitypes.NodeServer{
+	s.db.WriteNode(&apitypes.NodeState{Servers: map[string]*apitypes.NodeServer{
 		"srv-a": {Endpoint: "10.0.1.10"},
 		"srv-b": {Endpoint: "10.0.1.11"},
 		"srv-c": {Endpoint: "10.0.1.12"},
 	}})
-	s.state.WriteInstances(&apitypes.InstancesState{
+	s.db.WriteInstances(&apitypes.InstancesState{
 		Groups: map[string]*apitypes.InstanceGroupState{
 			"order": {
 				Type:          "replication",
@@ -179,7 +179,7 @@ func TestHandleSentinelFailover_UpdatesState(t *testing.T) {
 	if err := s.handleSentinelFailover("order", "10.0.1.11:6379", "test", "sentinel"); err != nil {
 		t.Fatal(err)
 	}
-	state, err := s.state.ReadInstances()
+	state, err := s.db.ReadInstances()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -212,11 +212,11 @@ func TestHandleSentinelFailover_UpdatesState(t *testing.T) {
 
 func TestHandleSentinelFailover_NoOpWhenAlreadySynchronized(t *testing.T) {
 	s := newTestServer(t, "")
-	s.state.WriteNode(&apitypes.NodeState{Servers: map[string]*apitypes.NodeServer{
+	s.db.WriteNode(&apitypes.NodeState{Servers: map[string]*apitypes.NodeServer{
 		"srv-a": {Endpoint: "10.0.1.10"},
 		"srv-b": {Endpoint: "10.0.1.11"},
 	}})
-	s.state.WriteInstances(&apitypes.InstancesState{
+	s.db.WriteInstances(&apitypes.InstancesState{
 		Groups: map[string]*apitypes.InstanceGroupState{
 			"order": {
 				Type:          "replication",
@@ -239,7 +239,7 @@ func TestHandleSentinelFailover_NoOpWhenAlreadySynchronized(t *testing.T) {
 	if err := s.handleSentinelFailover("order", "10.0.1.11:6379", "test", "sentinel"); err != nil {
 		t.Fatal(err)
 	}
-	state, err := s.state.ReadInstances()
+	state, err := s.db.ReadInstances()
 	if err != nil {
 		t.Fatal(err)
 	}

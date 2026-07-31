@@ -68,7 +68,7 @@ func main() {
 	defer db.Close()
 
 	// ── 5. 写入节点 ───────────────────────────────────────────────────────
-	if err := db.WriteNodeState(nodeState); err != nil {
+	if err := db.WriteNode(nodeState); err != nil {
 		log.Fatalf("写入节点失败: %v", err)
 	}
 	log.Printf("✓ 写入 %d 个节点", len(nodeState.Servers))
@@ -84,7 +84,7 @@ func main() {
 	log.Printf("✓ 写入 %d 个实例组，%d 个实例", len(instState.Groups), len(instState.Instances))
 
 	// ── 7. 验证回读 ───────────────────────────────────────────────────────
-	gotNode, err := db.ReadNodeState()
+	gotNode, err := db.ReadNode()
 	if err != nil {
 		log.Fatalf("回读节点失败: %v", err)
 	}

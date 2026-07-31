@@ -39,8 +39,8 @@ func TestGeneration_EveryMutatingMethodBumps(t *testing.T) {
 				return nil
 			})
 		}},
-		{"WriteNodeState", func() error {
-			return db.WriteNodeState(&apitypes.NodeState{
+		{"WriteNode", func() error {
+			return db.WriteNode(&apitypes.NodeState{
 				Servers: map[string]*apitypes.NodeServer{"srv1": srv},
 			})
 		}},
@@ -103,7 +103,7 @@ func TestGeneration_ReadsDoNotBump(t *testing.T) {
 	if _, err := db.ReadInstances(); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.ReadNodeState(); err != nil {
+	if _, err := db.ReadNode(); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := db.GetAllServers(); err != nil {

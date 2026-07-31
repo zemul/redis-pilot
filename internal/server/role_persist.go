@@ -46,7 +46,7 @@ func resolveReplicaOfAddr(node *apitypes.NodeState, instances *apitypes.Instance
 // resolveReplicaOfAddrFor 读取当前状态，把指定实例记录的 ReplicaOf（实例名）解析为
 // "ip:port"。实例是 master 时返回空串。
 func (s *Server) resolveReplicaOfAddrFor(name string) (string, error) {
-	instances, err := s.state.ReadInstances()
+	instances, err := s.db.ReadInstances()
 	if err != nil {
 		return "", err
 	}
@@ -57,7 +57,7 @@ func (s *Server) resolveReplicaOfAddrFor(name string) (string, error) {
 	if inst.ReplicaOf == "" {
 		return "", nil
 	}
-	node, err := s.state.ReadNode()
+	node, err := s.db.ReadNode()
 	if err != nil {
 		return "", err
 	}
@@ -106,12 +106,12 @@ func (s *Server) persistGroupRoles(groupName string) {
 // 可能把过期的 replicaof 写进配置文件，容器下次重启就按错的角色起来——这正是上一个
 // commit 要消除的角色回退，只是换了个成因。
 func (s *Server) persistGroupRolesLocked(groupName string) {
-	instances, err := s.state.ReadInstances()
+	instances, err := s.db.ReadInstances()
 	if err != nil {
 		s.log.Errorf("persist group roles: read instances: %v", err)
 		return
 	}
-	node, err := s.state.ReadNode()
+	node, err := s.db.ReadNode()
 	if err != nil {
 		s.log.Errorf("persist group roles: read node: %v", err)
 		return

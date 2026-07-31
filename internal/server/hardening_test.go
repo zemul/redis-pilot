@@ -164,7 +164,7 @@ func TestNodeRemove_ConcurrentWithUpdateDoesNotResurrect(t *testing.T) {
 	}()
 	wg.Wait()
 
-	node, err := s.state.ReadNode()
+	node, err := s.db.ReadNode()
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -7,7 +7,7 @@ import (
 	"time"
 )
 
-// ── 审计日志结构（与 audit.Record 对齐，store 层独立定义避免循环依赖） ────────
+// ── 审计日志结构（审计日志结构体） ────────
 
 // AuditRecord 审计日志条目。
 type AuditRecord struct {

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/internal/audit"
+	"gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/internal/store"
 
 	"gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/pkg/apitypes"
 )
@@ -14,7 +15,7 @@ import (
 func setupProxySnapshotServer(t *testing.T) *Server {
 	t.Helper()
 	s := newTestServer(t, "")
-	if err := s.state.WriteNode(&apitypes.NodeState{
+	if err := s.db.WriteNode(&apitypes.NodeState{
 		Servers: map[string]*apitypes.NodeServer{
 			"srv1": {Endpoint: "10.0.1.10", AgentPort: 8400},
 		},
@@ -27,7 +28,7 @@ func setupProxySnapshotServer(t *testing.T) *Server {
 	group := testGroup("cache-1")
 	group.Type = "replication"
 	group.Envoy = &apitypes.EnvoyConfig{AutoPort: 16379, MasterPort: 16500}
-	if err := s.state.WriteInstances(&apitypes.InstancesState{
+	if err := s.db.WriteInstances(&apitypes.InstancesState{
 		Groups: map[string]*apitypes.InstanceGroupState{"cache": group},
 		Instances: map[string]*apitypes.Instance{
 			"cache-1": {
@@ -120,7 +121,7 @@ func TestProxySnapshot_WakesOnStateChange(t *testing.T) {
 
 	time.Sleep(200 * time.Millisecond)
 	// 加一个实例，代理配置随之变化
-	if err := s.state.WithInstances(func(st *apitypes.InstancesState) error {
+	if err := s.db.WithInstances(func(st *apitypes.InstancesState) error {
 		st.Instances["cache-2"] = &apitypes.Instance{
 			Group: "cache", Server: "srv1", Port: 6380, Role: "replica", ReplicaOf: "cache-1",
 			DesiredState: apitypes.DesiredRunning, ObservedStatus: apitypes.ObservedRunning,
@@ -209,8 +210,8 @@ func parseSnapshotVersion(t *testing.T, body []byte) string {
 	return envelope.Data.Version
 }
 
-func auditTestRecord() audit.Record {
-	return audit.Record{
+func auditTestRecord() store.AuditRecord {
+	return store.AuditRecord{
 		Operator: "test",
 		Action:   "test.noop",
 		Level:    audit.LevelNormal,

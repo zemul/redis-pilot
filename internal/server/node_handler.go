@@ -11,12 +11,12 @@ import (
 )
 
 func (s *Server) nodeQuery(c *gin.Context) {
-	state, err := s.state.ReadNode()
+	state, err := s.db.ReadNode()
 	if err != nil {
 		fail(c, http.StatusInternalServerError, err.Error())
 		return
 	}
-	instances, _ := s.state.ReadInstances()
+	instances, _ := s.db.ReadInstances()
 	if instances != nil {
 		for name, srv := range state.Servers {
 			memGi, cpus, diskGi := computeAllocated(instances, name)
@@ -48,7 +48,7 @@ func (s *Server) nodeAdd(c *gin.Context) {
 	// 两个并发的 node add 同名请求会双双通过存在性检查，后写的静默覆盖先写的，
 	// 冲突检查形同虚设。WithNode 在数据库互斥锁内完成读-改-写。
 	var conflict bool
-	if err := s.state.WithNode(func(node *apitypes.NodeState) error {
+	if err := s.db.WithNode(func(node *apitypes.NodeState) error {
 		if _, exists := node.Servers[req.Name]; exists {
 			conflict = true
 			return errNodeConflict
@@ -86,7 +86,7 @@ func (s *Server) nodeRemove(c *gin.Context) {
 	// 若各自读到同一份快照，remove 先写、update 后写，被删掉的节点会被 update 重新写回来，
 	// 表现为"删除成功但节点还在"。
 	var notFound bool
-	if err := s.state.WithNode(func(node *apitypes.NodeState) error {
+	if err := s.db.WithNode(func(node *apitypes.NodeState) error {
 		if _, exists := node.Servers[req.Name]; !exists {
 			notFound = true
 			return errNodeNotFound
@@ -116,7 +116,7 @@ func (s *Server) nodeUpdate(c *gin.Context) {
 
 	// 同 nodeAdd 用 WithNode：避免 update 用一份过期快照把已被删除的节点写回来。
 	var notFound bool
-	if err := s.state.WithNode(func(node *apitypes.NodeState) error {
+	if err := s.db.WithNode(func(node *apitypes.NodeState) error {
 		if _, exists := node.Servers[req.Name]; !exists {
 			notFound = true
 			return errNodeNotFound

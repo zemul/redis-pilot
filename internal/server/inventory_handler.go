@@ -16,12 +16,12 @@ func (s *Server) inventory(c *gin.Context) {
 	serverFilter := c.Query("server")
 	engineFilter := c.Query("engine")
 
-	instances, err := s.state.ReadInstances()
+	instances, err := s.db.ReadInstances()
 	if err != nil {
 		fail(c, http.StatusInternalServerError, err.Error())
 		return
 	}
-	node, err := s.state.ReadNode()
+	node, err := s.db.ReadNode()
 	if err != nil {
 		fail(c, http.StatusInternalServerError, err.Error())
 		return

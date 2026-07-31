@@ -4,11 +4,11 @@ import (
 	"net/http"
 
 	"github.com/gin-gonic/gin"
-	"gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/internal/audit"
+	"gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/internal/store"
 )
 
 func (s *Server) auditQuery(c *gin.Context) {
-	f := audit.QueryFilter{
+	f := store.AuditFilter{
 		From:     c.Query("from"),
 		To:       c.Query("to"),
 		Group:    c.Query("group"),

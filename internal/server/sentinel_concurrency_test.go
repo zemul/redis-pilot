@@ -72,7 +72,7 @@ func TestFailover_SerializedByTopologyLock(t *testing.T) {
 	group.Engine = "redis"
 	group.CurrentMaster = "order-a"
 
-	if err := s.state.WriteNode(&apitypes.NodeState{
+	if err := s.db.WriteNode(&apitypes.NodeState{
 		Servers: map[string]*apitypes.NodeServer{
 			"srv1": {Endpoint: agentHost, AgentPort: agentPort},
 		},
@@ -86,7 +86,7 @@ func TestFailover_SerializedByTopologyLock(t *testing.T) {
 			Container: "redis-order",
 		}
 	}
-	if err := s.state.WriteInstances(&apitypes.InstancesState{
+	if err := s.db.WriteInstances(&apitypes.InstancesState{
 		Groups: map[string]*apitypes.InstanceGroupState{"order": group},
 		Instances: map[string]*apitypes.Instance{
 			"order-a": mk(6379, "master", ""),
@@ -111,7 +111,7 @@ func TestFailover_SerializedByTopologyLock(t *testing.T) {
 	}
 	wg.Wait()
 
-	after, err := s.state.ReadInstances()
+	after, err := s.db.ReadInstances()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -160,12 +160,12 @@ func TestSyncSentinel_NoDeadlockFromFailoverPath(t *testing.T) {
 	group.Engine = "redis"
 	group.CurrentMaster = "order-a"
 
-	if err := s.state.WriteNode(&apitypes.NodeState{
+	if err := s.db.WriteNode(&apitypes.NodeState{
 		Servers: map[string]*apitypes.NodeServer{"srv1": {Endpoint: agentHost, AgentPort: agentPort}},
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.state.WriteInstances(&apitypes.InstancesState{
+	if err := s.db.WriteInstances(&apitypes.InstancesState{
 		Groups: map[string]*apitypes.InstanceGroupState{"order": group},
 		Instances: map[string]*apitypes.Instance{
 			"order-a": {Group: "order", Server: "srv1", Port: 6379, Role: "master",

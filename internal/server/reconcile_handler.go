@@ -7,6 +7,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/internal/audit"
+	"gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/internal/store"
 	"gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/internal/state"
 	"gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/pkg/apitypes"
 )
@@ -54,11 +55,11 @@ func desiredMatchesObserved(desired, observed string) bool {
 
 // runReconcile 执行状态校验，HTTP handler 和定时任务共用
 func (s *Server) runReconcile() ([]ReconcileResult, error) {
-	instances, err := s.state.ReadInstances()
+	instances, err := s.db.ReadInstances()
 	if err != nil {
 		return nil, err
 	}
-	node, err := s.state.ReadNode()
+	node, err := s.db.ReadNode()
 	if err != nil {
 		return nil, err
 	}
@@ -174,7 +175,7 @@ func (s *Server) runReconcile() ([]ReconcileResult, error) {
 
 	// 在写锁内原子应用状态变更，避免覆盖并发写入
 	if len(patches) > 0 {
-		if err := s.state.WithInstances(func(st *apitypes.InstancesState) error {
+		if err := s.db.WithInstances(func(st *apitypes.InstancesState) error {
 			affectedGroups := map[string]struct{}{}
 			for _, p := range patches {
 				if inst := st.Instances[p.name]; inst != nil {
@@ -197,7 +198,7 @@ func (s *Server) runReconcile() ([]ReconcileResult, error) {
 	if len(roleDrifts) > 0 {
 		s.reconcileRoleDrift(node, instances, roleDrifts)
 		for _, d := range roleDrifts {
-			s.audit.Log(audit.Record{
+			s.audit.Log(store.AuditRecord{
 				Operator: "system",
 				Action:   "reconcile.role_drift",
 				Level:    audit.LevelImportant,
@@ -215,7 +216,7 @@ func (s *Server) runReconcile() ([]ReconcileResult, error) {
 	// 记录有异常的审计日志
 	for _, r := range results {
 		if r.Action == "alert" || r.Action == "updated" {
-			s.audit.Log(audit.Record{
+			s.audit.Log(store.AuditRecord{
 				Operator: "system",
 				Action:   "reconcile",
 				Level:    audit.LevelImportant,

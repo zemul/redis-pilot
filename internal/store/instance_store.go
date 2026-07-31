@@ -213,8 +213,8 @@ func (d *DB) ReadInstances() (*apitypes.InstancesState, error) {
 	return loadInstancesState(d.sql)
 }
 
-// ReadNodeState 读取完整 NodeState 快照（只读，无锁）。
-func (d *DB) ReadNodeState() (*apitypes.NodeState, error) {
+// ReadNode 读取完整 NodeState 快照（只读，无锁）。
+func (d *DB) ReadNode() (*apitypes.NodeState, error) {
 	servers, err := d.GetAllServers()
 	if err != nil {
 		return nil, err
@@ -222,8 +222,8 @@ func (d *DB) ReadNodeState() (*apitypes.NodeState, error) {
 	return &apitypes.NodeState{Servers: servers}, nil
 }
 
-// WriteNodeState 覆写完整 NodeState（在事务中执行）。
-func (d *DB) WriteNodeState(ns *apitypes.NodeState) error {
+// WriteNode 覆写完整 NodeState（在事务中执行）。
+func (d *DB) WriteNode(ns *apitypes.NodeState) error {
 	return d.WithServers(func(m map[string]*apitypes.NodeServer) error {
 		// 清空并重建
 		for k := range m {
@@ -232,6 +232,22 @@ func (d *DB) WriteNodeState(ns *apitypes.NodeState) error {
 		for k, v := range ns.Servers {
 			m[k] = v
 		}
+		return nil
+	})
+}
+
+// WithNode 在事务中原子执行 read -> fn -> write，传入 NodeState 快照。
+func (d *DB) WithNode(fn func(*apitypes.NodeState) error) error {
+	return d.WithServers(func(servers map[string]*apitypes.NodeServer) error {
+		return fn(&apitypes.NodeState{Servers: servers})
+	})
+}
+
+// WriteInstances 覆写完整 InstancesState（在事务中执行）。
+func (d *DB) WriteInstances(state *apitypes.InstancesState) error {
+	return d.WithInstances(func(st *apitypes.InstancesState) error {
+		st.Groups = state.Groups
+		st.Instances = state.Instances
 		return nil
 	})
 }
