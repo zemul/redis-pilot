@@ -39,7 +39,8 @@ redis-pilot-cli instance create <replica> --replica-of <master> --node <server> 
 redis-pilot-cli instance delete <name>              # 删除实例
 redis-pilot-cli instance start <name>               # 启动实例
 redis-pilot-cli instance stop <name>                # 停止实例（主库需加 --force）
-redis-pilot-cli instance config <name> --set k=v    # 修改配置
+redis-pilot-cli instance config <name> --set k=v    # 热更新配置（CONFIG SET + 写文件）
+redis-pilot-cli instance config <name> --set k=v --restart  # 写文件后重启容器（角色不回退）
 redis-pilot-cli instance failover <name>            # 触发故障转移（Sentinel 唯一权威，不保证提升的就是这个实例）
 redis-pilot-cli instance replicate <name> --replica-of <master>  # 设置复制
 ```

@@ -374,7 +374,7 @@ func (s *Server) instanceCreate(c *gin.Context) {
 	// 调用 Agent 创建（传解析后的 ip:port）
 	req.ReplicaOf = resolvedAddr
 	client := newAgentClient(srv)
-	if _, err := client.post("/instance/create", req); err != nil {
+	if _, err := client.postLong("/instance/create", req); err != nil {
 		// 调用 Agent 清理已创建的资源（best-effort，忽略错误）
 		client.post("/instance/delete", map[string]interface{}{
 			"name":       req.Name,
@@ -1490,8 +1490,16 @@ func parseMemoryGi(s string) int {
 		n, _ := strconv.Atoi(strings.TrimSuffix(s, "Gi"))
 		return n
 	}
+	if strings.HasSuffix(s, "G") {
+		n, _ := strconv.Atoi(strings.TrimSuffix(s, "G"))
+		return n
+	}
 	if strings.HasSuffix(s, "Mi") {
 		n, _ := strconv.Atoi(strings.TrimSuffix(s, "Mi"))
+		return (n + 1023) / 1024
+	}
+	if strings.HasSuffix(s, "M") {
+		n, _ := strconv.Atoi(strings.TrimSuffix(s, "M"))
 		return (n + 1023) / 1024
 	}
 	return 0

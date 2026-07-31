@@ -310,3 +310,12 @@ func swapInPath(staged, target, preserve string) error {
 	}
 	return nil
 }
+
+// isContainerNotFound 判断 podman 操作错误是否因为容器不存在。
+func isContainerNotFound(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "no such container") || strings.Contains(msg, "no container with name or ID")
+}

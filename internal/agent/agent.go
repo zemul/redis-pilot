@@ -324,8 +324,11 @@ func (a *Agent) instanceDelete(c *gin.Context) {
 	// 先优雅停止，让 Redis 有机会 flush 数据；忽略错误（容器可能已停止）
 	_ = a.runtime.Stop(containerName)
 	if err := a.runtime.Remove(containerName); err != nil {
-		fail(c, http.StatusInternalServerError, err.Error())
-		return
+		// 容器不存在时不应报错（幂等删除）
+		if !isContainerNotFound(err) {
+			fail(c, http.StatusInternalServerError, err.Error())
+			return
+		}
 	}
 	if req.CleanData {
 		os.RemoveAll(filepath.Join(a.cfg.DataDir, req.Name))

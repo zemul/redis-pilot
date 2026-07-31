@@ -17,6 +17,11 @@ var agentHTTPClient = &http.Client{
 	Timeout: 10 * time.Second,
 }
 
+// agentHTTPClientLong 用于可能耗时较长的操作（如 create 需要拉镜像）。
+var agentHTTPClientLong = &http.Client{
+	Timeout: 90 * time.Second,
+}
+
 type agentClient struct {
 	endpoint string
 	token    string
@@ -30,6 +35,15 @@ func newAgentClient(server *apitypes.NodeServer) *agentClient {
 }
 
 func (c *agentClient) post(path string, body interface{}) ([]byte, error) {
+	return c.doPost(path, body, agentHTTPClient)
+}
+
+// postLong 用于耗时较长的操作（如 create 可能需要拉镜像）。
+func (c *agentClient) postLong(path string, body interface{}) ([]byte, error) {
+	return c.doPost(path, body, agentHTTPClientLong)
+}
+
+func (c *agentClient) doPost(path string, body interface{}, client *http.Client) ([]byte, error) {
 	data, err := json.Marshal(body)
 	if err != nil {
 		return nil, err
@@ -42,7 +56,7 @@ func (c *agentClient) post(path string, body interface{}) ([]byte, error) {
 	if c.token != "" {
 		req.Header.Set("Authorization", "Bearer "+c.token)
 	}
-	resp, err := agentHTTPClient.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
 	}
