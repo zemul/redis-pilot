@@ -47,6 +47,16 @@ const proxySnapshotPollInterval = 100 * time.Millisecond
 // 只说明"有写入"，不保证代理配置真的变了，所以变了之后仍要重算并比对版本，弱信号加强
 // 比对既不会漏也不会误报。
 func (s *Server) proxySnapshot(c *gin.Context) {
+	// 代际必须在读状态之前取，顺序反了会漏掉一次变更。
+	//
+	// 反过来写（先算快照、再取代际）时，落在"buildProxySnapshot 读实例状态"和"取代际"
+	// 之间的那次写入，其代际已经被计入基线，而它的效果又没进这份快照。循环因此永远不会
+	// 为它触发重算，这次变更要等满整个 wait 才被下一次请求发现——比改造前 2 秒定期轮询
+	// 还慢一个数量级，等于把常见情况改好、罕见情况改坏。
+	//
+	// 先取代际的代价只是可能多醒一次、重算一遍快照后发现版本没变，与"弱信号 + 强比对"
+	// 的设计一致。
+	baseGen := s.db.Generation()
 	snapshot, err := s.buildProxySnapshot()
 	if err != nil {
 		fail(c, http.StatusInternalServerError, err.Error())
@@ -61,7 +71,7 @@ func (s *Server) proxySnapshot(c *gin.Context) {
 	}
 
 	deadline := time.Now().Add(wait)
-	lastGen := s.db.Generation()
+	lastGen := baseGen
 	ticker := time.NewTicker(proxySnapshotPollInterval)
 	defer ticker.Stop()
 
@@ -106,6 +116,15 @@ func parseProxySnapshotWait(raw string) time.Duration {
 	return d
 }
 
+// proxySnapshotAfterStateReadHook 只在测试里被赋值，生产环境恒为 nil。
+//
+// 它存在的理由：proxySnapshot 里"取代际基线"必须早于"读状态"，这个先后顺序是正确性的
+// 一部分，而顺序错了既不报错也不崩，只会让某一次变更的传播延迟从接近即时退化成一个完整
+// 的 wait 周期（20 秒）。这类只在几毫秒窗口内成立的错误，靠概率去撞是撞不到的，回归也就
+// 无从发现。这个注入点让测试能把一次并发写入精确放进那个窗口，把顺序变成可断言的事实。
+// 代价是生产路径上一次 nil 判断。
+var proxySnapshotAfterStateReadHook func()
+
 func (s *Server) buildProxySnapshot() (*apitypes.ProxySnapshot, error) {
 	instances, err := s.db.ReadInstances()
 	if err != nil {
@@ -114,6 +133,9 @@ func (s *Server) buildProxySnapshot() (*apitypes.ProxySnapshot, error) {
 	node, err := s.db.ReadNode()
 	if err != nil {
 		return nil, err
+	}
+	if proxySnapshotAfterStateReadHook != nil {
+		proxySnapshotAfterStateReadHook()
 	}
 
 	groups := s.buildInstanceGroups(instances, node)

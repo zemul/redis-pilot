@@ -139,8 +139,10 @@ CLI Token 优先级（从高到低）：`--token` 参数 > `REDIS_SERVER_TOKEN` 
   POST /instance/replicate     设置复制目标（REPLICAOF host port）——同上，仅无 Sentinel 托管
                                 的组或 Sentinel 自身触发的降级会用到
 
-  GET  /instance/list          列出本机所有实例，并附带各实例磁盘配置文件里的
-                               replicaof（configured_replica_of），供 Server 检测角色漂移
+  GET  /instance/list          列出本机所有实例，并附带两份角色观测供 Server 检测漂移：
+                               configured_replica_of（磁盘配置文件里的 replicaof）
+                               runtime_replica_of（进程此刻实际在复制谁，取健康探测缓存，
+                               不现场探测；过期或探测失败的实例不出现在其中）
   GET  /instance/status        实例详细状态（含 INFO 解析）
 
 备份管理

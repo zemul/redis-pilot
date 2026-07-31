@@ -73,6 +73,7 @@ func (s *Server) runReconcile() ([]ReconcileResult, error) {
 	var results []ReconcileResult
 	var patches []statusPatch
 	var roleDrifts []roleDrift
+	var replicaDrifts []replicaDrift
 
 	for serverName, instNames := range serverInstances {
 		srv := node.Servers[serverName]
@@ -125,6 +126,10 @@ func (s *Server) runReconcile() ([]ReconcileResult, error) {
 		configuredReplicaOf := parseConfiguredReplicaOf(apiResp.Data)
 		roleDrifts = append(roleDrifts,
 			detectRoleDrift(node, instances, serverName, instNames, configuredReplicaOf)...)
+		// 以及各实例进程此刻实际在复制谁，用于检测运行时复制漂移。
+		runtimeReplicaOf := parseRuntimeReplicaOf(apiResp.Data)
+		replicaDrifts = append(replicaDrifts,
+			detectReplicaDrift(node, instances, serverName, instNames, runtimeReplicaOf)...)
 
 		// 逐个对比
 		for _, name := range instNames {
@@ -192,27 +197,14 @@ func (s *Server) runReconcile() ([]ReconcileResult, error) {
 		}
 	}
 
-	// 修正角色漂移：磁盘配置文件里的 replicaof 与 Server 记录不一致时补推一次配置重写。
-	// 这一步不重启容器，只让"重启后会读到的角色"与 Sentinel 的决定保持一致。
-	// 放在状态补丁之后，是为了让漂移判定基于本轮已经修正过的状态。
-	if len(roleDrifts) > 0 {
-		s.reconcileRoleDrift(node, instances, roleDrifts)
-		for _, d := range roleDrifts {
-			s.audit.Log(store.AuditRecord{
-				Operator: "system",
-				Action:   "reconcile.role_drift",
-				Level:    audit.LevelImportant,
-				Result:   "corrected",
-				Target:   map[string]interface{}{"instance": d.Instance, "server": d.Server},
-				Params: map[string]interface{}{
-					"configured_replica_of": d.Configured,
-					"expected_replica_of":   d.Expected,
-				},
-				Detail: "config file role did not match server record; rewrote config so a container restart will not roll the role back",
-			})
-		}
-	}
+	// 状态由 reconcileRoleDrift 在编排锁内重新读取，这里传的只是待处置清单。
+	s.reconcileRoleDrift(roleDrifts)
 
+	// 修正运行时复制漂移：实例进程此刻实际在复制谁，与 Server 记录不一致时重新下发
+	// REPLICAOF。与上一步是两件不同的事--配置文件的角色要等下次重启才生效，运行时偏差
+	// 是此刻正在发生的：一个实际挂在错误 master 上的 replica 在 Envoy 眼里完全健康，
+	// 仍然接读流量，链路一断就长期提供陈旧数据而不报任何错。
+	s.reconcileReplicaDrift(replicaDrifts)
 	// 记录有异常的审计日志
 	for _, r := range results {
 		if r.Action == "alert" || r.Action == "updated" {
@@ -237,12 +229,27 @@ func (s *Server) runReconcile() ([]ReconcileResult, error) {
 // 字段缺失时返回空 map 而不是 nil 语义上的"全部为 master"——detectRoleDrift 只检查
 // map 中存在的实例，所以旧版本 Agent（不上报该字段）不会被误判为全组漂移。
 func parseConfiguredReplicaOf(data interface{}) map[string]string {
+	return parseStringMapField(data, "configured_replica_of")
+}
+
+// parseRuntimeReplicaOf 从 Agent /instance/list 的响应里取出各实例进程此刻实际在复制的
+// 地址（ip:port，空串表示它认为自己是 master）。
+//
+// 与 configured_replica_of 同样的约定：只有 Agent 探测成功且结果足够新的实例才会出现在
+// map 里，缺失即"这一轮没有可信的运行时观测"，检测方跳过而不是当成 master。判据宁可缺失
+// 也不能猜——猜错的方向是给一个正常的 replica 下发 REPLICAOF。
+func parseRuntimeReplicaOf(data interface{}) map[string]string {
+	return parseStringMapField(data, "runtime_replica_of")
+}
+
+// parseStringMapField 从 Agent 响应的 data 里取出一个 map[string]string 字段。
+func parseStringMapField(data interface{}, field string) map[string]string {
 	result := make(map[string]string)
 	m, ok := data.(map[string]interface{})
 	if !ok {
 		return result
 	}
-	raw, ok := m["configured_replica_of"].(map[string]interface{})
+	raw, ok := m[field].(map[string]interface{})
 	if !ok {
 		return result
 	}

@@ -187,7 +187,15 @@
    - 目的是让"容器重启后读到的角色"与 Sentinel 的决定一致，消除角色回退
    - 记审计 `reconcile.role_drift`
    - 保守跳过三种情况：非 `replication` 组、Agent 未上报该实例、期望地址解析失败
+   - 状态在持 `topologyMu` 后重新读取；期望值与检测时不一致则跳过，记审计 `skipped`
    - 详见 [architecture/flows.md §4.3.6](architecture/flows.md)
+6. 检测并修正**运行时复制漂移**（`detectReplicaDrift` / `reconcileReplicaDrift`）:
+   - 比对 Agent 上报的 `runtime_replica_of`（进程实际在复制谁）与 Server 记录
+   - 不一致时对 replica 重新下发 `REPLICAOF`，目标取自 Sentinel 确认过的当前 master
+   - **绝不提升实例**：期望为 master 却在复制别人时只记审计 `alert`，提升是 Sentinel 的决定
+   - Sentinel 与 Server 记录对该组 master 认定不一致时什么都不做（交给 sentinel reconcile）
+   - 记审计 `reconcile.replica_drift`（Critical 级别：重发 REPLICAOF 会丢弃分叉数据）
+   - 详见 [architecture/flows.md §4.3.7](architecture/flows.md)
 
 **返回结果**:
 ```json
@@ -224,7 +232,7 @@
 
 | API 路径 | 方法 | 功能 | 实现函数 |
 |---------|------|------|---------|
-| `/instance/list` | GET | 列出所有容器及运行状态，附带 `configured_replica_of`（磁盘配置文件里的角色） | `instanceList()` |
+| `/instance/list` | GET | 列出所有容器及运行状态，附带 `configured_replica_of`（磁盘配置文件里的角色）与 `runtime_replica_of`（进程实际在复制谁） | `instanceList()` |
 | `/instance/status` | GET | 获取实例详细信息（实时 INFO） | `instanceStatus()` |
 | `/instance/create` | POST | 创建容器并启动 | `instanceCreate()` |
 | `/instance/start` | POST | 启动容器 | `instanceStart()` |

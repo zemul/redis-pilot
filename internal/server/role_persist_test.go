@@ -10,30 +10,62 @@ import (
 	"gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/pkg/apitypes"
 )
 
-// recordingAgent 是能记录 /instance/config 调用的 fake Agent，
-// 并可按实例返回磁盘配置文件里的角色（模拟 configured_replica_of 上报）。
+// recordingAgent 是能记录 /instance/config 与 /instance/replicate 调用的 fake Agent，
+// 并可按实例返回磁盘配置文件里的角色（configured_replica_of）和运行时实际复制目标
+// （runtime_replica_of）。
 type recordingAgent struct {
 	*httptest.Server
-	mu          sync.Mutex
-	configCalls []map[string]interface{}
+	mu              sync.Mutex
+	configCalls     []map[string]interface{}
+	replicateCalls  []map[string]interface{}
+	containers      []map[string]interface{}
+	configured      map[string]string
+	runtime         map[string]string
+	failConfig      bool
+	failReplicate   bool
+	hasRuntimeField bool
 }
 
 func newRecordingAgent(containers []map[string]interface{}, configured map[string]string) *recordingAgent {
-	ra := &recordingAgent{}
+	ra := &recordingAgent{containers: containers, configured: configured}
 	ra.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/instance/list":
-			data := map[string]interface{}{"containers": containers}
-			if configured != nil {
-				data["configured_replica_of"] = configured
+			ra.mu.Lock()
+			data := map[string]interface{}{"containers": ra.containers}
+			if ra.configured != nil {
+				data["configured_replica_of"] = ra.configured
 			}
+			if ra.hasRuntimeField {
+				data["runtime_replica_of"] = ra.runtime
+			}
+			ra.mu.Unlock()
 			json.NewEncoder(w).Encode(apitypes.APIResponse{Success: true, Data: data})
 		case "/instance/config":
 			var body map[string]interface{}
 			json.NewDecoder(r.Body).Decode(&body)
 			ra.mu.Lock()
 			ra.configCalls = append(ra.configCalls, body)
+			shouldFail := ra.failConfig
 			ra.mu.Unlock()
+			if shouldFail {
+				w.WriteHeader(http.StatusInternalServerError)
+				json.NewEncoder(w).Encode(apitypes.APIResponse{Success: false, Error: "injected config failure"})
+				return
+			}
+			json.NewEncoder(w).Encode(apitypes.APIResponse{Success: true})
+		case "/instance/replicate":
+			var body map[string]interface{}
+			json.NewDecoder(r.Body).Decode(&body)
+			ra.mu.Lock()
+			ra.replicateCalls = append(ra.replicateCalls, body)
+			shouldFail := ra.failReplicate
+			ra.mu.Unlock()
+			if shouldFail {
+				w.WriteHeader(http.StatusInternalServerError)
+				json.NewEncoder(w).Encode(apitypes.APIResponse{Success: false, Error: "injected replicate failure"})
+				return
+			}
 			json.NewEncoder(w).Encode(apitypes.APIResponse{Success: true})
 		default:
 			json.NewEncoder(w).Encode(apitypes.APIResponse{Success: true})
@@ -42,11 +74,45 @@ func newRecordingAgent(containers []map[string]interface{}, configured map[strin
 	return ra
 }
 
+// setRuntimeReplicaOf 让 /instance/list 附带 runtime_replica_of 字段。
+// 显式调用才带上，用于验证"旧 Agent 不上报该字段时 Server 不会误判"。
+func (ra *recordingAgent) setRuntimeReplicaOf(m map[string]string) {
+	ra.mu.Lock()
+	defer ra.mu.Unlock()
+	ra.runtime = m
+	ra.hasRuntimeField = true
+}
+
+func (ra *recordingAgent) setFailConfig(v bool) {
+	ra.mu.Lock()
+	defer ra.mu.Unlock()
+	ra.failConfig = v
+}
+
+func (ra *recordingAgent) setFailReplicate(v bool) {
+	ra.mu.Lock()
+	defer ra.mu.Unlock()
+	ra.failReplicate = v
+}
+
 func (ra *recordingAgent) calls() []map[string]interface{} {
 	ra.mu.Lock()
 	defer ra.mu.Unlock()
 	out := make([]map[string]interface{}, len(ra.configCalls))
 	copy(out, ra.configCalls)
+	return out
+}
+
+// replicateCallsFor 返回针对指定实例的所有 /instance/replicate 调用。
+func (ra *recordingAgent) replicateCallsFor(name string) []map[string]interface{} {
+	ra.mu.Lock()
+	defer ra.mu.Unlock()
+	var out []map[string]interface{}
+	for _, c := range ra.replicateCalls {
+		if c["name"] == name {
+			out = append(out, c)
+		}
+	}
 	return out
 }
 

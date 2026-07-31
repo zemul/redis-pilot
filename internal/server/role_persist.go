@@ -3,6 +3,8 @@ package server
 import (
 	"fmt"
 
+	"gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/internal/audit"
+	"gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/internal/store"
 	"gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/pkg/apitypes"
 )
 
@@ -194,22 +196,37 @@ func detectRoleDrift(
 	return drifts
 }
 
-// reconcileRoleDrift 对检测到的角色漂移补推配置重写。
 // reconcileRoleDrift 补推检测到的角色漂移。
 //
-// 持编排锁的原因与 persistGroupRolesLocked 相同：它同样往实例的磁盘配置文件写
-// replicaof。若与一次正在进行的故障转移并发，reconcile 手里的快照可能已经过期，
-// 会把刚被 failover 改对的角色又按旧值写回去。
-func (s *Server) reconcileRoleDrift(
-	node *apitypes.NodeState,
-	instances *apitypes.InstancesState,
-	drifts []roleDrift,
-) {
+// 只接收漂移清单，状态在锁内重新读取——刻意不沿用检测时的快照。检测发生在 runReconcile
+// 开头读快照之后、遍历各节点 Agent 的 /instance/list 的过程中，两者之间的窗口是所有
+// Agent 往返之和（每个最多 agentHTTPClient 的 10 秒，有节点不可达时就是 10 秒起）。
+// 窗口里完成一次故障转移的话，沿用旧快照会把刚被 failover 改对的 replicaof 按旧值写回
+// 配置文件，容器下次重启即按错角色起来——正是角色落盘机制要消除的那个回退，只是换了个
+// 成因。持锁但用锁外读的快照，锁是白加的。
+//
+// 重新解析出的期望地址与检测时不一致，说明拓扑在这中间变过了。此时不能下发：我们对
+// "磁盘上现在写着什么"的认知来自变更之前的那次 Agent 上报，已经过期，据此判定的漂移
+// 可能根本不存在。跳过并交给下一轮 reconcile 重新检测；而且造成变更的那次故障转移
+// 自己的 persistGroupRolesLocked 已经把正确值推给了全组，本来就不需要这里补。
+func (s *Server) reconcileRoleDrift(drifts []roleDrift) {
 	if len(drifts) == 0 {
 		return
 	}
 	s.topologyMu.Lock()
 	defer s.topologyMu.Unlock()
+
+	instances, err := s.db.ReadInstances()
+	if err != nil {
+		s.log.Errorf("reconcile role drift: read instances: %v", err)
+		return
+	}
+	node, err := s.db.ReadNode()
+	if err != nil {
+		s.log.Errorf("reconcile role drift: read node: %v", err)
+		return
+	}
+
 	for _, d := range drifts {
 		inst := instances.Instances[d.Instance]
 		if inst == nil {
@@ -220,11 +237,46 @@ func (s *Server) reconcileRoleDrift(
 		if group == nil || srv == nil {
 			continue
 		}
-		if err := s.pushConfigRewrite(srv, group, d.Instance, inst, d.Expected); err != nil {
+		expected, err := resolveReplicaOfAddr(node, instances, inst.ReplicaOf)
+		if err != nil {
+			s.log.Errorf("reconcile role drift for %s: resolve expected replicaof: %v", d.Instance, err)
+			continue
+		}
+		if expected != d.Expected {
+			s.log.Infof("skipped role drift correction for %s: topology changed since detection (detected=%q now=%q)",
+				d.Instance, d.Expected, expected)
+			s.auditRoleDrift(d, "skipped",
+				"topology changed between drift detection and correction; deferred to the next reconcile")
+			continue
+		}
+		if err := s.pushConfigRewrite(srv, group, d.Instance, inst, expected); err != nil {
 			s.log.Errorf("reconcile role drift for %s: %v", d.Instance, err)
+			s.auditRoleDrift(d, "failed", err.Error())
 			continue
 		}
 		s.log.Infof("corrected role drift in config file: instance=%s configured=%q expected=%q",
-			d.Instance, d.Configured, d.Expected)
+			d.Instance, d.Configured, expected)
+		s.auditRoleDrift(d, "corrected",
+			"config file role did not match server record; rewrote config so a container restart will not roll the role back")
 	}
+}
+
+// auditRoleDrift 记录一次角色漂移的处置结果。
+//
+// result 必须反映实际下发结果。此前调用方在 runReconcile 里对每个 drift 无条件记
+// "corrected"，而 pushConfigRewrite 失败时只是 continue——审计日志会声称修好了没修好的
+// 东西，排查故障时反倒把人引开。
+func (s *Server) auditRoleDrift(d roleDrift, result, detail string) {
+	s.audit.Log(store.AuditRecord{
+		Operator: "system",
+		Action:   "reconcile.role_drift",
+		Level:    audit.LevelImportant,
+		Result:   result,
+		Target:   map[string]interface{}{"instance": d.Instance, "server": d.Server},
+		Params: map[string]interface{}{
+			"configured_replica_of": d.Configured,
+			"expected_replica_of":   d.Expected,
+		},
+		Detail: detail,
+	})
 }

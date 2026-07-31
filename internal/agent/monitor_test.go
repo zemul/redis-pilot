@@ -15,6 +15,9 @@ type fakeRedis struct {
 	listener  net.Listener
 	authReply string
 	pingReply string
+	// infoReply 是 INFO 命令的原始 RESP 回复（需自带 \r\n）。为空时回 +OK，
+	// 用于模拟"拿不到 INFO"——健康结论不应因此改变。
+	infoReply string
 }
 
 func newFakeRedis(t *testing.T, authReply, pingReply string) *fakeRedis {
@@ -69,6 +72,12 @@ func (f *fakeRedis) serve() {
 					fmt.Fprint(c, f.authReply)
 				case "PING":
 					fmt.Fprint(c, f.pingReply)
+				case "INFO":
+					if f.infoReply != "" {
+						fmt.Fprint(c, f.infoReply)
+					} else {
+						fmt.Fprint(c, "+OK\r\n")
+					}
 				default:
 					fmt.Fprint(c, "+OK\r\n")
 				}

@@ -3,8 +3,10 @@ package agent
 import (
 	"bufio"
 	"fmt"
+	"io"
 	"net"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -34,10 +36,30 @@ type healthState struct {
 	UpdatedAt time.Time
 }
 
+// replicationState 是某个实例最近一次探测到的运行时复制关系，即实例进程此刻实际在
+// 复制谁。这与另外两份记录都不同，三者可以互相偏离，所以必须单独观测：
+//
+//	Server 记录的 ReplicaOf     —— 意图（跟随 Sentinel 的决定）
+//	磁盘配置文件里的 replicaof  —— 容器下次重启会读到的角色
+//	这里的 ReplicaOf            —— 此刻正在发生的事实
+type replicationState struct {
+	Role      string // INFO replication 的 role 字段，"master" 或 "slave"
+	ReplicaOf string // 实际在复制的 "ip:port"，Role 为 master 时是空串
+	UpdatedAt time.Time
+}
+
+// replicationStaleAfter 是运行时复制观测的有效期。
+//
+// 探测频率是 30s，取 3 倍留出两次失败的余量。超过这个年龄的观测不再上报给 Server：
+// Server 会据此下发 REPLICAOF，判据必须是"刚刚看到的事实"而不是"上次开机时的事实"。
+// 宁可这一轮没有观测（Server 跳过），也不能给出过期结论。
+const replicationStaleAfter = 90 * time.Second
+
 type monitor struct {
 	mu        sync.RWMutex
 	instances map[string]*metrics
 	health    map[string]*healthState
+	repl      map[string]*replicationState
 	host      hostMetrics
 }
 
@@ -45,6 +67,7 @@ func newMonitor() *monitor {
 	return &monitor{
 		instances: make(map[string]*metrics),
 		health:    make(map[string]*healthState),
+		repl:      make(map[string]*replicationState),
 	}
 }
 
@@ -72,6 +95,43 @@ func (m *monitor) getHealth(name string) *healthState {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.health[name]
+}
+
+// setRepl 记录一次运行时复制关系观测。
+func (m *monitor) setRepl(name string, st *replicationState) {
+	if st == nil {
+		return
+	}
+	st.UpdatedAt = time.Now()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.repl[name] = st
+}
+
+// clearRepl 丢弃某个实例的运行时复制观测。
+//
+// 探测失败时必须显式丢弃而不是留着上一次的结果：留着会让一个已经不可达的实例继续以
+// 陈旧观测的身份被 Server 当作判据。
+func (m *monitor) clearRepl(name string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.repl, name)
+}
+
+// replicaOfMap 返回所有观测仍在有效期内的实例的运行时复制目标。
+// 空串表示该实例认为自己是 master。过期或从未探测过的实例不出现在结果里。
+func (m *monitor) replicaOfMap() map[string]string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := make(map[string]string, len(m.repl))
+	now := time.Now()
+	for name, st := range m.repl {
+		if st == nil || now.Sub(st.UpdatedAt) > replicationStaleAfter {
+			continue
+		}
+		out[name] = st.ReplicaOf
+	}
+	return out
 }
 
 func (m *monitor) hostResources() map[string]interface{} {
@@ -120,12 +180,19 @@ func (a *Agent) runHealthCheck() {
 				continue
 			}
 			instName := trimPrefix(c.Name)
-			health, pingErr := tcpPing("127.0.0.1:"+c.Port, a.getPassword(instName))
+			health, repl, pingErr := probeInstance("127.0.0.1:"+c.Port, a.getPassword(instName))
 			detail := ""
 			if pingErr != nil {
 				detail = pingErr.Error()
 			}
 			a.mon.setHealth(instName, health, detail)
+			// 复制关系只在这次探测确实读到了才更新，读不到就丢弃旧值——Server 会据此
+			// 下发 REPLICAOF，用陈旧观测当判据会对着已经变化的拓扑动手。
+			if repl != nil {
+				a.mon.setRepl(instName, repl)
+			} else {
+				a.mon.clearRepl(instName)
+			}
 			if health != healthOK {
 				a.log.Errorf("instance %s health=%s: %s", c.Name, health, detail)
 			}
@@ -277,58 +344,147 @@ const (
 )
 
 // tcpPing 通过 RESP 协议直连实例发送 PING，返回分类后的健康状态。
+// 是 probeInstance 的窄接口，供只关心健康分类的调用方使用。
+func tcpPing(addr, password string) (instanceHealth, error) {
+	health, _, err := probeInstance(addr, password)
+	return health, err
+}
+
+// probeInstance 用一条 TCP 连接完成两件事：健康探测，以及读取实例进程此刻实际在复制谁。
 //
 // 这里刻意不用 redisCmd（util.go）：那条路是 podman exec + redis-cli，每次要 fork
 // 两个进程，而健康检查每 30s 要把本机所有实例跑一遍，开销不可接受。代价是需要自己
 // 手写 RESP，因此下面对回复的解析要足够严格。
-func tcpPing(addr, password string) (instanceHealth, error) {
+//
+// 复制关系读取失败不影响健康结论：健康由 PING 决定，INFO replication 只是顺路取回的
+// 观测信息，读不到就返回 nil 让调用方跳过这一轮。反过来把 INFO 失败当成不健康，会让
+// 一个纯观测功能去误报实例故障。
+func probeInstance(addr, password string) (instanceHealth, *replicationState, error) {
 	conn, err := net.DialTimeout("tcp", addr, 3*time.Second)
 	if err != nil {
-		return healthUnreachable, err
+		return healthUnreachable, nil, err
 	}
 	defer conn.Close()
 	conn.SetDeadline(time.Now().Add(3 * time.Second))
+	// 整条连接共用一个 reader。此前每读一条回复都新建 bufio.NewReader(conn)，会把已经
+	// 读进缓冲区、但属于下一条回复的字节连同 reader 一起丢掉——之所以没出问题，是因为
+	// 每条命令都等回复读完才发下一条，缓冲区恰好只有一行。那是时序上的侥幸，不是保证，
+	// 而 INFO 的回复跨多行，靠不住。
+	r := bufio.NewReader(conn)
 
 	if password != "" {
 		if _, err := fmt.Fprintf(conn, "*2\r\n$4\r\nAUTH\r\n$%d\r\n%s\r\n", len(password), password); err != nil {
-			return healthUnreachable, err
+			return healthUnreachable, nil, err
 		}
 		// AUTH 的回复必须检查。早期实现读了就丢，导致密码不一致时 AUTH 静默失败，
 		// 随后的 PING 收到 -NOAUTH 被当成"实例挂了"，触发重启。
-		authResp, err := readRESPLine(conn)
+		authResp, err := r.ReadString('\n')
 		if err != nil {
-			return healthUnreachable, err
+			return healthUnreachable, nil, err
 		}
 		if kind, ok := classifyRESPError(authResp); ok {
-			return kind, fmt.Errorf("AUTH rejected: %s", strings.TrimSpace(authResp))
+			return kind, nil, fmt.Errorf("AUTH rejected: %s", strings.TrimSpace(authResp))
 		}
 		if !strings.HasPrefix(authResp, "+") {
-			return healthUnexpected, fmt.Errorf("unexpected AUTH reply: %q", strings.TrimSpace(authResp))
+			return healthUnexpected, nil, fmt.Errorf("unexpected AUTH reply: %q", strings.TrimSpace(authResp))
 		}
 	}
 
 	if _, err := fmt.Fprintf(conn, "*1\r\n$4\r\nPING\r\n"); err != nil {
-		return healthUnreachable, err
+		return healthUnreachable, nil, err
 	}
-	resp, err := readRESPLine(conn)
+	resp, err := r.ReadString('\n')
 	if err != nil {
-		return healthUnreachable, err
+		return healthUnreachable, nil, err
 	}
 	if kind, ok := classifyRESPError(resp); ok {
-		return kind, fmt.Errorf("ping rejected: %s", strings.TrimSpace(resp))
+		return kind, nil, fmt.Errorf("ping rejected: %s", strings.TrimSpace(resp))
 	}
 	// 只接受 +PONG。早期实现用 HasPrefix(resp, "+") 兜底，任何 + 开头的回复都算健康，
 	// 包括上一条命令残留的 +OK —— 那是靠时序侥幸而非逻辑保证。
-	if strings.HasPrefix(resp, "+PONG") {
-		return healthOK, nil
+	if !strings.HasPrefix(resp, "+PONG") {
+		return healthUnexpected, nil, fmt.Errorf("unexpected PING reply: %q", strings.TrimSpace(resp))
 	}
-	return healthUnexpected, fmt.Errorf("unexpected PING reply: %q", strings.TrimSpace(resp))
+
+	repl, replErr := readReplicationState(conn, r)
+	if replErr != nil {
+		return healthOK, nil, nil
+	}
+	return healthOK, repl, nil
 }
 
-// readRESPLine 读取一行 RESP 回复（到 \n 为止）。健康探测只需要处理简单字符串（+）
-// 和错误（-）两种单行回复，不需要完整的 RESP 解析器。
-func readRESPLine(conn net.Conn) (string, error) {
-	return bufio.NewReader(conn).ReadString('\n')
+// readReplicationState 发一条 INFO replication 并解析出运行时复制关系。
+func readReplicationState(conn net.Conn, r *bufio.Reader) (*replicationState, error) {
+	if _, err := fmt.Fprintf(conn, "*2\r\n$4\r\nINFO\r\n$11\r\nreplication\r\n"); err != nil {
+		return nil, err
+	}
+	info, err := readRESPBulkString(r)
+	if err != nil {
+		return nil, err
+	}
+	return parseReplicationInfo(info)
+}
+
+// maxInfoBulkLen 限制 INFO 回复的大小。INFO replication 只有十几行，1MB 已极宽松；
+// 上限的作用是不让一个畸形的 $<len> 头把 Agent 的内存拉爆。
+const maxInfoBulkLen = 1 << 20
+
+// readRESPBulkString 读一个 RESP 批量字符串（$<len>\r\n<payload>\r\n）。
+func readRESPBulkString(r *bufio.Reader) (string, error) {
+	header, err := r.ReadString('\n')
+	if err != nil {
+		return "", err
+	}
+	header = strings.TrimRight(header, "\r\n")
+	if !strings.HasPrefix(header, "$") {
+		return "", fmt.Errorf("expected bulk string reply, got %q", header)
+	}
+	n, err := strconv.Atoi(header[1:])
+	if err != nil {
+		return "", fmt.Errorf("bad bulk length: %q", header)
+	}
+	if n < 0 {
+		return "", fmt.Errorf("nil bulk reply")
+	}
+	if n > maxInfoBulkLen {
+		return "", fmt.Errorf("bulk reply too large: %d bytes", n)
+	}
+	buf := make([]byte, n+2) // payload + CRLF
+	if _, err := io.ReadFull(r, buf); err != nil {
+		return "", err
+	}
+	return string(buf[:n]), nil
+}
+
+// parseReplicationInfo 从 INFO replication 的输出里取出角色和实际复制目标。
+//
+// 解析不出 role 时返回错误而不是一个"空的 master 结论"：这个结果会上报给 Server 当作
+// 下发 REPLICAOF 的判据，"没读到"和"确实是 master"必须区分开，混同的方向是对一个正常
+// 的 replica 动手。role 不是 master 但缺 master_host/master_port 时同理。
+func parseReplicationInfo(info string) (*replicationState, error) {
+	st := &replicationState{}
+	var host, port string
+	for _, line := range strings.Split(info, "\n") {
+		line = strings.TrimSpace(line)
+		switch {
+		case strings.HasPrefix(line, "role:"):
+			st.Role = strings.TrimPrefix(line, "role:")
+		case strings.HasPrefix(line, "master_host:"):
+			host = strings.TrimPrefix(line, "master_host:")
+		case strings.HasPrefix(line, "master_port:"):
+			port = strings.TrimPrefix(line, "master_port:")
+		}
+	}
+	if st.Role == "" {
+		return nil, fmt.Errorf("no role field in INFO replication output")
+	}
+	if st.Role != "master" {
+		if host == "" || port == "" {
+			return nil, fmt.Errorf("role=%s but master_host/master_port missing", st.Role)
+		}
+		st.ReplicaOf = host + ":" + port
+	}
+	return st, nil
 }
 
 // classifyRESPError 把 RESP 错误回复（- 开头）映射到健康分类。

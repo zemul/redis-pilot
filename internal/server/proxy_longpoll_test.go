@@ -3,6 +3,7 @@ package server
 import (
 	"encoding/json"
 	"net/http"
+	"sync"
 	"testing"
 	"time"
 
@@ -189,6 +190,58 @@ func TestProxySnapshot_AuditWriteDoesNotWake(t *testing.T) {
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("长轮询没有按 wait 超时返回")
+	}
+}
+
+// TestProxySnapshot_DoesNotMissWriteRacingTheGenerationBaseline 锁住"代际基线必须早于
+// 读状态"这个顺序。
+//
+// 顺序反了（先算快照、再取代际）会漏掉一次变更：落在"读完实例状态"和"取代际"之间的写入，
+// 其代际已经被计入基线，而它的效果又没进这份快照，于是等待循环永远不会为它触发重算。这次
+// 变更要等满整个 wait（默认 20s）才被下一次请求发现，比改造前 2 秒定期轮询还慢一个数量级
+// ——故障转移后 Envoy 会在这 20 秒里持续把写流量发给已经降级的旧 master。
+//
+// 用注入点把写入精确放进那个窗口，而不是靠并发去撞几毫秒的时间差：撞不到的测试等于没有测试。
+func TestProxySnapshot_DoesNotMissWriteRacingTheGenerationBaseline(t *testing.T) {
+	s := setupProxySnapshotServer(t)
+	r := s.Router()
+
+	w := doRequest(r, "GET", "/proxy/snapshot", nil)
+	current := parseSnapshotVersion(t, w.Body.Bytes())
+
+	// 读完状态之后、快照算完之前做一次会改变代理配置的写入。只做一次：后续的重算必须
+	// 看到一个稳定的新状态，否则永远追不上。
+	var once sync.Once
+	proxySnapshotAfterStateReadHook = func() {
+		once.Do(func() {
+			if err := s.db.WithInstances(func(st *apitypes.InstancesState) error {
+				st.Instances["cache-2"] = &apitypes.Instance{
+					Group: "cache", Server: "srv1", Port: 6380, Role: "replica", ReplicaOf: "cache-1",
+					DesiredState: apitypes.DesiredRunning, ObservedStatus: apitypes.ObservedRunning,
+				}
+				return nil
+			}); err != nil {
+				t.Errorf("注入写入失败: %v", err)
+			}
+		})
+	}
+	t.Cleanup(func() { proxySnapshotAfterStateReadHook = nil })
+
+	start := time.Now()
+	w = doRequest(r, "GET", "/proxy/snapshot?known_version="+current+"&wait=3s", nil)
+	elapsed := time.Since(start)
+
+	if w.Code == http.StatusNotModified {
+		t.Fatalf("变更被漏掉了：代际基线取在读状态之后，这次写入既不在基线里也不在快照里（耗时 %v）", elapsed)
+	}
+	if w.Code != http.StatusOK {
+		t.Fatalf("期望 200，实际 %d：%s", w.Code, w.Body.String())
+	}
+	if v := parseSnapshotVersion(t, w.Body.Bytes()); v == current {
+		t.Error("返回的还是旧版本")
+	}
+	if elapsed > 2*time.Second {
+		t.Errorf("变更应当在一个 100ms 检查周期内被发现，实际等了 %v", elapsed)
 	}
 }
 

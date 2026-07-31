@@ -606,7 +606,18 @@ func (a *Agent) instanceList(c *gin.Context) {
 		}
 		configured[instName] = replicaOf
 	}
-	ok(c, gin.H{"containers": containers, "configured_replica_of": configured})
+	// 以及每个实例进程此刻实际在复制谁，让 reconcile 能发现运行时复制漂移。
+	//
+	// 取的是健康探测（每 30s）缓存下来的结果，不在这里现场探测：现场探测意味着本接口耗时
+	// 随实例数线性增长，而任何一个 hang 住的实例都会把整个响应拖过 Server 侧
+	// agentHTTPClient 的超时，让 reconcile 把这台机器上所有实例误判为 unreachable——
+	// 用一个纯观测功能换掉整台机器的可观测性是净损失。
+	// 观测过期或探测失败的实例不出现在 map 里，Server 侧据此跳过。
+	ok(c, gin.H{
+		"containers":            containers,
+		"configured_replica_of": configured,
+		"runtime_replica_of":    a.mon.replicaOfMap(),
+	})
 }
 
 func (a *Agent) instanceStatus(c *gin.Context) {

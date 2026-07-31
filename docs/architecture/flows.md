@@ -393,6 +393,49 @@ Sentinel 用 `REPLICAOF` 改变角色，这个变更**只存在于 Redis 进程�
 
 配置文件仍然是"重启后读到的角色"的来源，所以从"Sentinel 改变角色"到"Server 把新角色写进配置文件"之间存在一个窗口。窗口内如果容器恰好重启，角色仍会回退一次，随后由下一轮 reconcile（30 秒）纠正。彻底消除需要让配置文件完全不表达角色，但那会引入"重启瞬间出现一个独立 master"的新问题，且 kvrocks 模板没有 `min-replicas-to-write` 这类写保护（`config_template.go:79` 只在 Redis 模板内），因此没有采纳。
 
+**漂移修正必须基于锁内重新读取的状态**
+
+`reconcileRoleDrift` 只接收漂移清单，`node` / `instances` 在持 `topologyMu` 之后重新读，刻意不沿用检测时的快照。
+
+原因是检测和修正之间的窗口比看起来长得多：`runReconcile` 在开头读快照，随后**顺序遍历每台节点的 Agent** 调 `/instance/list`（`agentHTTPClient` 每个最多 10 秒），漂移是在这个遍历过程中检测出来的。窗口里完成一次故障转移，沿用旧快照就会把刚被 `persistGroupRolesLocked` 改对的 `replicaof` 按旧值写回磁盘，容器下次重启即按错角色起来——正是本节要消除的那个回退，只是换了个成因。**持锁但用锁外读的快照，锁是白加的。**
+
+重新解析出的期望地址与检测时不一致，说明拓扑在这中间变过了。此时对"磁盘上现在写着什么"的认知已经过期（它来自变更之前的那次 Agent 上报），据此判定的漂移可能根本不存在，所以跳过并交给下一轮 reconcile 重新检测；而且造成变更的那次故障转移自己已经把正确值推给了全组，本来就不需要这里补。审计记 `skipped`。
+
+审计结果也必须反映实际下发结果（`corrected` / `failed` / `skipped`）。此前是在 `runReconcile` 里对每个 drift 无条件写 `corrected`，而 `pushConfigRewrite` 失败只是 `continue`——排查故障时审计日志会声称修好了没修好的东西，把人引开。
+
+#### 4.3.7 运行时复制关系的自愈
+
+§4.3.6 处理的是"配置文件里的角色"和"Server 记录"之间的偏差。还有第三份记录：**实例进程内存里此刻实际在复制谁**。三份可以互相偏离：
+
+| 记录 | 含义 | 生效时机 |
+|------|------|----------|
+| `Instance.ReplicaOf`（`pilot.db`） | 意图，跟随 Sentinel 的决定 | —— |
+| 磁盘配置文件的 `replicaof` | 容器下次重启会读到的角色 | 下次重启 |
+| `INFO replication` 的 `master_host` | 此刻正在发生的事实 | 立即 |
+
+制造 1↔3 偏差的入口有好几个：Sentinel 的 `+switch-master` 事件在 Server 重启或网络分区期间丢失、实例恰好在故障转移期间重启后按旧配置文件起来、有人直接对容器执行了 `redis-cli REPLICAOF`。而在补上本机制之前，Server 侧三条自愈路径**一条都不看运行时复制关系**：`runReconcile` 只问容器在不在跑，`reconcileSentinelOnce` 只比对每组的 master 地址，`detectRoleDrift` 只比对配置文件。出口缺失让任何一次瞬时偏差都变成永久偏差。
+
+典型形态：三节点组 A/B/C，Sentinel 把 master 从 A 切到 B，C 因为某个入口没收到，仍在复制 A。数据本身不会错（B→A→C 的链式复制在 Redis 里合法），但 C 在 `proxy_group` 眼里 `IsServing()` 为真，照样进 replica cluster 接读流量；一旦 A 停掉或 A→B 的复制链断开，**C 就长期提供陈旧数据，而所有监控指标都显示它健康**。这类"看起来正常的错"比直接报错危险得多。
+
+| 环节 | 实现 | 说明 |
+|------|------|------|
+| Agent 观测运行时角色 | `monitor.go` `probeInstance` | 健康探测（30s）在同一条 TCP 连接上顺带发一条 `INFO replication` |
+| Agent 上报 | `agent.go` `instanceList` 响应新增 `runtime_replica_of` | 读的是探测缓存，**不现场探测** |
+| Server 检测 | `replication_drift.go` `detectReplicaDrift` | 与 `detectRoleDrift` 同样的保守约定 |
+| Server 修正 | `replication_drift.go` `reconcileReplicaDrift` | 持 `topologyMu`，锁内重读状态 |
+
+**为什么上报的是缓存而不是现场探测**：现场探测会让 `/instance/list` 的耗时随实例数线性增长，而任何一个 hang 住的实例都会把整个响应拖过 Server 侧 `agentHTTPClient` 的 10 秒超时，让 reconcile 把这台机器上**所有**实例误判为 `unreachable`。用一个纯观测功能换掉整台机器的可观测性是净损失。缓存超过 `replicationStaleAfter`（90s，探测周期的 3 倍）的实例不出现在上报里，探测失败时显式 `clearRepl` 丢弃旧值——Server 会据此下发 `REPLICAOF`，判据必须是"刚刚看到的事实"。
+
+**纠正动作的边界刻意收得很窄**，理由是不能让 Server 变成第二个拓扑决策者：
+
+- 只对 replica 下发 `REPLICAOF`，目标地址取自 Sentinel 确认过的当前 master。
+- **绝不提升任何实例**（不发 `REPLICAOF NO ONE`）。期望是 master 而实际在复制别人时只记审计 `alert`：要么 Server 记录本身落后于 Sentinel（`reconcileSentinelOnce` 会纠正），要么 Sentinel 确实认为它该是 master 而它自己不知道（该由 Sentinel 提升）。
+- Sentinel 启用时，下发前先向 Sentinel 确认该组 master 与 Server 记录一致，不一致就什么都不做——那属于 `reconcileSentinelOnce` 的职责，两条路径同时动手会互相打架。查询失败一律视为不一致（拿不到权威意见时宁可这一轮不动）。
+
+这样本机制只做一件事：**把 Sentinel 已经做出、但在某个实例上丢失了的决定重新贴上去。** 审计 `reconcile.replica_drift` 记为 Critical 级别——重新下发 `REPLICAOF` 会让目标实例丢弃自己与新 master 分叉的那部分数据（复制的固有语义），属于影响数据的动作。
+
+`detectReplicaDrift` 在这些情况下不判定漂移：组不是 `replication` 类型；`runtime_replica_of` 里没有该实例（Agent 这一轮没探到、实例正在 loading、或观测已过期）；期望地址解析失败。**缺失必须跳过而不是当成"它以为自己是 master"**——猜错的方向是对一个正常 replica 动手。旧版本 Agent 完全不上报该字段时同理，不会被误判为全组漂移。
+
 ### 4.4 实例迁移
 
 ```
@@ -612,6 +655,10 @@ Server / Agent / xDS 三处 Bearer Token 校验改用 `subtle.ConstantTimeCompar
 计数器放在 store 层而不是各个 handler 里发通知，是因为 store 是所有状态写入的唯一收口点，9 个写方法都在同一个包内，改动时一眼能看全。非事务写入统一走 `execWrite`（写成功后自增），事务写入在 `Commit` 成功后自增。漏掉任何一处的后果是 Envoy 配置永久停在旧值——一个不报错、只静默错下去的故障，比多几次无用重算糟糕得多。`TestGeneration_EveryMutatingMethodBumps` 逐个方法验证，不抽样。
 
 计数器的语义刻意做弱：变了只说明"有写入发生"，不保证代理配置真的变了（例如只更新备份时间戳）。所以变了之后仍要重算并比对内容哈希——弱信号 + 强比对，既不会漏也不会误报。审计日志写入刻意不自增：它不影响代理配置，而写入很频繁，自增会让每条日志都唤醒一次无谓的重算。
+
+**取代际基线必须早于读状态。** 顺序反了会漏掉一次变更：落在"`buildProxySnapshot` 读完实例状态"和"取代际"之间的那次写入，它的代际已经被计入基线，而它的效果又没进这份快照，等待循环因此永远不会为它触发重算。这次变更要等满整个 `wait`（20s）才被下一次请求发现，比改造前 2 秒定期轮询还慢一个数量级——故障转移后 Envoy 会在这 20 秒里持续把写流量发给已经降级的旧 master。所以基线在 `buildProxySnapshot` 之前取：代价只是可能多醒一次、重算后发现版本没变，与"弱信号 + 强比对"的取向一致。
+
+这个顺序是正确性的一部分，但错了既不报错也不崩，只在几毫秒窗口内成立，靠并发去撞是撞不到的。因此 `buildProxySnapshot` 里留了一个仅测试赋值的注入点 `proxySnapshotAfterStateReadHook`（生产环境恒为 nil），让 `TestProxySnapshot_DoesNotMissWriteRacingTheGenerationBaseline` 能把一次写入精确放进那个窗口——顺序反过来时该测试会等满 `wait` 并收到 304 而失败。
 
 两道保护：
 

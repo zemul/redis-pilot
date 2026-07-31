@@ -30,11 +30,11 @@ redis-pilot/
   │   └── migrate/  # 一次性迁移工具：旧版 pool-state.yaml/instances-state.yaml → pilot.db
   ├── internal/
   │   ├── store/    # pilot.db（SQLite）读写：servers/instance_groups/instances/audit_log 等表
-  │   ├── state/    # 状态管理薄封装层，委托给 internal/store，对上层 handler 保持稳定接口
+  │   ├── state/    # 状态辅助纯函数（锁、拓扑计算），状态读写直接使用 internal/store
   │   ├── server/   # Server HTTP handler、调度、代理层状态快照
   │   ├── xds/      # redis-pilot-xds：Envoy xDS 控制面
   │   ├── agent/    # Agent HTTP handler + 定时任务
-  │   ├── audit/    # 审计日志（底层委托给 internal/store，对外接口与原 JSONL 版本保持一致）
+  │   ├── audit/    # 审计日志（Logger 负责ID/时间戳生成，底层委托给 internal/store）
   │   └── podman/   # Podman API 封装
   └── pkg/
       ├── apitypes/ # Server ↔ Agent 共享请求/响应结构体
