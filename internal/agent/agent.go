@@ -44,11 +44,12 @@ func validateBackupTs(ts string) error {
 }
 
 type Agent struct {
-	cfg       *Config
-	log       *logger.Logger
-	mon       *monitor
-	runtime   podman.ContainerRuntime
-	passwords sync.Map // instanceName → password
+	cfg           *Config
+	log           *logger.Logger
+	mon           *monitor
+	runtime       podman.ContainerRuntime
+	passwords     sync.Map // instanceName → password
+	instanceLocks sync.Map // instanceName → *sync.Mutex
 }
 
 func New(cfg *Config) *Agent {
@@ -60,6 +61,15 @@ func New(cfg *Config) *Agent {
 	}
 	a.loadPasswords()
 	return a
+}
+
+// lockInstance 获取指定实例的互斥锁，返回解锁函数。
+// 用于防止对同一实例的并发操作（如备份期间被 stop/delete）导致数据损坏。
+func (a *Agent) lockInstance(name string) func() {
+	v, _ := a.instanceLocks.LoadOrStore(name, &sync.Mutex{})
+	mu := v.(*sync.Mutex)
+	mu.Lock()
+	return mu.Unlock
 }
 
 // loadPasswords scans existing instance config files to recover passwords after restart.
@@ -170,6 +180,9 @@ func (a *Agent) instanceCreate(c *gin.Context) {
 		return
 	}
 
+	unlock := a.lockInstance(req.Name)
+	defer unlock()
+
 	dataDir := filepath.Join(a.cfg.DataDir, req.Name)
 	for _, sub := range []string{"conf", "data", "backup"} {
 		if err := os.MkdirAll(filepath.Join(dataDir, sub), 0755); err != nil {
@@ -254,6 +267,10 @@ func (a *Agent) instanceStart(c *gin.Context) {
 		fail(c, http.StatusBadRequest, err.Error())
 		return
 	}
+
+	unlock := a.lockInstance(req.Name)
+	defer unlock()
+
 	if err := a.runtime.Start(req.Engine + "-" + req.Name); err != nil {
 		fail(c, http.StatusInternalServerError, err.Error())
 		return
@@ -274,6 +291,10 @@ func (a *Agent) instanceStop(c *gin.Context) {
 		fail(c, http.StatusBadRequest, err.Error())
 		return
 	}
+
+	unlock := a.lockInstance(req.Name)
+	defer unlock()
+
 	if err := a.runtime.Stop(req.Engine + "-" + req.Name); err != nil {
 		fail(c, http.StatusInternalServerError, err.Error())
 		return
@@ -295,7 +316,14 @@ func (a *Agent) instanceDelete(c *gin.Context) {
 		fail(c, http.StatusBadRequest, err.Error())
 		return
 	}
-	if err := a.runtime.Remove(req.Engine + "-" + req.Name); err != nil {
+
+	unlock := a.lockInstance(req.Name)
+	defer unlock()
+
+	containerName := req.Engine + "-" + req.Name
+	// 先优雅停止，让 Redis 有机会 flush 数据；忽略错误（容器可能已停止）
+	_ = a.runtime.Stop(containerName)
+	if err := a.runtime.Remove(containerName); err != nil {
 		fail(c, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -396,6 +424,9 @@ func (a *Agent) instanceConfig(c *gin.Context) {
 		return
 	}
 
+	unlock := a.lockInstance(req.Name)
+	defer unlock()
+
 	containerName := req.Engine + "-" + req.Name
 	if req.Password != "" {
 		a.passwords.Store(req.Name, req.Password)
@@ -457,6 +488,10 @@ func (a *Agent) instancePromote(c *gin.Context) {
 		fail(c, http.StatusBadRequest, err.Error())
 		return
 	}
+
+	unlock := a.lockInstance(req.Name)
+	defer unlock()
+
 	if _, err := redisCmd(req.Name, a.getPassword(req.Name), "REPLICAOF", "NO", "ONE"); err != nil {
 		fail(c, http.StatusInternalServerError, err.Error())
 		return
@@ -477,6 +512,10 @@ func (a *Agent) instanceReplicate(c *gin.Context) {
 		fail(c, http.StatusBadRequest, err.Error())
 		return
 	}
+
+	unlock := a.lockInstance(req.Name)
+	defer unlock()
+
 	parts := strings.SplitN(req.ReplicaOf, ":", 2)
 	if len(parts) != 2 {
 		fail(c, http.StatusBadRequest, "replica_of must be ip:port")
@@ -664,6 +703,9 @@ func (a *Agent) instanceBackup(c *gin.Context) {
 		return
 	}
 
+	unlock := a.lockInstance(req.Name)
+	defer unlock()
+
 	backupDir := filepath.Join(a.cfg.DataDir, req.Name, "backup")
 	ts := time.Now().Format("2006-01-02T15:04:05")
 	// 记录发起时刻，用于校验持久化产物确实是本次生成的（而非上一次的残留）。
@@ -805,6 +847,9 @@ func (a *Agent) instanceRestore(c *gin.Context) {
 		fail(c, http.StatusBadRequest, err.Error())
 		return
 	}
+
+	unlock := a.lockInstance(req.Name)
+	defer unlock()
 
 	backupDir := filepath.Join(a.cfg.DataDir, req.Name, "backup")
 	dataDir := filepath.Join(a.cfg.DataDir, req.Name, "data")

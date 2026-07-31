@@ -50,7 +50,7 @@ func (d *DB) InsertAudit(r AuditRecord) error {
 	paramsJSON, _ := json.Marshal(r.Params)
 
 	_, err := d.sql.Exec(`
-		INSERT OR IGNORE INTO audit_log(id, ts, date, operator, action, level, target, params, result, duration_ms, detail)
+		INSERT INTO audit_log(id, ts, date, operator, action, level, target, params, result, duration_ms, detail)
 		VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
 		r.ID, r.Timestamp, date,
 		r.Operator, r.Action, r.Level,

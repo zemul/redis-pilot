@@ -133,7 +133,7 @@ func (d *DB) GetInstance(name string) (*apitypes.Instance, error) {
 }
 
 // WithInstances 在事务中原子执行 read → fn → write。
-// fn 接收完整 InstancesState 快照，修改后批量写回。
+// fn 接收完整 InstancesState 快照，修改后增量写回（仅 upsert 变更项、delete 删除项）。
 //
 // 用 DB.mu 强制同一时间只有一个 WithInstances/WithServers 在执行，避免并发调用者
 // 各自基于旧快照修改后互相覆盖（丢失更新），或触发 SQLITE_BUSY_SNAPSHOT 静默失败。
@@ -152,33 +152,55 @@ func (d *DB) WithInstances(fn func(*apitypes.InstancesState) error) error {
 		return err
 	}
 
+	// 记录修改前的 key 集合，用于 diff
+	oldGroups := make(map[string]struct{}, len(st.Groups))
+	for k := range st.Groups {
+		oldGroups[k] = struct{}{}
+	}
+	oldInstances := make(map[string]struct{}, len(st.Instances))
+	for k := range st.Instances {
+		oldInstances[k] = struct{}{}
+	}
+
 	if err := fn(st); err != nil {
 		return err
 	}
 
-	// 写回 groups
-	if _, err := tx.Exec(`DELETE FROM instance_groups`); err != nil {
-		return err
-	}
+	// 增量写回 groups：upsert 当前存在的，delete 被移除的
 	for name, g := range st.Groups {
 		envoyJSON, _ := json.Marshal(g.Envoy)
 		if _, err := tx.Exec(`
 			INSERT INTO instance_groups(name, type, engine, engine_version, category,
 			    current_master, topology_status, failover_conflict, envoy, created_at, updated_at)
-			VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
+			VALUES(?,?,?,?,?,?,?,?,?,?,?)
+			ON CONFLICT(name) DO UPDATE SET
+				type              = excluded.type,
+				engine            = excluded.engine,
+				engine_version    = excluded.engine_version,
+				category          = excluded.category,
+				current_master    = excluded.current_master,
+				topology_status   = excluded.topology_status,
+				failover_conflict = excluded.failover_conflict,
+				envoy             = excluded.envoy,
+				created_at        = excluded.created_at,
+				updated_at        = excluded.updated_at`,
 			name,
 			g.Type, g.Engine, g.EngineVersion, g.Category,
 			g.CurrentMaster, g.TopologyStatus, boolToInt(g.FailoverConflict),
 			string(envoyJSON), g.CreatedAt, g.UpdatedAt,
 		); err != nil {
-			return fmt.Errorf("insert group %s: %w", name, err)
+			return fmt.Errorf("upsert group %s: %w", name, err)
+		}
+	}
+	for name := range oldGroups {
+		if _, exists := st.Groups[name]; !exists {
+			if _, err := tx.Exec(`DELETE FROM instance_groups WHERE name = ?`, name); err != nil {
+				return fmt.Errorf("delete group %s: %w", name, err)
+			}
 		}
 	}
 
-	// 写回 instances
-	if _, err := tx.Exec(`DELETE FROM instances`); err != nil {
-		return err
-	}
+	// 增量写回 instances：upsert 当前存在的，delete 被移除的
 	for name, inst := range st.Instances {
 		persistenceJSON, _ := json.Marshal(inst.Persistence)
 		overridesJSON, _ := json.Marshal(inst.ConfigOverrides)
@@ -189,7 +211,28 @@ func (d *DB) WithInstances(fn func(*apitypes.InstancesState) error) error {
 			INSERT INTO instances(name, grp, role, server, container, port, memory, cpus, disk,
 			    password, config_path, data_path, backup_path,
 			    persistence, config_overrides, replica_of, backup, desired_state, observed_status, lock, created_at)
-			VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+			VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+			ON CONFLICT(name) DO UPDATE SET
+				grp              = excluded.grp,
+				role             = excluded.role,
+				server           = excluded.server,
+				container        = excluded.container,
+				port             = excluded.port,
+				memory           = excluded.memory,
+				cpus             = excluded.cpus,
+				disk             = excluded.disk,
+				password         = excluded.password,
+				config_path      = excluded.config_path,
+				data_path        = excluded.data_path,
+				backup_path      = excluded.backup_path,
+				persistence      = excluded.persistence,
+				config_overrides = excluded.config_overrides,
+				replica_of       = excluded.replica_of,
+				backup           = excluded.backup,
+				desired_state    = excluded.desired_state,
+				observed_status  = excluded.observed_status,
+				lock             = excluded.lock,
+				created_at       = excluded.created_at`,
 			name,
 			inst.Group, inst.Role, inst.Server, inst.Container,
 			inst.Port, inst.Memory, inst.CPUs, inst.Disk,
@@ -198,9 +241,17 @@ func (d *DB) WithInstances(fn func(*apitypes.InstancesState) error) error {
 			inst.ReplicaOf, string(backupJSON),
 			inst.DesiredState, inst.ObservedStatus, string(lockJSON), inst.CreatedAt,
 		); err != nil {
-			return fmt.Errorf("insert instance %s: %w", name, err)
+			return fmt.Errorf("upsert instance %s: %w", name, err)
 		}
 	}
+	for name := range oldInstances {
+		if _, exists := st.Instances[name]; !exists {
+			if _, err := tx.Exec(`DELETE FROM instances WHERE name = ?`, name); err != nil {
+				return fmt.Errorf("delete instance %s: %w", name, err)
+			}
+		}
+	}
+
 	if err := tx.Commit(); err != nil {
 		return err
 	}

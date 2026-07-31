@@ -3,7 +3,6 @@ package audit
 
 import (
 	"fmt"
-	"sync/atomic"
 	"time"
 
 	"gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/internal/store"
@@ -18,8 +17,7 @@ const (
 
 // Logger 审计日志写入器
 type Logger struct {
-	db  *store.DB
-	seq atomic.Int64
+	db *store.DB
 }
 
 // New 创建审计日志写入器。
@@ -34,8 +32,7 @@ func (l *Logger) Log(r store.AuditRecord) error {
 		r.Timestamp = now.Format(time.RFC3339)
 	}
 	if r.ID == "" {
-		seq := l.seq.Add(1)
-		r.ID = fmt.Sprintf("audit-%s-%06d", now.Format("20060102"), seq)
+		r.ID = fmt.Sprintf("audit-%d", now.UnixNano())
 	}
 	return l.db.InsertAudit(r)
 }

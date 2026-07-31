@@ -139,19 +139,31 @@ func cleanupBackups(dir string, retention int) {
 }
 
 // copyFile 复制文件
-func copyFile(src, dst string) error {
+func copyFile(src, dst string) (retErr error) {
 	in, err := os.Open(src)
 	if err != nil {
 		return err
 	}
 	defer in.Close()
+
 	out, err := os.Create(dst)
 	if err != nil {
 		return err
 	}
-	defer out.Close()
-	_, err = io.Copy(out, in)
-	return err
+	defer func() {
+		if retErr != nil {
+			out.Close()
+			os.Remove(dst)
+		}
+	}()
+
+	if _, err = io.Copy(out, in); err != nil {
+		return err
+	}
+	if err = out.Sync(); err != nil {
+		return err
+	}
+	return out.Close()
 }
 
 // verifyBackupSource 校验 BGSAVE 的产物目录可用：存在、非空，且至少有一个文件是
