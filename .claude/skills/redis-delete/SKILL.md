@@ -28,9 +28,9 @@ description: 删除 Redis/Kvrocks 实例组
    redis-pilot-cli instance delete <master-instance-name> --clean-data
    ```
 
-5. Sentinel 和 Envoy 路由无需手动操作：
+5. Sentinel 和 Proxy 路由无需手动操作：
    - Server 在删除主库后会自动调用 `removeSentinelMaster` + `syncSentinel`
-   - `redis-pilot-xds` 会从 snapshot 自动下发新的 Envoy 配置，移除该组的端口映射
+   - Proxy 通过长轮询 Server snapshot 自动发现拓扑变更，移除该组的端口映射
 
 6. 确认清理完成
    ```

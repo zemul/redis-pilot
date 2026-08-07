@@ -30,7 +30,7 @@ var inventoryCmd = &cobra.Command{
 }
 
 func init() {
-	inventoryCmd.Flags().String("port", "", "Filter by Envoy port")
+	inventoryCmd.Flags().String("port", "", "Filter by Proxy port")
 	inventoryCmd.Flags().String("node", "", "Filter by server name")
 	inventoryCmd.Flags().String("engine", "", "Filter by engine (redis|kvrocks)")
 	inventoryCmd.Flags().String("view", "summary", "View: summary | port | server")

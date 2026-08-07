@@ -20,8 +20,8 @@ type PortRange struct {
 // PortConfig 端口分配策略配置
 type PortConfig struct {
 	Redis       PortRange `yaml:"redis"`        // Redis 实例端口范围
-	EnvoyAuto   PortRange `yaml:"envoy_auto"`   // Envoy 自动读写分离端口范围
-	EnvoyMaster PortRange `yaml:"envoy_master"` // Envoy 强一致主库端口范围
+	ProxyAuto   PortRange `yaml:"proxy_auto"`   // Proxy 自动读写分离端口范围
+	ProxyMaster PortRange `yaml:"proxy_master"` // Proxy 强一致主库端口范围
 }
 
 type SentinelConfig struct {
@@ -56,8 +56,8 @@ func LoadConfig(path string) (*Config, error) {
 		DataDir: "/opt/redis-server/state",
 		Ports: PortConfig{
 			Redis:       PortRange{Start: 6379, End: 6499},
-			EnvoyAuto:   PortRange{Start: 16379, End: 16499},
-			EnvoyMaster: PortRange{Start: 16500, End: 16619},
+			ProxyAuto:   PortRange{Start: 16379, End: 16499},
+			ProxyMaster: PortRange{Start: 16500, End: 16619},
 		},
 		Images: defaultImageConfig(),
 		Sentinel: SentinelConfig{

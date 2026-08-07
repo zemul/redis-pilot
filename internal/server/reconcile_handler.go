@@ -202,7 +202,7 @@ func (s *Server) runReconcile() ([]ReconcileResult, error) {
 
 	// 修正运行时复制漂移：实例进程此刻实际在复制谁，与 Server 记录不一致时重新下发
 	// REPLICAOF。与上一步是两件不同的事--配置文件的角色要等下次重启才生效，运行时偏差
-	// 是此刻正在发生的：一个实际挂在错误 master 上的 replica 在 Envoy 眼里完全健康，
+	// 是此刻正在发生的：一个实际挂在错误 master 上的 replica 在 Proxy 眼里完全健康，
 	// 仍然接读流量，链路一断就长期提供陈旧数据而不报任何错。
 	s.reconcileReplicaDrift(replicaDrifts)
 	// 记录有异常的审计日志

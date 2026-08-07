@@ -25,10 +25,10 @@ func setupProxySnapshotServer(t *testing.T) *Server {
 	}
 	// 三个条件缺一个快照就是空的（0 listeners / 0 clusters），"状态变化导致版本变化"
 	// 的前提就不成立：必须是 replication 组、CurrentMaster 指向真实存在的实例、
-	// 且配了 Envoy 端口（listener 的生成条件是 masterPort > 0 且有 master 端点）。
+	// 且配了 Proxy 端口（listener 的生成条件是 masterPort > 0 且有 master 端点）。
 	group := testGroup("cache-1")
 	group.Type = "replication"
-	group.Envoy = &apitypes.EnvoyConfig{AutoPort: 16379, MasterPort: 16500}
+	group.Proxy = &apitypes.ProxyConfig{AutoPort: 16379, MasterPort: 16500}
 	if err := s.db.WriteInstances(&apitypes.InstancesState{
 		Groups: map[string]*apitypes.InstanceGroupState{"cache": group},
 		Instances: map[string]*apitypes.Instance{
@@ -74,7 +74,7 @@ func TestProxySnapshot_StaleVersionReturnsImmediately(t *testing.T) {
 // TestProxySnapshot_UnchangedWaitsThenReturns304 版本未变时挂起到超时并返回 304。
 //
 // 超时上限的意义不是省资源，而是保证这条路径永远会结束：任何"等待唤醒"的机制都有
-// 漏唤醒的可能，没有超时就会让 Envoy 的配置永久停在旧值，且不报错。
+// 漏唤醒的可能，没有超时就会让 Proxy 的配置永久停在旧值，且不报错。
 func TestProxySnapshot_UnchangedWaitsThenReturns304(t *testing.T) {
 	s := setupProxySnapshotServer(t)
 	r := s.Router()
@@ -199,7 +199,7 @@ func TestProxySnapshot_AuditWriteDoesNotWake(t *testing.T) {
 // 顺序反了（先算快照、再取代际）会漏掉一次变更：落在"读完实例状态"和"取代际"之间的写入，
 // 其代际已经被计入基线，而它的效果又没进这份快照，于是等待循环永远不会为它触发重算。这次
 // 变更要等满整个 wait（默认 20s）才被下一次请求发现，比改造前 2 秒定期轮询还慢一个数量级
-// ——故障转移后 Envoy 会在这 20 秒里持续把写流量发给已经降级的旧 master。
+// ——故障转移后 Proxy 会在这 20 秒里持续把写流量发给已经降级的旧 master。
 //
 // 用注入点把写入精确放进那个窗口，而不是靠并发去撞几毫秒的时间差：撞不到的测试等于没有测试。
 func TestProxySnapshot_DoesNotMissWriteRacingTheGenerationBaseline(t *testing.T) {

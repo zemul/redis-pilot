@@ -14,7 +14,7 @@ import (
 func (d *DB) GetAllGroups() (map[string]*apitypes.InstanceGroupState, error) {
 	rows, err := d.sql.Query(
 		`SELECT name, type, engine, engine_version, category,
-		        current_master, topology_status, failover_conflict, envoy, created_at, updated_at
+		        current_master, topology_status, failover_conflict, proxy, created_at, updated_at
 		 FROM instance_groups`)
 	if err != nil {
 		return nil, err
@@ -25,10 +25,10 @@ func (d *DB) GetAllGroups() (map[string]*apitypes.InstanceGroupState, error) {
 
 // UpsertGroup 新增或更新实例组。
 func (d *DB) UpsertGroup(name string, g *apitypes.InstanceGroupState) error {
-	envoyJSON, _ := json.Marshal(g.Envoy)
+	proxyJSON, _ := json.Marshal(g.Proxy)
 	return d.execWrite(`
 		INSERT INTO instance_groups(name, type, engine, engine_version, category,
-		    current_master, topology_status, failover_conflict, envoy, created_at, updated_at)
+		    current_master, topology_status, failover_conflict, proxy, created_at, updated_at)
 		VALUES(?,?,?,?,?,?,?,?,?,?,?)
 		ON CONFLICT(name) DO UPDATE SET
 			type              = excluded.type,
@@ -38,13 +38,13 @@ func (d *DB) UpsertGroup(name string, g *apitypes.InstanceGroupState) error {
 			current_master    = excluded.current_master,
 			topology_status   = excluded.topology_status,
 			failover_conflict = excluded.failover_conflict,
-			envoy             = excluded.envoy,
+			proxy             = excluded.proxy,
 			created_at        = excluded.created_at,
 			updated_at        = excluded.updated_at`,
 		name,
 		g.Type, g.Engine, g.EngineVersion, g.Category,
 		g.CurrentMaster, g.TopologyStatus, boolToInt(g.FailoverConflict),
-		string(envoyJSON), g.CreatedAt, g.UpdatedAt,
+		string(proxyJSON), g.CreatedAt, g.UpdatedAt,
 	)
 }
 
@@ -168,10 +168,10 @@ func (d *DB) WithInstances(fn func(*apitypes.InstancesState) error) error {
 
 	// 增量写回 groups：upsert 当前存在的，delete 被移除的
 	for name, g := range st.Groups {
-		envoyJSON, _ := json.Marshal(g.Envoy)
+		proxyJSON, _ := json.Marshal(g.Proxy)
 		if _, err := tx.Exec(`
 			INSERT INTO instance_groups(name, type, engine, engine_version, category,
-			    current_master, topology_status, failover_conflict, envoy, created_at, updated_at)
+			    current_master, topology_status, failover_conflict, proxy, created_at, updated_at)
 			VALUES(?,?,?,?,?,?,?,?,?,?,?)
 			ON CONFLICT(name) DO UPDATE SET
 				type              = excluded.type,
@@ -181,13 +181,13 @@ func (d *DB) WithInstances(fn func(*apitypes.InstancesState) error) error {
 				current_master    = excluded.current_master,
 				topology_status   = excluded.topology_status,
 				failover_conflict = excluded.failover_conflict,
-				envoy             = excluded.envoy,
+				proxy             = excluded.proxy,
 				created_at        = excluded.created_at,
 				updated_at        = excluded.updated_at`,
 			name,
 			g.Type, g.Engine, g.EngineVersion, g.Category,
 			g.CurrentMaster, g.TopologyStatus, boolToInt(g.FailoverConflict),
-			string(envoyJSON), g.CreatedAt, g.UpdatedAt,
+			string(proxyJSON), g.CreatedAt, g.UpdatedAt,
 		); err != nil {
 			return fmt.Errorf("upsert group %s: %w", name, err)
 		}
@@ -314,7 +314,7 @@ func loadInstancesState(db *sql.DB) (*apitypes.InstancesState, error) {
 	// 读 groups
 	gRows, err := db.Query(
 		`SELECT name, type, engine, engine_version, category,
-		        current_master, topology_status, failover_conflict, envoy, created_at, updated_at
+		        current_master, topology_status, failover_conflict, proxy, created_at, updated_at
 		 FROM instance_groups`)
 	if err != nil {
 		return nil, err
@@ -350,7 +350,7 @@ func loadInstancesStateTx(tx *sql.Tx) (*apitypes.InstancesState, error) {
 
 	gRows, err := tx.Query(
 		`SELECT name, type, engine, engine_version, category,
-		        current_master, topology_status, failover_conflict, envoy, created_at, updated_at
+		        current_master, topology_status, failover_conflict, proxy, created_at, updated_at
 		 FROM instance_groups`)
 	if err != nil {
 		return nil, err
@@ -432,19 +432,19 @@ func scanGroups(rows *sql.Rows) (map[string]*apitypes.InstanceGroupState, error)
 	defer rows.Close()
 	result := make(map[string]*apitypes.InstanceGroupState)
 	for rows.Next() {
-		var name, envoyJSON string
+		var name, proxyJSON string
 		var failoverConflict int
 		g := &apitypes.InstanceGroupState{}
 		if err := rows.Scan(
 			&name,
 			&g.Type, &g.Engine, &g.EngineVersion, &g.Category,
 			&g.CurrentMaster, &g.TopologyStatus, &failoverConflict,
-			&envoyJSON, &g.CreatedAt, &g.UpdatedAt,
+			&proxyJSON, &g.CreatedAt, &g.UpdatedAt,
 		); err != nil {
 			return nil, err
 		}
 		g.FailoverConflict = failoverConflict != 0
-		json.Unmarshal([]byte(envoyJSON), &g.Envoy) //nolint:errcheck
+		json.Unmarshal([]byte(proxyJSON), &g.Proxy) //nolint:errcheck
 		result[name] = g
 	}
 	return result, rows.Err()

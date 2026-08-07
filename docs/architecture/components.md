@@ -166,7 +166,7 @@ master/standalone 必须显式传 group；replica 不需要传 group，会从 re
 
 请求体：
 {
-  "name": "order-master",
+  "name": "order-1",
   "group": "order",
   "port": 6379,
   "memory": "4Gi",
@@ -193,11 +193,11 @@ master/standalone 必须显式传 group；replica 不需要传 group，会从 re
 {
   "success": true,
   "container_id": "a1b2c3d4",
-  "container_name": "redis-order-master",
+  "container_name": "redis-order-1",
   "port": 6379,
-  "conf_dir": "/data/redis/order-master/conf",
-  "data_dir": "/data/redis/order-master/data",
-  "backup_dir": "/data/redis/order-master/backup"
+  "conf_dir": "/data/redis/order-1/conf",
+  "data_dir": "/data/redis/order-1/data",
+  "backup_dir": "/data/redis/order-1/backup"
 }
 ```
 
@@ -217,7 +217,7 @@ GET /host/resources
     "available": "380Gi",
     "redis_data": "80Gi"
   },
-  "instances": ["order-master", "cache-1"],
+  "instances": ["order-1", "cache-1"],
   "podman": { "containers": 2, "running": 2 }
 }
 ```
@@ -249,7 +249,7 @@ servers:
       memory: 16Gi
       disk: 80Gi
     instances:
-      - order-master
+      - order-1
       - cache-1
     status: healthy
     last_heartbeat: "2026-04-23T18:00:00Z"
@@ -269,7 +269,7 @@ servers:
       memory: 32Gi
       disk: 120Gi
     instances:
-      - order-replica
+      - order-2
       - user-master
       - user-replica
     status: healthy
@@ -316,7 +316,7 @@ servers:
 
 #### 3.3.1 实例状态存储
 
-全局维护在 `pilot.db` 的 `instance_groups` 表 + `instances` 表中，其中 `instance_groups` 是拓扑与入口的权威状态，`instances` 只记录单容器运行状态。以下用 YAML 风格展示概念性结构，实际存储为两张 SQLite 表（复合字段如 `envoy` / `persistence` / `config_overrides` / `backup` / `lock` 以 JSON 编码存入对应列）：
+全局维护在 `pilot.db` 的 `instance_groups` 表 + `instances` 表中，其中 `instance_groups` 是拓扑与入口的权威状态，`instances` 只记录单容器运行状态。以下用 YAML 风格展示概念性结构，实际存储为两张 SQLite 表（复合字段如 `proxy` / `persistence` / `config_overrides` / `backup` / `lock` 以 JSON 编码存入对应列）：
 
 ```yaml
 # 概念性字段说明；实际存储为 pilot.db 的 instance_groups 表 + instances 表
@@ -325,28 +325,28 @@ groups:
     type: replication                 # standalone | replication
     engine: kvrocks                   # redis | kvrocks
     category: persistent              # cache | persistent
-    current_master: order-master      # 当前主库实例名
+    current_master: order-1      # 当前主库实例名
     topology_status: healthy          # standalone: 主库运行即 healthy；replication: 主库和至少 1 个从库运行才 healthy
     failover_conflict: false
-    envoy:
-      master_port: 16500              # Envoy 强一致主库端口，所有命令走主库
-      auto_port: 16379                # Envoy 自动读写分离端口，读命令走从库
+    proxy:
+      master_port: 16500              # Proxy 强制主库端口，所有命令走主库
+      auto_port: 16379                # Proxy 读写分离端口，写走主库，读走主库+从库
     created_at: "2026-04-23T10:00:00Z"
     updated_at: "2026-04-23T10:05:00Z"
 
 instances:
-  order-master:
-    group: order                      # 稳定实例组名；Sentinel/Envoy/审计均使用该名字
+  order-1:
+    group: order                      # 稳定实例组名；Sentinel/Proxy/审计均使用该名字
     role: master                      # master | replica
     server: server-a
-    container: redis-order-master
+    container: redis-order-1
     port: 6379
     memory: 4Gi
     cpus: 2
     password: "******"               # 脱敏存储
-    config_path: /data/redis/order-master/conf
-    data_path: /data/redis/order-master/data
-    backup_path: /data/redis/order-master/backup
+    config_path: /data/redis/order-1/conf
+    data_path: /data/redis/order-1/data
+    backup_path: /data/redis/order-1/backup
     persistence: null                 # Kvrocks 实例无需 RDB/AOF，RocksDB 原生持久化
     config_overrides:
       rocksdb.compression: lz4
@@ -362,18 +362,18 @@ instances:
     status: running
     created_at: "2026-04-23T10:00:00Z"
 
-  order-replica:
+  order-2:
     group: order                      # 从库继承主库 group；failover 后不变化
     role: replica
     server: server-b
-    container: redis-order-replica
+    container: redis-order-2
     port: 6379
     memory: 4Gi
     cpus: 2
     password: "******"
-    config_path: /data/redis/order-replica/conf
-    data_path: /data/redis/order-replica/data
-    backup_path: /data/redis/order-replica/backup
+    config_path: /data/redis/order-2/conf
+    data_path: /data/redis/order-2/data
+    backup_path: /data/redis/order-2/backup
     persistence: null                 # Kvrocks 实例无需 RDB/AOF，RocksDB 原生持久化
     config_overrides:
       rocksdb.compression: lz4
@@ -381,7 +381,7 @@ instances:
       rocksdb.max_write_buffer_number: "4"
       maxmemory-policy: noeviction    # 持久化实例不禁用数据
       timeout: "300"
-    replica_of: order-master         # 引用主库实例名
+    replica_of: order-1         # 引用主库实例名
     backup:
       schedule: "0 */6 * * *"
       retention: 7
@@ -408,8 +408,8 @@ instances:
 ```yaml
 # lock 字段现存储于 instances 表的 lock 列（JSON 编码）
 instances:
-  order-master:
-    name: order-master
+  order-1:
+    name: order-1
     # ... 其他字段 ...
     lock:
       held_by: "gal-session-abc123"    # 持有锁的 GAL 会话 ID
@@ -451,7 +451,7 @@ instances:
 
 ---
 
-### 3.4 Envoy 统一代理
+### 3.4 Proxy 统一代理
 
 #### 3.4.1 端口分配策略
 
@@ -459,111 +459,65 @@ Redis 协议无 Host Header，**只能通过端口区分不同实例**：
 
 | 端口范围 | 用途 | 说明 |
 |----------|------|------|
-| 16379-16499 | 业务读写端口（RW） | 每个实例组分配一个，后端为主库，支持读写 |
-| 16500-16619 | 业务只读端口（RO） | 主从实例组分配，后端为从库，仅支持读操作 |
+| 16379-16499 | AUTO 端口（读写分离） | 每个实例组分配一个，写命令走主库，读命令在主库+从库间按 weight 分摊 |
+| 16500-16619 | MASTER 端口（强制主库） | 主从实例组分配，所有命令都走主库 |
 
 #### 3.4.2 代理模式
 
 **双端口模型（主从实例组）**
 
 ```
-客户端 → Envoy:16379 (RW)  → 主库 order-master:6379   （读写均可）
-客户端 → Envoy:16500 (RO)  → 从库 order-replica:6379  （只读，减轻主库压力）
+客户端 -> Proxy:16379 (AUTO)    -> 写走主库，读走主库+从库（读写分离）
+客户端 -> Proxy:16500 (MASTER) -> 所有命令走主库 order-1:6379
 ```
 
-- RW 端口：后端 cluster 只包含主库 endpoint，所有命令（读+写）都走主库
-- RO 端口：后端 cluster 只包含从库 endpoint，用于读多写少场景分流读请求
-- 从库不可用时 RO 端口不可达，业务应回退到 RW 端口
-- 类似 AWS ElastiCache 的 Primary Endpoint + Reader Endpoint 模型
+- AUTO 端口：写命令路由到主库，读命令在主库 + 所有健康从库间按 weight 分摊（会话一致性窗口内强制走主库）
+- MASTER 端口：所有命令（读+写）都走主库，适合需要强一致读的场景
+- 从库不可用时 AUTO 端口读回落到主库，同时打告警指标
+- 会话一致性：客户端写后 500ms 内的读强制走主库，避免读己之写的 stale read
 
 **单端口模型（单点实例）**
 
 ```
-客户端 → Envoy:16379 (RW)  → 主库 cache-1:6379
+客户端 -> Proxy:16379 (AUTO)  -> 主库 cache-1:6379
 ```
 
-- 单点实例只分配 RW 端口，无 RO 端口
+- 单点实例只分配 AUTO 端口，无 MASTER 端口
 
-> **设计说明**：Envoy `redis_proxy` 的 `read_policy: REPLICA` 仅对 Redis Cluster 协议有效（通过 `CLUSTER SLOTS` 发现拓扑）。本系统只管理 standalone 主从，不使用 Redis Cluster 协议，因此无法在单端口内实现自动读写分离，采用双端口模型由业务侧显式选择。
+> **设计说明**：Proxy 是自研 Go 代理（`redis-pilot`），通过 HTTP 长轮询从 Server 获取拓扑快照（`/api/v1/proxy/snapshot`），在单端口上支持全部 Redis 命令（含阻塞/订阅/Stream/事务），读写分离按命令分类自动路由，无需业务侧显式选择端口。MASTER 端口提供强制主库访问入口，用于需要强一致读的场景。
 
-#### 3.4.3 Envoy 配置片段
+#### 3.4.3 Proxy 配置
+
+Proxy 是 Go 二进制（`redis-pilot`），通过 `proxy.yaml` 配置启动（`redis-pilot -config proxy.yaml`）：
 
 ```yaml
-# Envoy Redis Proxy 配置示例（由 Server 自动生成）
-static_resources:
-  listeners:
-  - name: redis-order-rw
-    address:
-      socket_address:
-        address: 0.0.0.0
-        port_value: 16379
-    filter_chains:
-    - filters:
-      - name: envoy.filters.network.redis_proxy
-        typed_config:
-          "@type": type.googleapis.com/envoy.extensions.filters.network.redis_proxy.v3.RedisProxy
-          stat_prefix: redis_order
-          settings:
-            op_timeout: 5s
-            read_policy: MASTER
-          prefix_routes:
-            catch_all_route:
-              cluster: redis-order-cluster
-
-  - name: redis-order-ro
-    address:
-      socket_address:
-        address: 0.0.0.0
-        port_value: 16500
-    filter_chains:
-    - filters:
-      - name: envoy.filters.network.redis_proxy
-        typed_config:
-          "@type": type.googleapis.com/envoy.extensions.filters.network.redis_proxy.v3.RedisProxy
-          stat_prefix: redis_order_ro
-          settings:
-            op_timeout: 5s
-            read_policy: MASTER
-          prefix_routes:
-            catch_all_route:
-              cluster: redis-order-ro-cluster
-
-  clusters:
-  - name: redis-order-cluster        # RW cluster：仅主库
-    type: STRICT_DNS
-    load_assignment:
-      cluster_name: redis-order-cluster
-      endpoints:
-      - lb_endpoints:
-        - endpoint:
-            address:
-              socket_address:
-                address: 10.0.1.10    # 主库
-                port_value: 6379
-
-  - name: redis-order-ro-cluster     # RO cluster：仅从库
-    type: STRICT_DNS
-    load_assignment:
-      cluster_name: redis-order-ro-cluster
-      endpoints:
-      - lb_endpoints:
-        - endpoint:
-            address:
-              socket_address:
-                address: 10.0.1.11    # 从库
-                port_value: 6379
+# proxy.yaml 配置示例
+listen_bind: 0.0.0.0
+server:                      # 拉快照的 Server
+  endpoint: http://127.0.0.1:8080
+  token: ""
+poll:
+  wait: 20s                  # 长轮询挂起上限（Server 侧上限 30s）
+  timeout: 5s
+rw_split:
+  enabled_groups: []         # 按 group 显式开读写分离
+  session_consistency_ms: 500
+  master_read_weight: 1      # master 在读池的权重
+limits:
+  deny_commands: [MONITOR, KEYS, FLUSHALL, FLUSHDB, CONFIG, SHUTDOWN, ACL, PSYNC]
+  max_connections_per_client: 100
+  max_request_bytes: 67108864
 ```
 
 > **说明**：
-> - RW cluster 只包含主库 endpoint，保证写入不会发到从库
-> - RO cluster 只包含从库 endpoint，从库不可用时该端口不可达
-> - Envoy 进程/容器属于独立数据面，平台不负责创建 Envoy
-> - Server 只暴露 proxy snapshot，不写 Envoy 配置文件，也不执行 reload
-> - `redis-pilot-xds` 轮询 Server snapshot，并通过 xDS 向 Envoy 动态发布 LDS/CDS/EDS
+> - Proxy 是 Go 二进制（`redis-pilot -config proxy.yaml`），不是外部容器
+> - Server 暴露 proxy snapshot（`/api/v1/proxy/snapshot`），Proxy 通过 HTTP 长轮询拉取
+> - 拓扑变化通过快照热更新，无需重启 Proxy
+> - 代理级策略（deny_commands / consistency 窗口 / master_read_weight）在 `proxy.yaml` 中，变更需重启 Proxy
 
 #### 3.4.4 管理命令
 
-管理命令（`INFO`、`CONFIG GET/SET`、`SLOWLOG GET`、`CLIENT LIST` 等）应通过 RW 端口执行，该端口直连主库。RO 端口后端为从库，不支持写入和管理命令。
+管理命令（`INFO`、`CONFIG GET/SET`、`SLOWLOG GET`、`CLIENT LIST` 等）应通过 MASTER 端口执行，该端口直连主库。AUTO 端口会按命令分类路由，管理类命令自动走主库。
 
 ---
 
@@ -738,7 +692,7 @@ Server 启动时读取所有实例的 `backup.schedule`，注册内部 cron，�
 ```yaml
 # 由 Skill: redis-inventory 生成，可输出为 table / yaml / json
 port_inventory:
-  - envoy_port: 16379
+  - proxy_port: 16379
     mode: readwrite
     instance_group: order
     engine: kvrocks
@@ -747,7 +701,7 @@ port_inventory:
     purpose: "订单持久化存储读写入口"
     backend_servers: ["server-a:6379(master)"]
 
-  - envoy_port: 16380
+  - proxy_port: 16380
     mode: readonly
     instance_group: order
     engine: kvrocks
@@ -756,7 +710,7 @@ port_inventory:
     purpose: "订单只读入口"
     backend_servers: ["server-b:6379(replica)"]
 
-  - envoy_port: 16381
+  - proxy_port: 16381
     mode: readwrite
     instance_group: cache-1
     engine: redis
@@ -773,7 +727,7 @@ server_inventory:
   server-a:
     ip: 10.0.1.10
     instances:
-      - name: order-master
+      - name: order-1
         engine: kvrocks
         container_port: 6379
         memory: 4Gi
@@ -786,7 +740,7 @@ server_inventory:
   server-b:
     ip: 10.0.1.11
     instances:
-      - name: order-replica
+      - name: order-2
         engine: kvrocks
         container_port: 6379
         memory: 4Gi
@@ -816,7 +770,7 @@ server_inventory:
 ┌──────────────────────────────────────────────────────┐
 │ 资源清单摘要                                          │
 ├──────────┬────────┬──────────┬──────────┬────────────┤
-│ 实例组    │ Engine │ 用途      │ Envoy端口 │ 状态       │
+│ 实例组    │ Engine │ 用途      │ Proxy端口 │ 状态       │
 ├──────────┼────────┼──────────┼──────────┼────────────┤
 │ order    │kvrocks │ 订单持久化 │ 16379/80 │ ✅ running │
 │ cache-1  │redis   │ 会话缓存   │ 16381    │ ✅ running │
@@ -840,7 +794,7 @@ server_inventory:
 
 ### 3.7 Sentinel 高可用设计
 
-Sentinel 用于 Redis/Kvrocks 主从实例组的自动故障转移。Sentinel 只负责判定主库故障、选举从库并执行主从切换；平台仍负责状态文件同步、刷新 Envoy 和记录审计。
+Sentinel 用于 Redis/Kvrocks 主从实例组的自动故障转移。Sentinel 只负责判定主库故障、选举从库并执行主从切换；平台仍负责状态文件同步、刷新 Proxy 和记录审计。
 
 #### 3.7.1 部署策略
 
@@ -990,7 +944,7 @@ podman run -d \
 ```
 1. 直连所有 Sentinel 节点执行 SENTINEL REMOVE <group>
 2. 从 `instance_groups` 表删除实例组
-3. 状态变更后 `redis-pilot-xds` 自动通过 xDS 推送新配置到 Envoy
+3. 状态变更后 Proxy 自动通过长轮询获取新拓扑
 4. 写入审计日志
 ```
 
@@ -1037,7 +991,7 @@ Server 启动时：
 2. 获取实例组编排锁
 3. 校验新 master 地址属于当前实例组
 4. 更新 `groups[group].current_master/topology_status`，并更新实例 `role` / `replica_of` / `status`
-5. 状态变更后 `redis-pilot-xds` 自动通过 xDS 推送新配置到 Envoy
+5. 状态变更后 Proxy 自动通过长轮询获取新拓扑
 6. 写 `topology.failover` 审计日志
 7. 释放编排锁
 
@@ -1051,17 +1005,17 @@ Server 启动时：
 | 直连 Sentinel 同步部分节点失败 | 成功节点数 >= quorum 则继续并告警；否则返回 warning 并等待 reconcile 重试 |
 | Sentinel 返回的新 master 不在 `instances` 表 | 标记 `failover_conflict`，不自动改拓扑，触发人工介入 |
 | 新主库再次故障 | 不主动抢占 Sentinel，等待下一轮 Sentinel failover；编排锁超时后允许重新同步 |
-| xDS 推送失败 | 不影响状态更新，xDS 下次轮询时自动重试推送 |
+| Proxy 快照拉取失败 | 不影响状态更新，Proxy 下次长轮询时自动获取新拓扑 |
 
 #### 3.7.8 验证矩阵
 
 | 场景 | 期望 |
 |------|------|
-| Redis 主库容器停止 | Sentinel 提升从库，Envoy 写入口切到新 master，Server 状态最终同步 |
+| Redis 主库容器停止 | Sentinel 提升从库，Proxy 写入口切到新 master，Server 状态最终同步 |
 | Kvrocks 主库容器停止 | 行为同 Redis，需验证 `ROLE` / Sentinel failover / replication 状态兼容 |
 | Redis/Kvrocks 配置 requirepass | Sentinel auth-pass 生效，failover 成功 |
 | Sentinel 节点少于 quorum | 不发生自动故障转移，系统发出降级告警 |
-| Envoy 重启 | 通过 xDS 自动从控制面恢复配置，业务端口不变化 |
+| Proxy 重启 | 启动时从 Server 拉取快照恢复拓扑，业务端口不变化 |
 
 ---
 

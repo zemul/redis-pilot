@@ -18,7 +18,7 @@ Skill: redis-create
   │
   ├─2. port_allocate()
   │   → 分配实例端口 6379（本机无冲突）
-  │   → 分配 Envoy 端口 16381
+  │   → 分配 Proxy 端口 16381
   │
   ├─3. state_update(instances, "cache-1", status=creating)
   │
@@ -36,8 +36,8 @@ Skill: redis-create
   ├─5. health_check(server-c, 6379)
   │   → 验证 PONG + INFO 验证持久化配置生效
   │
-  ├─6. state_update(instances, "cache-1", status=running, envoy.auto_port=16381)
-  │   → xDS 自动检测到 snapshot 变化并推送新配置到 Envoy
+  ├─6. state_update(instances, "cache-1", status=running, proxy.auto_port=16381)
+  │   → Proxy 自动通过长轮询发现拓扑变更
   │
   ├─7. state_update(instances, "cache-1", status=running)
   │   state_update(servers, server-c, allocated += 2Gi)
@@ -57,14 +57,14 @@ Skill: redis-create
   │   → 选择 server-b（剩余 28Gi，zone: az-2）→ 从库（不同 zone）
   │
   ├─2. port_allocate()
-  │   → 主库端口 6379，Envoy 端口 16379 (读写) + 16380 (只读)
+  │   → 主库端口 6379，Proxy 端口 16379 (读写) + 16380 (只读)
   │   → 从库端口 6379
   │
-  ├─3. state_update(instances, "order-master", status=creating)
-  │   state_update(instances, "order-replica", status=creating)
+  ├─3. state_update(instances, "order-1", status=creating)
+  │   state_update(instances, "order-2", status=creating)
   │
   ├─4. agent_exec(server-a, "instance/create", {
-  │       name: "order-master",
+  │       name: "order-1",
   │       category: "persistent",
   │       engine: "kvrocks",
   │       port: 6379,
@@ -81,7 +81,7 @@ Skill: redis-create
   ├─5. health_check(server-a, 6379)
   │
   ├─6. agent_exec(server-b, "instance/create", {
-  │       name: "order-replica",
+  │       name: "order-2",
   │       category: "persistent",
   │       engine: "kvrocks",
   │       port: 6379,
@@ -99,11 +99,11 @@ Skill: redis-create
   ├─7. health_check(server-b, 6379)
   │   → 验证 INFO replication: role=slave, master_link_status=up
   │
-  ├─8. state_update(instances, envoy.auto_port=16379, envoy.master_port=16380)
-  │   → xDS 自动检测到 snapshot 变化并推送新配置到 Envoy
+  ├─8. state_update(instances, proxy.auto_port=16379, proxy.master_port=16380)
+  │   → Proxy 自动通过长轮询发现拓扑变更
   │
-  ├─9. state_update(instances, "order-master", status=running)
-  │   state_update(instances, "order-replica", status=running)
+  ├─9. state_update(instances, "order-1", status=running)
+  │   state_update(instances, "order-2", status=running)
   │   state_update(servers, server-a, allocated += 4Gi)
   │   state_update(servers, server-b, allocated += 4Gi)
   │
@@ -121,11 +121,11 @@ Skill: redis-create
 #### 4.3.1 用户主动触发（`instance failover`）
 
 ```
-用户: "把 order-replica 提升为主库" / "手动切换 order 组的主库"
+用户: "把 order-2 提升为主库" / "手动切换 order 组的主库"
 
-CLI: redis-pilot-cli instance failover order-replica
+CLI: redis-pilot-cli instance failover order-2
 
-Server: instanceFailover(name="order-replica")
+Server: instanceFailover(name="order-2")
   │
   ├─1. 解析 name 找到所属实例组 order 及其类型
   │
@@ -188,7 +188,7 @@ Server: instanceFailover(name="order-replica")
      → 确认后执行后续编排：
        a. 获取同组实例编排锁
        b. 使用确认后的 master 地址修正 `instances`/`instance_groups` 表拓扑
-       c. 更新 Envoy 路由并重新生成/落盘 Envoy 配置
+       c. Proxy 自动通过长轮询发现拓扑变更
        d. 写入 topology.failover 审计日志
        e. 释放编排锁
 
@@ -196,7 +196,7 @@ Server: instanceFailover(name="order-replica")
        - 实例组：
          current_master: <新主库实例名>
          topology_status: healthy 或 degraded
-         envoy: 保持原实例组 master_port / auto_port 不变
+         proxy: 保持原实例组 master_port / auto_port 不变
        - 旧主库：
          status: failed 或 unexpected_stopped
          role: replica
@@ -208,17 +208,17 @@ Server: instanceFailover(name="order-replica")
          role: replica
          replica_of: <新主库实例名>
 
-     Envoy 更新要求：
-       - 业务读写端口保持不变，避免业务侧修改连接地址
-       - 后端 endpoints 必须包含新主库和所有健康从库
-       - RO 只读集群后端更新为当前所有健康从库
-       - 生成的 Envoy 配置必须落盘，保证 Envoy/Server 重启后拓扑不回退
+     Proxy 更新要求：
+       - 业务端口保持不变，避免业务侧修改连接地址
+       - 快照中后端 endpoints 必须包含新主库和所有健康从库
+       - Proxy 通过长轮询自动发现拓扑变更，无需手动刷新配置
+
 
      审计要求：
        - action: topology.failover
        - level: critical
        - target 记录实例组、旧主库、新主库、故障服务器、新主库服务器
-       - params 记录 Sentinel 事件和 Envoy 端口
+       - params 记录 Sentinel 事件和 Proxy 端口
        - result 记录 success / failed / conflict
 
   3. 编排锁与幂等保护机制：
@@ -253,7 +253,7 @@ Server: instanceFailover(name="order-replica")
 
 > **编排锁为什么重要？**
 > - Sentinel 的 failover-timeout（30s）内可能重试 failover，导致 Server watcher 收到多个 +switch-master 事件
-> - 没有锁保护时，多个编排流程并发执行会造成 Envoy 路由混乱、状态文件冲突和重复告警
+> - 没有锁保护时，多个编排流程并发执行会造成 Proxy 路由混乱、状态文件冲突和重复告警
 > - 编排锁确保同一实例组同一时刻只有一个故障转移编排流程在执行
 
 #### 4.3.4 Sentinel 唯一权威模型下的四个关键实现约束
@@ -308,7 +308,7 @@ Kvrocks 场景复现明显（收尾阶段耗时更长，窗口期更长）；Red
 
 | 决策者 | 能改什么 | 决策依据 | 是否知道其他决策者 |
 |--------|----------|----------|-------------------|
-| Server | 容器生命周期、配置、状态记账、Envoy 路由 | `pilot.db` + Agent 上报 | 知道 Sentinel |
+| Server | 容器生命周期、配置、状态记账、Proxy 路由 | `pilot.db` + Agent 上报 | 知道 Sentinel |
 | Sentinel | 节点角色（`REPLICAOF`） | 自己探测 + 多数派选举 | 不知道 |
 | Agent `runHealthCheck` | ~~`podman restart`~~（已删除） | 本机单次 `PING` | 不知道 |
 | podman `--restart on-failure:5` | 容器自动重启 | 进程退出码 | 不知道 |
@@ -329,7 +329,7 @@ Kvrocks 场景复现明显（收尾阶段耗时更长，窗口期更长）；Red
 
 **c. 主从架构里自愈的正确层次是切流量，不是修实例**
 
-切流量无损、可逆、秒级（Sentinel failover + Envoy 路由更新）；重启有损、不可逆、慢。Agent 用错了工具。
+切流量无损、可逆、秒级（Sentinel failover + Proxy 路由更新）；重启有损、不可逆、慢。Agent 用错了工具。
 
 **d. 静默重启会掩盖问题**
 
@@ -385,7 +385,7 @@ Sentinel 用 `REPLICAOF` 改变角色，这个变更**只存在于 Redis 进程�
 
 **顺带修复的一个既有 bug**
 
-`inst.ReplicaOf` 在 `pilot.db` 里存的是**实例名**（`instance_handler.go:343`、`:1002`），而配置模板期待 `ip:port`（`config_template.go:157` 把冒号替换成空格拼进 `replicaof` 指令）。`instanceConfig` 此前直接把 `inst.ReplicaOf` 传给 Agent，导致对 replica 执行 `instance config --restart` 时配置文件被写成 `replicaof order-master` —— 缺少端口，Redis 启动时报 `wrong number of arguments`，而容器已经被 Stop，**实例起不来**。
+`inst.ReplicaOf` 在 `pilot.db` 里存的是**实例名**（`instance_handler.go:343`、`:1002`），而配置模板期待 `ip:port`（`config_template.go:157` 把冒号替换成空格拼进 `replicaof` 指令）。`instanceConfig` 此前直接把 `inst.ReplicaOf` 传给 Agent，导致对 replica 执行 `instance config --restart` 时配置文件被写成 `replicaof order-1` —— 缺少端口，Redis 启动时报 `wrong number of arguments`，而容器已经被 Stop，**实例起不来**。
 
 现在统一经 `resolveReplicaOfAddr` 解析。它与用于校验用户输入的 `resolveReplicaOf` 的区别是**不断言目标必须是 master**：角色落盘发生在故障转移前后，组内角色可能正处于中间状态，此时需要如实写出 Server 的记录，而不是校验这份记录是否合理。
 
@@ -439,13 +439,13 @@ Sentinel 用 `REPLICAOF` 改变角色，这个变更**只存在于 Redis 进程�
 ### 4.4 实例迁移
 
 ```
-用户: "把 order-master 从 server-a 迁移到 server-c"
+用户: "把 order-1 从 server-a 迁移到 server-c"
 
 Skill: redis-migrate
   │
   ├─1. 在目标服务器创建从库
   │   agent_exec(server-c, "instance/create", {
-  │       name: "order-master-new",
+  │       name: "order-3",
   │       replica_of: "10.0.1.10:6379",
   │       ...
   │   })
@@ -454,7 +454,7 @@ Skill: redis-migrate
   │   health_check → INFO replication: master_sync_in_progress=0
   │
   ├─3. 提升新从库为主库
-  │   redis-pilot-cli instance failover order-master-new
+  │   redis-pilot-cli instance failover order-3
   │   → 若该组由 Sentinel 托管：Server 发送 SENTINEL FAILOVER，等待并同步结果
   │   → 若未托管：Server 直接向 Agent 下发 REPLICAOF NO ONE（fallback）
   │
@@ -462,15 +462,15 @@ Skill: redis-migrate
   │   若该组由 Sentinel 托管：Sentinel 会在下一轮探测中自动将旧从库/旧主库
   │   重新指向新主库，无需手动调用；仅在未托管的组才需要手动调用：
   │   agent_exec(server-b, "instance/replicate", {
-  │       name: "order-replica",
+  │       name: "order-2",
   │       replica_of: "10.0.1.12:6379"   // 新主库
   │   })
   │
   ├─5. 停止并删除旧主库
-  │   agent_exec(server-a, "instance/stop", { name: "order-master" })
-  │   agent_exec(server-a, "instance/delete", { name: "order-master" })
+  │   agent_exec(server-a, "instance/stop", { name: "order-1" })
+  │   agent_exec(server-a, "instance/delete", { name: "order-1" })
   │
-  ├─6. 更新状态（xDS 自动推送新路由到 Envoy）
+  ├─6. 更新状态（Proxy 自动通过长轮询发现拓扑变更）
   │   state_update(instances, order,
   │       master=server-c:6379,
   │       replica=server-b:6379)
@@ -490,21 +490,21 @@ Skill: redis-migrate
 Skill: redis-backup
   │
   ├─1. 确定备份源
-  │   → 优先从库: order-replica (server-b)
+  │   → 优先从库: order-2 (server-b)
   │   → 无从库时从主库备份
   │
   ├─2. agent_exec(server-b, "instance/backup", {
-  │       name: "order-replica",
+  │       name: "order-2",
   │   })
   │   → Agent: BGSAVE → 等待完成（失败/超时即报错）→ 校验产物 → 复制 dump.rdb 到 backup/ 目录
   │
   ├─3. 轮转清理
   │   agent_exec(server-b, "instance/backups/cleanup", {
-  │       name: "order-replica",
+  │       name: "order-2",
   │       retention: 7
   │   })
   │
-  └─4. state_update(instances, order-replica, last_backup=now)
+  └─4. state_update(instances, order-2, last_backup=now)
 ```
 
 ---
@@ -548,11 +548,11 @@ Skill: redis-backup
 
 `handleSentinelFailover` 同时服务 Sentinel 自动故障转移（旧 master 通常真的挂了）和用户手动 `instance failover`（旧 master 可能完全健康）。把它一律标成异常是猜测而非观测，交给 reconcile 在 30 秒内如实观测。
 
-新 master 的 `observed_status` 则会被写成 `running`：Sentinel 能把它选为新 master，说明 Sentinel 探测到它健康，这是有依据的观测。不写的话，Envoy 要等下一轮 reconcile 才会把写流量指向新 master（`proxy_group` 只挂 `IsServing()` 的实例），白丢最多 30 秒写入。
+新 master 的 `observed_status` 则会被写成 `running`：Sentinel 能把它选为新 master，说明 Sentinel 探测到它健康，这是有依据的观测。不写的话，Proxy 要等下一轮 reconcile 才会把写流量指向新 master（`proxy_group` 只挂 `IsServing()` 的实例），白丢最多 30 秒写入。
 
 **c. "Agent 不可达"不得写进实例的观测状态**
 
-Agent 不可达是对 **Agent** 的观测，不是对实例的观测。Agent 重启或网络抖动时，它名下的 Redis 实例通常完好无损。若把 `unreachable` 写进实例的 `observed_status`，`IsServing()` 会变成 false，`proxy_group` 就会把这些健康实例从 Envoy 端点里摘掉——一次 Agent 重启造成一次业务中断。
+Agent 不可达是对 **Agent** 的观测，不是对实例的观测。Agent 重启或网络抖动时，它名下的 Redis 实例通常完好无损。若把 `unreachable` 写进实例的 `observed_status`，`IsServing()` 会变成 false，`proxy_group` 就会把这些健康实例从 Proxy 端点里摘掉——一次 Agent 重启造成一次业务中断。
 
 所以 `runReconcile` 的三处 Agent 不可达分支只告警、不写观测字段。回归测试：`TestReconcile_AgentUnreachableDoesNotOverwriteObservedStatus`。
 
@@ -560,7 +560,7 @@ Agent 不可达是对 **Agent** 的观测，不是对实例的观测。Agent 重
 
 | 读取点 | 读哪个 | 为什么 |
 |--------|--------|--------|
-| `proxy_group` Envoy 端点 | 观测（`IsServing()`） | 不能把流量发给一个"应该在跑但已经挂了"的实例 |
+| `proxy_group` Proxy 端点 | 观测（`IsServing()`） | 不能把流量发给一个"应该在跑但已经挂了"的实例 |
 | `backup_scheduler` 排备份 | 观测（`IsServing()`） | 对挂掉的实例发 BGSAVE 只会失败 |
 | `scheduler` 容量计算 | 观测（`missing`） | 容器已消失的实例不该继续占配额 |
 | `RecalculateGroupTopology` | 观测 | 组健康度是事实结论，用意图判断只能得出"配置上应该是健康的" |
@@ -625,7 +625,7 @@ Go 的 `Mutex` 不可重入，持锁路径调错变体会当场卡死整个 Serv
 
 **Token 比较**
 
-Server / Agent / xDS 三处 Bearer Token 校验改用 `subtle.ConstantTimeCompare`。字符串比较在首个不同字节处短路，耗时随匹配前缀长度变化。这条路径的可利用性很低（网络抖动远大于纳秒级差异），改动成本也极低，按纵深防御处理。
+Server / Agent / Proxy 三处 Bearer Token 校验改用 `subtle.ConstantTimeCompare`。字符串比较在首个不同字节处短路，耗时随匹配前缀长度变化。这条路径的可利用性很低（网络抖动远大于纳秒级差异），改动成本也极低，按纵深防御处理。
 
 **`reconcileSentinelOnce` 的二次确认耗时**
 
@@ -635,7 +635,7 @@ Server / Agent / xDS 三处 Bearer Token 校验改用 `subtle.ConstantTimeCompar
 
 二次确认的语义只要求两次观测之间有间隔，并不要求每组各睡一次。现在改为两趟：先收集全部不一致的组，再统一 sleep 一次，然后逐个确认。总耗时恒定 3 秒，与组数无关。
 
-**xDS 配置下发的延迟（长轮询）**
+**Proxy 快照下发的延迟（长轮询）**
 
 `/proxy/snapshot` 支持两个可选查询参数，不带时行为与原来完全一致：
 
@@ -644,7 +644,7 @@ Server / Agent / xDS 三处 Bearer Token 校验改用 `subtle.ConstantTimeCompar
 | `known_version` | 调用方已持有的快照版本 |
 | `wait` | 最长挂起时长，服务端上限 30s |
 
-版本相同时请求挂起直到版本变化或超时，超时返回 `304 Not Modified`。收益有两条：故障转移传播到 Envoy 的延迟从"最多一个轮询周期"降到接近即时——在这段窗口里 Envoy 还把写流量发给已经挂掉的旧 master，写请求直接失败，缩短窗口就是缩短写不可用时间；另外快照里含 Redis 明文密码（Envoy 需要它连后端），原来每 2 秒完整传输一次，现在只在真正变化时传输。
+版本相同时请求挂起直到版本变化或超时，超时返回 `304 Not Modified`。收益有两条：故障转移传播到 Proxy 的延迟从"最多一个轮询周期"降到接近即时——在这段窗口里 Proxy 还把写流量发给已经挂掉的旧 master，写请求直接失败，缩短窗口就是缩短写不可用时间；另外快照里含 Redis 明文密码（Proxy 需要它连后端），原来每 2 秒完整传输一次，现在只在真正变化时传输。
 
 **关键设计：等的是代际计数器，不是重复重算快照。**
 
@@ -652,20 +652,20 @@ Server / Agent / xDS 三处 Bearer Token 校验改用 `subtle.ConstantTimeCompar
 
 若改成每 100ms 重算快照来检测变化，要读数据库 + 算 SHA256，反而比原来 2 秒轮询一次更耗资源——那样"优化"就成了负优化。
 
-计数器放在 store 层而不是各个 handler 里发通知，是因为 store 是所有状态写入的唯一收口点，9 个写方法都在同一个包内，改动时一眼能看全。非事务写入统一走 `execWrite`（写成功后自增），事务写入在 `Commit` 成功后自增。漏掉任何一处的后果是 Envoy 配置永久停在旧值——一个不报错、只静默错下去的故障，比多几次无用重算糟糕得多。`TestGeneration_EveryMutatingMethodBumps` 逐个方法验证，不抽样。
+计数器放在 store 层而不是各个 handler 里发通知，是因为 store 是所有状态写入的唯一收口点，9 个写方法都在同一个包内，改动时一眼能看全。非事务写入统一走 `execWrite`（写成功后自增），事务写入在 `Commit` 成功后自增。漏掉任何一处的后果是 Proxy 配置永久停在旧值——一个不报错、只静默错下去的故障，比多几次无用重算糟糕得多。`TestGeneration_EveryMutatingMethodBumps` 逐个方法验证，不抽样。
 
 计数器的语义刻意做弱：变了只说明"有写入发生"，不保证代理配置真的变了（例如只更新备份时间戳）。所以变了之后仍要重算并比对内容哈希——弱信号 + 强比对，既不会漏也不会误报。审计日志写入刻意不自增：它不影响代理配置，而写入很频繁，自增会让每条日志都唤醒一次无谓的重算。
 
-**取代际基线必须早于读状态。** 顺序反了会漏掉一次变更：落在"`buildProxySnapshot` 读完实例状态"和"取代际"之间的那次写入，它的代际已经被计入基线，而它的效果又没进这份快照，等待循环因此永远不会为它触发重算。这次变更要等满整个 `wait`（20s）才被下一次请求发现，比改造前 2 秒定期轮询还慢一个数量级——故障转移后 Envoy 会在这 20 秒里持续把写流量发给已经降级的旧 master。所以基线在 `buildProxySnapshot` 之前取：代价只是可能多醒一次、重算后发现版本没变，与"弱信号 + 强比对"的取向一致。
+**取代际基线必须早于读状态。** 顺序反了会漏掉一次变更：落在"`buildProxySnapshot` 读完实例状态"和"取代际"之间的那次写入，它的代际已经被计入基线，而它的效果又没进这份快照，等待循环因此永远不会为它触发重算。这次变更要等满整个 `wait`（20s）才被下一次请求发现，比改造前 2 秒定期轮询还慢一个数量级——故障转移后 Proxy 会在这 20 秒里持续把写流量发给已经降级的旧 master。所以基线在 `buildProxySnapshot` 之前取：代价只是可能多醒一次、重算后发现版本没变，与"弱信号 + 强比对"的取向一致。
 
 这个顺序是正确性的一部分，但错了既不报错也不崩，只在几毫秒窗口内成立，靠并发去撞是撞不到的。因此 `buildProxySnapshot` 里留了一个仅测试赋值的注入点 `proxySnapshotAfterStateReadHook`（生产环境恒为 nil），让 `TestProxySnapshot_DoesNotMissWriteRacingTheGenerationBaseline` 能把一次写入精确放进那个窗口——顺序反过来时该测试会等满 `wait` 并收到 304 而失败。
 
 两道保护：
 
-- **服务端超时上限（30s）**。意义不是省资源，而是保证这条路径永远会结束。任何"等待唤醒"的机制都有漏唤醒的可能，没有超时就会让 Envoy 配置永久停在旧值且不报错；有了上限，最坏情况退化成原来的定期轮询。
+- **服务端超时上限（30s）**。意义不是省资源，而是保证这条路径永远会结束。任何"等待唤醒"的机制都有漏唤醒的可能，没有超时就会让 Proxy 配置永久停在旧值且不报错；有了上限，最坏情况退化成原来的定期轮询。
 - **客户端最小间隔（`Poll.Interval`）**。长轮询模式下拿到"版本未变"后会立刻发起下一次请求，因为正常情况服务端已挂起了 `Wait`。但服务端若不认识这两个参数（版本不匹配的旧 Server，或中间代理吃掉了查询串），会立即返回相同版本的完整快照——没有下限就变成不停打 Server 的忙循环。客户端按实际耗时补足到 `Poll.Interval`，`TestPoll_DoesNotBusyLoopWhenServerIgnoresLongPollParams` 守这一点。
 
-xDS 侧 `http.Client` 刻意不设 `Timeout`（它会连正常挂起一起掐断），每次请求的超时由 `refresh` 用 context 按 `Wait + Timeout` 单独设定。`Poll.Timeout` 的含义因此变成"网络往返余量"，默认从 1s 调到 5s。首次拉取还没有版本可比，不进长轮询，避免启动时白等一个 `Wait`。
+Proxy 侧 `http.Client` 刻意不设 `Timeout`（它会连正常挂起一起掐断），每次请求的超时由 `refresh` 用 context 按 `Wait + Timeout` 单独设定。`Poll.Timeout` 的含义因此变成"网络往返余量"，默认从 1s 调到 5s。首次拉取还没有版本可比，不进长轮询，避免启动时白等一个 `Wait`。
 
 ## 5. Skills 设计
 
@@ -684,7 +684,7 @@ xDS 侧 `http.Client` 刻意不设 `Timeout`（它会连正常挂起一起掐断
 | `redis-backup` | "备份 / 恢复 Redis" | 备份：BGSAVE → 校验产物 → 复制 → 轮转；恢复：停止 → 暂存并校验 → 原子替换（原数据保留）→ 启动 |
 | `redis-diagnose` | "Redis 有问题" | 采集 INFO/SLOWLOG/MEMORY → AI 分析 → 建议 |
 | `redis-status` | "查看 Redis 状态" | 池状态 / 实例状态 / 主从同步状态 |
-| `redis-envoy` | "代理管理" | 查看路由 / 更新配置 / 重载 Envoy |
+| `redis-proxy` | "代理管理" | 查看路由 / 更新配置 / 重载 Proxy |
 | `redis-inventory` | "资源清单" / "端口对应什么" | 从 `instances`/`instance_groups` 表 + `servers` 表派生端口/集群/用途映射表，支持按端口/服务器/引擎查询 |
 | `redis-audit` | "操作记录" / "谁做了什么" | 查询审计日志，支持按时间/实例/操作级别过滤 |
 | `redis-node` | "添加服务器" / "移除服务器" | 维护 `servers` 表，注册/移除/更新服务器信息，纯本地操作 |
@@ -693,21 +693,21 @@ xDS 侧 `http.Client` 刻意不设 `Timeout`（它会连正常挂起一起掐断
 
 ```
 redis-create     → node_list, port_allocate, agent_exec(create), health_check,
-                   state_update (xDS 自动推送)
+                   state_update (Proxy 自动发现拓扑变更)
 
-redis-delete     → agent_exec(stop), agent_exec(delete), state_update (xDS 自动推送)
+redis-delete     → agent_exec(stop), agent_exec(delete), state_update (Proxy 自动发现拓扑变更)
 
 redis-config     → agent_exec(config), health_check, state_update
 
 redis-scale      → node_list, agent_exec(create/replicate), health_check,
-                   state_update (xDS 自动推送)
+                   state_update (Proxy 自动发现拓扑变更)
 
 redis-migrate    → node_list, agent_exec(create), agent_exec(promote),
                    agent_exec(replicate), agent_exec(stop/delete),
-                   state_update (xDS 自动推送)
+                   state_update (Proxy 自动发现拓扑变更)
 
 redis-failover   → health_check, agent_exec(promote), agent_exec(create/replicate),
-                   state_update (xDS 自动推送)
+                   state_update (Proxy 自动发现拓扑变更)
 
 redis-backup     → agent_exec(backup), agent_exec(restore), agent_exec(cleanup),
                    state_update

@@ -53,7 +53,7 @@ Sentinel 数据目录：
 
 ```
 Redis 实例:  redis-{instance-name}     例: redis-cache-1
-Kvrocks 实例: kvrocks-{instance-name}  例: kvrocks-order-master, kvrocks-order-replica
+Kvrocks 实例: kvrocks-{instance-name}  例: kvrocks-order-1, kvrocks-order-2
 ```
 
 ### 7.1.1 实例命名规范
@@ -128,7 +128,7 @@ podman run -d \
 
 ```
 管理网络:  Agent API (8400) 仅对 GAL 可访问
-业务网络:  Redis 端口 (6379) 通过 Envoy 代理暴露
+业务网络:  Redis 端口 (6379) 通过 Proxy 代理暴露
 备份网络:  备份目录仅 Agent 和运维可访问
 ```
 
@@ -136,7 +136,7 @@ podman run -d \
 
 - Redis 实例启用 `requirepass`
 - Agent API 使用 Token 认证
-- Envoy 代理可配置 Redis AUTH
+- Proxy 代理可配置 Redis AUTH
 
 ### 8.3 敏感信息
 
@@ -263,23 +263,23 @@ redis-diagnose Skill
 
 ## 10. 约束与限制
 
-### 10.1 Envoy Redis Proxy 协议约束
+### 10.1 Proxy 协议约束
 
-- Envoy `redis_proxy` 当前按 RESP2 工作，业务客户端经 Envoy 访问时不得尝试 `HELLO 3` 升级协议
-- Redis/Kvrocks 实例配置不强制写入 `proto 2`；协议约束发生在业务客户端与 Envoy 之间
-- 若未来 Envoy 支持 RESP3，需评估后全局切换
+- Proxy 当前按 RESP2 工作，业务客户端经 Proxy 访问时不得尝试 `HELLO 3` 升级协议
+- Redis/Kvrocks 实例配置不强制写入 `proto 2`；协议约束发生在业务客户端与 Proxy 之间
+- 若未来 Proxy 支持 RESP3，需评估后全局切换
 
 ### 10.2 MULTI/EXEC 事务限制
 
-- Envoy 读写分离代理下，`MULTI/EXEC` 事务必须路由到主库
+- Proxy 读写分离代理下，`MULTI/EXEC` 事务必须路由到主库
 - 事务内包含读命令（如 `GET`）时，仍由主库执行，不经过读副本
 - 应用层应避免在事务中混用读写与纯读操作，以减少主库压力
 
 ### 10.3 读写一致性
 
-- 写操作：经 Envoy 写集群路由到主库，强一致
-- 读操作：经 Envoy 读集群路由到从库，存在复制延迟（通常 < 1ms）
-- 对一致性要求极高的读操作，应使用 RW 端口直连主库（§3.4.4）
+- 写操作：经 Proxy 写集群路由到主库，强一致
+- 读操作：经 Proxy 读集群路由到从库，存在复制延迟（通常 < 1ms）
+- 对一致性要求极高的读操作，应使用 MASTER 端口直连主库（§3.4.4）
 
 ### 10.4 拓扑约束
 

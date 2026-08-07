@@ -284,9 +284,9 @@ func (s *Server) instanceCreate(c *gin.Context) {
 			if group.Type == "standalone" {
 				group.Type = "replication"
 			}
-			if group.Envoy != nil && group.Envoy.AutoPort == 0 {
-				if ec, err := allocEnvoyPorts(s.cfg.Ports, instances, true); err == nil {
-					group.Envoy.AutoPort = ec.AutoPort
+			if group.Proxy != nil && group.Proxy.AutoPort == 0 {
+				if ec, err := allocProxyPorts(s.cfg.Ports, instances, true); err == nil {
+					group.Proxy.AutoPort = ec.AutoPort
 				}
 			}
 		} else {
@@ -318,7 +318,7 @@ func (s *Server) instanceCreate(c *gin.Context) {
 		req.Port = port
 
 		if role == "master" {
-			ec, err := allocEnvoyPorts(s.cfg.Ports, instances, req.Type == "replication")
+			ec, err := allocProxyPorts(s.cfg.Ports, instances, req.Type == "replication")
 			if err != nil {
 				return err
 			}
@@ -330,7 +330,7 @@ func (s *Server) instanceCreate(c *gin.Context) {
 				Category:       req.Category,
 				CurrentMaster:  req.Name,
 				TopologyStatus: "degraded",
-				Envoy:          ec,
+				Proxy:          ec,
 				CreatedAt:      now,
 				UpdatedAt:      now,
 			}
@@ -771,11 +771,11 @@ func (s *Server) sentinelFailover(c *gin.Context, start time.Time, group, reques
 	var lastErr error
 	triggered := false
 	for _, name := range nodes {
-		srv := node.Servers[name]
-		if srv == nil || srv.Endpoint == "" {
+		endpoint := s.sentinelNodeEndpoint(name, node)
+		if endpoint == "" {
 			continue
 		}
-		addr := fmt.Sprintf("%s:%d", srv.Endpoint, s.sentinelPort())
+		addr := fmt.Sprintf("%s:%d", endpoint, s.sentinelPort())
 		if _, err := sentinelCommand(addr, "SENTINEL", "FAILOVER", group); err != nil {
 			lastErr = err
 			continue
@@ -1027,9 +1027,9 @@ func (s *Server) instanceReplicate(c *gin.Context) {
 				group := is.Groups[groupName]
 				if group != nil {
 					group.Type = "replication"
-					if group.Envoy != nil && group.Envoy.AutoPort == 0 {
-						if ec, err := allocEnvoyPorts(s.cfg.Ports, is, true); err == nil {
-							group.Envoy.AutoPort = ec.AutoPort
+					if group.Proxy != nil && group.Proxy.AutoPort == 0 {
+						if ec, err := allocProxyPorts(s.cfg.Ports, is, true); err == nil {
+							group.Proxy.AutoPort = ec.AutoPort
 						}
 					}
 				}

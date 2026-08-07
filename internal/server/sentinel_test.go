@@ -12,17 +12,20 @@ func TestSelectSentinelNodes_ConfiguredOnly(t *testing.T) {
 	s := newTestServer(t, "")
 	s.cfg.Sentinel = SentinelConfig{
 		Enabled: true,
-		Nodes:   []string{"srv-c", "srv-a", "srv-c", "missing"},
+		Nodes:   []string{"srv-c", "srv-a", "srv-c", "10.0.1.99"},
 		Quorum:  2,
 	}
 	node := &apitypes.NodeState{Servers: map[string]*apitypes.NodeServer{
-		"srv-a": {Status: "healthy", Labels: map[string]string{"zone": "az-1", "role": "production"}},
-		"srv-b": {Status: "healthy", Labels: map[string]string{"zone": "az-1", "role": "production"}},
-		"srv-c": {Status: "healthy", Labels: map[string]string{"zone": "az-2", "role": "production"}},
-		"srv-d": {Status: "healthy", Labels: map[string]string{"zone": "az-3", "role": "standby"}},
+		"srv-a": {Endpoint: "10.0.1.1", Status: "healthy", Labels: map[string]string{"zone": "az-1", "role": "production"}},
+		"srv-b": {Endpoint: "10.0.1.2", Status: "healthy", Labels: map[string]string{"zone": "az-1", "role": "production"}},
+		"srv-c": {Endpoint: "10.0.1.3", Status: "healthy", Labels: map[string]string{"zone": "az-2", "role": "production"}},
+		"srv-d": {Endpoint: "10.0.1.4", Status: "healthy", Labels: map[string]string{"zone": "az-3", "role": "standby"}},
 	}}
 	got := s.selectSentinelNodes(node)
-	want := []string{"srv-c", "srv-a"}
+	// sentinel.nodes entries are returned as-is (deduped).
+	// "10.0.1.99" is not a registered server but is still included —
+	// sentinel nodes can be specified by IP directly without registration.
+	want := []string{"srv-c", "srv-a", "10.0.1.99"}
 	if len(got) != len(want) {
 		t.Fatalf("expected configured sentinel nodes %v, got %v", want, got)
 	}
@@ -121,7 +124,7 @@ func TestSentinelEventEndpoint(t *testing.T) {
 				Engine:        "redis",
 				Category:      "cache",
 				CurrentMaster: "order-master",
-				Envoy:         &apitypes.EnvoyConfig{AutoPort: 16379, MasterPort: 16500},
+				Proxy:         &apitypes.ProxyConfig{AutoPort: 16379, MasterPort: 16500},
 			},
 		},
 		Instances: map[string]*apitypes.Instance{
@@ -159,7 +162,7 @@ func TestHandleSentinelFailover_UpdatesState(t *testing.T) {
 				Engine:        "redis",
 				Category:      "cache",
 				CurrentMaster: "order-master",
-				Envoy:         &apitypes.EnvoyConfig{AutoPort: 16379, MasterPort: 16500},
+				Proxy:         &apitypes.ProxyConfig{AutoPort: 16379, MasterPort: 16500},
 			},
 		},
 		Instances: map[string]*apitypes.Instance{
@@ -199,8 +202,8 @@ func TestHandleSentinelFailover_UpdatesState(t *testing.T) {
 	if group.CurrentMaster != "order-replica" {
 		t.Fatalf("group current master not updated: %#v", group)
 	}
-	if group.Envoy == nil || group.Envoy.AutoPort != 16379 || group.Envoy.MasterPort != 16500 {
-		t.Fatalf("group envoy config changed unexpectedly: %#v", group.Envoy)
+	if group.Proxy == nil || group.Proxy.AutoPort != 16379 || group.Proxy.MasterPort != 16500 {
+		t.Fatalf("group proxy config changed unexpectedly: %#v", group.Proxy)
 	}
 	if otherReplica.ReplicaOf != "order-replica" {
 		t.Fatalf("other replica should point at new master: %#v", otherReplica)
@@ -223,7 +226,7 @@ func TestHandleSentinelFailover_NoOpWhenAlreadySynchronized(t *testing.T) {
 				Engine:        "redis",
 				Category:      "cache",
 				CurrentMaster: "order-replica",
-				Envoy:         &apitypes.EnvoyConfig{AutoPort: 16379, MasterPort: 16500},
+				Proxy:         &apitypes.ProxyConfig{AutoPort: 16379, MasterPort: 16500},
 			},
 		},
 		Instances: map[string]*apitypes.Instance{

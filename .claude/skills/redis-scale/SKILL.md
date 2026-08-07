@@ -22,7 +22,7 @@ description: 扩容 Redis 实例（加从库或提升配置）
    redis-pilot-cli instance status <replica-name>
    ```
 
-3. 确认控制面快照已包含新从库。Envoy 不通过 CLI 手动改路由；`redis-pilot-xds` 自动下发。
+3. 确认控制面快照已包含新从库。Proxy 不通过 CLI 手动改路由；Proxy 通过长轮询 Server snapshot 自动发现拓扑变更。
    ```
    redis-pilot-cli instance status <replica-name>
    redis-pilot-cli inventory --view port
@@ -72,5 +72,5 @@ description: 扩容 Redis 实例（加从库或提升配置）
 
 - 加从库时优先选择与主库不同的服务器（跨机容灾）
 - 缩容（删从库）使用 redis-delete
-- Redis/Envoy 端口由 Server 自动分配和发布，不从 CLI 传 `--port`
+- Redis/Proxy 端口由 Server 自动分配和发布，不从 CLI 传 `--port`
 - 提升配置本质是替换式升级：新建高配从库 → 同步 → promote → 清理旧实例

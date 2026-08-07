@@ -61,9 +61,9 @@ redis-pilot-cli sentinel status                     # 查看 Sentinel 状态
 redis-pilot-cli sentinel sync                       # 从 Sentinel 同步故障转移状态
 ```
 
-### Envoy 代理
+### Proxy 代理
 
-当前 CLI 不提供 `envoy` 子命令。实例创建、删除、主从切换会更新 Server 状态中的 Envoy 端口和后端拓扑；`redis-pilot-xds` 轮询 `/api/v1/proxy/snapshot`，再通过 xDS 向 Envoy 动态下发 LDS/CDS/EDS。不要在技能里生成 Envoy 配置文件或执行 reload。
+当前 CLI 不提供 `proxy` 子命令。实例创建、删除、主从切换会更新 Server 状态中的 Proxy 端口和后端拓扑；Proxy 为自建 Go 二进制（`cmd/proxy/`），部署为 systemd 服务，配置文件 `proxy.yaml`（含 `server_endpoint`、`poll_interval`、`metrics_listen` 等）。Proxy 通过 HTTP 长轮询 `/api/v1/proxy/snapshot` 自动发现拓扑变更（无 xDS、无 gRPC）。不要在技能里生成 Proxy 配置文件或执行 reload。
 
 ```
 curl http://<server>/api/v1/proxy/snapshot          # 只读查看控制面快照
@@ -84,7 +84,7 @@ redis-pilot-cli audit --from 20260501 --to 20260510 # 日期范围
 redis-pilot-cli inventory                           # 全部清单
 redis-pilot-cli inventory --node <name>             # 按服务器
 redis-pilot-cli inventory --engine redis            # 按引擎
-redis-pilot-cli inventory --port 16379              # 按 Envoy 端口
+redis-pilot-cli inventory --port 16379              # 按 Proxy 端口
 redis-pilot-cli inventory --view port               # 端口视图
 redis-pilot-cli inventory --view server             # 服务器视图
 ```

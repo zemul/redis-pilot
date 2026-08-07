@@ -1,0 +1,30 @@
+# redis-proxy 配置文件示例
+#
+# 用法：redis-proxy -config proxy.yaml
+# 配置优先级：CLI flag > YAML > 代码默认值
+# 所有字段都是可选的，省略的字段使用代码默认值。
+
+# ─── Discovery 模式（与 static 模式二选一） ───
+# 从 Server 拉取快照，动态驱动 listener 和连接池。
+# server_endpoint: "http://127.0.0.1:8080"
+# server_token: ""
+# poll_interval: 2s
+# poll_timeout: 5s
+# poll_wait: 20s
+
+# ─── Static 模式（与 discovery 模式二选一） ───
+# 直接配置单个 group 的后端地址。
+listen: ":16379"
+master: "127.0.0.1:6379"
+replicas:
+  - "127.0.0.1:6380"
+  # - "127.0.0.1:6381"
+password: ""  # 空 = 不鉴权
+
+# ─── 通用参数 ───
+master_read_weight: 0       # master 读权重（0 = master 不参与读分流）
+consistency_window: 500ms   # 会话一致性窗口
+pool_size: 64                # 每后端 SHARED 连接池上限（§13）
+idle_timeout: 5m             # 空闲连接回收超时（§13）
+metrics_listen: ":19100"    # Prometheus /metrics 地址（空 = 关闭）
+max_request_bytes: 16777216 # 单条命令最大字节数（D13，默认 16MB）

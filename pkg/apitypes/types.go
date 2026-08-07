@@ -55,13 +55,13 @@ type NodeState struct {
 	Servers map[string]*NodeServer `yaml:"servers"`
 }
 
-// EnvoyConfig 实例组的 Envoy 端口配置
-type EnvoyConfig struct {
+// ProxyConfig 实例组的 Proxy 端口配置
+type ProxyConfig struct {
 	AutoPort   int `yaml:"auto_port,omitempty" json:"auto_port,omitempty"`
 	MasterPort int `yaml:"master_port,omitempty" json:"master_port,omitempty"`
 }
 
-// ProxySnapshot is the stable, read-only view consumed by redis-pilot-xds.
+// ProxySnapshot is the stable, read-only view consumed by redis-proxy.
 type ProxySnapshot struct {
 	Version     string          `json:"version"`
 	GeneratedAt string          `json:"generated_at"`
@@ -69,7 +69,7 @@ type ProxySnapshot struct {
 	Clusters    []ProxyCluster  `json:"clusters"`
 }
 
-// ProxyListener describes one Envoy Redis proxy listener.
+// ProxyListener describes one Proxy Redis proxy listener.
 type ProxyListener struct {
 	Name        string `json:"name"`
 	Group       string `json:"group"`
@@ -128,7 +128,7 @@ type InstanceGroupState struct {
 	CurrentMaster    string       `yaml:"current_master" json:"current_master"`
 	TopologyStatus   string       `yaml:"topology_status" json:"topology_status"` // healthy | degraded
 	FailoverConflict bool         `yaml:"failover_conflict" json:"failover_conflict"`
-	Envoy            *EnvoyConfig `yaml:"envoy,omitempty" json:"envoy,omitempty"`
+	Proxy            *ProxyConfig `yaml:"proxy,omitempty" json:"proxy,omitempty"`
 	CreatedAt        string       `yaml:"created_at" json:"created_at"`
 	UpdatedAt        string       `yaml:"updated_at" json:"updated_at"`
 }
@@ -227,7 +227,7 @@ func (i *Instance) Phase() string {
 }
 
 // IsServing 报告实例当前是否可以承接业务流量。
-// 判据是观测结果而非意图——Envoy 端点、备份调度这类决策必须基于事实。
+// 判据是观测结果而非意图——Proxy 端点、备份调度这类决策必须基于事实。
 func (i *Instance) IsServing() bool {
 	return i != nil && i.ObservedStatus == ObservedRunning
 }
@@ -325,7 +325,7 @@ type APIResponse struct {
 
 // PortInventoryItem 端口-实例映射（视图 A）
 type PortInventoryItem struct {
-	EnvoyPort      int      `json:"envoy_port"`
+	ProxyPort      int      `json:"proxy_port"`
 	Mode           string   `json:"mode"` // auto | master
 	InstanceName   string   `json:"instance_name"`
 	Engine         string   `json:"engine"`
@@ -368,7 +368,7 @@ type InstanceSummaryItem struct {
 	Name       string `json:"name"`
 	Engine     string `json:"engine"`
 	Category   string `json:"category"`
-	EnvoyPorts string `json:"envoy_ports"`
+	ProxyPorts string `json:"proxy_ports"`
 	Server     string `json:"server"`
 	Status     string `json:"status"`
 }

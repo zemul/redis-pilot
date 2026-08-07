@@ -74,13 +74,13 @@ func (s *Server) sentinelStatus(c *gin.Context) {
 	}
 	for _, name := range s.selectSentinelNodes(nodeState) {
 		node := sentinelNodeStatus{Name: name}
-		srv := nodeState.Servers[name]
-		if srv == nil || srv.Endpoint == "" {
-			node.Error = "server not found in pool-state"
+		endpoint := s.sentinelNodeEndpoint(name, nodeState)
+		if endpoint == "" {
+			node.Error = "no endpoint for sentinel node"
 			result.Nodes = append(result.Nodes, node)
 			continue
 		}
-		status, err := s.querySentinelStatus(srv)
+		status, err := s.querySentinelStatus(&apitypes.NodeServer{Endpoint: endpoint})
 		if err != nil {
 			node.Error = err.Error()
 		} else {
@@ -162,11 +162,8 @@ func (s *Server) sentinelNodeAddress(node string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	srv := nodeState.Servers[node]
-	if srv == nil || srv.Endpoint == "" {
-		return "", fmt.Errorf("sentinel node %s not found in pool-state", node)
-	}
-	return fmt.Sprintf("%s:%d", srv.Endpoint, s.sentinelPort()), nil
+	endpoint := s.sentinelNodeEndpoint(node, nodeState)
+	return fmt.Sprintf("%s:%d", endpoint, s.sentinelPort()), nil
 }
 
 func (s *Server) subscribeSentinelSwitchMaster(addr string, onSwitch func(group string)) error {
@@ -326,11 +323,11 @@ func (s *Server) reconcileSentinelOnce() error {
 func (s *Server) querySentinelMaster(nodeState *apitypes.NodeState, nodes []string, group string) (string, error) {
 	var firstErr error
 	for _, node := range nodes {
-		srv := nodeState.Servers[node]
-		if srv == nil || srv.Endpoint == "" {
+		endpoint := s.sentinelNodeEndpoint(node, nodeState)
+		if endpoint == "" {
 			continue
 		}
-		addr := fmt.Sprintf("%s:%d", srv.Endpoint, s.sentinelPort())
+		addr := fmt.Sprintf("%s:%d", endpoint, s.sentinelPort())
 		master, err := sentinelGetMasterAddr(addr, group)
 		if err == nil {
 			return master, nil
@@ -630,7 +627,7 @@ func (s *Server) handleSentinelFailover(group, newMasterAddr, source, operator s
 		newMaster.Role = "master"
 		newMaster.ReplicaOf = ""
 		// 这一处写观测字段是有依据的：Sentinel 能把它选为新 master，说明 Sentinel
-		// 探测到它是健康的。不写的话，Envoy 要等到下一轮 reconcile 才会把写流量
+		// 探测到它是健康的。不写的话，Proxy 要等到下一轮 reconcile 才会把写流量
 		// 指向新 master（proxy_group 只挂 IsServing() 的实例），白丢最多 30 秒写入。
 		newMaster.ObservedStatus = apitypes.ObservedRunning
 		groupState.CurrentMaster = newMasterName
@@ -774,11 +771,11 @@ func (s *Server) syncSentinelMastersLocked() error {
 	var firstErr error
 	success := 0
 	for _, name := range nodes {
-		srv := node.Servers[name]
-		if srv == nil || srv.Endpoint == "" {
+		endpoint := s.sentinelNodeEndpoint(name, node)
+		if endpoint == "" {
 			continue
 		}
-		addr := fmt.Sprintf("%s:%d", srv.Endpoint, s.sentinelPort())
+		addr := fmt.Sprintf("%s:%d", endpoint, s.sentinelPort())
 		if err := syncSentinelNode(addr, masters, known, s.sentinelQuorum()); err != nil {
 			s.log.Errorf("sentinel sync failed on %s: %v", name, err)
 			if firstErr == nil {
@@ -808,11 +805,11 @@ func (s *Server) removeSentinelMaster(group string) {
 		return
 	}
 	for _, name := range s.selectSentinelNodes(node) {
-		srv := node.Servers[name]
-		if srv == nil || srv.Endpoint == "" {
+		endpoint := s.sentinelNodeEndpoint(name, node)
+		if endpoint == "" {
 			continue
 		}
-		addr := fmt.Sprintf("%s:%d", srv.Endpoint, s.sentinelPort())
+		addr := fmt.Sprintf("%s:%d", endpoint, s.sentinelPort())
 		if _, err := sentinelCommand(addr, "SENTINEL", "REMOVE", group); err != nil {
 			s.log.Errorf("sentinel remove %s on %s failed: %v", group, name, err)
 		}
@@ -984,21 +981,27 @@ func (s *Server) buildSentinelMasters(node *apitypes.NodeState, instances *apity
 	return masters
 }
 
-func (s *Server) selectSentinelNodes(node *apitypes.NodeState) []string {
+func (s *Server) selectSentinelNodes(_ *apitypes.NodeState) []string {
 	var selected []string
 	seen := map[string]bool{}
 	for _, name := range s.cfg.Sentinel.Nodes {
 		if name == "" || seen[name] {
 			continue
 		}
-		if node.Servers[name] == nil {
-			s.log.Errorf("configured sentinel node %s not found in pool-state", name)
-			continue
-		}
 		selected = append(selected, name)
 		seen[name] = true
 	}
 	return selected
+}
+
+// sentinelNodeEndpoint 返回 sentinel 节点的 IP 地址。
+// 如果 name 已注册为 node（向后兼容），取其 Endpoint；
+// 否则将 name 本身视为 IP/hostname 直接返回。
+func (s *Server) sentinelNodeEndpoint(name string, node *apitypes.NodeState) string {
+	if srv := node.Servers[name]; srv != nil && srv.Endpoint != "" {
+		return srv.Endpoint
+	}
+	return name
 }
 
 func (s *Server) sentinelReplicas() int {

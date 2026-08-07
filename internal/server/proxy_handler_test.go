@@ -22,7 +22,7 @@ func TestProxySnapshot(t *testing.T) {
 				"cache": {
 					Type:          "replication",
 					CurrentMaster: "cache-1",
-					Envoy:         &apitypes.EnvoyConfig{AutoPort: 16379, MasterPort: 16500},
+					Proxy:         &apitypes.ProxyConfig{AutoPort: 16379, MasterPort: 16500},
 				},
 			},
 			Instances: map[string]*apitypes.Instance{
@@ -77,7 +77,7 @@ func TestProxySnapshot(t *testing.T) {
 				"cache": {
 					Type:          "replication",
 					CurrentMaster: "cache-1",
-					Envoy:         &apitypes.EnvoyConfig{AutoPort: 16379, MasterPort: 16500},
+					Proxy:         &apitypes.ProxyConfig{AutoPort: 16379, MasterPort: 16500},
 				},
 			},
 			Instances: map[string]*apitypes.Instance{
@@ -106,7 +106,7 @@ func TestProxySnapshot(t *testing.T) {
 		if autoListener == nil {
 			t.Fatal("auto listener should exist even when all replicas are stopped (degrade to master)")
 		}
-		// ReadCluster 留空 -> Envoy 不做读写分离，所有命令走 master
+		// ReadCluster 留空 -> Proxy 不做读写分离，所有命令走 master
 		if autoListener.ReadCluster != "" {
 			t.Errorf("ReadCluster = %q, want empty (degrade reads to master)", autoListener.ReadCluster)
 		}
@@ -141,7 +141,7 @@ func TestProxySnapshot(t *testing.T) {
 				"cache": {
 					Type:          "standalone",
 					CurrentMaster: "cache-1",
-					Envoy:         &apitypes.EnvoyConfig{AutoPort: 16379, MasterPort: 16500},
+					Proxy:         &apitypes.ProxyConfig{AutoPort: 16379, MasterPort: 16500},
 				},
 			},
 			Instances: map[string]*apitypes.Instance{

@@ -60,10 +60,10 @@ var instanceMetricsCmd = &cobra.Command{
 	},
 }
 
-var instanceCreateCmd = &cobra.Command{
-	Use:   "create <name>",
-	Short: "Create an instance",
-	Long: `Create a new Redis or Kvrocks instance on the specified server.
+	var instanceCreateCmd = &cobra.Command{
+		Use:   "create <name>",
+		Short: "Create an instance",
+		Long: `Create a new Redis or Kvrocks instance on the specified server.
 
 --category controls the eviction and persistence defaults:
   cache       maxmemory-policy=allkeys-lru, AOF disabled
@@ -74,19 +74,23 @@ var instanceCreateCmd = &cobra.Command{
               Use for queues, primary data stores, etc.
 
 Choosing the wrong category has real consequences:
-  - cache on a persistent store → data silently evicted when memory is full
-  - persistent on a cache → writes fail under memory pressure + AOF overhead`,
-	Example: `  # Cache instance (auto-schedule node)
+  - cache on a persistent store -> data silently evicted when memory is full
+  - persistent on a cache -> writes fail under memory pressure + AOF overhead
+
+Naming: do NOT encode role or node info in instance names (e.g. master, replica,
+node1, redis01). Roles swap during failover, instances may migrate to other nodes.
+Use ordinal names like order-1, order-2, cache-a, cache-b.`,
+		Example: `  # Cache instance (auto-schedule node)
   redis-pilot-cli instance create session-cache --group session --memory 4Gi
 
   # Persistent instance on specific node
-  redis-pilot-cli instance create order-master --node redis01 --group order --category persistent --memory 8Gi
+  redis-pilot-cli instance create order-1 --node redis01 --group order --category persistent --memory 8Gi
 
   # Kvrocks with custom RocksDB tuning
-  redis-pilot-cli instance create order-master --group order --engine kvrocks --category persistent --memory 8Gi --config "rocksdb.compression=lz4,rocksdb.write_buffer_size=256"
+  redis-pilot-cli instance create order-1 --group order --engine kvrocks --category persistent --memory 8Gi --config "rocksdb.compression=lz4,rocksdb.write_buffer_size=256"
 
   # Redis with custom config overrides
-  redis-pilot-cli instance create order-master --group order --category persistent --memory 4Gi --engine-version 6.2 --config "hz=20,tcp-keepalive=60"`,
+  redis-pilot-cli instance create order-1 --group order --category persistent --memory 4Gi --engine-version 6.2 --config "hz=20,tcp-keepalive=60"`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		category, _ := cmd.Flags().GetString("category")

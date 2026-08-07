@@ -23,29 +23,29 @@ func allocRedisPort(cfg PortConfig, instances *apitypes.InstancesState, serverNa
 	return 0, fmt.Errorf("no available redis port on server %s (range %d-%d)", serverName, cfg.Redis.Start, cfg.Redis.End)
 }
 
-// allocEnvoyPorts 为一个实例组分配 Envoy 端口。
+// allocProxyPorts 为一个实例组分配 Proxy 端口。
 // withAuto=true 时额外分配自动读写分离端口（用于主从拓扑）。
-func allocEnvoyPorts(cfg PortConfig, instances *apitypes.InstancesState, withAuto bool) (*apitypes.EnvoyConfig, error) {
+func allocProxyPorts(cfg PortConfig, instances *apitypes.InstancesState, withAuto bool) (*apitypes.ProxyConfig, error) {
 	usedAuto := make(map[int]bool)
 	usedMaster := make(map[int]bool)
 	for _, group := range instances.Groups {
-		if group.Envoy == nil {
+		if group.Proxy == nil {
 			continue
 		}
-		usedAuto[group.Envoy.AutoPort] = true
-		usedMaster[group.Envoy.MasterPort] = true
+		usedAuto[group.Proxy.AutoPort] = true
+		usedMaster[group.Proxy.MasterPort] = true
 	}
 
-	master, err := nextFree(cfg.EnvoyMaster, usedMaster)
+	master, err := nextFree(cfg.ProxyMaster, usedMaster)
 	if err != nil {
-		return nil, fmt.Errorf("envoy master port: %w", err)
+		return nil, fmt.Errorf("proxy master port: %w", err)
 	}
 
-	ec := &apitypes.EnvoyConfig{MasterPort: master}
+	ec := &apitypes.ProxyConfig{MasterPort: master}
 	if withAuto {
-		auto, err := nextFree(cfg.EnvoyAuto, usedAuto)
+		auto, err := nextFree(cfg.ProxyAuto, usedAuto)
 		if err != nil {
-			return nil, fmt.Errorf("envoy auto port: %w", err)
+			return nil, fmt.Errorf("proxy auto port: %w", err)
 		}
 		ec.AutoPort = auto
 	}

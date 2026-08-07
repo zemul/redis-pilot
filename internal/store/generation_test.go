@@ -9,7 +9,7 @@ import (
 // TestGeneration_EveryMutatingMethodBumps 逐个验证所有拓扑写方法都会推进代际。
 //
 // 代际是 xDS 长轮询的唤醒依据。漏掉任何一个写方法的后果不是性能问题，而是那类写入
-// 之后 Envoy 的配置永久停在旧值——一个不报错、只静默错下去的故障。所以这里把每个
+// 之后 Proxy 的配置永久停在旧值——一个不报错、只静默错下去的故障。所以这里把每个
 // 方法都单独过一遍，而不是抽样。
 //
 // 新增写方法时，如果忘了走 execWrite 或忘了在 Commit 后自增，这个测试不会自动发现，
@@ -66,7 +66,7 @@ func TestGeneration_EveryMutatingMethodBumps(t *testing.T) {
 			}
 			if after := db.Generation(); after <= before {
 				t.Errorf("%s 没有推进代际（%d → %d）。"+
-					"xDS 长轮询靠代际唤醒，漏掉的写入会让 Envoy 配置永久停在旧值",
+					"xDS 长轮询靠代际唤醒，漏掉的写入会让 Proxy 配置永久停在旧值",
 					c.name, before, after)
 			}
 		})

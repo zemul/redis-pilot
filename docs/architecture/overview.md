@@ -6,7 +6,7 @@
 
 本篇是架构文档的入口，覆盖设计目标、范围、整体架构图与实施路线。详细内容拆分在以下几篇：
 
-- [组件详细设计](components.md) — Server / Agent / CLI / xDS / 存储的详细设计
+- [组件详细设计](components.md) — Server / Agent / CLI / Proxy / 存储的详细设计
 - [关键流程](flows.md) — 实例创建、故障转移等关键流程 + Skills 设计
 - [部署与运维](deployment-ops.md) — 持久化目录结构、Podman 规范、安全设计、可观测性、约束与限制
 
@@ -22,7 +22,7 @@
 - **自动备份与备份管理**（创建、恢复、轮转、清理）
 - **服务器节点化**，实例按资源状态智能分配
 - **实例迁移与故障转移**，跨服务器自动/手动切换
-- **统一代理**，通过 Envoy 对业务侧暴露标准化接入点
+- **统一代理**，通过 Redis Pilot Proxy 对业务侧暴露标准化接入点
 - **问题诊断与可观测**，采集指标 + AI 辅助分析
 
 ### 1.2 范围
@@ -32,7 +32,7 @@
 | 单点实例管理 | Redis Cluster 管理 |
 | 主从复制管理 | 多活/异地复制 |
 | Podman 容器化部署 | 裸金属/VM 部署 |
-| Envoy 统一代理 | 自研代理层 |
+| 自研 Proxy 统一代理 | Envoy 等外部代理 |
 | RDB + AOF 备份 | 云存储备份集成 |
 | 基础监控与诊断 | 完整 Prometheus/Grafana 体系 |
 
@@ -42,7 +42,7 @@
 2. **状态驱动** — 全局状态文件由 Server 统一管理，所有读写经过 Server 串行化
 3. **Agent 自治** — 每台服务器 Agent 可独立执行本地操作，GAL 断连仍可自愈
 4. **主从分治** — 单点和主从使用独立 Skill 体系，不强行统一
-5. **业务流量与管理流量分离** — 业务走 Envoy 代理，运维直连实例
+5. **业务流量与管理流量分离** — 业务走 Proxy 代理，运维直连实例
 
 ---
 
@@ -67,7 +67,7 @@
    │    Skill     │ │    Skill     │ │    Skill     │
    │ redis-config │ │redis-failover│ │redis-diagnose│
    │ redis-scale  │ │ redis-delete │ │ redis-status │
-   │ redis-envoy  │ │              │ │              │
+   │ redis-proxy  │ │              │ │              │
    └──────┬───────┘ └──────┬───────┘ └──────┬───────┘
           │                │                │
           ▼                ▼                ▼
@@ -111,7 +111,7 @@
    └──────────────┘ └──────────────┘ └──────────────┘
 
    ┌──────────────┐
-   │ Envoy Proxy  │  统一代理层
+   │ Proxy        │  统一代理层
    │ :16379       │  ← 订单主库（读写分离）
    │ :16380       │  ← 订单从库（只读）
    │ :16381       │  ← 用户主库
@@ -132,9 +132,9 @@
 ### Phase 2：主从与代理
 
 - [ ] Agent：主从复制管理（replicate / promote）
-- [ ] Envoy Redis Proxy 集成
+- [ ] Redis Pilot Proxy 集成
 - [ ] 资源清单：从状态文件派生端口/集群/用途映射
-- [ ] Skills：redis-config / redis-scale / redis-envoy / redis-inventory
+- [ ] Skills：redis-config / redis-scale / redis-proxy / redis-inventory
 - [ ] 验证：主从实例 + 读写分离代理 + 资源清单可查
 
 ### Phase 3：运维增强
@@ -294,54 +294,19 @@ checkpoint-dir /backup
 {{ config_overrides }}
 ```
 
-## 附录 C：Envoy 写集群 ROLE 健康检查配置
+## 附录 C：Proxy 后端健康检查
 
-写集群必须确保仅 `role=master` 的端点接收写请求。Envoy 内置 Redis health checker 只能做 PING/EXISTS 存活检查，不能判断 Redis ROLE；因此写集群使用 TCP health check 发送 Redis RESP 编码的 `ROLE` 命令，并匹配 master 响应。
+Proxy 通过 Server 快照获取后端拓扑（master/replica 角色与端点地址），无需独立的 ROLE 探测。写命令始终路由到快照中标记为 master 的后端，读命令在 master + 所有健康 replica 间按 weight 分摊。
 
-```yaml
-# 写集群 — 仅主库接收写请求
-clusters:
-- name: redis-order-write-cluster
-  type: STRICT_DNS
-  health_checks:
-  - timeout: 1s
-    interval: 5s
-    unhealthy_threshold: 2
-    healthy_threshold: 1
-    tcp_health_check:
-      send:
-        text: "*1\r\n$4\r\nROLE\r\n"
-      receive:
-      - text: "*3\r\n$6\r\nmaster\r\n"
-  drain_connections_on_host_removal: true
-  load_assignment:
-    cluster_name: redis-order-write-cluster
-    endpoints:
-    - lb_endpoints:
-      - endpoint:
-          address:
-            socket_address:
-              address: 10.0.1.10      # 主库
-              port_value: 6379
-      - endpoint:
-          address:
-            socket_address:
-              address: 10.0.1.11      # 从库（健康检查 ROLE=slave → 标记不健康 → 不接收写请求）
-              port_value: 6379
-```
+Proxy 对每个后端维护健康状态机：
 
-> 如果 Redis/Kvrocks 启用了 `requirepass`，ROLE 健康检查必须先发送 AUTH，再发送 ROLE。RESP payload 示例：
->
-> ```
-> *2\r\n$4\r\nAUTH\r\n$<password_length>\r\n<password>\r\n*1\r\n$4\r\nROLE\r\n
-> ```
->
-> 健康检查期望响应仍匹配 `*3\r\n$6\r\nmaster\r\n`。如果不带 AUTH，受密码保护的实例会返回 `NOAUTH`，写集群会把所有端点判定为不健康。
+| 状态 | 触发 | 连接动作 |
+|------|------|---------|
+| OK | 正常 | 读池参与，按 weight 分摊读 |
+| SYNCING | replica `INFO replication` 的 `master_sync_in_progress=1` | weight 归零，不参与读 |
+| DEGRADED | 连续连接失败/异常 | 降 weight，连续失败超阈值转 DOWN |
+| DOWN | 失败超阈值 / 快照移除 | 移出读池，drain 连接 |
 
-> **ROLE 健康检查原理**：
-> - TCP health check 发送 `ROLE` 命令
-> - master 返回 `*3\r\n$6\r\nmaster\r\n`，健康检查通过
-> - replica 返回 `*5\r\n$5\r\nslave\r\n`，健康检查失败，不接收写请求
-> - 当主库故障切换后，新主库 ROLE 变为 master → 健康检查通过 → 自动接收写请求
-> - 旧主库变为 slave → 健康检查标记为不健康（对写集群）→ 写流量停止
-> - `drain_connections_on_host_removal: true` 确保端点移除时优雅排空连接
+- master 切换由快照长轮询感知：快照 `Version` 变化 -> Proxy 收到新拓扑 -> 旧 master Backend 标 DOWN 并主动 close 其池内所有连接 -> 新 master 建池
+- `requirepass` 认证：Proxy 从快照中获取每个 group 的密码（后端 requirepass），AUTH 在 Proxy 终结不透传
+- replica 全挂时读回落 master（可用性优先），同时打指标告警

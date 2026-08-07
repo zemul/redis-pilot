@@ -45,19 +45,19 @@ func (s *Server) buildPortView(instances *apitypes.InstancesState, portFilter, e
 	}
 
 	for groupName, group := range instances.Groups {
-		if group == nil || group.Envoy == nil {
+		if group == nil || group.Proxy == nil {
 			continue
 		}
 		if engineFilter != "" && group.Engine != engineFilter {
 			continue
 		}
 		backends := backendServersForGroup(instances, groupName)
-		if group.Envoy.MasterPort > 0 {
-			if filterPort > 0 && group.Envoy.MasterPort != filterPort {
+		if group.Proxy.MasterPort > 0 {
+			if filterPort > 0 && group.Proxy.MasterPort != filterPort {
 				goto checkAuto
 			}
 			items = append(items, apitypes.PortInventoryItem{
-				EnvoyPort:      group.Envoy.MasterPort,
+				ProxyPort:      group.Proxy.MasterPort,
 				Mode:           "master",
 				InstanceName:   groupName,
 				Engine:         group.Engine,
@@ -70,12 +70,12 @@ func (s *Server) buildPortView(instances *apitypes.InstancesState, portFilter, e
 			}
 		}
 	checkAuto:
-		if group.Envoy.AutoPort > 0 {
-			if filterPort > 0 && group.Envoy.AutoPort != filterPort {
+		if group.Proxy.AutoPort > 0 {
+			if filterPort > 0 && group.Proxy.AutoPort != filterPort {
 				continue
 			}
 			items = append(items, apitypes.PortInventoryItem{
-				EnvoyPort:      group.Envoy.AutoPort,
+				ProxyPort:      group.Proxy.AutoPort,
 				Mode:           "auto",
 				InstanceName:   groupName,
 				Engine:         group.Engine,
@@ -158,23 +158,23 @@ func (s *Server) buildSummaryView(instances *apitypes.InstancesState, node *apit
 		if engineFilter != "" && group.Engine != engineFilter {
 			continue
 		}
-		envoyPorts := ""
-		if group.Envoy != nil {
-			if group.Envoy.MasterPort > 0 {
-				envoyPorts = "master:" + strconv.Itoa(group.Envoy.MasterPort)
+		proxyPorts := ""
+		if group.Proxy != nil {
+			if group.Proxy.MasterPort > 0 {
+				proxyPorts = "master:" + strconv.Itoa(group.Proxy.MasterPort)
 			}
-			if group.Envoy.AutoPort > 0 {
-				if envoyPorts != "" {
-					envoyPorts += "/"
+			if group.Proxy.AutoPort > 0 {
+				if proxyPorts != "" {
+					proxyPorts += "/"
 				}
-				envoyPorts += "auto:" + strconv.Itoa(group.Envoy.AutoPort)
+				proxyPorts += "auto:" + strconv.Itoa(group.Proxy.AutoPort)
 			}
 		}
 		summary.Instances = append(summary.Instances, apitypes.InstanceSummaryItem{
 			Name:       name,
 			Engine:     group.Engine,
 			Category:   group.Category,
-			EnvoyPorts: envoyPorts,
+			ProxyPorts: proxyPorts,
 			Server:     inst.Server,
 			Status:     inst.Phase(),
 		})

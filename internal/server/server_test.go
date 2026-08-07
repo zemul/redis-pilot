@@ -785,7 +785,7 @@ func TestInstanceFailover_DirectFallback_DemotesOldMaster(t *testing.T) {
 				Engine:        "redis",
 				Category:      "cache",
 				CurrentMaster: "order-master",
-				Envoy:         &apitypes.EnvoyConfig{AutoPort: 16379, MasterPort: 16500},
+				Proxy:         &apitypes.ProxyConfig{AutoPort: 16379, MasterPort: 16500},
 			},
 		},
 		Instances: map[string]*apitypes.Instance{
@@ -864,7 +864,7 @@ func TestInstanceFailover_DirectFallback_OldMasterUnreachable(t *testing.T) {
 				Engine:        "redis",
 				Category:      "cache",
 				CurrentMaster: "order-master",
-				Envoy:         &apitypes.EnvoyConfig{AutoPort: 16379, MasterPort: 16500},
+				Proxy:         &apitypes.ProxyConfig{AutoPort: 16379, MasterPort: 16500},
 			},
 		},
 		Instances: map[string]*apitypes.Instance{
@@ -1124,7 +1124,7 @@ func TestInstanceFailover_SentinelManaged_TriggersRealFailoverAndSyncsState(t *t
 				Engine:        "redis",
 				Category:      "cache",
 				CurrentMaster: "order-master",
-				Envoy:         &apitypes.EnvoyConfig{AutoPort: 16379, MasterPort: 16500},
+				Proxy:         &apitypes.ProxyConfig{AutoPort: 16379, MasterPort: 16500},
 			},
 		},
 		Instances: map[string]*apitypes.Instance{

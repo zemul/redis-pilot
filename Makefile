@@ -3,16 +3,16 @@ VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -s -w -X main.version=$(VERSION)
 GOFLAGS := -trimpath
 
-BINS := server agent cli
+BINS := server agent cli proxy
 OUT  := bin
 DASHBOARD_DIR := web/dashboard
 
 DEPLOY_SERVER := redis01
 DEPLOY_AGENTS := redis01 redis02 redis03
 
-.PHONY: all clean dashboard $(BINS) xds build-linux deploy deploy-server deploy-agent deploy-cli setup
+.PHONY: all clean dashboard $(BINS) build-linux deploy deploy-server deploy-agent deploy-cli deploy-proxy setup
 
-all: $(BINS) xds
+all: $(BINS)
 
 server: dashboard
 
@@ -23,16 +23,13 @@ dashboard:
 $(BINS):
 	go build $(GOFLAGS) -ldflags '$(LDFLAGS)' -o $(OUT)/redis-$@ ./cmd/$@
 
-xds:
-	go build $(GOFLAGS) -ldflags '$(LDFLAGS)' -o $(OUT)/redis-pilot-xds ./cmd/xds
-
 clean:
 	rm -rf $(OUT)
 
 build-linux:
 	GOOS=linux GOARCH=amd64 $(MAKE) all
 
-deploy: build-linux deploy-server deploy-agent deploy-cli deploy-xds
+deploy: build-linux deploy-server deploy-agent deploy-cli deploy-proxy
 
 deploy-server:
 	ssh $(DEPLOY_SERVER) systemctl stop redis-pilot-server || true
@@ -55,11 +52,11 @@ deploy-cli:
 		scp bin/redis-cli $$h:/usr/local/bin/redis-pilot-cli; \
 	done
 
-deploy-xds:
-	ssh $(DEPLOY_SERVER) systemctl stop redis-pilot-xds || true
-	scp bin/redis-pilot-xds $(DEPLOY_SERVER):/opt/redis-pilot-xds/redis-pilot-xds
+deploy-proxy:
+	ssh $(DEPLOY_SERVER) systemctl stop redis-pilot || true
+	scp bin/redis-proxy $(DEPLOY_SERVER):/opt/redis-pilot/redis-pilot
 	ssh $(DEPLOY_SERVER) systemctl daemon-reload
-	ssh $(DEPLOY_SERVER) systemctl start redis-pilot-xds
+	ssh $(DEPLOY_SERVER) systemctl start redis-pilot
 
 setup:
 	bash scripts/setup.sh

@@ -58,9 +58,9 @@
 
 **拓扑变更特性**:
 - 自动维护主库的 `Replicas` 列表
-- 提升时自动分配 Envoy 端口
-- 变为从库时释放 Envoy 端口
-- 自动刷新 Envoy 配置
+- 提升时自动分配 Proxy 端口
+- 变为从库时释放 Proxy 端口
+- 自动刷新 Proxy 配置
 
 #### 1.2.4 创建实例的完整流程
 
@@ -69,7 +69,7 @@
    - 检查实例名冲突
    - 自动调度（若未指定服务器）
    - 分配 Redis 端口
-   - 分配 Envoy 端口（仅主库/standalone）
+   - 分配 Proxy 端口（仅主库/standalone）
    - 写入 "creating" 状态
 
 2. 调用 Agent 创建容器
@@ -80,7 +80,7 @@
 
 4. 更新 `servers` 表资源分配
 
-5. 刷新 Envoy 配置
+5. Proxy 自动通过长轮询发现拓扑变更
 ```
 
 **支持的参数**:
@@ -144,25 +144,25 @@
 
 ---
 
-### 1.4 Envoy xDS 代理控制面
+### 1.4 Proxy 代理控制面
 
 | API 路径 | 方法 | 功能 | 实现函数 |
 |---------|------|------|---------|
 | `/api/v1/proxy/snapshot` | GET | 返回代理层结构化快照 | `proxySnapshot()` |
 | `/proxy/snapshot` | GET | 返回代理层结构化快照 | `proxySnapshot()` |
 
-**xDS 配置生成逻辑**:
+**快照生成逻辑**:
 1. 按主库名聚合实例组（主库 + 所有从库）
-2. `redis-pilot-xds` 为每个实例组创建业务 Listener:
+2. 为每个实例组生成业务监听端口:
    - **MASTER 端口** (`MasterPort`): 后端仅包含主库，所有命令都走主库
-   - **AUTO 端口** (`AutoPort`): 默认走主库，读命令通过 `read_command_policy` 走从库
+   - **AUTO 端口** (`AutoPort`): 默认走主库，读命令走从库
 3. 创建 master/replica Cluster，master 指向当前主库，replica 指向所有从库
-4. Envoy 通过 LDS/CDS/EDS 动态接收 Listener、Cluster、Endpoint
+4. Proxy 通过 HTTP 长轮询获取 Listener、Cluster、Endpoint 快照
 
 **自动刷新机制**:
-- `redis-pilot-xds` 定时轮询 Server proxy snapshot
-- snapshot 版本变化后推送新的 xDS Snapshot
-- Server 不写 Envoy 配置文件，也不执行 Envoy reload
+- Proxy 定时通过 HTTP 长轮询拉取 Server proxy snapshot（`/api/v1/proxy/snapshot`）
+- snapshot 版本变化后 Proxy 自动应用新拓扑
+- Server 不写 Proxy 配置文件，也不执行 reload
 
 ---
 
@@ -524,7 +524,7 @@ redis-pilot-cli sentinel sync
   }
 }
 ```
-> `envoy`（`master_port`/`auto_port`）等拓扑/入口相关字段存储在 `instance_groups` 表的 `envoy` 列（JSON），因为它们是实例组级别的属性，不随单个容器变化。
+> `proxy`（`master_port`/`auto_port`）等拓扑/入口相关字段存储在 `instance_groups` 表的 `proxy` 列（JSON），因为它们是实例组级别的属性，不随单个容器变化。
 
 安全说明：`instances.password` 和 `servers.agent_token` 目前明文存储在 `pilot.db` 中；数据目录权限收紧为 `0700`、数据库文件权限收紧为 `0600`（仅属主可访问）以降低本机其他用户读取风险，长期考虑加密存储。
 
@@ -679,13 +679,13 @@ server.StartReconcileLoop()
 2. 从配置范围 (`redis.start` - `redis.end`) 中取第一个未占用的端口
 3. 若无可用端口，返回错误
 
-### 8.2 Envoy 端口分配
+### 8.2 Proxy 端口分配
 
 **分配策略**:
-1. 为每个实例组分配 Envoy 端口:
-   - MASTER 端口 (MasterPort): 从 `envoy_master` 范围分配
-   - AUTO 端口 (AutoPort): 从 `envoy_auto` 范围分配，仅主从拓扑需要
-2. 扫描所有已有实例的 Envoy 端口
+1. 为每个实例组分配 Proxy 端口:
+   - MASTER 端口 (MasterPort): 从 `proxy_master` 范围分配
+   - AUTO 端口 (AutoPort): 从 `proxy_auto` 范围分配，仅主从拓扑需要
+2. 扫描所有已有实例的 Proxy 端口
 3. 从配置范围中取第一个未占用的端口
 
 ---
@@ -755,7 +755,7 @@ server.StartReconcileLoop()
 | **实例生命周期** | ✅ | 创建、删除、启动、停止、自动调度 |
 | **配置管理** | ✅ | 热更新、重启生效、配置覆盖 |
 | **拓扑管理** | ✅ | 主从复制、从库提升、自动 Replicas 维护 |
-| **Envoy 代理** | ✅ | 自动配置生成、读写分离、自动重载 |
+| **Proxy 代理** | ✅ | 自动配置生成、读写分离、自动重载 |
 | **备份恢复** | ✅ | RDB/AOF 联合备份、轮转清理、多引擎支持 |
 | **定时调度** | ✅ | 备份调度、状态校验、自动修复 |
 | **健康检查** | ✅ | 30s 周期检查、自动重启 |

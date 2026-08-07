@@ -29,7 +29,7 @@ type DB struct {
 	//
 	// 放在 store 层而不是各个 handler 里，是因为这里是所有状态写入的唯一收口点：
 	// 全部 9 个写方法都在本包内，改动时一眼能看全。如果改成在业务代码里逐处发通知，
-	// 漏掉任何一处的后果是 Envoy 的配置永久停留在旧值——一个不会报错、只会静默错下去
+	// 漏掉任何一处的后果是 Proxy 的配置永久停留在旧值——一个不会报错、只会静默错下去
 	// 的故障，比多几次无用的重算糟糕得多。
 	//
 	// 语义刻意做弱：generation 变了只说明"有写入发生"，不保证代理配置真的变了
@@ -75,7 +75,12 @@ func Open(dataDir string) (*DB, error) {
 		return nil, fmt.Errorf("store: chmod %s: %w", dataDir, err)
 	}
 	path := filepath.Join(dataDir, "pilot.db")
-	db, err := sql.Open("sqlite", path+"?_journal_mode=WAL&_busy_timeout=5000&_foreign_keys=on")
+	// modernc.org/sqlite 使用 _pragma=name(value) 格式，不支持 _busy_timeout / _journal_mode
+	// 等下划线参数（静默忽略，导致 busy_timeout=0 + 非 WAL 模式 -> 并发读写直接 SQLITE_BUSY）。
+	//   - WAL：读不阻塞写、写不阻塞读
+	//   - busy_timeout=15s：遇到锁时自动重试（覆盖 checkpoint 和短暂写冲突）
+	//   - foreign_keys=ON：外键约束
+	db, err := sql.Open("sqlite", path+"?_pragma=busy_timeout(15000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(on)")
 	if err != nil {
 		return nil, fmt.Errorf("store: open %s: %w", path, err)
 	}
@@ -149,7 +154,7 @@ func (d *DB) migrate() error {
 			current_master    TEXT NOT NULL DEFAULT '',
 			topology_status   TEXT NOT NULL DEFAULT 'degraded',
 			failover_conflict INTEGER NOT NULL DEFAULT 0,
-			envoy             TEXT NOT NULL DEFAULT 'null', -- JSON: EnvoyConfig|null
+			proxy             TEXT NOT NULL DEFAULT 'null', -- JSON: ProxyConfig|null
 			created_at        TEXT NOT NULL DEFAULT '',
 			updated_at        TEXT NOT NULL DEFAULT ''
 		)`,

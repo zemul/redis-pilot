@@ -1,4 +1,8 @@
-package xds
+// Package discovery 从 Server 拉取 ProxySnapshot 并维护后端拓扑。
+//
+// 复用原 xds/client.go 的长轮询客户端（FetchProxySnapshot），已整体搬到此处。
+// 原 internal/xds/ 已在迁移中删除。
+package discovery
 
 import (
 	"context"
@@ -12,6 +16,7 @@ import (
 	"gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/pkg/apitypes"
 )
 
+// serverClient 是到 Server 的 HTTP 客户端。
 type serverClient struct {
 	baseURL string
 	token   string
@@ -32,7 +37,7 @@ func newServerClient(cfg ServerConfig, httpClient *http.Client) *serverClient {
 // 变化或 wait 超时。超时返回 unchanged=true，此时 snapshot 为 nil。
 //
 // 兼容性：Server 若不认识这两个参数会立即返回完整快照，此时 unchanged=false，
-// 调用方仍能正确工作（只是退化成短轮询），不会因此死循环——调用方按实际耗时补足间隔。
+// 调用方仍能正确工作（只是退化成短轮询），不会因此死循环--调用方按实际耗时补足间隔。
 func (c *serverClient) FetchProxySnapshot(ctx context.Context, knownVersion string, wait time.Duration) (snapshot *apitypes.ProxySnapshot, unchanged bool, err error) {
 	url := c.baseURL + "/api/v1/proxy/snapshot"
 	if knownVersion != "" && wait > 0 {

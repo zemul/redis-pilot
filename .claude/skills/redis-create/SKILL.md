@@ -32,9 +32,9 @@ description: 创建 Redis/Kvrocks 实例，支持单点和主从
    redis-pilot-cli instance list --group <group>
    ```
 
-4. 查看 Envoy 入口端口。实例创建成功后，Server 会分配并写入 `envoy.master_port` / `envoy.auto_port`；`redis-pilot-xds` 会从控制面 snapshot 自动下发到 Envoy。
+4. 查看 Proxy 入口端口。实例创建成功后，Server 会分配并写入 `proxy.master_port` / `proxy.auto_port`；Proxy 通过长轮询 Server snapshot 自动发现拓扑变更。
    ```
-   redis-pilot-cli inventory --port <envoy-port>
+   redis-pilot-cli inventory --port <proxy-port>
    ```
 
 ## 参数
@@ -51,13 +51,13 @@ description: 创建 Redis/Kvrocks 实例，支持单点和主从
 | group | 主库/单点必填 | 实例组名（主从共用） |
 | replica-of | 从库必填 | 主库实例名或地址 |
 | password | 否 | 访问密码 |
-| type | 否 | standalone 或 replication，默认 standalone。声明实例组的拓扑规划：standalone 为单点，replication 表示主从架构（会预分配 Envoy auto_port 用于读写分离）。添加从库时 Server 会自动将 standalone 升级为 replication |
+| type | 否 | standalone 或 replication，默认 standalone。声明实例组的拓扑规划：standalone 为单点，replication 表示主从架构（会预分配 proxy auto_port 用于读写分离）。添加从库时 Server 会自动将 standalone 升级为 replication |
 | config | 否 | 配置覆盖，格式 `k=v,k=v` |
 
 ## 注意事项
 
 - **实例命名不要包含角色或节点信息**（如 master、replica、node1、redis01）。主从角色会因 failover 切换，实例也可能迁移到不同服务器，名字应使用纯序号，例如 `order-1` / `order-2` 或 `order-a` / `order-b`。当前主库由 group 的 `current_master` 字段维护。
 - 创建主从时，先创建主库再创建从库
-- group 名在 Sentinel/Envoy/审计中统一使用
-- Redis 实例端口和 Envoy 端口均由 Server 统一分配，不从 CLI 传 `--port`
-- Envoy 通过 `/api/v1/proxy/snapshot` + xDS 控制面自动下发，不需要执行手动路由更新
+- group 名在 Sentinel/Proxy/审计中统一使用
+- Redis 实例端口和 Proxy 端口均由 Server 统一分配，不从 CLI 传 `--port`
+- Proxy 通过 `/api/v1/proxy/snapshot` HTTP 长轮询自动发现拓扑变更，不需要执行手动路由更新

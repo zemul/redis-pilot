@@ -7,10 +7,10 @@ ports:
   redis:
     start: 6379
     end: 6499
-  envoy_auto:
+  proxy_auto:
     start: 16379
     end: 16499
-  envoy_master:
+  proxy_master:
     start: 16500
     end: 16619
 

@@ -47,11 +47,11 @@ func New(cfg *Config) (*Server, error) {
 	if cfg.Ports.Redis.Start == 0 && cfg.Ports.Redis.End == 0 {
 		cfg.Ports.Redis = PortRange{Start: 6379, End: 6499}
 	}
-	if cfg.Ports.EnvoyAuto.Start == 0 && cfg.Ports.EnvoyAuto.End == 0 {
-		cfg.Ports.EnvoyAuto = PortRange{Start: 16379, End: 16499}
+	if cfg.Ports.ProxyAuto.Start == 0 && cfg.Ports.ProxyAuto.End == 0 {
+		cfg.Ports.ProxyAuto = PortRange{Start: 16379, End: 16499}
 	}
-	if cfg.Ports.EnvoyMaster.Start == 0 && cfg.Ports.EnvoyMaster.End == 0 {
-		cfg.Ports.EnvoyMaster = PortRange{Start: 16500, End: 16619}
+	if cfg.Ports.ProxyMaster.Start == 0 && cfg.Ports.ProxyMaster.End == 0 {
+		cfg.Ports.ProxyMaster = PortRange{Start: 16500, End: 16619}
 	}
 
 	db, err := store.Open(cfg.DataDir)

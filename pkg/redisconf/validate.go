@@ -27,7 +27,7 @@ var validConfigKey = regexp.MustCompile(`^[a-z][a-z0-9-]{0,63}$`)
 //
 //   - replicaof / slaveof：复制关系由 Sentinel 和 Server 拓扑决定。改成指向外部地址，
 //     实例会清空自己的数据集去同步对方——一条指令就能抹掉整个实例。
-//   - requirepass / masterauth：置空即摘掉认证；改值会让 Server、Agent、Envoy、Sentinel
+//   - requirepass / masterauth：置空即摘掉认证；改值会让 Server、Agent、Proxy、Sentinel
 //     手里的密码全部失效，实例变成谁都连不上。
 //   - dir / dbfilename / appendfilename / appenddirname：持久化文件的位置决定备份和恢复
 //     能不能找到数据。改掉它，备份链路会静默备份到错误的路径。

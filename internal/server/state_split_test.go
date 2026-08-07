@@ -214,7 +214,7 @@ func TestReconcile_NeverWritesDesiredState(t *testing.T) {
 //
 // "Agent 不可达"是对 Agent 的观测，不是对实例的观测。Agent 重启或网络抖动时，它名下的
 // Redis 实例通常完好无损。如果把 unreachable 写进实例的 ObservedStatus，IsServing() 会
-// 变成 false，proxy_group 会把这些健康实例从 Envoy 端点里摘掉——一次 Agent 重启就造成
+// 变成 false，proxy_group 会把这些健康实例从 Proxy 端点里摘掉——一次 Agent 重启就造成
 // 一次业务中断。
 //
 // 所以这种情况只告警，不写观测字段。
@@ -248,7 +248,7 @@ func TestReconcile_AgentUnreachableDoesNotOverwriteObservedStatus(t *testing.T) 
 	inst := after.Instances["cache-1"]
 	if inst.ObservedStatus != apitypes.ObservedRunning {
 		t.Errorf("ObservedStatus = %q。Agent 不可达是对 Agent 的观测，不是对实例的观测；"+
-			"覆盖实例观测状态会让 Envoy 把健康实例摘掉", inst.ObservedStatus)
+			"覆盖实例观测状态会让 Proxy 把健康实例摘掉", inst.ObservedStatus)
 	}
 	if !inst.IsServing() {
 		t.Error("实例应当仍被认为可以承接流量")
