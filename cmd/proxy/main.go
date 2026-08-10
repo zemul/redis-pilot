@@ -47,7 +47,6 @@ func main() {
 
 	// 通用
 	masterReadWeight := flag.Int("master-read-weight", 0, "master read weight in read pool (0 = master not in read pool)")
-	consistencyWindow := flag.Duration("consistency-window", 500*time.Millisecond, "session consistency window")
 	poolSize := flag.Int("pool-size", 64, "max shared connections per backend (§13)")
 	idleTimeout := flag.Duration("idle-timeout", 5*time.Minute, "idle upstream connection timeout (§13)")
 	maxRequestBytes := flag.Int("max-request-bytes", 16*1024*1024, "max bytes per command (D13)")
@@ -77,7 +76,6 @@ func main() {
 		// 代码默认值
 		ConnectTimeout:    3 * time.Second,
 		ShutdownTimeout:   10 * time.Second,
-		ConsistencyWindow: 500 * time.Millisecond,
 		PoolSize:          64,
 		IdleTimeout:       5 * time.Minute,
 		MaxRequestBytes:   16 * 1024 * 1024,
@@ -120,9 +118,6 @@ func main() {
 		}
 		if fc.MasterReadWeight != 0 {
 			cfg.MasterReadWeight = fc.MasterReadWeight
-		}
-		if fc.ConsistencyWindow != 0 {
-			cfg.ConsistencyWindow = time.Duration(fc.ConsistencyWindow)
 		}
 		if fc.PoolSize != 0 {
 			cfg.PoolSize = fc.PoolSize
@@ -176,9 +171,6 @@ func main() {
 	}
 	if setFlags["master-read-weight"] {
 		cfg.MasterReadWeight = *masterReadWeight
-	}
-	if setFlags["consistency-window"] {
-		cfg.ConsistencyWindow = *consistencyWindow
 	}
 	if setFlags["pool-size"] {
 		cfg.PoolSize = *poolSize

@@ -43,7 +43,6 @@ type FileConfig struct {
 
 	// 通用
 	MasterReadWeight  int      `yaml:"master_read_weight"`
-	ConsistencyWindow Duration `yaml:"consistency_window"`
 	PoolSize          int      `yaml:"pool_size"`
 	IdleTimeout       Duration `yaml:"idle_timeout"`
 	MetricsListen     string   `yaml:"metrics_listen"`

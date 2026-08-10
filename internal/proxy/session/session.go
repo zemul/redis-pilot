@@ -39,7 +39,6 @@ type Config struct {
 	Password          string        // group 密码（D7：空=不鉴权）
 	ConnectTimeout    time.Duration // 建连超时（§15: 3s）
 	MasterReadWeight  int           // master 读权重（默认 0）
-	ConsistencyWindow time.Duration // 会话一致性窗口（默认 500ms）
 	MaxRequestBytes   int           // 单条命令最大字节数（D13，默认 16MB）
 }
 
@@ -57,7 +56,6 @@ type Session struct {
 
 	mode          Mode
 	authed        bool
-	lastWriteAt   time.Time
 	exclusiveConn *backend.UpstreamConn // EXCLUSIVE 模式下的独占连接
 
 	// Pipeline read-ahead: command read from buffer but not yet processed
@@ -70,10 +68,6 @@ var ErrQuit = errors.New("client sent QUIT")
 
 // New 创建 session。Pools 由 proxysvc 创建并共享。
 func New(conn net.Conn, cfg Config, masterPool *backend.Pool, replicaPools map[string]*backend.Pool, m *metrics.Metrics) (*Session, error) {
-	if cfg.ConsistencyWindow == 0 {
-		cfg.ConsistencyWindow = 500 * time.Millisecond
-	}
-
 	// 构建读池：master + 所有 replica
 	entries := []readpool.Entry{
 		{Addr: cfg.MasterAddr, Weight: cfg.MasterReadWeight, Role: readpool.RoleMaster},
@@ -248,11 +242,10 @@ func (s *Session) selectTarget(d route.Decision) *backend.Pool {
 
 	switch d.Class {
 	case route.ClassWrite:
-		s.lastWriteAt = time.Now()
 		return s.masterPool
 
 	case route.ClassRead:
-		if s.rwSplitEnabled() && time.Since(s.lastWriteAt) >= s.cfg.ConsistencyWindow {
+		if s.rwSplitEnabled() {
 			return s.selectFromReadPool()
 		}
 		return s.masterPool

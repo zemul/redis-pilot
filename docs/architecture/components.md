@@ -471,10 +471,10 @@ Redis 协议无 Host Header，**只能通过端口区分不同实例**：
 客户端 -> Proxy:16500 (MASTER) -> 所有命令走主库 order-1:6379
 ```
 
-- AUTO 端口：写命令路由到主库，读命令在主库 + 所有健康从库间按 weight 分摊（会话一致性窗口内强制走主库）
+- AUTO 端口：写命令路由到主库，读命令在主库 + 所有健康从库间按 weight 分摊
 - MASTER 端口：所有命令（读+写）都走主库，适合需要强一致读的场景
 - 从库不可用时 AUTO 端口读回落到主库，同时打告警指标
-- 会话一致性：客户端写后 500ms 内的读强制走主库，避免读己之写的 stale read
+- 不保证 read-your-writes：AUTO 端口读可能命中未同步的从库，需要强一致读用 MASTER 端口
 
 **单端口模型（单点实例）**
 
@@ -501,7 +501,6 @@ poll:
   timeout: 5s
 rw_split:
   enabled_groups: []         # 按 group 显式开读写分离
-  session_consistency_ms: 500
   master_read_weight: 1      # master 在读池的权重
 limits:
   deny_commands: [MONITOR, KEYS, FLUSHALL, FLUSHDB, CONFIG, SHUTDOWN, ACL, PSYNC]
@@ -513,7 +512,7 @@ limits:
 > - Proxy 是 Go 二进制（`redis-pilot -config proxy.yaml`），不是外部容器
 > - Server 暴露 proxy snapshot（`/api/v1/proxy/snapshot`），Proxy 通过 HTTP 长轮询拉取
 > - 拓扑变化通过快照热更新，无需重启 Proxy
-> - 代理级策略（deny_commands / consistency 窗口 / master_read_weight）在 `proxy.yaml` 中，变更需重启 Proxy
+> - 代理级策略（deny_commands / master_read_weight）在 `proxy.yaml` 中，变更需重启 Proxy
 
 #### 3.4.4 管理命令
 

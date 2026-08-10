@@ -29,7 +29,6 @@ type Config struct {
 	ConnectTimeout    time.Duration
 	ShutdownTimeout   time.Duration
 	MasterReadWeight  int
-	ConsistencyWindow time.Duration
 	PoolSize          int           // 每后端池上限（§13，默认 64）
 	IdleTimeout       time.Duration // 空闲连接回收（§13，默认 5m）
 	MetricsListen     string        // /metrics HTTP 监听地址（空=不开）
@@ -94,9 +93,6 @@ func New(cfg Config) *Proxy {
 	}
 	if cfg.ShutdownTimeout == 0 {
 		cfg.ShutdownTimeout = 10 * time.Second
-	}
-	if cfg.ConsistencyWindow == 0 {
-		cfg.ConsistencyWindow = 500 * time.Millisecond
 	}
 	if cfg.PoolSize == 0 {
 		cfg.PoolSize = 64
@@ -374,7 +370,6 @@ func (p *Proxy) handleConnDiscovery(conn net.Conn, group, mode string) {
 		Password:          g.Password,
 		ConnectTimeout:    p.cfg.ConnectTimeout,
 		MasterReadWeight:  p.cfg.MasterReadWeight,
-		ConsistencyWindow: p.cfg.ConsistencyWindow,
 		MaxRequestBytes:   p.cfg.MaxRequestBytes,
 	}
 	if mode == "master" {
@@ -412,7 +407,6 @@ func (p *Proxy) handleConnStatic(conn net.Conn) {
 		Password:          p.cfg.Password,
 		ConnectTimeout:    p.cfg.ConnectTimeout,
 		MasterReadWeight:  p.cfg.MasterReadWeight,
-		ConsistencyWindow: p.cfg.ConsistencyWindow,
 		MaxRequestBytes:   p.cfg.MaxRequestBytes,
 	}
 

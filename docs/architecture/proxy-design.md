@@ -34,7 +34,7 @@
 | D2 | 对标阿里云**读写分离**外部行为，非其内部实现 | 路由表、连接语义、健康处理照阿里云**公开文档**；内部实现（FIFO 解复用等）由 RESP 协议约束推导 + Predixy 源码佐证，非来自阿里云闭源代码。 |
 | D3 | 池化 + 独占升级模型 | 常规命令多路复用共享上游连接；阻塞/事务/订阅命令把连接从池里"升级"为独占。连接模型 day1 定死（池化不是可后补的外挂，它动的是响应解复用这个核心）。 |
 | D4 | 读池纳入 master | 读请求在 master + 所有 replica 间按 weight 分摊（master 读权重可调低，因其还要扛写）。 |
-| D5 | 会话一致性默认开，窗口 500ms | 客户端发生写后，其读在窗口内强制走 master，避免读己之写的 stale read。 |
+| D5 | 无会话一致性窗口 | 读写分离时读始终走读池（replica + master 按 weight），不保证 read-your-writes。需要强一致读的场景用 MASTER 端口。 |
 | D6 | 读写分离按 group 显式开 | 不是全局默认。未开的 group 走"强制 master"语义。 |
 | D7 | 认证：**按实例（group）来，密码全部来自快照，proxy 不配任何密码** | 每个 group 的 client 面密码 = 该 group 后端自身的 requirepass（快照 `ProxyCluster.Password` 已携带）；client 面与后端面**共用这同一个密码**。后端未设密码则该 group 两面都不鉴权。proxy 靠"客户端连的哪个监听端口 -> 哪个 group -> 哪个密码"判定（与"端口即路由"一致）。AUTH 在 proxy **终结、不透传**（透传会破坏池化）。 |
 | D8 | 仅支持 RESP2 | 绝大多数客户端默认 RESP2。`HELLO 3` 不应答 3 / 返回错误，逼客户端回落 RESP2。 |
@@ -44,7 +44,7 @@
 | D12 | `MONITOR` 禁用 | 会刷屏且需独占连接；列入危险命令名单。 |
 | D13 | per-client 连接 + 单请求体积 上限 | 对标公有云 proxy 保护机制。per-client 并发连接超阈值 reject 新连接防单客户端耗尽 fd/端口预算（§13）；单 RESP 帧超 `max_request_bytes` reject 防 OOM。均 `proxy.yaml` 可配。 |
 | D14 | 优雅关闭（SIGTERM drain） | 收到 SIGTERM -> 停止 accept -> 等待 inflight 写完成或 `shutdown_timeout`（默认 10s）超时 -> 关闭。SHARED 连接等 FIFO 排空；EXCLUSIVE 连接等当前阻塞命令返回或超时。避免 kill -9 断 inflight 写导致 ambiguous error。 |
-| D15 | 代理级策略：v1 reload-only | deny_commands / consistency 窗口 / master_read_weight 在 `proxy.yaml` 中，变更需重启 proxy。拓扑变化通过快照热更新无需重启。后续可把策略搬进快照 `proxy_config` 字段实现 Server 在线下发（O4）。v1 接受重启频率低（策略稳定后不动）。 |
+| D15 | 代理级策略：v1 reload-only | deny_commands / master_read_weight 在 `proxy.yaml` 中，变更需重启 proxy。拓扑变化通过快照热更新无需重启。后续可把策略搬进快照 `proxy_config` 字段实现 Server 在线下发（O4）。v1 接受重启频率低（策略稳定后不动）。 |
 
 > D7 补充：密码来源是每 group 的快照 `ProxyCluster.Password`（由 master 实例的
 > requirepass 而来，见 §11）。proxy 侧无任何密码配置，故不存在配置漂移；password 随快照
@@ -65,7 +65,7 @@
   立场（重放不安全），后续视客户端反馈可补有限重试。
 - **O3 超时策略（已定，见 §15）。** EXCLUSIVE/阻塞连接不设 read 超时。TCP keepalive
   60s，建连超时 3s。Redis 实例模板须设 `timeout 0`。
-- **O4 代理级路由策略在线变更。** 当前 deny_commands / consistency 窗口 / master_read_weight
+- **O4 代理级路由策略在线变更。** 当前 deny_commands / master_read_weight
   在 proxy.yaml 中，变更需重启 proxy（D15）。拓扑变化靠快照热更新无需重启。后续可将策略
   搬进快照由 Server 在线下发。
 
@@ -94,7 +94,6 @@
   - `NORMAL`：命令逐条按路由表分发到共享池。
   - `EXCLUSIVE(conn)`：整条 client 钉死在某条独占上游，直到独占条件结束。
   - `SUBSCRIBE`：进入推送模式（独占的一种，基本不还池）。
-- `lastWriteAt`：会话一致性时间戳（见 §8）。
 - `db`：当前 SELECT 的 DB（见 §5.5）。
 
 ### 5.2 Backend -- 一个 redis 实例（master 或某 replica）
@@ -226,14 +225,13 @@ open 监听端口 -> 开始 accept。
 §7.4 路径触发 -> client 断连重试。持续失败超阈值（默认 5min）打告警「proxy 与 Server
 失联」。
 
-## 8. 会话一致性（D4/D5/D6）
+## 8. 读写分离（D4/D5/D6）
 
 - 读写分离**按 group 显式开**（D6）；未开的 group 所有命令走 master。
-- 开启的 group：写命令更新 `client.lastWriteAt`；读命令若 `now - lastWriteAt < 500ms`
-  强制走 master，否则进读池（master + replica 按 weight，D4）。
-- 窗口时长 500ms 可配（按 group）。
-- 局限：会话一致性只保证**同一 client 连接**读己之写；跨连接不保证（与 Redis 主从异步
-  复制的固有语义一致）。
+- 开启的 group：写命令走 master 池；读命令直接进读池（master + replica 按 weight，D4）。
+- **不保证 read-your-writes**（D5）：读写分离后读可能命中尚未同步的 replica。需要
+  read-your-writes 语义的客户端应使用 MASTER 端口（直连主库）。
+- AUTO 端口适合读多写少、容忍最终一致性的场景（缓存、统计、报表等）。
 
 ## 9. 读分摊与 weight（D4/D10）
 
@@ -360,7 +358,7 @@ per-command 指标 v1 降级为"先记录不细分"，后续按需补。
 internal/proxy/
   session/    ClientSession：client 连接、RESP 解析、mode 状态机、auth 状态、（预留）reorder buffer
   backend/    Backend：角色/健康/weight；UpstreamConn 池（pool_size/idle_timeout）；inflight FIFO 解复用
-  route/      路由决策：命令分类表、读写判定、会话一致性、weight 选择（纯函数，易单测）
+  route/      路由决策：命令分类表、读写判定、weight 选择（纯函数，易单测）
   resp/       RESP2 解析/编码（解析到判定所需，不全量解 value）
   discovery/  快照拉取（长轮询客户端）+ 后端状态维护
   proxysvc/   组装：listener、失败重连、指标、优雅关闭、/metrics endpoint
@@ -377,7 +375,7 @@ cmd/proxy/    进程入口
 2. **M2 单后端直通**：写死一组 master/replica，每 client 一条 SHARED 上游（池大小=客户端
    数，退化不收敛），跑通 `XREADGROUP … BLOCK 0`、`MULTI/EXEC`、`SUBSCRIBE` 的独占路径。
    验收线 = **旧代理不支持的那些命令在这里能跑通**。
-3. **M3 读写分离 + 会话一致性**：接读池 weight、500ms 窗口、回落 master。
+3. **M3 读写分离**：接读池 weight、回落 master。
 4. **M4 快照接入 + failover**：搬 `discovery`，接 Server 快照，实现 master 切换 close/rebuild。
 5. **M5 池收敛 + 指标**：SHARED 连接真正多路复用（打开 FIFO 解复用 / reorder 或 D11 化简），
    补 §14 指标。

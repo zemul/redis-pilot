@@ -12,7 +12,7 @@
 | 分类 | 含义 | 路由动作 |
 |------|------|---------|
 | `WRITE` | 修改数据 | master 池 |
-| `READ` | 只读 | 读池（master + replica 按 weight）；会话一致性窗口内 → master |
+| `READ` | 只读 | 读池（master + replica 按 weight）；未开读写分离时 → master |
 | `BLOCKING` | 可无限阻塞（含阻塞写、阻塞读） | **pin 独占** + 走 master |
 | `TXN` | 事务控制 | **pin 独占** + 走 master |
 | `SUBSCRIBE` | 进入/维持推送模式 | **pin（SUBSCRIBE 模式）** + 走 master |
