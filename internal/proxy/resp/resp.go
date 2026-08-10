@@ -218,29 +218,74 @@ func (r *Reader) readBulkFrame() ([]byte, error) {
 	return raw, nil
 }
 
-// readArrayFrame 读取 array 的完整帧（递归读取 N 个子帧）。
+// readArrayFrame 读取 array 的完整帧。
+// 对 bulk string 元素内联读取（避免递归调用和中间 buffer 分配），
+// 其他类型回退 ReadFrame 递归处理。
 func (r *Reader) readArrayFrame() ([]byte, error) {
 	line, err := r.readLine()
 	if err != nil {
 		return nil, err
 	}
-	raw := make([]byte, 0, 256) // pre-allocate to reduce reallocations
-	raw = append(raw, line...)
 
 	count, err := parseArrayCount(line)
 	if err != nil {
 		return nil, err
 	}
 	if count < 0 {
-		return raw, nil // null array
+		// null array
+		raw := make([]byte, 0, len(line))
+		return append(raw, line...), nil
 	}
 
+	// Pre-allocate based on element count: each bulk string is at least
+	// $N\r\n + data + \r\n. 32 bytes/element is a conservative average.
+	raw := make([]byte, 0, len(line)+count*32)
+	raw = append(raw, line...)
+
 	for i := 0; i < count; i++ {
-		elem, err := r.ReadFrame()
+		first, err := r.br.Peek(1)
 		if err != nil {
 			return raw, err
 		}
-		raw = append(raw, elem...)
+
+		if first[0] == '$' {
+			// Inline bulk string: read header + data directly into raw,
+			// avoiding the intermediate allocation in readBulkFrame.
+			elemLine, err := r.readLine()
+			if err != nil {
+				return raw, err
+			}
+			raw = append(raw, elemLine...)
+
+			if len(elemLine) < 4 {
+				return raw, fmt.Errorf("resp: invalid bulk string header %q", elemLine)
+			}
+
+			lenStr := string(elemLine[1 : len(elemLine)-2])
+			if lenStr == "-1" {
+				continue // null bulk string, no data
+			}
+
+			n, err := strconv.Atoi(lenStr)
+			if err != nil || n < 0 {
+				return raw, fmt.Errorf("resp: invalid bulk string length %q", lenStr)
+			}
+
+			// Grow raw by n+2, then read data+\r\n directly into it.
+			start := len(raw)
+			raw = append(raw, make([]byte, n+2)...)
+			if _, err := io.ReadFull(r.br, raw[start:]); err != nil {
+				return raw, err
+			}
+		} else {
+			// Non-bulk-string element (simple string, error, integer, nested array):
+			// fall back to recursive ReadFrame.
+			elem, err := r.ReadFrame()
+			if err != nil {
+				return raw, err
+			}
+			raw = append(raw, elem...)
+		}
 	}
 	return raw, nil
 }
