@@ -84,6 +84,28 @@ func (p *Pool) RoundTrip(raw []byte) ([]byte, error) {
 	return resp.data, resp.err
 }
 
+// RoundTripBatch sends multiple commands as a pipeline and collects
+// responses in order. All commands are sent before any response is read,
+// enabling backend-side pipelining.
+func (p *Pool) RoundTripBatch(raws [][]byte) ([][]byte, error) {
+	conn := p.getSharedConn()
+	if conn == nil {
+		return nil, ErrPoolExhausted
+	}
+	channels := conn.SendBatch(raws)
+
+	resps := make([][]byte, len(raws))
+	for i, ch := range channels {
+		resp := <-ch
+		if resp.err != nil {
+			p.removeClosedConns()
+			return nil, resp.err
+		}
+		resps[i] = resp.data
+	}
+	return resps, nil
+}
+
 // AcquireExclusive 取一条连接用于独占模式（§7.1）。
 // 优先从空闲池取，否则新建。
 func (p *Pool) AcquireExclusive() (*UpstreamConn, error) {

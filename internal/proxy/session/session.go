@@ -59,6 +59,11 @@ type Session struct {
 	authed        bool
 	lastWriteAt   time.Time
 	exclusiveConn *backend.UpstreamConn // EXCLUSIVE 模式下的独占连接
+
+	// Pipeline read-ahead: command read from buffer but not yet processed
+	// (because it couldn't be batched with the previous group).
+	pendingRaw  []byte
+	pendingArgv [][]byte
 }
 
 var ErrQuit = errors.New("client sent QUIT")
@@ -101,12 +106,21 @@ func (s *Session) Serve() error {
 	defer s.cleanup()
 
 	for {
-		raw, argv, err := s.clientReader.ReadCommand()
-		if err != nil {
-			if err == io.EOF {
-				return nil
+		// Get next command: either from pipeline read-ahead or read from client.
+		var raw []byte
+		var argv [][]byte
+		if s.pendingRaw != nil {
+			raw, argv = s.pendingRaw, s.pendingArgv
+			s.pendingRaw, s.pendingArgv = nil, nil
+		} else {
+			var err error
+			raw, argv, err = s.clientReader.ReadCommand()
+			if err != nil {
+				if err == io.EOF {
+					return nil
+				}
+				return err
 			}
-			return err
 		}
 
 		// AUTH 检查
@@ -192,8 +206,34 @@ func (s *Session) Serve() error {
 		default:
 			// WRITE / READ / MASTER_ONLY / ADMIN
 			pool := s.selectTarget(d)
-			if err := s.forwardAndRelay(raw, pool); err != nil {
-				return err
+
+			// Pipeline: read ahead while commands are buffered.
+			// Batch commands of the same class going to the same pool.
+			batch := [][]byte{raw}
+			for s.clientReader.PendingCommand() {
+				raw2, argv2, err := s.clientReader.ReadCommand()
+				if err != nil {
+					break
+				}
+				d2 := route.Classify(argv2)
+				if d2.Class != d.Class {
+					// Different routing class — save for next iteration.
+					s.pendingRaw = raw2
+					s.pendingArgv = argv2
+					break
+				}
+				s.metrics.IncCommand(s.cfg.Group)
+				batch = append(batch, raw2)
+			}
+
+			if len(batch) == 1 {
+				if err := s.forwardAndRelay(raw, pool); err != nil {
+					return err
+				}
+			} else {
+				if err := s.forwardBatchAndRelay(batch, pool); err != nil {
+					return err
+				}
 			}
 		}
 	}
@@ -258,6 +298,49 @@ func (s *Session) forwardAndRelay(raw []byte, pool *backend.Pool) error {
 		return err
 	}
 	return s.clientWriter.WriteRaw(resp)
+}
+
+// forwardBatchAndRelay forwards a batch of commands to the same pool,
+// collecting all responses before writing them to the client in one flush.
+// Enables pipelining: all commands are sent before any response is read.
+func (s *Session) forwardBatchAndRelay(batch [][]byte, pool *backend.Pool) error {
+	// EXCLUSIVE mode: send all, then recv all (pipeline on exclusive conn).
+	if s.exclusiveConn != nil {
+		w := s.exclusiveConn.Writer()
+		for _, raw := range batch {
+			if err := w.WriteRawNoFlush(raw); err != nil {
+				return err
+			}
+		}
+		if err := w.Flush(); err != nil {
+			return err
+		}
+		for range batch {
+			resp, err := s.exclusiveConn.Recv()
+			if err != nil {
+				return err
+			}
+			if err := s.clientWriter.WriteRawNoFlush(resp); err != nil {
+				return err
+			}
+		}
+		return s.clientWriter.Flush()
+	}
+
+	if pool == nil {
+		return errors.New("no backend pool available")
+	}
+
+	resps, err := pool.RoundTripBatch(batch)
+	if err != nil {
+		return err
+	}
+	for _, resp := range resps {
+		if err := s.clientWriter.WriteRawNoFlush(resp); err != nil {
+			return err
+		}
+	}
+	return s.clientWriter.Flush()
 }
 
 // forwardExclusive 在独占连接上直接转发（不走 FIFO）。

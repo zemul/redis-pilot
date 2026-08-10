@@ -31,6 +31,12 @@ func (r *Reader) SetMaxBytes(n int) {
 	r.maxBytes = n
 }
 
+// PendingCommand returns true if more data is buffered and likely forms
+// another complete command. Used to detect pipelined commands without blocking.
+func (r *Reader) PendingCommand() bool {
+	return r.br.Buffered() > 0
+}
+
 // ReadCommand 读取一条客户端命令（RESP array of bulk string）。
 // 返回原始字节（可直接转发后端）和解析出的 argv（命令名 + 参数，不含 RESP 框架）。
 // 支持 inline 命令（非 * 开头）以兼容老客户端。
@@ -264,6 +270,13 @@ func (w *Writer) WriteRaw(raw []byte) error {
 		return err
 	}
 	return w.bw.Flush()
+}
+
+// WriteRawNoFlush writes raw RESP bytes without flushing.
+// Caller must Flush before waiting for responses. Used for pipeline batching.
+func (w *Writer) WriteRawNoFlush(raw []byte) error {
+	_, err := w.bw.Write(raw)
+	return err
 }
 
 // WriteCommand 将 argv 编码为 RESP array 并写入（发给后端）。

@@ -70,6 +70,40 @@ func (c *UpstreamConn) Send(raw []byte) <-chan response {
 	return ch
 }
 
+// SendBatch writes multiple commands in a single flush and returns
+// response channels in order. Enables pipelining: all commands are
+// sent to the backend before waiting for any response.
+func (c *UpstreamConn) SendBatch(raws [][]byte) []<-chan response {
+	channels := make([]<-chan response, len(raws))
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.closed {
+		for i := range channels {
+			ch := make(chan response, 1)
+			ch <- response{err: errConnClosed}
+			channels[i] = ch
+		}
+		return channels
+	}
+
+	for i, raw := range raws {
+		ch := make(chan response, 1)
+		if err := c.writer.WriteRawNoFlush(raw); err != nil {
+			ch <- response{err: err}
+		} else {
+			c.inflight = append(c.inflight, ch)
+		}
+		channels[i] = ch
+	}
+
+	c.writer.Flush()
+	c.lastUsedAt = time.Now()
+
+	return channels
+}
+
 // readLoop 持续读响应，弹 FIFO 队头分发（SHARED 模式）。
 // 连接断开时通知所有 inflight 等待者（§7.4）。
 func (c *UpstreamConn) readLoop() {
