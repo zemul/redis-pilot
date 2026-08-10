@@ -786,6 +786,14 @@ function DashboardView({ groups, servers, audits }) {
   );
 }
 
+function SummaryCell({ label, value, icon: Icon, tone = 'neutral' }) {
+  return (
+    <div className={`summary-cell tone-${tone}`}>
+      <span className="summary-label"><Icon size={15} /> {label}</span>
+      <span className="summary-value">{value}</span>
+    </div>
+  );
+}
 
 function InstancesView({ groups, query, setQuery, expandedGroups, setExpandedGroups, onOpenDetail, onOpenBackups, onPowerAction, pendingAction }) {
   const filtered = groups.filter((group) => {
