@@ -736,6 +736,20 @@ button:disabled {
 .alert-item > div { display: flex; flex-direction: column; gap: 2px; }
 .alert-item strong { font-size: 13px; font-weight: 500; }
 
+/* ---------- 大盘:服务器行 ---------- */
+.server-row {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 13px 18px;
+  border-bottom: 1px solid var(--border);
+}
+.server-row:last-child { border-bottom: 0; }
+.server-row > div { display: flex; flex-direction: column; gap: 2px; flex: 1; min-width: 0; }
+.server-row strong { font-size: 13px; font-weight: 500; }
+
+.text-warn { color: var(--amber-fg); }
+
 /* ============================================================
    Tables
    ============================================================ */

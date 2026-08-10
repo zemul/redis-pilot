@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
-  Activity,
   AlertCircle,
   AlertTriangle,
   BarChart3,
@@ -660,79 +659,133 @@ export default function App() {
 	}
 
 function DashboardView({ groups, servers, audits }) {
-  const healthyGroups = groups.filter((group) => group.status === 'healthy' || group.status === 'running').length;
-  const alerts = groups.filter((group) => instanceStatusTone(group.status) === 'bad').length +
-    servers.filter((item) => getField(item, 'status', 'Status') === 'unhealthy').length;
+  const allInstances = groups.flatMap((g) => g.instances);
+  const totalInstances = allInstances.length;
+  const runningInstances = allInstances.filter((inst) => getField(inst, 'status', 'Status') === 'running').length;
+  const failedInstances = allInstances.filter((inst) => instanceStatusTone(getField(inst, 'status', 'Status')) === 'bad').length;
 
-  const allHealthy = groups.length > 0 && healthyGroups === groups.length;
-  const healthTone = groups.length === 0 ? 'neutral' : allHealthy ? 'positive' : 'warn';
-  const alertTone = alerts > 0 ? 'alert' : 'neutral';
+  const totalGroups = groups.length;
+  const healthyGroups = groups.filter((g) => g.status === 'running' || g.status === 'healthy').length;
+
+  const totalServers = servers.length;
+  const healthyServers = servers.filter((s) => {
+    const st = getField(s, 'status', 'Status');
+    return st === 'healthy' || st === 'drain';
+  }).length;
+
+  const groupAlerts = groups.filter((g) => g.status === 'degraded' || g.status === 'failover_conflict').length;
+  const serverAlerts = servers.filter((s) => getField(s, 'status', 'Status') === 'unhealthy').length;
+  const totalAlerts = failedInstances + groupAlerts + serverAlerts;
+
+  const instanceTone = totalInstances === 0 ? 'neutral' : runningInstances === totalInstances ? 'positive' : failedInstances > 0 ? 'alert' : 'warn';
+  const groupTone = totalGroups === 0 ? 'neutral' : healthyGroups === totalGroups ? 'positive' : 'warn';
+  const serverTone = totalServers === 0 ? 'neutral' : healthyServers === totalServers ? 'positive' : 'warn';
+  const alertTone = totalAlerts > 0 ? 'alert' : 'positive';
+
+  const instancesPerServer = {};
+  for (const inst of allInstances) {
+    const s = getField(inst, 'server', 'Server', '-');
+    instancesPerServer[s] = (instancesPerServer[s] || 0) + 1;
+  }
 
   return (
     <div className="stack">
       <section className="panel summary-strip">
-        <SummaryCell label="总实例组数" value={groups.length} icon={Database} />
-        <SummaryCell label="服务器节点" value={servers.length} icon={Server} />
-        <SummaryCell label="健康集群" value={healthyGroups} icon={ShieldCheck} tone={healthTone} />
-        <SummaryCell label="待处理告警" value={alerts} icon={AlertCircle} tone={alertTone} />
+        <SummaryCell label="实例状态" value={totalInstances ? `${runningInstances}/${totalInstances}` : '0'} icon={Database} tone={instanceTone} />
+        <SummaryCell label="拓扑健康" value={totalGroups ? `${healthyGroups}/${totalGroups}` : '0'} icon={GitMerge} tone={groupTone} />
+        <SummaryCell label="服务器" value={totalServers ? `${healthyServers}/${totalServers}` : '0'} icon={Server} tone={serverTone} />
+        <SummaryCell label="待处理告警" value={totalAlerts} icon={AlertTriangle} tone={alertTone} />
       </section>
 
       <div className="dashboard-grid">
         <section className="panel">
           <div className="panel-header">
-            <h3>实例运行状态概览</h3>
-            <Activity size={18} />
+            <h3>实例组概览</h3>
+            <Database size={18} />
           </div>
-          <div className="panel-body list">
-            {groups.length === 0 ? <EmptyState title="暂无实例组" detail="创建实例后会在这里展示运行状态。" /> :
-              groups.slice(0, 8).map((group) => <InstanceGroupCard key={group.groupName} group={group} />)}
-          </div>
+          {groups.length === 0 ? (
+            <div className="panel-body"><EmptyState title="暂无实例组" detail="创建实例后会在这里展示运行状态。" /></div>
+          ) : (
+            <div className="table-scroll">
+              <table>
+                <thead>
+                  <tr>
+                    <th>实例组</th>
+                    <th>引擎</th>
+                    <th>拓扑</th>
+                    <th>主库</th>
+                    <th>代理端口</th>
+                    <th>实例</th>
+                    <th>状态</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {groups.map((group) => {
+                    const master = group.master;
+                    const running = group.instances.filter((inst) => getField(inst, 'status', 'Status') === 'running').length;
+                    const total = group.instances.length;
+                    return (
+                      <tr key={group.groupName}>
+                        <td><strong>{group.groupName}</strong></td>
+                        <td><span className="muted">{engineLabel(group)}</span></td>
+                        <td>{topologyLabel(group, master)}</td>
+                        <td>
+                          {master ? (
+                            <><strong>{master.name}</strong><span className="muted">{getField(master, 'server', 'Server', '-')}</span></>
+                          ) : <span className="muted">-</span>}
+                        </td>
+                        <td><ProxyPorts group={group} /></td>
+                        <td><span className={`mono ${running === total ? '' : 'text-warn'}`}>{running}/{total}</span></td>
+                        <td><StatusBadge status={group.status} /></td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
         </section>
 
-        <section className="panel">
-          <div className="panel-header">
-            <h3>审计记录</h3>
-            <Clock size={18} />
-          </div>
-          <div className="panel-body audit-list">
-            {(audits || []).slice(0, 4).map((log, index) => (
-              <AuditCard key={log.id || log.ID || index} log={log} />
-            ))}
-            {(!audits || audits.length === 0) && <EmptyState icon={List} title="暂无审计记录" />}
-          </div>
-        </section>
+        <div className="stack">
+          <section className="panel">
+            <div className="panel-header">
+              <h3>服务器状态</h3>
+              <Server size={18} />
+            </div>
+            <div className="panel-body list">
+              {servers.length === 0 ? <EmptyState icon={Server} title="暂无服务器" /> :
+                servers.map((s) => (
+                  <div key={s.name} className="server-row">
+                    <StatusBadge status={getField(s, 'status', 'Status')} />
+                    <div>
+                      <strong>{s.name}</strong>
+                      <code className="muted">{getField(s, 'endpoint', 'Endpoint', '-')}</code>
+                    </div>
+                    <span className="muted">{instancesPerServer[s.name] || 0} 个实例</span>
+                  </div>
+                ))
+              }
+            </div>
+          </section>
+
+          <section className="panel">
+            <div className="panel-header">
+              <h3>最近操作</h3>
+              <Clock size={18} />
+            </div>
+            <div className="panel-body audit-list">
+              {(audits || []).slice(0, 6).map((log, index) => (
+                <AuditCard key={log.id || log.ID || index} log={log} />
+              ))}
+              {(!audits || audits.length === 0) && <EmptyState icon={Clock} title="暂无操作记录" />}
+            </div>
+          </section>
+        </div>
       </div>
     </div>
   );
 }
 
-function SummaryCell({ label, value, icon: Icon, tone = 'neutral' }) {
-  return (
-    <div className={`summary-cell tone-${tone}`}>
-      <span className="summary-label"><Icon size={15} /> {label}</span>
-      <span className="summary-value">{value}</span>
-    </div>
-  );
-}
-
-function InstanceGroupCard({ group }) {
-  const master = group.master;
-  const masterServer = master ? getField(master, 'server', 'Server', '-') : '';
-  const topology = topologyLabel(group, master) === '单点' ? '单点' : '主从';
-  return (
-    <div className="instance-card">
-      <div className={`status-dot ${statusMeta(group.status).tone}`} />
-      <div className="card-main">
-        <strong>{group.groupName}</strong>
-        <span>{master ? `主库: ${masterServer}` : '无主节点'}{group.replicas.length > 0 ? ` · 从库: ${group.replicas.length} 个` : ''}</span>
-      </div>
-      <div className="card-side">
-        <StatusBadge status={group.status} />
-        <span><GitMerge size={12} /> {engineLabel(group)} · {topology}</span>
-      </div>
-    </div>
-  );
-}
 
 function InstancesView({ groups, query, setQuery, expandedGroups, setExpandedGroups, onOpenDetail, onOpenBackups, onPowerAction, pendingAction }) {
   const filtered = groups.filter((group) => {
