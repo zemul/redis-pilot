@@ -33,7 +33,7 @@ type Pool struct {
 // NewPool 创建连接池。
 func NewPool(addr, password string, connectTimeout time.Duration, maxSize int, idleTimeout time.Duration) *Pool {
 	if maxSize <= 0 {
-		maxSize = 64
+		maxSize = 128
 	}
 	if idleTimeout <= 0 {
 		idleTimeout = 5 * time.Minute
@@ -77,6 +77,7 @@ func (p *Pool) RoundTrip(raw []byte) ([]byte, error) {
 	}
 	ch := conn.Send(raw)
 	resp := <-ch
+	chanPool.Put(ch)
 	if resp.err != nil {
 		// 连接可能已断开，清理
 		p.removeClosedConns()
@@ -97,8 +98,19 @@ func (p *Pool) RoundTripBatch(raws [][]byte) ([][]byte, error) {
 	resps := make([][]byte, len(raws))
 	for i, ch := range channels {
 		resp := <-ch
+		chanPool.Put(ch)
 		if resp.err != nil {
 			p.removeClosedConns()
+			// Drain remaining channels: those with data can be returned to pool;
+			// those still in inflight (no data yet) will be GC'd safely.
+			for j := i + 1; j < len(channels); j++ {
+				select {
+				case <-channels[j]:
+					chanPool.Put(channels[j])
+				default:
+					// Still in inflight — leak is safe, readLoop will send and GC.
+				}
+			}
 			return nil, resp.err
 		}
 		resps[i] = resp.data

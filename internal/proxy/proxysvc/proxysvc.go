@@ -95,7 +95,7 @@ func New(cfg Config) *Proxy {
 		cfg.ShutdownTimeout = 10 * time.Second
 	}
 	if cfg.PoolSize == 0 {
-		cfg.PoolSize = 64
+		cfg.PoolSize = 128
 	}
 	if cfg.IdleTimeout == 0 {
 		cfg.IdleTimeout = 5 * time.Minute

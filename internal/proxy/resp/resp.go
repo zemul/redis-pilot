@@ -22,7 +22,7 @@ type Reader struct {
 }
 
 func NewReader(r io.Reader) *Reader {
-	return &Reader{br: bufio.NewReader(r)}
+	return &Reader{br: bufio.NewReaderSize(r, 8192)}
 }
 
 // SetMaxBytes 设置单条命令的最大字节数。
@@ -59,6 +59,7 @@ func (r *Reader) readArrayCommand() (raw []byte, argv [][]byte, err error) {
 	if err != nil {
 		return nil, nil, err
 	}
+	raw = make([]byte, 0, 256) // pre-allocate to reduce reallocations
 	raw = append(raw, line...)
 
 	count, err := parseArrayCount(line)
@@ -192,7 +193,8 @@ func (r *Reader) readBulkFrame() ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	raw := line
+	raw := make([]byte, 0, 256) // pre-allocate to reduce reallocations
+	raw = append(raw, line...)
 
 	if len(line) < 1 || line[0] != '$' {
 		return nil, fmt.Errorf("resp: expected bulk string, got %q", line)
@@ -222,7 +224,8 @@ func (r *Reader) readArrayFrame() ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	raw := line
+	raw := make([]byte, 0, 256) // pre-allocate to reduce reallocations
+	raw = append(raw, line...)
 
 	count, err := parseArrayCount(line)
 	if err != nil {
@@ -261,7 +264,7 @@ type Writer struct {
 }
 
 func NewWriter(w io.Writer) *Writer {
-	return &Writer{bw: bufio.NewWriter(w)}
+	return &Writer{bw: bufio.NewWriterSize(w, 8192)}
 }
 
 // WriteRaw 写入原始 RESP 字节并 flush。

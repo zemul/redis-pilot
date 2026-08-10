@@ -14,6 +14,12 @@ type response struct {
 	err  error
 }
 
+// chanPool 复用 chan response，避免每条命令分配 channel（高吞吐下 GC 压力大）。
+// 使用约定：Send/SendBatch 从 pool Get，RoundTrip/RoundTripBatch 收到响应后 Put。
+var chanPool = sync.Pool{
+	New: func() any { return make(chan response, 1) },
+}
+
 // UpstreamConn 是一条 proxy->redis 的真实连接。
 //
 // 两种使用模式：
@@ -46,9 +52,9 @@ func newUpstreamConn(conn net.Conn, addr string) *UpstreamConn {
 }
 
 // Send 写入命令并返回响应通道（SHARED 模式）。
-// 调用方在通道上等待响应。
-func (c *UpstreamConn) Send(raw []byte) <-chan response {
-	ch := make(chan response, 1)
+// 调用方在通道上等待响应，收到后应调用 chanPool.Put(ch) 归还。
+func (c *UpstreamConn) Send(raw []byte) chan response {
+	ch := chanPool.Get().(chan response)
 
 	c.mu.Lock()
 	if c.closed {
@@ -73,15 +79,16 @@ func (c *UpstreamConn) Send(raw []byte) <-chan response {
 // SendBatch writes multiple commands in a single flush and returns
 // response channels in order. Enables pipelining: all commands are
 // sent to the backend before waiting for any response.
-func (c *UpstreamConn) SendBatch(raws [][]byte) []<-chan response {
-	channels := make([]<-chan response, len(raws))
+// Caller must receive from all channels and return them via chanPool.Put.
+func (c *UpstreamConn) SendBatch(raws [][]byte) []chan response {
+	channels := make([]chan response, len(raws))
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	if c.closed {
 		for i := range channels {
-			ch := make(chan response, 1)
+			ch := chanPool.Get().(chan response)
 			ch <- response{err: errConnClosed}
 			channels[i] = ch
 		}
@@ -89,7 +96,7 @@ func (c *UpstreamConn) SendBatch(raws [][]byte) []<-chan response {
 	}
 
 	for i, raw := range raws {
-		ch := make(chan response, 1)
+		ch := chanPool.Get().(chan response)
 		if err := c.writer.WriteRawNoFlush(raw); err != nil {
 			ch <- response{err: err}
 		} else {

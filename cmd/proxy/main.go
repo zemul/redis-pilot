@@ -47,7 +47,7 @@ func main() {
 
 	// 通用
 	masterReadWeight := flag.Int("master-read-weight", 0, "master read weight in read pool (0 = master not in read pool)")
-	poolSize := flag.Int("pool-size", 64, "max shared connections per backend (§13)")
+	poolSize := flag.Int("pool-size", 128, "max shared connections per backend (§13)")
 	idleTimeout := flag.Duration("idle-timeout", 5*time.Minute, "idle upstream connection timeout (§13)")
 	maxRequestBytes := flag.Int("max-request-bytes", 16*1024*1024, "max bytes per command (D13)")
 	metricsListen := flag.String("metrics-listen", ":19100", "Prometheus /metrics HTTP listen address (empty = disabled)")
@@ -76,7 +76,7 @@ func main() {
 		// 代码默认值
 		ConnectTimeout:    3 * time.Second,
 		ShutdownTimeout:   10 * time.Second,
-		PoolSize:          64,
+		PoolSize:          128,
 		IdleTimeout:       5 * time.Minute,
 		MaxRequestBytes:   16 * 1024 * 1024,
 		Listen:            ":16379",
