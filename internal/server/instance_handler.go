@@ -544,7 +544,7 @@ func (s *Server) instanceDelete(c *gin.Context) {
 }
 
 func (s *Server) instanceStart(c *gin.Context) {
-	s.instanceSimpleOp(c, "start", "/instance/start", "instance.start", audit.LevelNormal)
+	s.instanceSimpleOp(c, "start", "/instance/start", "instance.start", audit.LevelImportant)
 }
 
 func (s *Server) instanceStop(c *gin.Context) {

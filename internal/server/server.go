@@ -40,6 +40,11 @@ type Server struct {
 	//
 	// 加锁后，"读快照 → 下发"整体互斥，最后一次下发用的一定是它自己在锁内读到的快照。
 	topologyMu sync.Mutex
+
+	// alertInstances tracks which instances are currently in alert state,
+	// so reconcile only logs state transitions (ok->alert, alert->ok) instead
+	// of repeating the same alert every 30 seconds.
+	alertInstances map[string]bool
 }
 
 func New(cfg *Config) (*Server, error) {
@@ -60,10 +65,11 @@ func New(cfg *Config) (*Server, error) {
 	}
 
 	s := &Server{
-		cfg:   cfg,
-		db:    db,
-		log:   logger.New(cfg.Log.Dir, cfg.Log.Stdout),
-		audit: audit.New(db),
+		cfg:            cfg,
+		db:             db,
+		log:            logger.New(cfg.Log.Dir, cfg.Log.Stdout),
+		audit:          audit.New(db),
+		alertInstances: make(map[string]bool),
 	}
 	s.scheduler = newBackupScheduler(s)
 	return s, nil

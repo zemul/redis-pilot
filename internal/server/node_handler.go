@@ -4,9 +4,12 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
+	"gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/internal/audit"
+	"gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/internal/store"
 	"gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/pkg/apitypes"
 )
 
@@ -35,6 +38,7 @@ func (s *Server) nodeQuery(c *gin.Context) {
 }
 
 func (s *Server) nodeAdd(c *gin.Context) {
+	start := time.Now()
 	var req struct {
 		Name   string               `json:"name" binding:"required"`
 		Server *apitypes.NodeServer `json:"server" binding:"required"`
@@ -57,12 +61,23 @@ func (s *Server) nodeAdd(c *gin.Context) {
 		return nil
 	}); err != nil {
 		if conflict {
+			s.audit.Log(store.AuditRecord{
+				Operator: operatorFrom(c), Action: "node.add", Level: audit.LevelImportant, Result: "failed",
+				DurationMs: time.Since(start).Milliseconds(),
+				Target:     map[string]interface{}{"node": req.Name},
+				Detail:     "server already exists",
+			})
 			fail(c, http.StatusConflict, "server already exists: "+req.Name)
 			return
 		}
 		fail(c, http.StatusInternalServerError, err.Error())
 		return
 	}
+	s.audit.Log(store.AuditRecord{
+		Operator: operatorFrom(c), Action: "node.add", Level: audit.LevelImportant, Result: "success",
+		DurationMs: time.Since(start).Milliseconds(),
+		Target:     map[string]interface{}{"node": req.Name},
+	})
 	ok(c, nil)
 }
 
@@ -74,6 +89,7 @@ var (
 )
 
 func (s *Server) nodeRemove(c *gin.Context) {
+	start := time.Now()
 	var req struct {
 		Name string `json:"name" binding:"required"`
 	}
@@ -101,10 +117,16 @@ func (s *Server) nodeRemove(c *gin.Context) {
 		fail(c, http.StatusInternalServerError, err.Error())
 		return
 	}
+	s.audit.Log(store.AuditRecord{
+		Operator: operatorFrom(c), Action: "node.remove", Level: audit.LevelImportant, Result: "success",
+		DurationMs: time.Since(start).Milliseconds(),
+		Target:     map[string]interface{}{"node": req.Name},
+	})
 	ok(c, nil)
 }
 
 func (s *Server) nodeUpdate(c *gin.Context) {
+	start := time.Now()
 	var req struct {
 		Name   string               `json:"name" binding:"required"`
 		Server *apitypes.NodeServer `json:"server" binding:"required"`
@@ -131,5 +153,10 @@ func (s *Server) nodeUpdate(c *gin.Context) {
 		fail(c, http.StatusInternalServerError, err.Error())
 		return
 	}
+	s.audit.Log(store.AuditRecord{
+		Operator: operatorFrom(c), Action: "node.update", Level: audit.LevelNormal, Result: "success",
+		DurationMs: time.Since(start).Milliseconds(),
+		Target:     map[string]interface{}{"node": req.Name},
+	})
 	ok(c, nil)
 }

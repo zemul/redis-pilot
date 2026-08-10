@@ -724,6 +724,18 @@ button:disabled {
   white-space: nowrap;
 }
 
+/* ---------- 异常总览 ---------- */
+.alert-item {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 13px 18px;
+  border-bottom: 1px solid var(--border);
+}
+.alert-item:last-child { border-bottom: 0; }
+.alert-item > div { display: flex; flex-direction: column; gap: 2px; }
+.alert-item strong { font-size: 13px; font-weight: 500; }
+
 /* ============================================================
    Tables
    ============================================================ */
@@ -853,8 +865,9 @@ td .mono {
 }
 
 .group-row:hover,
-.replica-row:hover {
-  background: var(--surface);
+.replica-row:hover,
+.master-row:hover {
+  background: var(--surface-2);
 }
 
 .group-cell,
@@ -915,8 +928,15 @@ td .mono {
   color: var(--ink-muted);
 }
 
-.replica-row {
+.replica-row,
+.master-row {
   background: var(--surface);
+}
+
+.master-cell {
+  gap: 10px;
+  display: flex;
+  align-items: center;
 }
 
 .replica-cell {

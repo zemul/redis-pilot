@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import {
   Activity,
   AlertCircle,
+  AlertTriangle,
   BarChart3,
   ChevronDown,
   ChevronRight,
@@ -28,6 +29,7 @@ import {
 const TABS = [
   { id: 'dashboard', label: '大盘看板', icon: LayoutDashboard },
   { id: 'instances', label: '实例管理', icon: Database },
+  { id: 'alerts', label: '异常总览', icon: AlertTriangle },
   { id: 'servers', label: '服务器节点', icon: Server },
   { id: 'audit', label: '操作审计', icon: List }
 ];
@@ -86,7 +88,44 @@ function backupRows(payload) {
 }
 
 function auditOperator(log) {
-	return displayValue(log?.operator || log?.Operator, 'unknown');
+	return displayValue(log?.operator || log?.Operator, '系统');
+}
+
+function auditActionLabel(action) {
+	const labels = {
+		'instance.create': '创建实例',
+		'instance.delete': '删除实例',
+		'instance.start': '启动实例',
+		'instance.stop': '停止实例',
+		'config.update': '更新配置',
+		'topology.failover': '故障转移',
+		'topology.replicate': '建立复制',
+		'backup.create': '创建备份',
+		'backup.restore': '恢复备份',
+		'node.add': '注册节点',
+		'node.remove': '移除节点',
+		'node.update': '更新节点',
+		'reconcile': '状态协调',
+		'reconcile.replica_drift': '副本漂移修复',
+		'reconcile.role_drift': '角色漂移修复',
+	};
+	return labels[action] || action || '-';
+}
+
+function auditLevelLabel(level) {
+	const labels = { normal: '常规', important: '重要', critical: '关键' };
+	return labels[level] || level || '-';
+}
+
+function auditTargetDisplay(target) {
+	if (!target) return '-';
+	if (typeof target === 'string') return target;
+	const group = target.group || target.Group || target.instance_group;
+	const instance = target.instance || target.Instance || target.name || target.Name || target.new_master;
+	if (group && instance) return `${group} / ${instance}`;
+	if (instance) return instance;
+	if (group) return group;
+	return '-';
 }
 
 function formatAuditDate(value) {
@@ -128,31 +167,52 @@ function statusMeta(status) {
     running: '运行中',
     creating: '创建中',
     stopped: '已停止',
+    stopping: '停止中',
     failed: '异常',
     unexpected_stopped: '异常停止',
+    unreachable: '不可达',
     healthy: '健康',
     unhealthy: '异常',
     degraded: '拓扑降级',
     failover_conflict: '故障转移冲突',
     drain: '下线中',
-    success: '成功',
-    error: '失败'
   };
   const tone = {
     running: 'ok',
     healthy: 'ok',
-    success: 'ok',
     creating: 'warn',
+    stopping: 'warn',
     drain: 'warn',
     stopped: 'warn',
+    unreachable: 'bad',
     failed: 'bad',
     unexpected_stopped: 'bad',
     unhealthy: 'bad',
     degraded: 'warn',
     failover_conflict: 'bad',
-    error: 'bad'
   };
   return { label: labels[status] || status || '未知', tone: tone[status] || 'neutral' };
+}
+
+function auditResultMeta(result) {
+	result = displayValue(result, 'success');
+	const labels = {
+    success: '成功',
+    failed: '失败',
+    corrected: '已修正',
+    alert: '告警',
+    updated: '已更新',
+    skipped: '已跳过',
+  };
+  const tone = {
+    success: 'ok',
+    corrected: 'ok',
+    updated: 'ok',
+    alert: 'warn',
+    skipped: 'warn',
+    failed: 'bad',
+  };
+  return { label: labels[result] || result, tone: tone[result] || 'neutral' };
 }
 
 function instanceStatusTone(status) {
@@ -193,7 +253,7 @@ function buildInstanceGroups(instanceState) {
 				category: getField(groupState, 'category', 'Category', ''),
 				type: getField(groupState, 'type', 'Type', ''),
 				currentMaster: getField(groupState, 'current_master', 'CurrentMaster', ''),
-				envoy: getField(groupState, 'envoy', 'Envoy', null),
+				proxy: getField(groupState, 'proxy', 'Proxy', null),
 				master: null,
 				replicas: [],
 				instances: []
@@ -219,7 +279,7 @@ function buildInstanceGroups(instanceState) {
 				category: getField(groupState, 'category', 'Category', ''),
 				type: getField(groupState, 'type', 'Type', ''),
 				currentMaster: getField(groupState, 'current_master', 'CurrentMaster', ''),
-				envoy: getField(groupState, 'envoy', 'Envoy', null),
+				proxy: getField(groupState, 'proxy', 'Proxy', null),
 				master: null,
 				replicas: [],
 				instances: []
@@ -250,7 +310,13 @@ function buildInstanceGroups(instanceState) {
 function engineLabel(group) {
 	const engine = displayValue(group.engine, '-');
 	const version = displayValue(group.engineVersion, '');
-	return version ? `${engine.toUpperCase()} ${version}` : engine.toUpperCase();
+	const label = engine.charAt(0).toUpperCase() + engine.slice(1).toLowerCase();
+	return version ? `${label} ${version}` : label;
+}
+
+function categoryLabel(category) {
+	const labels = { cache: '缓存', persistent: '持久化' };
+	return labels[category] || category || '-';
 }
 
 function extractMetricsPayload(metrics) {
@@ -285,11 +351,11 @@ function metricValue(sections, key, fallback = '-') {
 
 function topologyLabel(group, master) {
 	const type = group.type || (getField(master, 'role', 'Role') === 'standalone' ? 'standalone' : '');
-	return type === 'standalone' ? 'Standalone' : `1 Master / ${group.replicas.length} Replicas`;
+	return type === 'standalone' ? '单点' : `1主 ${group.replicas.length}从`;
 }
 
-function StatusBadge({ status, children }) {
-  const meta = statusMeta(status);
+function StatusBadge({ status, children, metaFn = statusMeta }) {
+  const meta = metaFn(status);
   return <span className={`badge ${meta.tone}`}>{children || meta.label}</span>;
 }
 
@@ -548,7 +614,7 @@ export default function App() {
         <section className="content">
           {error && <div className="notice"><AlertCircle size={16} /> {error}</div>}
           {loading ? (
-            <div className="panel loading">正在读取 Server 状态...</div>
+            <div className="panel loading">正在读取服务状态...</div>
           ) : (
             <>
               {activeTab === 'dashboard' && <DashboardView groups={instanceGroups} servers={servers} audits={data.audits} />}
@@ -565,6 +631,7 @@ export default function App() {
 	                  pendingAction={pendingAction}
 	                />
 	              )}
+              {activeTab === 'alerts' && <AlertsView groups={instanceGroups} servers={servers} />}
               {activeTab === 'servers' && <ServersView servers={servers} />}
               {activeTab === 'audit' && (
                 <AuditView
@@ -651,7 +718,7 @@ function SummaryCell({ label, value, icon: Icon, tone = 'neutral' }) {
 function InstanceGroupCard({ group }) {
   const master = group.master;
   const masterServer = master ? getField(master, 'server', 'Server', '-') : '';
-  const topology = topologyLabel(group, master).startsWith('Standalone') ? '单点' : '主从';
+  const topology = topologyLabel(group, master) === '单点' ? '单点' : '主从';
   return (
     <div className="instance-card">
       <div className={`status-dot ${statusMeta(group.status).tone}`} />
@@ -694,9 +761,9 @@ function InstancesView({ groups, query, setQuery, expandedGroups, setExpandedGro
       <div className="panel table-toolbar">
         <div className="search-box">
           <Search size={17} />
-          <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索实例组、Server 或端口..." />
+          <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索实例组、节点或端口..." />
         </div>
-        <button className="primary-button" disabled>创建实例</button>
+
       </div>
       <section className="panel table-panel">
         <div className="table-scroll">
@@ -706,7 +773,7 @@ function InstancesView({ groups, query, setQuery, expandedGroups, setExpandedGro
                 <th>实例名称 / 组</th>
                 <th>引擎版本</th>
                 <th>拓扑角色</th>
-                <th>Server</th>
+                <th>节点</th>
                 <th>端口</th>
                 <th>资源</th>
                 <th>状态</th>
@@ -720,7 +787,7 @@ function InstancesView({ groups, query, setQuery, expandedGroups, setExpandedGro
                 <InstanceGroupRows
                   key={group.groupName}
                   group={group}
-                  expanded={!!expandedGroups[group.groupName]}
+                  expanded={expandedGroups[group.groupName] !== false}
 	                onToggle={() => toggleGroup(group.groupName)}
 	                onOpenDetail={onOpenDetail}
 	                onOpenBackups={onOpenBackups}
@@ -740,9 +807,9 @@ function InstanceGroupRows({ group, expanded, onToggle, onOpenDetail, onOpenBack
   const master = group.master;
   const hasReplicas = group.replicas.length > 0;
   const topology = topologyLabel(group, master);
-  const isStandalone = topology === 'Standalone';
-  const category = group.category ? ` · ${group.category}` : '';
-  const powerAction = master ? powerActionFor(master, group) : null;
+  const isStandalone = topology === '单点';
+  const category = group.category ? categoryLabel(group.category) : '';
+  const showInstances = expanded || !hasReplicas;
 
   return (
     <>
@@ -759,11 +826,10 @@ function InstanceGroupRows({ group, expanded, onToggle, onOpenDetail, onOpenBack
             <div>
               <div className="group-title">
                 <strong>{group.groupName}</strong>
-                <span className="role-chip">{isStandalone ? '单点' : 'Master'}</span>
-                {category && <span className="role-chip subtle">{group.category}</span>}
+                {category && <span className="role-chip subtle">{category}</span>}
               </div>
               <span className="muted">
-                {master ? `当前主库: ${master.name} · ${getField(master, 'server', 'Server', '-')}${category}` : '主库状态异常'}
+                {master ? `主库: ${master.name}` : '主库状态异常'}
               </span>
             </div>
           </div>
@@ -771,37 +837,28 @@ function InstanceGroupRows({ group, expanded, onToggle, onOpenDetail, onOpenBack
         <td><span className="engine">{engineLabel(group)}</span></td>
         <td>{topology}</td>
         <td>{master ? getField(master, 'server', 'Server', '-') : '-'}</td>
-        <td>{master ? <EnvoyPorts group={group} item={master} /> : '-'}</td>
+        <td><ProxyPorts group={group} /></td>
         <td>{master ? <ResourceValue memory={group.resource.memory} cpus={group.resource.cpus} disk={group.resource.disk} /> : '-'}</td>
         <td><StatusBadge status={group.status} /></td>
-        <td>
-          <div className="row-actions">
-            {master && <IconButton icon={Info} label="详情与指标" onClick={(event) => {
-              event.stopPropagation();
-              onOpenDetail(master, group);
-            }} />}
-            {master && <IconButton icon={HardDrive} label="备份列表" onClick={(event) => {
-              event.stopPropagation();
-              onOpenBackups(master, group);
-            }} />}
-            {master && powerAction && <IconButton
-              icon={powerAction.icon}
-              label={powerAction.label}
-              disabled={powerAction.disabledReason || pendingAction === `${powerAction.action}:${master.name}`}
-              onClick={(event) => {
-                event.stopPropagation();
-                if (powerAction.disabledReason) return;
-                onPowerAction(master, group, powerAction.action);
-              }}
-            />}
-          </div>
-        </td>
+        <td />
       </tr>
-      {expanded && group.replicas.map((replica) => (
-        <ReplicaRow
+      {showInstances && master && (
+        <InstanceRow
+          item={master}
+          group={group}
+          role="主库"
+          onOpenDetail={onOpenDetail}
+          onOpenBackups={onOpenBackups}
+          onPowerAction={onPowerAction}
+          pendingAction={pendingAction}
+        />
+      )}
+      {showInstances && group.replicas.map((replica) => (
+        <InstanceRow
           key={replica.name}
           item={replica}
           group={group}
+          role="从库"
           onOpenDetail={onOpenDetail}
           onOpenBackups={onOpenBackups}
           onPowerAction={onPowerAction}
@@ -812,16 +869,15 @@ function InstanceGroupRows({ group, expanded, onToggle, onOpenDetail, onOpenBack
   );
 }
 
-function EnvoyPorts({ group, item }) {
-  const envoy = getField(group, 'envoy', 'Envoy', {}) || {};
-  const masterPort = envoy.master_port || envoy.MasterPort;
-  const autoPort = envoy.auto_port || envoy.AutoPort;
+function ProxyPorts({ group }) {
+  const proxy = getField(group, 'proxy', 'Proxy', {}) || {};
+  const masterPort = proxy.master_port || proxy.MasterPort;
+  const autoPort = proxy.auto_port || proxy.AutoPort;
   return (
     <>
-      <span className="muted">Redis <span className="mono">{getField(item, 'port', 'Port', '-')}</span></span>
-      {masterPort && <span className="muted">Envoy·M <span className="mono">{masterPort}</span></span>}
-      {autoPort && <span className="muted">Envoy·A <span className="mono">{autoPort}</span></span>}
-      {!masterPort && !autoPort && <span className="muted">Envoy <span className="mono">-</span></span>}
+      {autoPort && <span className="muted">读写 <span className="mono">{autoPort}</span></span>}
+      {masterPort && <span className="muted">主库 <span className="mono">{masterPort}</span></span>}
+      {!masterPort && !autoPort && <span className="muted">-</span>}
     </>
   );
 }
@@ -830,32 +886,33 @@ function ResourceValue({ memory, cpus, disk }) {
   return (
     <>
       <span className="mono">{formatGi(memory)} / {cpus || 0}C</span>
-      <span className="muted">Disk: <span className="mono">{formatGi(disk)}</span></span>
+      <span className="muted">磁盘: <span className="mono">{formatGi(disk)}</span></span>
     </>
   );
 }
 
-function ReplicaRow({ item, group, onOpenDetail, onOpenBackups, onPowerAction, pendingAction }) {
+function InstanceRow({ item, group, role, onOpenDetail, onOpenBackups, onPowerAction, pendingAction }) {
   const powerAction = powerActionFor(item, group);
+  const isReplica = role === '从库';
 
   return (
-    <tr className="replica-row">
+    <tr className={isReplica ? 'replica-row' : 'master-row'}>
       <td>
-        <div className="replica-cell">
-          <span className="replica-branch" />
+        <div className={isReplica ? 'replica-cell' : 'master-cell'}>
+          {isReplica && <span className="replica-branch" />}
           <div>
             <strong>{item.name}</strong>
-            <span className="muted">节点: {getField(item, 'server', 'Server', '-')}</span>
+            <span className="muted">{getField(item, 'server', 'Server', '-')}</span>
           </div>
         </div>
       </td>
       <td><span className="muted">{engineLabel(group)}</span></td>
-      <td>Replica</td>
+      <td>{role}</td>
       <td>{getField(item, 'server', 'Server', '-')}</td>
-      <td><span className="muted">通过主库 Envoy 路由读</span></td>
+      <td><span className="mono">{getField(item, 'port', 'Port', '-')}</span></td>
       <td>
         <span className="mono">{getField(item, 'memory', 'Memory', '-')} / {getField(item, 'cpus', 'CPUs', '-')}C</span>
-        <span className="muted">Disk: <span className="mono">{displayValue(getField(item, 'disk', 'Disk'), '0Gi')}</span></span>
+        <span className="muted">磁盘: <span className="mono">{displayValue(getField(item, 'disk', 'Disk'), '0Gi')}</span></span>
       </td>
       <td><StatusBadge status={getField(item, 'status', 'Status')} /></td>
       <td>
@@ -874,6 +931,135 @@ function ReplicaRow({ item, group, onOpenDetail, onOpenBackups, onPowerAction, p
         </div>
       </td>
     </tr>
+  );
+}
+
+function AlertsView({ groups, servers }) {
+  const badTone = (status) => instanceStatusTone(status) === 'bad';
+  const warnTone = (status) => instanceStatusTone(status) === 'warn';
+
+  // Instance-level anomalies
+  const instanceAlerts = [];
+  for (const group of groups) {
+    for (const inst of group.instances) {
+      const status = getField(inst, 'status', 'Status');
+      if (badTone(status) || status === 'unreachable') {
+        instanceAlerts.push({
+          instance: inst.name,
+          group: group.groupName,
+          server: getField(inst, 'server', 'Server', '-'),
+          status,
+          desired: getField(inst, 'desired_state', 'DesiredState', '-'),
+          observed: getField(inst, 'observed_status', 'ObservedStatus', '-'),
+        });
+      }
+    }
+  }
+
+  // Group-level topology anomalies
+  const groupAlerts = groups.filter(
+    (g) => g.status === 'degraded' || g.status === 'failover_conflict'
+  );
+
+  // Server-level anomalies
+  const serverAlerts = servers.filter(
+    (s) => getField(s, 'status', 'Status') === 'unhealthy'
+  );
+
+  const total = instanceAlerts.length + groupAlerts.length + serverAlerts.length;
+
+  return (
+    <div className="stack">
+      <section className="panel summary-strip">
+        <SummaryCell label="实例异常" value={instanceAlerts.length} icon={AlertCircle} tone={instanceAlerts.length > 0 ? 'alert' : 'neutral'} />
+        <SummaryCell label="拓扑降级" value={groupAlerts.length} icon={GitMerge} tone={groupAlerts.length > 0 ? 'alert' : 'neutral'} />
+        <SummaryCell label="节点异常" value={serverAlerts.length} icon={Server} tone={serverAlerts.length > 0 ? 'alert' : 'neutral'} />
+        <SummaryCell label="异常总计" value={total} icon={AlertTriangle} tone={total > 0 ? 'alert' : 'positive'} />
+      </section>
+
+      {total === 0 ? (
+        <section className="panel">
+          <EmptyState icon={ShieldCheck} title="一切正常" detail="当前没有检测到异常。" />
+        </section>
+      ) : (
+        <>
+          {instanceAlerts.length > 0 && (
+            <section className="panel">
+              <div className="panel-header">
+                <h3>实例异常</h3>
+                <AlertCircle size={18} />
+              </div>
+              <div className="table-scroll">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>实例</th>
+                      <th>实例组</th>
+                      <th>节点</th>
+                      <th>状态</th>
+                      <th>期望</th>
+                      <th>观测</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {instanceAlerts.map((a, i) => (
+                      <tr key={i}>
+                        <td className="mono">{a.instance}</td>
+                        <td>{a.group}</td>
+                        <td>{a.server}</td>
+                        <td><StatusBadge status={a.status} /></td>
+                        <td className="muted">{a.desired}</td>
+                        <td className="muted">{a.observed}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </section>
+          )}
+
+          {groupAlerts.length > 0 && (
+            <section className="panel">
+              <div className="panel-header">
+                <h3>拓扑异常</h3>
+                <GitMerge size={18} />
+              </div>
+              <div className="panel-body list">
+                {groupAlerts.map((g) => (
+                  <div key={g.groupName} className="alert-item">
+                    <StatusBadge status={g.status} />
+                    <div>
+                      <strong>{g.groupName}</strong>
+                      <span className="muted">{topologyLabel(g)}</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </section>
+          )}
+
+          {serverAlerts.length > 0 && (
+            <section className="panel">
+              <div className="panel-header">
+                <h3>节点异常</h3>
+                <Server size={18} />
+              </div>
+              <div className="panel-body list">
+                {serverAlerts.map((s) => (
+                  <div key={s.name} className="alert-item">
+                    <StatusBadge status={getField(s, 'status', 'Status')} />
+                    <div>
+                      <strong>{s.name}</strong>
+                      <code className="muted">{getField(s, 'endpoint', 'Endpoint', '-')}</code>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </section>
+          )}
+        </>
+      )}
+    </div>
   );
 }
 
@@ -921,7 +1107,7 @@ function ServerCard({ server }) {
           unit="Gi"
         />
         <ProgressBar
-          label={<><HardDrive size={13} /> Disk</>}
+          label={<><HardDrive size={13} /> 磁盘</>}
           current={parseGi(allocated.disk || allocated.Disk)}
           max={parseGi(capacity.disk || capacity.Disk)}
           unit="Gi"
@@ -964,14 +1150,14 @@ function AuditView({ audits, filters, setFilters, onApply }) {
             <span>级别</span>
             <select value={filters.level} onChange={(event) => updateFilter('level', event.target.value)}>
               <option value="">全部</option>
-              <option value="normal">normal</option>
-              <option value="important">important</option>
-              <option value="critical">critical</option>
+              <option value="normal">常规</option>
+              <option value="important">重要</option>
+              <option value="critical">关键</option>
             </select>
           </label>
           <label>
             <span>动作</span>
-            <input value={filters.action} onChange={(event) => updateFilter('action', event.target.value)} placeholder="backup.exec" />
+            <input value={filters.action} onChange={(event) => updateFilter('action', event.target.value)} placeholder="instance.start" />
           </label>
         </div>
         <div className="filter-actions">
@@ -997,19 +1183,21 @@ function AuditView({ audits, filters, setFilters, onApply }) {
                 <th>操作者</th>
                 <th>动作</th>
                 <th>目标</th>
+                <th>级别</th>
                 <th>结果</th>
               </tr>
             </thead>
             <tbody>
               {records.length === 0 ? (
-                <tr><td colSpan="5"><EmptyState icon={List} title="暂无审计记录" /></td></tr>
+                <tr><td colSpan="6"><EmptyState icon={List} title="暂无审计记录" /></td></tr>
               ) : records.slice(0, 50).map((log, index) => (
                 <tr key={log.id || log.ID || index}>
-	                  <td className="mono">{formatDateTime(log.time || log.Time || log.timestamp || log.Timestamp)}</td>
+                  <td className="mono">{formatDateTime(log.time || log.Time || log.timestamp || log.Timestamp)}</td>
                   <td>{auditOperator(log)}</td>
-                  <td><span className="mono">{displayValue(log.action || log.Action)}</span></td>
-                  <td>{displayValue(log.target || log.Target || log.instance || log.Instance)}</td>
-                  <td><StatusBadge status={log.result || log.Result || log.level || log.Level} /></td>
+                  <td>{auditActionLabel(log.action || log.Action)}</td>
+                  <td><span className="mono">{auditTargetDisplay(log.target || log.Target || log.instance || log.Instance)}</span></td>
+                  <td>{auditLevelLabel(log.level || log.Level)}</td>
+                  <td><StatusBadge status={log.result || log.Result || 'success'} metaFn={auditResultMeta} /></td>
                 </tr>
               ))}
             </tbody>
@@ -1021,15 +1209,15 @@ function AuditView({ audits, filters, setFilters, onApply }) {
 }
 
 function AuditCard({ log }) {
-  const result = log.result || log.Result || log.level || log.Level || 'success';
-  const isBad = statusMeta(result).tone === 'bad';
+  const result = log.result || log.Result || 'success';
+  const isBad = auditResultMeta(result).tone === 'bad';
   const Icon = isBad ? AlertCircle : CheckCircle2;
   return (
     <div className={isBad ? 'audit-card is-bad' : 'audit-card'}>
       <Icon size={18} />
       <div>
-        <strong>{displayValue(log.action || log.Action)}</strong>
-        <span>目标: {displayValue(log.target || log.Target || log.instance || log.Instance)} · 操作人: {auditOperator(log)}</span>
+        <strong>{auditActionLabel(log.action || log.Action)}</strong>
+        <span>{auditTargetDisplay(log.target || log.Target)} · {auditOperator(log)}</span>
       </div>
       <time>{formatDateTime(log.time || log.Time || log.timestamp || log.Timestamp)}</time>
     </div>
@@ -1054,9 +1242,9 @@ function InstanceDetailModal({ detail, onClose }) {
     ['实例组', group.groupName],
     ['引擎版本', engineLabel(group)],
     ['角色', getField(item, 'role', 'Role', '-')],
-    ['Server', getField(item, 'server', 'Server', '-')],
+    ['节点', getField(item, 'server', 'Server', '-')],
     ['Redis 端口', getField(item, 'port', 'Port', '-')],
-    ['资源', `${getField(item, 'memory', 'Memory', '-')} / ${getField(item, 'cpus', 'CPUs', '-')}C / Disk ${displayValue(getField(item, 'disk', 'Disk'), '0Gi')}`],
+    ['资源', `${getField(item, 'memory', 'Memory', '-')} / ${getField(item, 'cpus', 'CPUs', '-')}C / 磁盘 ${displayValue(getField(item, 'disk', 'Disk'), '0Gi')}`],
     ['数据目录', getField(item, 'data_path', 'DataPath', '-')],
     ['配置目录', getField(item, 'config_path', 'ConfigPath', '-')],
     ['备份目录', getField(item, 'backup_path', 'BackupPath', '-')],
@@ -1185,7 +1373,7 @@ function ConfirmPowerModal({ detail, loading, onCancel, onConfirm }) {
           <div className="confirm-facts">
             <span>角色: {displayValue(role)}</span>
             <span>当前状态: {statusMeta(status).label}</span>
-            <span>Server: {displayValue(getField(item, 'server', 'Server'))}</span>
+            <span>节点: {displayValue(getField(item, 'server', 'Server'))}</span>
           </div>
         </div>
         <div className="confirm-actions">

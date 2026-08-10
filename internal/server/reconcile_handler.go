@@ -6,8 +6,6 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	"gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/internal/audit"
-	"gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/internal/store"
 	"gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/internal/state"
 	"gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/pkg/apitypes"
 )
@@ -74,6 +72,7 @@ func (s *Server) runReconcile() ([]ReconcileResult, error) {
 	var patches []statusPatch
 	var roleDrifts []roleDrift
 	var replicaDrifts []replicaDrift
+	serverReachable := make(map[string]bool)
 
 	for serverName, instNames := range serverInstances {
 		srv := node.Servers[serverName]
@@ -95,6 +94,7 @@ func (s *Server) runReconcile() ([]ReconcileResult, error) {
 		resp, err := client.get("/instance/list")
 		if err != nil {
 			// Agent 不可达，所有实例标记异常
+			serverReachable[serverName] = false
 			for _, name := range instNames {
 				results = append(results, ReconcileResult{
 					Instance: name, Server: serverName,
@@ -111,6 +111,7 @@ func (s *Server) runReconcile() ([]ReconcileResult, error) {
 		if err := json.Unmarshal(resp, &apiResp); err != nil {
 			// Agent 响应格式异常（网络抖动/截断/非预期响应），不能当作"容器全部消失"处理，
 			// 否则会把所有实例误判为 missing 并标记为 failed。按 Agent 不可达的方式处理。
+			serverReachable[serverName] = false
 			for _, name := range instNames {
 				results = append(results, ReconcileResult{
 					Instance: name, Server: serverName,
@@ -122,6 +123,7 @@ func (s *Server) runReconcile() ([]ReconcileResult, error) {
 			continue
 		}
 		containerMap := parseContainerMap(apiResp.Data)
+		serverReachable[serverName] = true
 		// Agent 同时上报了各实例磁盘配置文件里的角色，用于检测角色漂移。
 		configuredReplicaOf := parseConfiguredReplicaOf(apiResp.Data)
 		roleDrifts = append(roleDrifts,
@@ -205,17 +207,41 @@ func (s *Server) runReconcile() ([]ReconcileResult, error) {
 	// 是此刻正在发生的：一个实际挂在错误 master 上的 replica 在 Proxy 眼里完全健康，
 	// 仍然接读流量，链路一断就长期提供陈旧数据而不报任何错。
 	s.reconcileReplicaDrift(replicaDrifts)
-	// 记录有异常的审计日志
+
+	// Update server health based on Agent reachability.
+	// Never touch "drain" status -- that's a manual operational decision.
+	if len(serverReachable) > 0 {
+		if err := s.db.WithNode(func(n *apitypes.NodeState) error {
+			for name, reachable := range serverReachable {
+				srv := n.Servers[name]
+				if srv == nil || srv.Status == "drain" {
+					continue
+				}
+				if reachable {
+					srv.Status = "healthy"
+				} else {
+					srv.Status = "unhealthy"
+				}
+			}
+			return nil
+		}); err != nil {
+			s.log.Errorf("reconcile: failed to update server health: %v", err)
+		}
+	}
+
+	// Log state transitions to application log (not audit log -- these are
+	// observations, not operations).
 	for _, r := range results {
-		if r.Action == "alert" || r.Action == "updated" {
-			s.audit.Log(store.AuditRecord{
-				Operator: "system",
-				Action:   "reconcile",
-				Level:    audit.LevelImportant,
-				Result:   r.Action,
-				Target:   map[string]interface{}{"instance": r.Instance, "server": r.Server},
-				Params:   map[string]interface{}{"desired": r.Desired, "actual": r.Actual},
-			})
+		isAlert := r.Action == "alert"
+		wasAlert := s.alertInstances[r.Instance]
+		if isAlert && !wasAlert {
+			s.alertInstances[r.Instance] = true
+			s.log.Errorf("reconcile: instance %s on %s entered alert state: desired=%s actual=%s",
+				r.Instance, r.Server, r.Desired, r.Actual)
+		} else if !isAlert && wasAlert {
+			s.alertInstances[r.Instance] = false
+			s.log.Infof("reconcile: instance %s on %s recovered: desired=%s actual=%s",
+				r.Instance, r.Server, r.Desired, r.Actual)
 		}
 	}
 
