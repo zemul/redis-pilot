@@ -39,7 +39,6 @@ var denyCommands = map[string]struct{}{
 	"SWAPDB":    {},
 	"SHUTDOWN":  {},
 	"DEBUG":     {},
-	"CONFIG":    {},
 	"REPLICAOF": {},
 	"SLAVEOF":   {},
 	"PSYNC":     {},

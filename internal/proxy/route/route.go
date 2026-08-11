@@ -74,7 +74,10 @@ func Classify(argv [][]byte) Decision {
 		return d
 	}
 
-	// 优先级 2b：子命令依赖分类（MEMORY / OBJECT）
+	// 优先级 2b：子命令依赖分类（CONFIG / MEMORY / OBJECT）
+	if cmd == "CONFIG" {
+		return classifyConfigSub(argv)
+	}
 	if cmd == "MEMORY" {
 		return classifyMemorySub(argv)
 	}
@@ -176,6 +179,20 @@ func classifyMemorySub(argv [][]byte) Decision {
 	if _, ok := memoryAdminSubs[sub]; ok {
 		return decAdmin // STATS / DOCTOR / PURGE / MALLOC-STATS
 	}
+	return decDeny
+}
+
+// classifyConfigSub 按 CONFIG 子命令分类。
+// CONFIG GET 透传（只读，无风险）；其他子命令拒绝。
+func classifyConfigSub(argv [][]byte) Decision {
+	if len(argv) < 2 {
+		return decDeny
+	}
+	sub := upper(argv[1])
+	if sub == "GET" {
+		return decAdmin // 透传到 master
+	}
+	// CONFIG SET / REWRITE / RESETSTAT → 拒绝
 	return decDeny
 }
 
