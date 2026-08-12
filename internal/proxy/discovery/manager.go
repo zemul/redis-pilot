@@ -124,6 +124,17 @@ func (m *Manager) refresh(ctx context.Context) (bool, error) {
 
 	newTopo := ParseSnapshot(snap)
 
+	// 防护：Server 异常返回空快照时不清空现有拓扑（§7.6 扩展）。
+	// 首次快照（topo==nil）允许为空（可能确实还没创建实例）。
+	m.mu.RLock()
+	hasExisting := m.topo != nil && len(m.topo.Groups) > 0
+	m.mu.RUnlock()
+	if hasExisting && len(newTopo.Groups) == 0 {
+		slog.Warn("ignoring empty snapshot from server, keeping last topology",
+			"version", snap.Version, "existing_groups", len(m.topo.Groups))
+		return false, nil
+	}
+
 	m.mu.Lock()
 	oldTopo := m.topo
 	m.topo = newTopo

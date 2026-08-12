@@ -3,6 +3,7 @@ import {
   AlertCircle,
   AlertTriangle,
   BarChart3,
+  Calendar,
   ChevronDown,
   ChevronRight,
   CheckCircle2,
@@ -16,12 +17,15 @@ import {
   List,
   Menu,
   Play,
+  Plus,
   Power,
   RefreshCw,
+  Save,
   Search,
   Server,
   SlidersHorizontal,
   ShieldCheck,
+  Trash2,
   X
 } from 'lucide-react';
 
@@ -74,16 +78,23 @@ function formatDateTime(value, fallback = '-') {
 function backupRows(payload) {
 	const backups = payload?.data?.backups || payload?.data?.Backups || payload?.backups || payload?.Backups || [];
 	const list = Array.isArray(backups) ? backups : [];
-	return list.sort().reverse().map((name) => {
-		const text = String(name);
-		const timestamp = text.replace(/\.(rdb|aof|tar\.gz|checkpoint\.tar\.gz)$/i, '').replace(/\/$/, '');
-		const extMatch = text.match(/\.([^.]+(?:\.tar\.gz)?)$/i);
-		return {
-			name: text,
-			time: formatDateTime(timestamp, timestamp),
-			type: extMatch ? extMatch[1].toUpperCase() : 'DIR'
-		};
-	});
+	return list
+		.map((item) => ({
+			name: item.name || '',
+			time: formatDateTime(item.timestamp, item.timestamp || '-'),
+			type: item.type === 'auto' ? '自动' : '手动',
+			status: item.status === 'success' ? '成功' : (item.status || '成功'),
+			size: item.size ? formatBytes(item.size) : '-'
+		}))
+		.sort((a, b) => (b.time || '').localeCompare(a.time || ''));
+}
+
+function formatBytes(bytes) {
+	if (!bytes || bytes <= 0) return '-';
+	if (bytes < 1024) return bytes + ' B';
+	if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+	if (bytes < 1024 * 1024 * 1024) return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+	return (bytes / (1024 * 1024 * 1024)).toFixed(2) + ' GB';
 }
 
 function auditOperator(log) {
@@ -430,6 +441,8 @@ export default function App() {
   const [detail, setDetail] = useState(null);
   const [backupDetail, setBackupDetail] = useState(null);
   const [confirmAction, setConfirmAction] = useState(null);
+  const [deleteConfirm, setDeleteConfirm] = useState(null);
+  const [createOpen, setCreateOpen] = useState(false);
   const [pendingAction, setPendingAction] = useState('');
   const [data, setData] = useState({ instances: {}, servers: {}, audits: [] });
   const [loading, setLoading] = useState(true);
@@ -558,6 +571,38 @@ export default function App() {
     }
   }
 
+  async function executeDelete() {
+    if (!deleteConfirm) return;
+    const { item, cleanData } = deleteConfirm;
+    const actionKey = `delete:${item.name}`;
+    setPendingAction(actionKey);
+    setError('');
+    try {
+      await request('/instance/delete', {
+        method: 'POST',
+        body: JSON.stringify({ name: item.name, clean_data: cleanData })
+      });
+      setDeleteConfirm(null);
+      await refresh();
+    } catch (err) {
+      setError(err.message || String(err));
+    } finally {
+      setPendingAction('');
+    }
+  }
+
+  async function createInstance(payload) {
+    try {
+      await request('/instance/create', {
+        method: 'POST',
+        body: JSON.stringify(payload)
+      });
+      return null;
+    } catch (err) {
+      return err.message || String(err);
+    }
+  }
+
   const nav = (
     <nav className="nav">
       {TABS.map((tab) => {
@@ -627,6 +672,9 @@ export default function App() {
 	                  onOpenDetail={openInstanceDetail}
 	                  onOpenBackups={openBackupList}
 	                  onPowerAction={changeInstancePower}
+	                  onDelete={(item, group) => setDeleteConfirm({ item, group, cleanData: true })}
+	                  onCreate={() => setCreateOpen(true)}
+	                  servers={servers}
 	                  pendingAction={pendingAction}
 	                />
 	              )}
@@ -645,13 +693,31 @@ export default function App() {
         </section>
 	      </main>
 	      {detail && <InstanceDetailModal detail={detail} onClose={() => setDetail(null)} />}
-	      {backupDetail && <BackupListModal detail={backupDetail} onClose={() => setBackupDetail(null)} />}
+	      {backupDetail && <BackupListModal detail={backupDetail} requestFn={request} onRefresh={refresh} onClose={() => setBackupDetail(null)} />}
 	      {confirmAction && (
 	        <ConfirmPowerModal
 	          detail={confirmAction}
 	          loading={pendingAction === `${confirmAction.action}:${confirmAction.item.name}`}
 	          onCancel={() => setConfirmAction(null)}
 	          onConfirm={executeInstancePower}
+	        />
+	      )}
+	      {deleteConfirm && (
+	        <DeleteConfirmModal
+	          detail={deleteConfirm}
+	          loading={pendingAction === `delete:${deleteConfirm.item.name}`}
+	          onCancel={() => setDeleteConfirm(null)}
+	          onConfirm={executeDelete}
+	          onToggleClean={(v) => setDeleteConfirm((prev) => ({ ...prev, cleanData: v }))}
+	        />
+	      )}
+	      {createOpen && (
+	        <CreateInstanceModal
+	          servers={servers}
+	          groups={instanceGroups}
+	          requestFn={request}
+          onRefresh={refresh}
+          onClose={() => setCreateOpen(false)}
 	        />
 	      )}
 	    </div>
@@ -795,7 +861,7 @@ function SummaryCell({ label, value, icon: Icon, tone = 'neutral' }) {
   );
 }
 
-function InstancesView({ groups, query, setQuery, expandedGroups, setExpandedGroups, onOpenDetail, onOpenBackups, onPowerAction, pendingAction }) {
+function InstancesView({ groups, query, setQuery, expandedGroups, setExpandedGroups, onOpenDetail, onOpenBackups, onPowerAction, onDelete, onCreate, pendingAction }) {
   const filtered = groups.filter((group) => {
     const text = [
       group.groupName,
@@ -824,7 +890,9 @@ function InstancesView({ groups, query, setQuery, expandedGroups, setExpandedGro
           <Search size={17} />
           <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索实例组、节点或端口..." />
         </div>
-
+        <button className="primary-button" onClick={onCreate}>
+          <Plus size={16} /> 创建实例
+        </button>
       </div>
       <section className="panel table-panel">
         <div className="table-scroll">
@@ -848,11 +916,12 @@ function InstancesView({ groups, query, setQuery, expandedGroups, setExpandedGro
                 <InstanceGroupRows
                   key={group.groupName}
                   group={group}
-                  expanded={expandedGroups[group.groupName] !== false}
+                  expanded={expandedGroups[group.groupName] === true}
 	                onToggle={() => toggleGroup(group.groupName)}
 	                onOpenDetail={onOpenDetail}
 	                onOpenBackups={onOpenBackups}
 	                onPowerAction={onPowerAction}
+	                onDelete={onDelete}
 	                pendingAction={pendingAction}
 	              />
               ))}
@@ -864,7 +933,7 @@ function InstancesView({ groups, query, setQuery, expandedGroups, setExpandedGro
   );
 }
 
-function InstanceGroupRows({ group, expanded, onToggle, onOpenDetail, onOpenBackups, onPowerAction, pendingAction }) {
+function InstanceGroupRows({ group, expanded, onToggle, onOpenDetail, onOpenBackups, onPowerAction, onDelete, pendingAction }) {
   const master = group.master;
   const hasReplicas = group.replicas.length > 0;
   const topology = topologyLabel(group, master);
@@ -911,6 +980,7 @@ function InstanceGroupRows({ group, expanded, onToggle, onOpenDetail, onOpenBack
           onOpenDetail={onOpenDetail}
           onOpenBackups={onOpenBackups}
           onPowerAction={onPowerAction}
+          onDelete={onDelete}
           pendingAction={pendingAction}
         />
       )}
@@ -923,6 +993,7 @@ function InstanceGroupRows({ group, expanded, onToggle, onOpenDetail, onOpenBack
           onOpenDetail={onOpenDetail}
           onOpenBackups={onOpenBackups}
           onPowerAction={onPowerAction}
+          onDelete={onDelete}
           pendingAction={pendingAction}
         />
       ))}
@@ -952,9 +1023,10 @@ function ResourceValue({ memory, cpus, disk }) {
   );
 }
 
-function InstanceRow({ item, group, role, onOpenDetail, onOpenBackups, onPowerAction, pendingAction }) {
+function InstanceRow({ item, group, role, onOpenDetail, onOpenBackups, onPowerAction, onDelete, pendingAction }) {
   const powerAction = powerActionFor(item, group);
   const isReplica = role === '从库';
+  const isMasterWithReplicas = role === '主库' && group.replicas.length > 0;
 
   return (
     <tr className={isReplica ? 'replica-row' : 'master-row'}>
@@ -989,6 +1061,14 @@ function InstanceRow({ item, group, role, onOpenDetail, onOpenBackups, onPowerAc
               onPowerAction(item, group, powerAction.action);
             }}
           />}
+          <IconButton
+            icon={Trash2}
+            label={isMasterWithReplicas ? '主库存在从库时不可删除' : '删除实例'}
+            disabled={isMasterWithReplicas ? '主库存在从库时不可删除，请先删除从库' : pendingAction === `delete:${item.name}`}
+            onClick={() => {
+              if (!isMasterWithReplicas) onDelete(item, group);
+            }}
+          />
         </div>
       </td>
     </tr>
@@ -1363,22 +1443,122 @@ function InstanceDetailModal({ detail, onClose }) {
   );
 }
 
-function BackupListModal({ detail, onClose }) {
+function BackupListModal({ detail, requestFn, onRefresh, onClose }) {
   const { item, group, loading, error, backups } = detail;
+  const [execLoading, setExecLoading] = useState(false);
+  const [execMsg, setExecMsg] = useState('');
+  const [scheduleLoading, setScheduleLoading] = useState(true);
+  const [schedule, setSchedule] = useState('');
+  const [retention, setRetention] = useState(7);
+  const [scheduleError, setScheduleError] = useState('');
+  const [scheduleSaving, setScheduleSaving] = useState(false);
+  const [scheduleSaved, setScheduleSaved] = useState(false);
+
+  useEffect(() => {
+    let ignore = false;
+    async function loadSchedule() {
+      try {
+        const data = await requestFn(`/backup/schedule?name=${encodeURIComponent(item.name)}`);
+        if (!ignore) {
+          setSchedule(data?.schedule || '');
+          setRetention(data?.retention || 7);
+        }
+      } catch (err) {
+        if (!ignore) setScheduleError(err.message || String(err));
+      } finally {
+        if (!ignore) setScheduleLoading(false);
+      }
+    }
+    loadSchedule();
+    return () => { ignore = true; };
+  }, [item.name]);
+
+  const isMaster = getField(item, 'role', 'Role') === 'master';
+  const hasReplicas = group.replicas && group.replicas.length > 0;
+
+  async function handleExecBackup() {
+    setExecLoading(true);
+    setExecMsg('');
+    try {
+      const res = await requestFn('/backup/exec', {
+        method: 'POST',
+        body: JSON.stringify({ name: item.name })
+      });
+      const taskId = res?.task_id;
+      if (!taskId) {
+        setExecMsg('备份已触发');
+        setExecLoading(false);
+        return;
+      }
+      setExecMsg('备份执行中...');
+      // Poll for status
+      const poll = setInterval(async () => {
+        try {
+          const statusRes = await requestFn(`/backup/status?name=${encodeURIComponent(item.name)}&task_id=${encodeURIComponent(taskId)}`);
+          const status = statusRes?.status;
+          if (status === 'success') {
+            clearInterval(poll);
+            setExecMsg('备份完成');
+            setExecLoading(false);
+          } else if (status === 'failed') {
+            clearInterval(poll);
+            setExecMsg('备份失败: ' + (statusRes?.error || '未知错误'));
+            setExecLoading(false);
+          }
+          // else still running, keep polling
+        } catch {
+          clearInterval(poll);
+          setExecMsg('查询状态失败');
+          setExecLoading(false);
+        }
+      }, 2000);
+    } catch (err) {
+      setExecMsg('备份触发失败: ' + (err.message || String(err)));
+      setExecLoading(false);
+    }
+  }
+
+  async function handleSaveSchedule() {
+    setScheduleSaving(true);
+    setScheduleError('');
+    setScheduleSaved(false);
+    try {
+      await requestFn('/backup/schedule', {
+        method: 'POST',
+        body: JSON.stringify({ name: item.name, schedule, retention: Number(retention) || 7 })
+      });
+      setScheduleSaved(true);
+    } catch (err) {
+      setScheduleError(err.message || String(err));
+    } finally {
+      setScheduleSaving(false);
+    }
+  }
 
   return (
     <div className="modal-backdrop" role="presentation" onMouseDown={onClose}>
       <section className="modal" role="dialog" aria-modal="true" onMouseDown={(event) => event.stopPropagation()}>
         <div className="modal-header">
           <div>
-            <h3>{item.name} 备份列表</h3>
-            <span>{group.groupName} · 只读查看</span>
+            <h3>{item.name} 备份管理</h3>
+            <span>{group.groupName}</span>
           </div>
           <button className="icon-button" onClick={onClose} aria-label="关闭" type="button"><X size={18} /></button>
         </div>
         <div className="modal-body">
           <section>
-            <h4><HardDrive size={16} /> 可用备份</h4>
+            <div className="section-header-row">
+              <h4><HardDrive size={16} /> 可用备份</h4>
+              <button
+                className="primary-button compact"
+                onClick={handleExecBackup}
+                disabled={execLoading}
+              >
+                {execLoading ? <><RefreshCw size={14} className="spin" /> 备份中...</> : <><Play size={14} /> 立即备份</>}
+              </button>
+            </div>
+            {execMsg && <div className={`notice compact ${execMsg.includes('失败') ? '' : 'notice-ok'}`}><AlertCircle size={16} /> {execMsg}</div>}
+            {isMaster && hasReplicas && <div className="form-hint">⚠️ 当前为主库，建议在从库上执行备份以避免影响主库性能。</div>}
             {loading ? (
               <div className="inline-loading">正在读取备份列表...</div>
             ) : error ? (
@@ -1392,14 +1572,98 @@ function BackupListModal({ detail, onClose }) {
                     <HardDrive size={18} />
                     <div>
                       <strong>{backup.time}</strong>
-                      <span>{backup.name}</span>
+                      <span>{backup.type} · {backup.size}</span>
                     </div>
-                    <span className="backup-type">{backup.type}</span>
+                    <StatusBadge status={backup.status === '成功' ? 'running' : 'failed'}>
+                      {backup.status}
+                    </StatusBadge>
                   </div>
                 ))}
               </div>
             )}
           </section>
+          <section>
+            <h4><Calendar size={16} /> 定时备份策略</h4>
+            {scheduleLoading ? (
+              <div className="inline-loading">正在读取策略...</div>
+            ) : (
+              <div className="schedule-form">
+                {scheduleError && <div className="notice compact"><AlertCircle size={16} /> {scheduleError}</div>}
+                {scheduleSaved && <div className="notice compact notice-ok"><CheckCircle2 size={16} /> 策略已保存</div>}
+                <div className="form-grid form-grid-2col">
+                  <label>Cron 表达式
+                    <input
+                      value={schedule}
+                      onChange={(e) => { setSchedule(e.target.value); setScheduleSaved(false); }}
+                      placeholder="0 2 * * *（每天凌晨2点）"
+                    />
+                  </label>
+                  <label>保留天数
+                    <input
+                      type="number"
+                      min={1}
+                      value={retention}
+                      onChange={(e) => { setRetention(e.target.value); setScheduleSaved(false); }}
+                    />
+                  </label>
+                </div>
+                <div className="schedule-hint">
+                  <span className="muted">留空 Cron 表达式则关闭定时备份。常用: <code>0 2 * * *</code>(每天2:00)、<code>0 */6 * * *</code>(每6小时)</span>
+                </div>
+                <div className="schedule-actions">
+                  <button
+                    className="primary-button compact"
+                    onClick={handleSaveSchedule}
+                    disabled={scheduleSaving}
+                  >
+                    {scheduleSaving ? <><RefreshCw size={14} className="spin" /> 保存中...</> : <><Save size={14} /> 保存策略</>}
+                  </button>
+                </div>
+              </div>
+            )}
+          </section>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function DeleteConfirmModal({ detail, loading, onCancel, onConfirm, onToggleClean }) {
+  const { item, group, cleanData } = detail;
+  const role = getField(item, 'role', 'Role', '-');
+  const status = getField(item, 'status', 'Status', '-');
+
+  return (
+    <div className="modal-backdrop" role="presentation" onMouseDown={onCancel}>
+      <section className="confirm-modal" role="dialog" aria-modal="true" onMouseDown={(event) => event.stopPropagation()}>
+        <div className="confirm-head">
+          <div className="confirm-icon warn">
+            <Trash2 size={20} />
+          </div>
+          <div>
+            <h3>确认删除实例</h3>
+            <span>{item.name} · {group.groupName}</span>
+          </div>
+        </div>
+        <div className="confirm-body">
+          <p>
+            将要删除实例 <strong>{item.name}</strong>。此操作不可恢复，实例容器将被停止并移除。
+          </p>
+          <div className="confirm-facts">
+            <span>角色: {displayValue(role)}</span>
+            <span>当前状态: {statusMeta(status).label}</span>
+            <span>节点: {displayValue(getField(item, 'server', 'Server'))}</span>
+          </div>
+          <label className="form-check delete-check">
+            <input type="checkbox" checked={cleanData} onChange={(e) => onToggleClean(e.target.checked)} />
+            同时删除数据文件（备份 + 数据目录）
+          </label>
+        </div>
+        <div className="confirm-actions">
+          <button className="ghost-button" onClick={onCancel} disabled={loading}>取消</button>
+          <button className="danger-button" onClick={onConfirm} disabled={loading}>
+            {loading ? '删除中...' : '确认删除'}
+          </button>
         </div>
       </section>
     </div>
@@ -1441,6 +1705,269 @@ function ConfirmPowerModal({ detail, loading, onCancel, onConfirm }) {
           <button className="ghost-button" onClick={onCancel} disabled={loading}>取消</button>
           <button className={isStop ? 'danger-button' : 'primary-button'} onClick={onConfirm} disabled={loading}>
             {loading ? '处理中...' : `确认${actionText}`}
+          </button>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function CreateInstanceModal({ servers, groups, requestFn, onRefresh, onClose }) {
+  const [form, setForm] = useState({
+    group: '', engine: 'redis', engine_version: '', category: 'cache',
+    joinExisting: false, replicaCount: 1,
+    memory: '', memory_unit: 'Gi', cpus: '', disk: '', disk_unit: 'Gi',
+    server: '', password: '', config_overrides: ''
+  });
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState('');
+  const [progress, setProgress] = useState(null);
+
+  const replicaGroups = groups.filter((g) => g.master);
+  const isReplica = form.joinExisting;
+
+  function update(key, value) {
+    setForm((prev) => {
+      const next = { ...prev, [key]: value };
+      if (key === 'joinExisting') {
+        next.group = '';
+        next.replicaCount = 1;
+      }
+      if (key === 'group' && prev.joinExisting) {
+        const g = replicaGroups.find((g) => g.groupName === value);
+        if (g) {
+          next.category = g.category || prev.category;
+          next.engine = g.engine || prev.engine;
+        }
+      }
+      return next;
+    });
+  }
+
+  function parseOverrides(text) {
+    const map = {};
+    for (const line of String(text || '').split('\n')) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      const eq = trimmed.indexOf('=');
+      if (eq < 0) continue;
+      const key = trimmed.slice(0, eq).trim();
+      const val = trimmed.slice(eq + 1).trim();
+      if (key) map[key] = val;
+    }
+    return Object.keys(map).length ? map : undefined;
+  }
+
+  function buildInstances() {
+    const overrides = parseOverrides(form.config_overrides);
+    const base = {
+      category: form.category,
+      engine: form.engine,
+      memory: form.memory.trim() + form.memory_unit,
+      cpus: form.cpus ? Number(form.cpus) : 0,
+      ...(form.server.trim() ? { server: form.server.trim() } : {}),
+      ...(form.disk.trim() ? { disk: form.disk.trim() + form.disk_unit } : {}),
+      ...(form.password ? { password: form.password } : {}),
+      ...(overrides ? { config_overrides: overrides } : {})
+    };
+
+    if (isReplica) {
+      const group = replicaGroups.find((g) => g.groupName === form.group);
+      if (!group || !group.master) return [];
+      const masterName = group.master.name;
+      let maxN = -1;
+      for (const inst of group.instances) {
+        const m = String(inst.name).match(/-(\d+)$/);
+        if (m) maxN = Math.max(maxN, parseInt(m[1]));
+      }
+      const list = [];
+      for (let i = 0; i < form.replicaCount; i++) {
+        const name = `${form.group}-${maxN + 1 + i}`;
+        list.push({
+          name, role: '副本',
+          payload: { ...base, name, type: 'replication', replica_of: masterName }
+        });
+      }
+      return list;
+    }
+
+    const isStandalone = form.replicaCount === 0;
+    const list = [{
+      name: `${form.group}-0`,
+      role: isStandalone ? '单点' : '主库',
+      payload: {
+        ...base,
+        name: `${form.group}-0`,
+        type: isStandalone ? 'standalone' : 'replication',
+        group: form.group,
+        ...(form.engine_version.trim() ? { engine_version: form.engine_version.trim() } : {})
+      }
+    }];
+    for (let i = 1; i <= form.replicaCount; i++) {
+      const name = `${form.group}-${i}`;
+      list.push({
+        name, role: '副本',
+        payload: { ...base, name, type: 'replication', replica_of: `${form.group}-0` }
+      });
+    }
+    return list;
+  }
+
+  const instances = buildInstances();
+
+  async function handleSubmit() {
+    setError('');
+    if (!form.group.trim()) { setError(isReplica ? '请选择实例组' : '请填写实例组名'); return; }
+    if (!form.memory.trim()) { setError('请填写内存'); return; }
+
+    setSubmitting(true);
+    const created = [];
+    for (let i = 0; i < instances.length; i++) {
+      const inst = instances[i];
+      setProgress({ current: i + 1, total: instances.length, name: inst.name });
+      try {
+        await requestFn('/instance/create', { method: 'POST', body: JSON.stringify(inst.payload) });
+        created.push(inst.name);
+      } catch (err) {
+        const msg = err.message || String(err);
+        if (created.length > 0) {
+          setError(`已创建 ${created.length}/${instances.length} 个（${created.join('、')}）。${inst.name} 失败：${msg}`);
+          await onRefresh();
+        } else {
+          setError(`${inst.name} 创建失败：${msg}`);
+        }
+        setProgress(null);
+        setSubmitting(false);
+        return;
+      }
+    }
+    setProgress(null);
+    setSubmitting(false);
+    await onRefresh();
+    onClose();
+  }
+
+  return (
+    <div className="modal-backdrop" role="presentation" onMouseDown={submitting ? undefined : onClose}>
+      <section className="modal create-modal" role="dialog" aria-modal="true" onMouseDown={(e) => e.stopPropagation()}>
+        <div className="modal-header">
+          <div>
+            <h3>创建实例</h3>
+            <span>新建 Redis / Kvrocks 实例</span>
+          </div>
+          <button className="icon-button" onClick={onClose} aria-label="关闭" type="button"><X size={18} /></button>
+        </div>
+        <div className="modal-body">
+          {error && <div className="notice compact"><AlertCircle size={16} /> {error}</div>}
+          <section>
+            <h4><Info size={16} /> 基本信息</h4>
+            <div className="form-grid">
+              <label>实例组 <span className="req">*</span>
+                {isReplica ? (
+                  <select value={form.group} onChange={(e) => update('group', e.target.value)}>
+                    <option value="">选择组</option>
+                    {replicaGroups.map((g) => <option key={g.groupName} value={g.groupName}>{g.groupName}</option>)}
+                  </select>
+                ) : (
+                  <input value={form.group} onChange={(e) => update('group', e.target.value)} placeholder="如 order" />
+                )}
+              </label>
+              <label>类别 <span className="req">*</span>
+                <select value={form.category} onChange={(e) => update('category', e.target.value)} disabled={isReplica}>
+                  <option value="cache">缓存</option>
+                  <option value="persistent">持久化</option>
+                </select>
+              </label>
+              <label>引擎 <span className="req">*</span>
+                <select value={form.engine} onChange={(e) => update('engine', e.target.value)} disabled={isReplica}>
+                  <option value="redis">Redis</option>
+                  <option value="kvrocks">Kvrocks</option>
+                </select>
+              </label>
+              <label>引擎版本
+                <input value={form.engine_version} onChange={(e) => update('engine_version', e.target.value)} placeholder="默认" disabled={isReplica} />
+              </label>
+              <label>副本数量 <span className="req">*</span>
+                <input type="number" min={0} value={form.replicaCount} onChange={(e) => update('replicaCount', Math.max(0, Number(e.target.value) || 0))} />
+              </label>
+            </div>
+            {replicaGroups.length > 0 && (
+              <label className="form-check">
+                <input type="checkbox" checked={form.joinExisting} onChange={(e) => update('joinExisting', e.target.checked)} disabled={submitting} />
+                添加副本到已有组
+              </label>
+            )}
+            {isReplica && <p className="form-hint">引擎 / 版本 / 类别将从主库自动继承。副本数量为本次新增的副本数。</p>}
+            {!isReplica && <p className="form-hint">副本数量 0 = 单点，1+ = 主从。实例名自动生成为 {form.group || '组名'}-0、{form.group || '组名'}-1 …</p>}
+          </section>
+          <section>
+            <h4><Database size={16} /> 资源配置</h4>
+            <div className="form-grid">
+              <label>内存 <span className="req">*</span>
+                <div className="input-unit">
+                  <input type="number" value={form.memory} onChange={(e) => update('memory', e.target.value)} placeholder="如 2" />
+                  <select value={form.memory_unit} onChange={(e) => update('memory_unit', e.target.value)}>
+                    <option value="Gi">Gi</option>
+                    <option value="Mi">Mi</option>
+                  </select>
+                </div>
+              </label>
+              <label>CPU 核数
+                <input type="number" step="0.5" value={form.cpus} onChange={(e) => update('cpus', e.target.value)} placeholder="如 1" />
+              </label>
+              <label>磁盘
+                <div className="input-unit">
+                  <input type="number" value={form.disk} onChange={(e) => update('disk', e.target.value)} placeholder="如 10" />
+                  <select value={form.disk_unit} onChange={(e) => update('disk_unit', e.target.value)}>
+                    <option value="Gi">Gi</option>
+                  </select>
+                </div>
+              </label>
+            </div>
+          </section>
+          <section>
+            <h4><Server size={16} /> 部署选项</h4>
+            <div className="form-grid">
+              <label>目标节点
+                <select value={form.server} onChange={(e) => update('server', e.target.value)}>
+                  <option value="">自动调度</option>
+                  {servers.map((s) => <option key={s.name} value={s.name}>{s.name}</option>)}
+                </select>
+              </label>
+              <label>密码
+                <input type="password" value={form.password} onChange={(e) => update('password', e.target.value)} placeholder="留空则无密码" />
+              </label>
+            </div>
+          </section>
+          <section>
+            <h4><SlidersHorizontal size={16} /> 高级</h4>
+            <div className="form-grid form-grid-full">
+              <label>配置覆盖
+                <textarea rows="4" value={form.config_overrides} onChange={(e) => update('config_overrides', e.target.value)} placeholder={'每行一个，格式 key=value\n如 maxmemory-policy=allkeys-lru'} />
+              </label>
+            </div>
+          </section>
+          {instances.length > 0 && !submitting && (
+            <section>
+              <h4><CheckCircle2 size={16} /> 将创建以下实例</h4>
+              <div className="instance-preview">
+                {instances.map((inst) => (
+                  <div key={inst.name} className="preview-item">
+                    <code>{inst.name}</code>
+                    <span className="preview-role">{inst.role}</span>
+                  </div>
+                ))}
+              </div>
+            </section>
+          )}
+          {progress && (
+            <div className="notice compact"><RefreshCw size={16} className="spin" /> 正在创建 {progress.name}（{progress.current}/{progress.total}）…</div>
+          )}
+        </div>
+        <div className="confirm-actions">
+          <button className="ghost-button" onClick={onClose} disabled={submitting}>取消</button>
+          <button className="primary-button" onClick={handleSubmit} disabled={submitting || instances.length === 0}>
+            {submitting ? '创建中…' : `创建 ${instances.length} 个实例`}
           </button>
         </div>
       </section>

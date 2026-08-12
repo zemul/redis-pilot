@@ -1586,6 +1586,235 @@ code {
 }
 
 /* ============================================================
+   Create instance form
+   ============================================================ */
+.modal.create-modal {
+  grid-template-rows: auto minmax(0, 1fr) auto;
+}
+
+.form-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.form-grid.form-grid-full {
+  grid-template-columns: 1fr;
+  margin-top: 12px;
+}
+
+.form-grid label {
+  display: block;
+  color: var(--ink-muted);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.form-grid label > input,
+.form-grid label > select,
+.form-grid label > textarea {
+  display: block;
+  margin-top: 6px;
+}
+
+.form-grid label > .input-unit {
+  margin-top: 6px;
+}
+
+.form-grid .req {
+  color: var(--red-fg);
+}
+
+.form-grid input,
+.form-grid select,
+.form-grid textarea {
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: var(--r-control);
+  padding: 0 10px;
+  outline: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: inherit;
+  font-size: 13px;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+.form-grid input,
+.form-grid select {
+  height: 36px;
+}
+
+.form-grid textarea {
+  padding: 8px 10px;
+  resize: vertical;
+  min-height: 80px;
+}
+
+.form-grid input:focus,
+.form-grid select:focus,
+.form-grid textarea:focus {
+  border-color: var(--ink);
+  box-shadow: 0 0 0 3px rgba(0, 0, 0, 0.08);
+}
+
+.form-grid input:disabled,
+.form-grid select:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.form-grid input::placeholder,
+.form-grid textarea::placeholder {
+  color: var(--ink-muted);
+}
+
+.input-unit {
+  display: flex;
+  gap: 6px;
+}
+
+.input-unit input {
+  flex: 1;
+  min-width: 0;
+}
+
+.input-unit select {
+  flex: 0 0 auto;
+  width: 64px;
+}
+
+.form-hint {
+  margin: 8px 0 0;
+  padding: 8px 10px;
+  border-radius: var(--r-control);
+  background: var(--surface-2);
+  color: var(--ink-secondary);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.form-check {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 10px;
+  font-size: 13px;
+  color: var(--ink-secondary);
+  cursor: pointer;
+}
+
+.form-check input {
+  width: auto;
+  height: auto;
+  margin: 0;
+}
+
+.instance-preview {
+  display: grid;
+  gap: 6px;
+}
+
+.preview-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-control);
+  background: var(--surface);
+}
+
+.preview-item code {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  color: var(--ink);
+}
+
+.preview-role {
+  margin-left: auto;
+  font-size: 12px;
+  color: var(--ink-muted);
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+.spin {
+  animation: spin 0.8s linear infinite;
+}
+
+@media (max-width: 640px) {
+  .form-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* ============================================================
+   Backup management & Delete confirm extras
+   ============================================================ */
+.section-header-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.section-header-row h4 {
+  margin: 0;
+}
+
+.primary-button.compact,
+.danger-button.compact {
+  padding: 6px 12px;
+  font-size: 12px;
+  gap: 5px;
+}
+
+.notice-ok {
+  background: var(--green-bg);
+  border-color: var(--green-border);
+  color: var(--green-fg);
+}
+
+.schedule-form {
+  display: grid;
+  gap: 12px;
+}
+
+.form-grid.form-grid-2col {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.schedule-hint {
+  padding: 6px 0;
+  font-size: 12px;
+}
+
+.schedule-hint code {
+  font-family: var(--font-mono);
+  background: var(--surface-2);
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-size: 11px;
+}
+
+.schedule-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.delete-check {
+  margin-top: 14px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-control);
+  background: var(--surface);
+}
+
+/* ============================================================
    Reduced motion
    ============================================================ */
 @media (prefers-reduced-motion: reduce) {
