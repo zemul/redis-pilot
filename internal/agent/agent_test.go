@@ -264,60 +264,6 @@ func TestTrimPrefix(t *testing.T) {
 	}
 }
 
-func TestCleanupBackups(t *testing.T) {
-	dir := t.TempDir()
-	// 创建 5 个备份文件
-	for _, name := range []string{"2024-01-01.rdb", "2024-01-02.rdb", "2024-01-03.rdb", "2024-01-04.rdb", "2024-01-05.rdb"} {
-		os.WriteFile(filepath.Join(dir, name), []byte("data"), 0644)
-	}
-	// 保留 3 份
-	cleanupBackups(dir, 3)
-	entries, _ := os.ReadDir(dir)
-	if len(entries) != 3 {
-		t.Fatalf("expected 3 backups, got %d", len(entries))
-	}
-	// 应保留最新的 3 个
-	names := make([]string, len(entries))
-	for i, e := range entries {
-		names[i] = e.Name()
-	}
-	for _, want := range []string{"2024-01-03.rdb", "2024-01-04.rdb", "2024-01-05.rdb"} {
-		found := false
-		for _, n := range names {
-			if n == want {
-				found = true
-				break
-			}
-		}
-		if !found {
-			t.Errorf("expected %s to be retained, got %v", want, names)
-		}
-	}
-}
-
-func TestCleanupBackups_SkipCheckpoint(t *testing.T) {
-	dir := t.TempDir()
-	os.MkdirAll(filepath.Join(dir, "checkpoint"), 0755)
-	os.WriteFile(filepath.Join(dir, "2024-01-01.rdb"), []byte("data"), 0644)
-	os.WriteFile(filepath.Join(dir, "2024-01-02.rdb"), []byte("data"), 0644)
-	cleanupBackups(dir, 1)
-	// checkpoint 目录不应被计入也不应被删除
-	if _, err := os.Stat(filepath.Join(dir, "checkpoint")); os.IsNotExist(err) {
-		t.Error("checkpoint dir should not be deleted")
-	}
-	entries, _ := os.ReadDir(dir)
-	// checkpoint + 1 个备份文件
-	fileCount := 0
-	for _, e := range entries {
-		if e.Name() != "checkpoint" {
-			fileCount++
-		}
-	}
-	if fileCount != 1 {
-		t.Fatalf("expected 1 backup file, got %d", fileCount)
-	}
-}
-
 func TestCopyFile(t *testing.T) {
 	dir := t.TempDir()
 	src := filepath.Join(dir, "src.txt")
@@ -411,14 +357,13 @@ func TestHostResources(t *testing.T) {
 	}
 }
 
-func TestInstanceBackups_Empty(t *testing.T) {
+func TestInstanceBackups_NotConfigured(t *testing.T) {
 	a := newTestAgent(t)
 	r := a.Router()
-	// 创建备份目录
 	os.MkdirAll(filepath.Join(a.cfg.DataDir, "redis-1", "backup"), 0755)
 	w := doAgentRequest(r, "GET", "/instance/backups?name=redis-1", nil)
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d", w.Code)
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503 (s3 not configured), got %d", w.Code)
 	}
 }
 
@@ -428,29 +373,6 @@ func TestInstanceBackups_MissingName(t *testing.T) {
 	w := doAgentRequest(r, "GET", "/instance/backups", nil)
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400, got %d", w.Code)
-	}
-}
-
-func TestInstanceBackups_WithFiles(t *testing.T) {
-	a := newTestAgent(t)
-	r := a.Router()
-	backupDir := filepath.Join(a.cfg.DataDir, "redis-1", "backup")
-	os.MkdirAll(backupDir, 0755)
-	os.WriteFile(filepath.Join(backupDir, "2024-01-01T00:00:00.rdb"), []byte("data"), 0644)
-	os.WriteFile(filepath.Join(backupDir, "2024-01-02T00:00:00.rdb"), []byte("data"), 0644)
-
-	w := doAgentRequest(r, "GET", "/instance/backups?name=redis-1", nil)
-	resp := parseAgentResponse(t, w)
-	if !resp.Success {
-		t.Fatalf("expected success: %s", resp.Error)
-	}
-	data, _ := json.Marshal(resp.Data)
-	var result struct {
-		Backups []string `json:"backups"`
-	}
-	json.Unmarshal(data, &result)
-	if len(result.Backups) != 2 {
-		t.Fatalf("expected 2 backups, got %d", len(result.Backups))
 	}
 }
 

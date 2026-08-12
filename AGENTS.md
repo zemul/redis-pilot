@@ -34,6 +34,7 @@ redis-pilot/
   │   ├── proxy/    # Proxy：HTTP 长轮询拉取快照、Redis 读写分离路由
   │   ├── agent/    # Agent HTTP handler + 定时任务
   │   ├── audit/    # 审计日志（Logger 负责ID/时间戳生成，底层委托给 internal/store）
+  │   ├── s3/       # S3 兼容对象存储客户端（备份上传/下载/列表/清理）
   │   └── podman/   # Podman API 封装
   └── pkg/
       ├── apitypes/ # Server ↔ Agent 共享请求/响应结构体
@@ -42,7 +43,7 @@ redis-pilot/
 
 ## 配置文件
 - `server.yaml`：Server 监听端口、CLI 鉴权 Token（空则不鉴权）、Redis/Kvrocks 版本白名单、`data_dir`（`pilot.db` 存放目录）
-- `agent.yaml`：Agent 监听端口、鉴权 Token（空则不鉴权）
+- `agent.yaml`：Agent 监听端口、鉴权 Token（空则不鉴权）、S3 备份存储配置（`backup.s3`：endpoint/bucket/access_key/secret_key）
 - `proxy.yaml`：Proxy 的 Server 连接信息（`server_endpoint`/`server_token`）、长轮询参数（`poll_interval`/`poll_timeout`/`poll_wait`）、`metrics_listen`
 - `~/.redis-pilot-cli/config.yaml`：CLI 配置，Server 地址默认 127.0.0.1:8080
 

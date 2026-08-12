@@ -6,7 +6,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"sort"
 	"strings"
 	"time"
 )
@@ -96,46 +95,6 @@ func runShell(name string, args ...string) (string, error) {
 		return "", fmt.Errorf("%s %v: %w\n%s", name, args, err, out)
 	}
 	return strings.TrimSpace(string(out)), nil
-}
-
-// cleanupBackups 保留最近 n 份备份，删除多余的
-func cleanupBackups(dir string, retention int) {
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return
-	}
-	// 过滤出真正的备份文件/目录。必须排除中间态产物，否则它们会被算作一份有效备份
-	// 参与计数，把真正的备份挤出保留窗口；恢复流程也可能挑中一个内容不全的备份集。
-	var backups []os.DirEntry
-	for _, e := range entries {
-		name := e.Name()
-		if name == "checkpoint" {
-			continue
-		}
-		if strings.HasSuffix(name, ".incomplete") { // 备份集写入中途的暂存目录
-			continue
-		}
-		if strings.HasPrefix(name, ".") { // 暂存/隐藏目录
-			continue
-		}
-		backups = append(backups, e)
-	}
-	if len(backups) <= retention {
-		return
-	}
-	// 按名称排序（时间戳格式，字典序即时间序）
-	sort.Slice(backups, func(i, j int) bool {
-		return backups[i].Name() < backups[j].Name()
-	})
-	// 删除最旧的
-	for _, e := range backups[:len(backups)-retention] {
-		path := filepath.Join(dir, e.Name())
-		if e.IsDir() {
-			os.RemoveAll(path)
-		} else {
-			os.Remove(path)
-		}
-	}
 }
 
 // copyFile 复制文件
@@ -318,4 +277,17 @@ func isContainerNotFound(err error) bool {
 	}
 	msg := err.Error()
 	return strings.Contains(msg, "no such container") || strings.Contains(msg, "no container with name or ID")
+}
+
+// dirSize 递归计算目录总大小（字节）。
+func dirSize(path string) int64 {
+	var total int64
+	filepath.Walk(path, func(_ string, info os.FileInfo, err error) error {
+		if err != nil || info.IsDir() {
+			return nil
+		}
+		total += info.Size()
+		return nil
+	})
+	return total
 }

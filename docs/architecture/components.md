@@ -40,7 +40,8 @@
   GET  /instance/status         实例详细状态
 
 备份管理（转发到目标服务器 Agent）
-  POST /backup/exec             执行备份
+  POST /backup/exec             执行备份（异步，返回 task_id）
+  GET  /backup/status            查询备份任务状态
   POST /backup/restore          从备份恢复
   GET  /backup/list             列出可用备份
 
@@ -146,7 +147,8 @@ CLI Token 优先级（从高到低）：`--token` 参数 > `REDIS_SERVER_TOKEN` 
   GET  /instance/status        实例详细状态（含 INFO 解析）
 
 备份管理
-  POST /instance/backup        执行备份
+  POST /instance/backup        执行备份（异步，返回 task_id）
+  GET  /instance/backup/status  查询备份任务状态
   POST /instance/restore       从备份恢复
   GET  /instance/backups       列出可用备份
 
@@ -358,7 +360,6 @@ instances:
     backup:
       schedule: "0 */6 * * *"        # 每 6 小时
       retention: 7                   # 保留 7 份
-      last_backup: "2026-04-23T12:00:00Z"
     status: running
     created_at: "2026-04-23T10:00:00Z"
 
@@ -385,7 +386,6 @@ instances:
     backup:
       schedule: "0 */6 * * *"
       retention: 7
-      last_backup: "2026-04-23T12:00:00Z"
     status: running
     created_at: "2026-04-23T10:05:00Z"
 ```
@@ -547,27 +547,25 @@ Kvrocks 基于 RocksDB 存储，数据天然持久化到磁盘，无需 RDB/AOF�
 
 - **Redis 实例（engine: redis）：**
   - 避免对主库性能影响
-  - 从库执行 `BGSAVE`，等待完成并校验产物后，复制 RDB 文件到 backup 目录
+  - 从库执行 `BGSAVE`，等待完成并校验产物后，上传 RDB 到 S3
   - 无从库的单点实例，在主库执行（安排在低峰期）
   - **如果开启了 AOF（appendonly: yes），备份时必须同时保存 AOF 文件**：
     1. 先执行 `BGREWRITEAOF` 生成精简 AOF
     2. 等待 `BGREWRITEAOF` 完成（`INFO Persistence: aof_rewrite_in_progress=0`）
-    3. 备份 RDB 文件 + 重写后的 AOF 文件（appendonly.aof）
-    4. 两者作为同一备份集，使用相同时间戳目录
+    3. 备份 RDB 文件 + 重写后的 AOF 文件，打包为 tar.gz 上传 S3
+    4. 两者作为同一备份集，使用相同时间戳
 
 - **Kvrocks 实例（engine: kvrocks）：**
-  - 使用 RocksDB Checkpoint 创建一致性快照（不阻塞读写）
-  - 从库执行 `ROCKSDB.CHECKPOINT` 生成快照目录，打包复制到 backup 目录
-  - 无从库的单点实例，在主库执行 Checkpoint
-
-**定时备份配置：**
+  - 使用 `BGSAVE` 生成 RocksDB 快照（不使用 `ROCKSDB.CHECKPOINT`，kvrocks 2.15.0 不存在该命令）
+  - 从库执行 `BGSAVE`，等待完成后打包为 tar.gz 上传 S3
+  - 无从库的单点实例，在主库执行（安排在低峰期）
 
 备份调度由 Server 内置 cron 驱动，配置读取自 `instances` 表每个实例的 `backup` 列（JSON）。Server 负责注册定时任务并在触发时调用目标实例所在 Agent 执行备份；Agent 不独立维护调度状态。
 
 ```yaml
 backup:
   schedule: "0 2 * * *"   # cron 表达式，空字符串表示不启用自动备份
-  retention: 7             # 保留份数
+  retention: 7             # S3 保留份数
 ```
 
 通过 CLI 配置：
@@ -585,36 +583,43 @@ redis-pilot-cli backup set-schedule <instance> --cron ""
 
 Server 启动时读取所有实例的 `backup.schedule`，注册内部 cron，并每 60 秒与 `instances` 表同步一次。实例备份配置变更后，Server 调度器在下一轮同步中增删对应任务。
 
+**S3 对象存储：**
+
+备份产物上传至 S3 兼容对象存储（如 MinIO），S3 是备份的唯一持久化位置，本地磁盘仅作暂存。S3 连接配置在 `agent.yaml`：
+
+```yaml
+backup:
+  s3:
+    endpoint: http://oss.internal:9000
+    bucket: redis-pilot-backup
+    access_key: xxx
+    secret_key: xxx
+    region: ""
+    use_ssl: false
+```
+
+Agent 初始化时创建 S3 客户端，若 endpoint 为空则备份/恢复/列表接口返回 503。
+
+**S3 Key 命名约定：**
+
+```
+{instance-name}/{backup-ts}.{suffix}
+
+# Redis RDB-only
+order-1/2026-08-11T02:00:00.rdb
+
+# Redis RDB+AOF（打包为单个 tar.gz）
+order-1/2026-08-11T02:00:00.rdbaof.tar.gz
+
+# Kvrocks
+order-2/2026-08-11T02:00:00.checkpoint.tar.gz
+```
+
+Key 完全可预测，不需要索引。`backup list` 通过 `ListObjects(prefix="{instance}/")` 获取列表；恢复时由 `{instance}/{backup-ts}.{suffix}` 拼出 key 下载。
+
 **备份轮转：**
 
-```
-# Redis 实例（RDB-only 实例）
-/data/redis/{instance-name}/backup/
-  ├── 2026-04-23T12:00:00.rdb
-  ├── 2026-04-23T06:00:00.rdb
-  ├── 2026-04-23T00:00:00.rdb
-  └── ...
-  保留策略：保留最近 N 份（默认 7），超期自动清理
-
-# Redis 实例（开启 AOF 的实例 — RDB+AOF 联合备份）
-/data/redis/{instance-name}/backup/
-  ├── 2026-04-23T12:00:00/
-  │   ├── dump.rdb              # RDB 快照
-  │   └── appendonly.aof        # 重写后的 AOF
-  ├── 2026-04-23T06:00:00/
-  │   ├── dump.rdb
-  │   └── appendonly.aof
-  └── ...
-  保留策略：保留最近 N 份（默认 7），超期自动清理
-
-# Kvrocks 实例
-/data/redis/{instance-name}/backup/
-  ├── 2026-04-23T12:00:00.checkpoint.tar.gz
-  ├── 2026-04-23T06:00:00.checkpoint.tar.gz
-  ├── 2026-04-23T00:00:00.checkpoint.tar.gz
-  └── ...
-  保留策略：保留最近 N 份（默认 7），超期自动清理
-```
+备份上传成功后，Agent 立即执行 S3 轮转清理（`ListObjects` + `DeleteObjects`），保留最近 N 份（`retention`）。实例删除时（`clean_data=true`），Agent 清理该实例在 S3 中的所有对象。
 
 **延迟从库（可选高级功能）：**
 

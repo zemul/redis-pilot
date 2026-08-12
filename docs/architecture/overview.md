@@ -33,7 +33,7 @@
 | 主从复制管理 | 多活/异地复制 |
 | Podman 容器化部署 | 裸金属/VM 部署 |
 | 自研 Proxy 统一代理 | Envoy 等外部代理 |
-| RDB + AOF 备份 | 云存储备份集成 |
+| RDB + AOF + S3 备份 | Redis Cluster 管理 |
 | 基础监控与诊断 | 完整 Prometheus/Grafana 体系 |
 
 ### 1.3 设计原则

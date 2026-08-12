@@ -4,3 +4,11 @@ data_dir: /data/redis
 log:
   dir: /opt/redis-pilot-agent/logs
   stdout: true
+backup:
+  s3:
+    endpoint: http://oss.internal:9000
+    bucket: redis-pilot-backup
+    access_key: ""
+    secret_key: ""
+    region: ""
+    use_ssl: false

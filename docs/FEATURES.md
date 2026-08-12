@@ -104,18 +104,23 @@
 
 | API 路径 | 方法 | 功能 | 实现函数 |
 |---------|------|------|---------|
-| `/backup/exec` | POST | 执行一次备份 | `backupExec()` |
+| `/backup/exec` | POST | 触发一次备份（异步，返回 `task_id`） | `backupExec()` |
+| `/backup/status` | GET | 查询备份任务状态（需 `name` 和 `task_id` 参数） | `backupStatus()` |
 | `/backup/restore` | POST | 从备份恢复数据 | `backupRestore()` |
 | `/backup/list` | GET | 列出可用备份（需 `name` 参数） | `backupList()` |
 
 **备份特性**:
+- **异步模型**: `POST /backup/exec` 立即返回 `task_id`，后台 goroutine 执行备份。通过 `GET /backup/status?name=xxx&task_id=xxx` 轮询任务状态（`running` / `success` / `failed`）
+
+- **S3 存储**: 备份产物上传至 S3 兼容对象存储，本地磁盘仅作暂存。上传成功后立即删除本地文件。`backup list` 通过 `ListObjects` 查询；恢复时从 S3 下载
+
 - **Redis 备份**:
-  - 仅 RDB: `BGSAVE` → 等待完成 → 校验产物 → 复制 `dump.rdb`
-  - RDB+AOF: `BGSAVE` + `BGREWRITEAOF` → 写入 `<ts>.incomplete` 暂存目录 → 全部成功后 `rename` 到 `<ts>`
+  - 仅 RDB: `BGSAVE` -> 等待完成 -> 校验产物 -> 上传 `{instance}/{ts}.rdb`
+  - RDB+AOF: `BGSAVE` + `BGREWRITEAOF` -> 暂存目录打包为 tar.gz -> 上传 `{instance}/{ts}.rdbaof.tar.gz`
   - 支持 AOF 目录模式（`appendonlydir/`）和单文件模式（`appendonly.aof`）
 
 - **Kvrocks 备份**:
-  - `BGSAVE` → 校验产物 → 压缩为 `.checkpoint.tar.gz`
+  - `BGSAVE` -> 校验产物 -> 压缩为 `{instance}/{ts}.checkpoint.tar.gz`
   - 不使用 `ROCKSDB.CHECKPOINT`：kvrocks 2.15.0 不存在该命令，实测返回 `ERR unknown command`
   - `BGSAVE` 把 RocksDB 数据文件写入容器内 `/data/backup`（宿主机 `dataDir/data/backup`），
     而不是 `-v` 挂载的 `/backup`（`dataDir/backup`）
@@ -129,8 +134,7 @@
     不足以区分「本次生成」和「上一次失败留下的残留」——后者会产出一个格式完全有效、
     时间戳崭新、内容却是旧快照的备份包，比没有备份更危险
 
-- **轮转清理**: 支持 `retention` 参数限制备份份数。中间态产物（`.incomplete` 后缀、
-  点开头的暂存目录）不计入份数，避免把真正的备份挤出保留窗口
+- **轮转清理**: 支持 `retention` 参数限制 S3 中的备份份数。上传成功后执行 `ListObjects` + `DeleteObjects` 保留最近 N 份。实例删除时（`clean_data=true`）清理该实例在 S3 中的所有对象
 
 - **恢复优先级**: AOF > RDB（若存在 AOF 则优先恢复）
 
@@ -486,7 +490,7 @@ redis-pilot-cli sentinel sync
 | password | TEXT | Redis/Kvrocks 密码（明文存储，见安全说明） |
 | config_path / data_path / backup_path | TEXT | 挂载路径 |
 | config_overrides | TEXT (JSON) | 配置覆盖项，如 `{"timeout":"300"}` |
-| backup | TEXT (JSON) | `{"schedule":"0 2 * * *","retention":7,"last_backup":"..."}` |
+| backup | TEXT (JSON) | `{"schedule":"0 2 * * *","retention":7}` |
 | desired_state | TEXT | 意图，仅用户操作可写：`running` / `stopped` |
 | observed_status | TEXT | 观测，仅观测通道可写：`""`(未观测) / `running` / `stopped` / `missing` / `unreachable` |
 
@@ -514,7 +518,7 @@ redis-pilot-cli sentinel sync
   "backup_path": "/data/redis/redis-1/backup",
   "config_overrides": { "timeout": "300" },
   "status": "running",
-  "backup": { "schedule": "0 2 * * *", "retention": 7, "last_backup": "2024-01-15T02:00:00Z" },
+  "backup": { "schedule": "0 2 * * *", "retention": 7 },
   "created_at": "2024-01-10T10:00:00Z",
   "lock": {
     "held_by": "auto-1234567890",
@@ -618,7 +622,7 @@ server.StartBackupScheduler()
 4. 对比当前 cron 任务:
    - 删除不再需要的任务
    - 新增或更新任务
-5. 任务执行时调用 `execBackup()`
+5. 任务执行时调用 `execBackup()`，返回 `task_id`（异步）
 
 **Cron 表达式支持**:
 - 标准 5 字段格式: `minute hour day month weekday`

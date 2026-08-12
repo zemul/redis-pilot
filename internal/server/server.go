@@ -135,6 +135,7 @@ func (s *Server) Router() *gin.Engine {
 	backup := r.Group("/backup")
 	{
 		backup.POST("/exec", s.backupExec)
+		backup.GET("/status", s.backupStatus)
 		backup.POST("/restore", s.backupRestore)
 		backup.GET("/list", s.backupList)
 		backup.GET("/schedule", s.backupGetSchedule)

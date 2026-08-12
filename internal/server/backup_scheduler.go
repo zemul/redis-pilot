@@ -95,9 +95,10 @@ func (bs *backupScheduler) syncJobs() {
 }
 
 func (bs *backupScheduler) runBackup(name string) {
-	if err := bs.s.execBackup(name, "system"); err != nil {
+	taskID, err := bs.s.execBackup(name, "system")
+	if err != nil {
 		bs.s.log.Errorf("backup scheduler: backup %s failed: %v", name, err)
 	} else {
-		bs.s.log.Infof("backup scheduler: backup %s completed", name)
+		bs.s.log.Infof("backup scheduler: backup %s triggered, task_id=%s", name, taskID)
 	}
 }

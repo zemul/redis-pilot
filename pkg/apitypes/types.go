@@ -98,9 +98,8 @@ type ProxyEndpoint struct {
 
 // BackupConfig 备份配置
 type BackupConfig struct {
-	Schedule   string `yaml:"schedule"`
-	Retention  int    `yaml:"retention"`
-	LastBackup string `yaml:"last_backup,omitempty"`
+	Schedule  string `yaml:"schedule"`
+	Retention int    `yaml:"retention"`
 }
 
 // Lock 实例操作锁

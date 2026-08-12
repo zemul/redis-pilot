@@ -281,56 +281,8 @@ func TestDirHasEntryModifiedSince(t *testing.T) {
 	}
 }
 
-// --------------------------------------------------------------------------
-// 备份轮转
-// --------------------------------------------------------------------------
-
-// TestCleanupBackups_IgnoresIntermediateArtifacts 验证轮转不把中间态产物算作
-// 一份有效备份——否则它们会占用保留窗口，把真正的备份挤掉。
-func TestCleanupBackups_IgnoresIntermediateArtifacts(t *testing.T) {
-	dir := t.TempDir()
-	// 三份真实备份
-	for _, name := range []string{"2026-01-01T00:00:00.rdb", "2026-01-02T00:00:00.rdb", "2026-01-03T00:00:00.rdb"} {
-		writeFile(t, filepath.Join(dir, name), "backup")
-	}
-	// 中间态产物
-	writeFile(t, filepath.Join(dir, "2026-01-04T00:00:00.incomplete", "dump.rdb"), "partial")
-	writeFile(t, filepath.Join(dir, ".restore-staging", "dump.rdb"), "staging")
-
-	cleanupBackups(dir, 3)
-
-	// 三份真实备份都应保留：中间态产物不参与计数
-	for _, name := range []string{"2026-01-01T00:00:00.rdb", "2026-01-02T00:00:00.rdb", "2026-01-03T00:00:00.rdb"} {
-		if _, err := os.Stat(filepath.Join(dir, name)); err != nil {
-			t.Errorf("真实备份 %s 被误删：中间态产物不应占用保留窗口", name)
-		}
-	}
-}
-
-func TestCleanupBackups_RemovesOldest(t *testing.T) {
-	dir := t.TempDir()
-	names := []string{
-		"2026-01-01T00:00:00.rdb",
-		"2026-01-02T00:00:00.rdb",
-		"2026-01-03T00:00:00.rdb",
-	}
-	for _, n := range names {
-		writeFile(t, filepath.Join(dir, n), "backup")
-	}
-
-	cleanupBackups(dir, 2)
-
-	if _, err := os.Stat(filepath.Join(dir, names[0])); !os.IsNotExist(err) {
-		t.Error("最旧的备份应当被删除")
-	}
-	for _, n := range names[1:] {
-		if _, err := os.Stat(filepath.Join(dir, n)); err != nil {
-			t.Errorf("%s 应当被保留", n)
-		}
-	}
-}
-
 // TestWaitForPersistenceDone_TimesOutInsteadOfSilentlySucceeding 验证等待超时会
+// 返回错误，而不是像早期实现那样静默放行让调用方继续打包。
 // 返回错误，而不是像早期实现那样静默放行让调用方继续打包。
 //
 // 这里的实例名不存在，redisCmd 必然失败（podman exec 找不到容器），因此走的是

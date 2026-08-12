@@ -11,12 +11,26 @@ type LogConfig struct {
 	Stdout bool   `yaml:"stdout"`
 }
 
+type S3Config struct {
+	Endpoint  string `yaml:"endpoint"`
+	Bucket    string `yaml:"bucket"`
+	AccessKey string `yaml:"access_key"`
+	SecretKey string `yaml:"secret_key"`
+	Region    string `yaml:"region"`
+	UseSSL    bool   `yaml:"use_ssl"`
+}
+
+type BackupConfig struct {
+	S3 S3Config `yaml:"s3"`
+}
+
 type Config struct {
-	Port       int       `yaml:"port"`
-	Token      string    `yaml:"token"`
-	DataDir    string    `yaml:"data_dir"`
-	AnnounceIP string    `yaml:"announce_ip"`
-	Log        LogConfig `yaml:"log"`
+	Port       int          `yaml:"port"`
+	Token      string       `yaml:"token"`
+	DataDir    string       `yaml:"data_dir"`
+	AnnounceIP string       `yaml:"announce_ip"`
+	Log        LogConfig    `yaml:"log"`
+	Backup     BackupConfig `yaml:"backup"`
 }
 
 func LoadConfig(path string) (*Config, error) {

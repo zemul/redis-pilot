@@ -490,21 +490,21 @@ Skill: redis-migrate
 Skill: redis-backup
   │
   ├─1. 确定备份源
-  │   → 优先从库: order-2 (server-b)
-  │   → 无从库时从主库备份
+  │   -> 优先从库: order-2 (server-b)
+  │   -> 无从库时从主库备份
   │
   ├─2. agent_exec(server-b, "instance/backup", {
   │       name: "order-2",
   │   })
-  │   → Agent: BGSAVE → 等待完成（失败/超时即报错）→ 校验产物 → 复制 dump.rdb 到 backup/ 目录
+  │   -> 立即返回 {task_id: "order-2-16989xxxxx"}
   │
-  ├─3. 轮转清理
-  │   agent_exec(server-b, "instance/backups/cleanup", {
-  │       name: "order-2",
-  │       retention: 7
-  │   })
+  ├─3. agent_exec(server-b, "instance/backup/status?task_id=order-2-16989xxxxx")
+  │   -> Agent 后台: BGSAVE -> 等待完成（失败/超时即报错）-> 校验产物
+  │                   -> 上传 S3（key: order-2/{ts}.rdb）-> 删本地临时文件
+  │                   -> S3 轮转清理（保留最近 N 份）
+  │   -> 轮询直到 status=success 或 failed
   │
-  └─4. state_update(instances, order-2, last_backup=now)
+  └─4. 通知: "备份完成" / "备份失败: {error}"
 ```
 
 ---
@@ -681,7 +681,7 @@ Proxy 侧 `http.Client` 刻意不设 `Timeout`（它会连正常挂起一起掐�
 | `redis-scale` | "加从库 / 扩容" | 加从库：创建从库 → 同步 → 注册代理；扩容：调整内存/CPU |
 | `redis-migrate` | "迁移 Redis" | 新从库 → 同步 → 提升 → 更新拓扑 → 清理旧实例 |
 | `redis-failover` | "故障转移" / 自动触发 | 检测故障 → 提升从库 → 创建新从库 → 更新路由 |
-| `redis-backup` | "备份 / 恢复 Redis" | 备份：BGSAVE → 校验产物 → 复制 → 轮转；恢复：停止 → 暂存并校验 → 原子替换（原数据保留）→ 启动 |
+| `redis-backup` | "备份 / 恢复 Redis" | 备份：BGSAVE -> 校验产物 -> 上传 S3 -> S3 轮转；恢复：从 S3 下载 -> 停止 -> 暂存并校验 -> 原子替换（原数据保留）-> 启动 |
 | `redis-diagnose` | "Redis 有问题" | 采集 INFO/SLOWLOG/MEMORY → AI 分析 → 建议 |
 | `redis-status` | "查看 Redis 状态" | 池状态 / 实例状态 / 主从同步状态 |
 | `redis-proxy` | "代理管理" | 查看路由 / 更新配置 / 重载 Proxy |
@@ -709,7 +709,7 @@ redis-migrate    → node_list, agent_exec(create), agent_exec(promote),
 redis-failover   → health_check, agent_exec(promote), agent_exec(create/replicate),
                    state_update (Proxy 自动发现拓扑变更)
 
-redis-backup     → agent_exec(backup), agent_exec(restore), agent_exec(cleanup),
+redis-backup     -> agent_exec(backup), agent_exec(restore),
                    state_update
 
 redis-diagnose   → agent_exec(status), metrics_collect, AI 分析

@@ -1073,26 +1073,61 @@ func (s *Server) backupExec(c *gin.Context) {
 		return
 	}
 
-	if err := s.execBackup(req.Name, operatorFrom(c)); err != nil {
+	taskID, err := s.execBackup(req.Name, operatorFrom(c))
+	if err != nil {
 		fail(c, http.StatusInternalServerError, err.Error())
 		return
 	}
-	ok(c, nil)
+	ok(c, gin.H{"task_id": taskID})
 }
 
-// execBackup 执行一次备份，供 HTTP handler 和定时调度器共用。
-func (s *Server) execBackup(name, operator string) error {
+func (s *Server) backupStatus(c *gin.Context) {
+	name := c.Query("name")
+	taskID := c.Query("task_id")
+	if name == "" || taskID == "" {
+		fail(c, http.StatusBadRequest, "name and task_id required")
+		return
+	}
+
+	_, srv, err := s.resolveInstance(c, name)
+	if err != nil {
+		return
+	}
+
+	client := newAgentClient(srv)
+	resp, err := client.get("/instance/backup/status?task_id=" + taskID)
+	if err != nil {
+		fail(c, http.StatusInternalServerError, "agent query failed: "+err.Error())
+		return
+	}
+
+	// Agent returns: {"success":true,"data":{"id":"...","status":"running|success|failed",...}}
+	var envelope struct {
+		Success bool            `json:"success"`
+		Data    json.RawMessage `json:"data"`
+		Error   string          `json:"error"`
+	}
+	json.Unmarshal(resp, &envelope)
+	if !envelope.Success {
+		fail(c, http.StatusInternalServerError, envelope.Error)
+		return
+	}
+	ok(c, envelope.Data)
+}
+
+// execBackup 触发一次异步备份，立即返回 task_id。
+func (s *Server) execBackup(name, operator string) (string, error) {
 	start := time.Now()
 
 	inst, srv, unlock, err := s.resolveAndLockInternal(name, "backup")
 	if err != nil {
-		return err
+		return "", err
 	}
 	defer unlock()
 
 	groupState, err := s.groupForInstance(name)
 	if err != nil {
-		return err
+		return "", err
 	}
 	// 构建请求，传入 retention
 	body := map[string]interface{}{
@@ -1104,30 +1139,27 @@ func (s *Server) execBackup(name, operator string) error {
 	}
 
 	client := newAgentClient(srv)
-	if _, err := client.post("/instance/backup", body); err != nil {
-		return fmt.Errorf("agent backup failed: %w", err)
+	resp, err := client.post("/instance/backup", body)
+	if err != nil {
+		return "", fmt.Errorf("agent backup failed: %w", err)
 	}
 
-	// 更新 last_backup
-	if err := s.db.WithInstances(func(is *apitypes.InstancesState) error {
-		if i, ok2 := is.Instances[name]; ok2 {
-			if i.Backup == nil {
-				i.Backup = &apitypes.BackupConfig{}
-			}
-			i.Backup.LastBackup = time.Now().Format(time.RFC3339)
-		}
-		return nil
-	}); err != nil {
-		s.log.Errorf("backup exec: failed to persist last_backup for %s: %v", name, err)
+	// Agent 现在立即返回 {task_id: "xxx"}
+	var result struct {
+		Data struct {
+			TaskID string `json:"task_id"`
+		} `json:"data"`
 	}
+	json.Unmarshal(resp, &result)
+	taskID := result.Data.TaskID
 
 	s.audit.Log(store.AuditRecord{
 		Operator: operator,
-		Action:   "backup.create", Level: audit.LevelNormal, Result: "success",
+		Action:   "backup.create", Level: audit.LevelNormal, Result: "accepted",
 		DurationMs: time.Since(start).Milliseconds(),
-		Target:   map[string]interface{}{"instance": name, "server": inst.Server},
+		Target:   map[string]interface{}{"instance": name, "server": inst.Server, "task_id": taskID},
 	})
-	return nil
+	return taskID, nil
 }
 
 func (s *Server) backupRestore(c *gin.Context) {
@@ -1184,7 +1216,6 @@ func (s *Server) backupList(c *gin.Context) {
 	if err != nil {
 		return
 	}
-	_ = inst
 
 	client := newAgentClient(srv)
 	resp, err := client.get("/instance/backups?name=" + name)
@@ -1193,9 +1224,41 @@ func (s *Server) backupList(c *gin.Context) {
 		return
 	}
 
-	var result interface{}
-	json.Unmarshal(resp, &result)
-	ok(c, result)
+	// 解析 Agent 返回的结构化备份列表
+	var envelope struct {
+		Success bool `json:"success"`
+		Data    struct {
+			Backups json.RawMessage `json:"backups"`
+		} `json:"data"`
+	}
+	json.Unmarshal(resp, &envelope)
+
+	type backupItem struct {
+		Name      string `json:"name"`
+		Timestamp string `json:"timestamp"`
+		Size      int64  `json:"size"`
+		Format    string `json:"format"`
+		Type      string `json:"type"`   // "auto" | "manual"
+		Status    string `json:"status"` // "success"
+	}
+
+	var items []backupItem
+	json.Unmarshal(envelope.Data.Backups, &items)
+
+	// 判断是否配置了定时备份
+	hasSchedule := inst.Backup != nil && inst.Backup.Schedule != ""
+
+	// 为每个备份标记类型：通过时间戳判断是否是整点/cron 触发的自动备份
+	for i := range items {
+		items[i].Status = "success"
+		if hasSchedule && looksLikeScheduledBackup(items[i].Timestamp, inst.Backup.Schedule) {
+			items[i].Type = "auto"
+		} else {
+			items[i].Type = "manual"
+		}
+	}
+
+	ok(c, map[string]interface{}{"backups": items})
 }
 
 func (s *Server) backupGetSchedule(c *gin.Context) {
@@ -1258,6 +1321,30 @@ func (s *Server) backupSetSchedule(c *gin.Context) {
 		return
 	}
 	ok(c, nil)
+}
+
+// looksLikeScheduledBackup 通过备份时间戳的分钟是否匹配 cron 表达式来推断是否为自动备份。
+// 简单启发式：解析 cron 的 minute 和 hour 字段，如果备份时间的分和时与 cron 吻合则认为是自动备份。
+func looksLikeScheduledBackup(timestamp, schedule string) bool {
+	t, err := time.Parse("2006-01-02T15:04:05", timestamp)
+	if err != nil {
+		return false
+	}
+	fields := strings.Fields(schedule)
+	if len(fields) < 5 {
+		return false
+	}
+	minute := fields[0]
+	hour := fields[1]
+	// 分钟匹配
+	if minute != "*" && minute != fmt.Sprintf("%d", t.Minute()) {
+		return false
+	}
+	// 小时匹配
+	if hour != "*" && hour != fmt.Sprintf("%d", t.Hour()) {
+		return false
+	}
+	return true
 }
 
 // --- 辅助方法 ---
