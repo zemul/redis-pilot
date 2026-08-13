@@ -739,14 +739,9 @@ function DashboardView({ groups, servers, audits }) {
     return st === 'healthy' || st === 'drain';
   }).length;
 
-  const groupAlerts = groups.filter((g) => g.status === 'degraded' || g.status === 'failover_conflict').length;
-  const serverAlerts = servers.filter((s) => getField(s, 'status', 'Status') === 'unhealthy').length;
-  const totalAlerts = failedInstances + groupAlerts + serverAlerts;
-
   const instanceTone = totalInstances === 0 ? 'neutral' : runningInstances === totalInstances ? 'positive' : failedInstances > 0 ? 'alert' : 'warn';
   const groupTone = totalGroups === 0 ? 'neutral' : healthyGroups === totalGroups ? 'positive' : 'warn';
   const serverTone = totalServers === 0 ? 'neutral' : healthyServers === totalServers ? 'positive' : 'warn';
-  const alertTone = totalAlerts > 0 ? 'alert' : 'positive';
 
   const instancesPerServer = {};
   for (const inst of allInstances) {
@@ -760,7 +755,6 @@ function DashboardView({ groups, servers, audits }) {
         <SummaryCell label="实例状态" value={totalInstances ? `${runningInstances}/${totalInstances}` : '0'} icon={Database} tone={instanceTone} />
         <SummaryCell label="拓扑健康" value={totalGroups ? `${healthyGroups}/${totalGroups}` : '0'} icon={GitMerge} tone={groupTone} />
         <SummaryCell label="服务器" value={totalServers ? `${healthyServers}/${totalServers}` : '0'} icon={Server} tone={serverTone} />
-        <SummaryCell label="待处理告警" value={totalAlerts} icon={AlertTriangle} tone={alertTone} />
       </section>
 
       <div className="dashboard-grid">
@@ -1115,7 +1109,6 @@ function AlertsView({ groups, servers }) {
         <SummaryCell label="实例异常" value={instanceAlerts.length} icon={AlertCircle} tone={instanceAlerts.length > 0 ? 'alert' : 'neutral'} />
         <SummaryCell label="拓扑降级" value={groupAlerts.length} icon={GitMerge} tone={groupAlerts.length > 0 ? 'alert' : 'neutral'} />
         <SummaryCell label="节点异常" value={serverAlerts.length} icon={Server} tone={serverAlerts.length > 0 ? 'alert' : 'neutral'} />
-        <SummaryCell label="异常总计" value={total} icon={AlertTriangle} tone={total > 0 ? 'alert' : 'positive'} />
       </section>
 
       {total === 0 ? (
