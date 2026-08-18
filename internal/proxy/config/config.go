@@ -41,6 +41,11 @@ type FileConfig struct {
 	Replicas []string `yaml:"replicas"`
 	Password string   `yaml:"password"`
 
+	// 伪 Sentinel 服务发现（proxy-design §19）
+	SentinelListen     string `yaml:"sentinel_listen"`
+	SentinelAnnounceIP string `yaml:"sentinel_announce_ip"`
+	SentinelPassword   string `yaml:"sentinel_password"`
+
 	// 通用
 	MasterReadWeight  int      `yaml:"master_read_weight"`
 	PoolSize          int      `yaml:"pool_size"`

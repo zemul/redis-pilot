@@ -20,6 +20,7 @@ import (
 	"gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/internal/proxy/backend"
 	"gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/internal/proxy/discovery"
 	"gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/internal/proxy/metrics"
+	"gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/internal/proxy/sentinel"
 	"gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/internal/proxy/session"
 )
 
@@ -41,6 +42,11 @@ type Config struct {
 	PollTimeout   time.Duration
 	PollWait      time.Duration
 
+	// 伪 Sentinel（proxy-design §19）
+	SentinelListen     string
+	SentinelAnnounceIP string
+	SentinelPassword   string
+
 	// Static 模式（M3 兼容）
 	Listen       string
 	MasterAddr   string
@@ -53,6 +59,7 @@ type Proxy struct {
 	cfg       Config
 	discovery *discovery.Manager
 	metrics   *metrics.Metrics
+	sentinel  *sentinel.Server
 
 	mu        sync.Mutex
 	listeners map[string]*listenerEntry
@@ -194,6 +201,26 @@ func (p *Proxy) listenAndServeDiscovery() error {
 	slog.Info("first snapshot received", "version", topo.Version, "groups", len(topo.Groups))
 
 	p.openListeners(topo)
+
+	// 伪 Sentinel（§19）：仅 discovery 模式、配置了监听地址时启用
+	if p.cfg.SentinelListen != "" {
+		ln, err := net.Listen("tcp", p.cfg.SentinelListen)
+		if err != nil {
+			return fmt.Errorf("sentinel listen %s: %w", p.cfg.SentinelListen, err)
+		}
+		p.sentinel = sentinel.New(sentinel.Config{
+			Listen:          p.cfg.SentinelListen,
+			AnnounceIP:      p.cfg.SentinelAnnounceIP,
+			Password:        p.cfg.SentinelPassword,
+			MaxRequestBytes: p.cfg.MaxRequestBytes,
+		}, p.discovery.Topology)
+		p.wg.Add(1)
+		go func() {
+			defer p.wg.Done()
+			p.sentinel.Serve(ln)
+		}()
+		slog.Info("pseudo-sentinel listening", "addr", p.cfg.SentinelListen)
+	}
 
 	// 保持进程存活即使 0 groups（等待后续 snapshot 动态添加 listener）。
 	// signal handler 退出时 Done 释放这个 keep-alive。
@@ -485,6 +512,11 @@ func (p *Proxy) closeSessionsForGroup(group string) {
 
 // Shutdown 优雅关闭。
 func (p *Proxy) Shutdown() {
+	// 关闭伪 Sentinel
+	if p.sentinel != nil {
+		p.sentinel.Stop()
+	}
+
 	p.mu.Lock()
 	for _, entry := range p.listeners {
 		entry.listener.Close()

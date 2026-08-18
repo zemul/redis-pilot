@@ -51,6 +51,12 @@ func main() {
 	idleTimeout := flag.Duration("idle-timeout", 5*time.Minute, "idle upstream connection timeout (§13)")
 	maxRequestBytes := flag.Int("max-request-bytes", 16*1024*1024, "max bytes per command (D13)")
 	metricsListen := flag.String("metrics-listen", ":19100", "Prometheus /metrics HTTP listen address (empty = disabled)")
+
+	// 伪 Sentinel（proxy-design §19）
+	sentinelListen := flag.String("sentinel-listen", "", "pseudo-sentinel listen address (empty = disabled)")
+	sentinelAnnounceIP := flag.String("sentinel-announce-ip", "", "IP returned by pseudo-sentinel (empty = connection local IP)")
+	sentinelPassword := flag.String("sentinel-password", "", "pseudo-sentinel auth password (empty = no auth)")
+
 	flag.Parse()
 
 	// --- 加载配置文件（YAML） ---
@@ -131,6 +137,15 @@ func main() {
 		if fc.MaxRequestBytes != 0 {
 			cfg.MaxRequestBytes = fc.MaxRequestBytes
 		}
+		if fc.SentinelListen != "" {
+			cfg.SentinelListen = fc.SentinelListen
+		}
+		if fc.SentinelAnnounceIP != "" {
+			cfg.SentinelAnnounceIP = fc.SentinelAnnounceIP
+		}
+		if fc.SentinelPassword != "" {
+			cfg.SentinelPassword = fc.SentinelPassword
+		}
 	}
 
 	// CLI flag 覆盖（仅显式设置的 flag）
@@ -183,6 +198,15 @@ func main() {
 	}
 	if setFlags["max-request-bytes"] {
 		cfg.MaxRequestBytes = *maxRequestBytes
+	}
+	if setFlags["sentinel-listen"] {
+		cfg.SentinelListen = *sentinelListen
+	}
+	if setFlags["sentinel-announce-ip"] {
+		cfg.SentinelAnnounceIP = *sentinelAnnounceIP
+	}
+	if setFlags["sentinel-password"] {
+		cfg.SentinelPassword = *sentinelPassword
 	}
 
 	p := proxysvc.New(cfg)
