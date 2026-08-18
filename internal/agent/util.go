@@ -270,6 +270,21 @@ func swapInPath(staged, target, preserve string) error {
 	return nil
 }
 
+// rollbackSwappedPath 撤销一次已经成功的 swapInPath。恢复后的新数据移到 failed 路径
+// 留作排查，再把原数据放回 target。调用方随后可重新启动原实例。
+func rollbackSwappedPath(target, preserve string) error {
+	failed := target + ".failed-restore-" + time.Now().Format("20060102T150405.000000000")
+	if err := os.Rename(target, failed); err != nil {
+		return fmt.Errorf("preserve failed restored data at %s: %w", failed, err)
+	}
+	if err := os.Rename(preserve, target); err != nil {
+		// 尽力把新数据放回原位，避免 target 消失。
+		_ = os.Rename(failed, target)
+		return fmt.Errorf("restore original data from %s: %w", preserve, err)
+	}
+	return nil
+}
+
 // isContainerNotFound 判断 podman 操作错误是否因为容器不存在。
 func isContainerNotFound(err error) bool {
 	if err == nil {

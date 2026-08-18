@@ -98,23 +98,19 @@ func (s *Server) nodeRemove(c *gin.Context) {
 		return
 	}
 
-	// 同 nodeAdd 用 WithNode。这里的竞态后果更实际：并发的 node remove 与 node update
-	// 若各自读到同一份快照，remove 先写、update 后写，被删掉的节点会被 update 重新写回来，
-	// 表现为"删除成功但节点还在"。
-	var notFound bool
-	if err := s.db.WithNode(func(node *apitypes.NodeState) error {
-		if _, exists := node.Servers[req.Name]; !exists {
-			notFound = true
-			return errNodeNotFound
-		}
-		delete(node.Servers, req.Name)
-		return nil
-	}); err != nil {
-		if notFound {
-			fail(c, http.StatusNotFound, "server not found: "+req.Name)
-			return
-		}
+	// 存在性检查、实例引用检查和删除必须是一个事务。若分成 ReadInstances + WithNode，
+	// instance create 可以在两步之间写入一条指向即将被删节点的记录，制造孤儿实例。
+	found, used, err := s.db.RemoveServerIfUnused(req.Name)
+	if err != nil {
 		fail(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if !found {
+		fail(c, http.StatusNotFound, "server not found: "+req.Name)
+		return
+	}
+	if used {
+		fail(c, http.StatusConflict, "server still has managed instances: "+req.Name)
 		return
 	}
 	s.audit.Log(store.AuditRecord{

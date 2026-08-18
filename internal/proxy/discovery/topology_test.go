@@ -79,6 +79,18 @@ func TestParseSnapshot_SingleGroup(t *testing.T) {
 	}
 }
 
+func TestManagerApplySnapshot_AppliesValidEmptySnapshot(t *testing.T) {
+	m := NewManager(ServerConfig{}, PollConfig{})
+	m.topo = &Topology{Version: "v1", Groups: map[string]*GroupTopology{"old": {Name: "old"}}}
+	m.version = "v1"
+	m.applySnapshot(&apitypes.ProxySnapshot{
+		Version: "v2", Listeners: []apitypes.ProxyListener{}, Clusters: []apitypes.ProxyCluster{},
+	})
+	if len(m.Topology().Groups) != 0 || m.Topology().Version != "v2" {
+		t.Fatalf("valid empty snapshot must clear old topology, got %#v", m.Topology())
+	}
+}
+
 func TestParseSnapshot_MultiGroup(t *testing.T) {
 	snap := &apitypes.ProxySnapshot{
 		Version: "v2",

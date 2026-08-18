@@ -11,8 +11,8 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/internal/audit"
-	"gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/internal/store"
 	"gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/internal/state"
+	"gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/internal/store"
 	"gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/pkg/apitypes"
 	"gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/pkg/redisconf"
 )
@@ -275,6 +275,12 @@ func (s *Server) instanceCreate(c *gin.Context) {
 			if group.Engine != req.Engine {
 				return fmt.Errorf("replica engine must match master group engine: %s", group.Engine)
 			}
+			// 同组认证与数据语义必须一致。Agent 会用 Password 同时生成 requirepass 和
+			// masterauth；若沿用调用方给从库单独传的密码，容器虽能启动，复制认证和
+			// Proxy 到从库的认证都会失败，Server 却会把它误标为健康。
+			req.Password = master.Password
+			req.Category = group.Category
+			req.Type = "replication"
 			req.EngineVersion = group.EngineVersion
 			_, engineImage, err = s.resolveEngineImage(req.Engine, req.EngineVersion)
 			if err != nil {
@@ -413,13 +419,13 @@ func (s *Server) instanceCreate(c *gin.Context) {
 	}
 
 	s.audit.Log(store.AuditRecord{
-		Operator: operatorFrom(c),
-		Action:   "instance.create",
-		Level:    audit.LevelImportant,
-		Result:   "success",
+		Operator:   operatorFrom(c),
+		Action:     "instance.create",
+		Level:      audit.LevelImportant,
+		Result:     "success",
 		DurationMs: time.Since(start).Milliseconds(),
-		Target:   map[string]interface{}{"instance": req.Name, "group": groupName, "engine": req.Engine, "server": req.Server},
-		Params:   map[string]interface{}{"memory": req.Memory, "cpus": req.CPUs, "category": req.Category, "engine_version": req.EngineVersion},
+		Target:     map[string]interface{}{"instance": req.Name, "group": groupName, "engine": req.Engine, "server": req.Server},
+		Params:     map[string]interface{}{"memory": req.Memory, "cpus": req.CPUs, "category": req.Category, "engine_version": req.EngineVersion},
 	})
 
 	s.log.Infof("instance created: %s on %s", req.Name, req.Server)
@@ -531,7 +537,7 @@ func (s *Server) instanceDelete(c *gin.Context) {
 		Operator: operatorFrom(c),
 		Action:   "instance.delete", Level: audit.LevelCritical, Result: "success",
 		DurationMs: time.Since(start).Milliseconds(),
-		Target:   map[string]interface{}{"instance": req.Name, "server": inst.Server},
+		Target:     map[string]interface{}{"instance": req.Name, "server": inst.Server},
 	})
 
 	s.log.Infof("instance deleted: %s", req.Name)
@@ -611,7 +617,7 @@ func (s *Server) instanceStop(c *gin.Context) {
 		Operator: operatorFrom(c),
 		Action:   "instance.stop", Level: audit.LevelImportant, Result: "success",
 		DurationMs: time.Since(start).Milliseconds(),
-		Target:   map[string]interface{}{"instance": req.Name, "server": inst.Server},
+		Target:     map[string]interface{}{"instance": req.Name, "server": inst.Server},
 	})
 
 	s.syncSentinel()
@@ -695,8 +701,8 @@ func (s *Server) instanceConfig(c *gin.Context) {
 		Operator: operatorFrom(c),
 		Action:   "config.update", Level: audit.LevelImportant, Result: "success",
 		DurationMs: time.Since(start).Milliseconds(),
-		Target:   map[string]interface{}{"instance": req.Name, "server": inst.Server},
-		Params:   toMap(req.ConfigOverrides),
+		Target:     map[string]interface{}{"instance": req.Name, "server": inst.Server},
+		Params:     toMap(req.ConfigOverrides),
 	})
 
 	ok(c, nil)
@@ -942,7 +948,7 @@ func (s *Server) directFailover(c *gin.Context, start time.Time, name string) {
 		Operator: operatorFrom(c),
 		Action:   "topology.failover", Level: audit.LevelCritical, Result: "success",
 		DurationMs: time.Since(start).Milliseconds(),
-		Target:   map[string]interface{}{"instance": name, "server": inst.Server},
+		Target:     map[string]interface{}{"instance": name, "server": inst.Server},
 	})
 
 	// 把新角色写进各实例的磁盘配置文件，避免容器重启后角色回退（与 Sentinel 路径一致）。
@@ -972,38 +978,100 @@ func (s *Server) instanceReplicate(c *gin.Context) {
 		fail(c, http.StatusBadRequest, err.Error())
 		return
 	}
+	if req.Name == req.ReplicaOf {
+		fail(c, http.StatusBadRequest, "instance cannot replicate from itself")
+		return
+	}
 
-	// 解析 replica_of：支持实例名或 ip:port
-	node, _ := s.db.ReadNode()
-	instances, _ := s.db.ReadInstances()
-	resolvedAddr, masterName, err := resolveReplicaOf(node, instances, req.ReplicaOf)
+	node, err := s.db.ReadNode()
 	if err != nil {
-		fail(c, http.StatusBadRequest, err.Error())
-		return
-	}
-	if masterName == "" {
-		fail(c, http.StatusBadRequest, "replica_of must reference an existing managed master instance")
+		fail(c, http.StatusInternalServerError, err.Error())
 		return
 	}
 
-	// 手动指定复制目标与 Sentinel 的自动化管理直接冲突：Sentinel 会持续监控该组的
-	// master/replica 拓扑，绕过它直接下发 REPLICAOF 可能在下一次 Sentinel 探测/failover
-	// 时被覆盖或产生冲突判断。该组一旦被 Sentinel 托管，只允许通过 instance failover
-	// 触发变更。
-	if s.cfg.Sentinel.Enabled {
-		if master := instances.Instances[masterName]; master != nil {
-			if group := instances.Groups[master.Group]; group != nil && group.Type == "replication" {
-				fail(c, http.StatusConflict, fmt.Sprintf("group %q is managed by Sentinel; use 'instance failover' to change replication topology instead of setting it directly", master.Group))
-				return
+	// 在一次状态事务里完成解析、兼容性检查并锁住源组和目标组。只锁源组会允许目标
+	// master 在 REPLICAOF 下发前被并发切换，最终让实例复制一个已经降级的旧 master。
+	sessionID := c.GetHeader("X-Session-ID")
+	if sessionID == "" {
+		sessionID = fmt.Sprintf("auto-%d", time.Now().UnixNano())
+	}
+	var inst apitypes.Instance
+	var masterName, targetGroupName, oldGroupName, resolvedAddr string
+	var lockNames []string
+	err = s.db.WithInstances(func(is *apitypes.InstancesState) error {
+		source := is.Instances[req.Name]
+		if source == nil {
+			return fmt.Errorf("instance not found: %s", req.Name)
+		}
+		addr, targetName, err := resolveReplicaOf(node, is, req.ReplicaOf)
+		if err != nil {
+			return err
+		}
+		if targetName == "" {
+			return fmt.Errorf("replica_of must reference an existing managed master instance")
+		}
+		if targetName == req.Name {
+			return fmt.Errorf("instance cannot replicate from itself")
+		}
+		target := is.Instances[targetName]
+		if target == nil || target.Role != "master" {
+			return fmt.Errorf("replica_of target must be a managed master")
+		}
+		oldGroup := is.Groups[source.Group]
+		targetGroup := is.Groups[target.Group]
+		if oldGroup == nil || targetGroup == nil {
+			return fmt.Errorf("source or target group not found")
+		}
+		if s.cfg.Sentinel.Enabled && targetGroup.Type == "replication" {
+			return fmt.Errorf("group %q is managed by Sentinel; use 'instance failover' to change replication topology instead of setting it directly", target.Group)
+		}
+		if oldGroup.Engine != targetGroup.Engine || oldGroup.EngineVersion != targetGroup.EngineVersion ||
+			oldGroup.Category != targetGroup.Category || source.Password != target.Password {
+			return fmt.Errorf("source instance is incompatible with target group (engine, version, category and password must match)")
+		}
+		if source.Role == "master" && source.Group != target.Group {
+			members := state.InstanceGroup(is, req.Name)
+			if len(members) > 1 {
+				return fmt.Errorf("cannot move current master %s out of non-empty group %s", req.Name, source.Group)
 			}
 		}
-	}
 
-	inst, srv, unlock, err := s.resolveAndLock(c, req.Name, "replicate")
+		seen := make(map[string]bool)
+		for _, n := range append(state.InstanceGroup(is, req.Name), state.InstanceGroup(is, targetName)...) {
+			if seen[n] {
+				continue
+			}
+			seen[n] = true
+			i := is.Instances[n]
+			if i != nil {
+				if err := state.TryAcquireLock(i, sessionID, "replicate", 300); err != nil {
+					return fmt.Errorf("instance %s: %s", n, err.Error())
+				}
+				lockNames = append(lockNames, n)
+			}
+		}
+		inst = *source
+		masterName = targetName
+		targetGroupName = target.Group
+		oldGroupName = source.Group
+		resolvedAddr = addr
+		return nil
+	})
 	if err != nil {
+		if strings.Contains(err.Error(), "not found") {
+			fail(c, http.StatusNotFound, err.Error())
+		} else {
+			fail(c, http.StatusConflict, err.Error())
+		}
 		return
 	}
-	defer unlock()
+	defer s.releaseLockGroup(lockNames, sessionID)
+
+	srv := node.Servers[inst.Server]
+	if srv == nil {
+		fail(c, http.StatusBadRequest, "server not found: "+inst.Server)
+		return
+	}
 
 	client := newAgentClient(srv)
 	if _, err := client.post("/instance/replicate", map[string]string{
@@ -1014,35 +1082,47 @@ func (s *Server) instanceReplicate(c *gin.Context) {
 		return
 	}
 
-	// 更新状态：角色变更 + 归入目标 group。
+	// 更新状态：角色变更 + 归入目标 group；若源组已空，必须同步删除，不能留下一个
+	// CurrentMaster 指向已迁出实例的永久孤儿组。
 	if err := s.db.WithInstances(func(is *apitypes.InstancesState) error {
 		i := is.Instances[req.Name]
 		if i == nil {
-			return nil
+			return fmt.Errorf("instance disappeared during replicate: %s", req.Name)
 		}
-		groupName := ""
-		if masterName != "" {
-			if master := is.Instances[masterName]; master != nil {
-				groupName = master.Group
-				group := is.Groups[groupName]
-				if group != nil {
-					group.Type = "replication"
-					if group.Proxy != nil && group.Proxy.AutoPort == 0 {
-						if ec, err := allocProxyPorts(s.cfg.Ports, is, true); err == nil {
-							group.Proxy.AutoPort = ec.AutoPort
-						}
-					}
-				}
+		master := is.Instances[masterName]
+		if master == nil || master.Group != targetGroupName || master.Role != "master" {
+			return fmt.Errorf("target topology changed during replicate")
+		}
+		group := is.Groups[targetGroupName]
+		if group == nil {
+			return fmt.Errorf("target group disappeared during replicate")
+		}
+		group.Type = "replication"
+		if group.Proxy != nil && group.Proxy.AutoPort == 0 {
+			ec, err := allocProxyPorts(s.cfg.Ports, is, true)
+			if err != nil {
+				return err
 			}
+			group.Proxy.AutoPort = ec.AutoPort
 		}
-		oldGroup := i.Group
 		i.Role = "replica"
 		i.ReplicaOf = masterName // 存实例名
-		i.Group = groupName
-		if oldGroup != "" && oldGroup != groupName {
-			state.RecalculateGroupTopology(is, oldGroup)
+		i.Group = targetGroupName
+		if oldGroupName != targetGroupName {
+			hasOldMembers := false
+			for _, other := range is.Instances {
+				if other != nil && other.Group == oldGroupName {
+					hasOldMembers = true
+					break
+				}
+			}
+			if hasOldMembers {
+				state.RecalculateGroupTopology(is, oldGroupName)
+			} else {
+				delete(is.Groups, oldGroupName)
+			}
 		}
-		state.RecalculateGroupTopology(is, groupName)
+		state.RecalculateGroupTopology(is, targetGroupName)
 		return nil
 	}); err != nil {
 		s.log.Errorf("instance replicate: failed to persist role change for %s: %v", req.Name, err)
@@ -1054,10 +1134,12 @@ func (s *Server) instanceReplicate(c *gin.Context) {
 		Operator: operatorFrom(c),
 		Action:   "topology.replicate", Level: audit.LevelImportant, Result: "success",
 		DurationMs: time.Since(start).Milliseconds(),
-		Target:   map[string]interface{}{"instance": req.Name, "server": inst.Server},
-		Params:   map[string]interface{}{"replica_of": req.ReplicaOf},
+		Target:     map[string]interface{}{"instance": req.Name, "server": inst.Server},
+		Params:     map[string]interface{}{"replica_of": req.ReplicaOf},
 	})
 
+	// REPLICAOF 只改运行时；立即把新角色写入磁盘，避免容器重启后回到迁移前拓扑。
+	s.persistGroupRoles(targetGroupName)
 	s.syncSentinel()
 	ok(c, nil)
 }
@@ -1157,7 +1239,7 @@ func (s *Server) execBackup(name, operator string) (string, error) {
 		Operator: operator,
 		Action:   "backup.create", Level: audit.LevelNormal, Result: "accepted",
 		DurationMs: time.Since(start).Milliseconds(),
-		Target:   map[string]interface{}{"instance": name, "server": inst.Server, "task_id": taskID},
+		Target:     map[string]interface{}{"instance": name, "server": inst.Server, "task_id": taskID},
 	})
 	return taskID, nil
 }
@@ -1198,8 +1280,8 @@ func (s *Server) backupRestore(c *gin.Context) {
 		Operator: operatorFrom(c),
 		Action:   "backup.restore", Level: audit.LevelCritical, Result: "success",
 		DurationMs: time.Since(start).Milliseconds(),
-		Target:   map[string]interface{}{"instance": req.Name, "server": inst.Server},
-		Params:   map[string]interface{}{"backup_ts": req.BackupTs},
+		Target:     map[string]interface{}{"instance": req.Name, "server": inst.Server},
+		Params:     map[string]interface{}{"backup_ts": req.BackupTs},
 	})
 
 	ok(c, nil)
@@ -1404,7 +1486,7 @@ func (s *Server) instanceSimpleOp(c *gin.Context, newStatus, agentPath, auditAct
 		Operator: operatorFrom(c),
 		Action:   auditAction, Level: level, Result: "success",
 		DurationMs: time.Since(start).Milliseconds(),
-		Target:   map[string]interface{}{"instance": req.Name, "server": inst.Server},
+		Target:     map[string]interface{}{"instance": req.Name, "server": inst.Server},
 	})
 
 	ok(c, nil)

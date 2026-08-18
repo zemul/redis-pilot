@@ -949,25 +949,21 @@ func (a *Agent) instanceRestore(c *gin.Context) {
 	dataDir := filepath.Join(a.cfg.DataDir, req.Name, "data")
 	containerName := req.Engine + "-" + req.Name
 
-	if err := a.runtime.Stop(containerName); err != nil {
-		fail(c, http.StatusInternalServerError, "stop container failed: "+err.Error())
-		return
-	}
-
-	// 恢复的通用原则：先把新数据准备到暂存位置并校验，再原子替换，且原数据不删除而是
-	// 改名保留到 .before-restore-<ts>。早期实现是「先 RemoveAll 目标再解压/复制」，
-	// 备份包损坏或磁盘写满就会导致原数据和备份双双丢失，实例以空库启动。
-	stageRoot := filepath.Join(dataDir, ".restore-staging")
+	// 下载、解压和校验都在实例仍运行时完成，只有确认恢复数据完整可用后才进入停机窗口。
+	// 暂存目录必须是 dataDir 的同级目录：最后整体 rename dataDir 才能把 RDB+AOF 作为
+	// 一个数据集原子替换，避免两次独立 swap 产生“新 RDB + 旧 AOF”的混合状态。
+	stageRoot := filepath.Join(a.cfg.DataDir, req.Name, ".restore-staging")
 	os.RemoveAll(stageRoot)
-	if err := os.MkdirAll(stageRoot, 0o755); err != nil {
+	stagedData := filepath.Join(stageRoot, "data")
+	if err := os.MkdirAll(stagedData, 0o755); err != nil {
 		fail(c, http.StatusInternalServerError, "create restore staging dir failed: "+err.Error())
 		return
 	}
-	// 失败时清掉暂存目录；成功路径下里面的内容已经被 rename 移走，这里是 no-op。
+	// 失败时清掉暂存目录；成功路径下 data 已经被 rename 移走，这里只清理下载包。
 	defer os.RemoveAll(stageRoot)
 
 	if req.Engine == "kvrocks" {
-		// Download checkpoint archive from S3, extract, swap into data/db.
+		// Download checkpoint archive from S3 and stage it as a complete data/db tree.
 		s3Key := req.Name + "/" + req.BackupTs + ".checkpoint.tar.gz"
 		archivePath := filepath.Join(stageRoot, "backup.tar.gz")
 		if err := a.s3.Download(ctx, s3Key, archivePath); err != nil {
@@ -978,7 +974,7 @@ func (a *Agent) instanceRestore(c *gin.Context) {
 			fail(c, http.StatusInternalServerError, err.Error())
 			return
 		}
-		stagedDB := filepath.Join(stageRoot, "db")
+		stagedDB := filepath.Join(stagedData, "db")
 		if err := os.MkdirAll(stagedDB, 0o755); err != nil {
 			fail(c, http.StatusInternalServerError, err.Error())
 			return
@@ -992,79 +988,41 @@ func (a *Agent) instanceRestore(c *gin.Context) {
 				"backup archive extracted to an empty dataset, refusing to replace existing data")
 			return
 		}
-		dbDir := filepath.Join(dataDir, "db")
-		if err := swapInPath(stagedDB, dbDir, restorePreservePath(dbDir)); err != nil {
-			fail(c, http.StatusInternalServerError, err.Error())
-			return
-		}
 	} else {
 		// Redis: determine backup format by checking S3 for rdbaof vs rdb.
 		rdbaofKey := req.Name + "/" + req.BackupTs + ".rdbaof.tar.gz"
 		rdbKey := req.Name + "/" + req.BackupTs + ".rdb"
 
 		if a.s3.Exists(ctx, rdbaofKey) {
-			// RDB + AOF joint backup: download tar.gz, extract, stage files, swap.
+			// RDB + AOF joint backup: extract both into one staged data directory.
 			archivePath := filepath.Join(stageRoot, "backup.tar.gz")
 			if err := a.s3.Download(ctx, rdbaofKey, archivePath); err != nil {
 				fail(c, http.StatusInternalServerError, "download rdbaof backup failed (original data untouched): "+err.Error())
 				return
 			}
-			extractDir := filepath.Join(stageRoot, "extracted")
-			if err := os.MkdirAll(extractDir, 0o755); err != nil {
-				fail(c, http.StatusInternalServerError, err.Error())
-				return
-			}
-			if _, err := runShell("tar", "-xzf", archivePath, "-C", extractDir); err != nil {
+			if _, err := runShell("tar", "-xzf", archivePath, "-C", stagedData); err != nil {
 				fail(c, http.StatusInternalServerError, "extract rdbaof backup failed (original data untouched): "+err.Error())
 				return
 			}
-			// Stage RDB.
-			stagedRDB := filepath.Join(stageRoot, "dump.rdb")
-			if err := copyFile(filepath.Join(extractDir, "dump.rdb"), stagedRDB); err != nil {
-				fail(c, http.StatusInternalServerError, "stage dump.rdb failed (original data untouched): "+err.Error())
+			if err := verifyBackupArchiveExists(filepath.Join(stagedData, "dump.rdb")); err != nil {
+				fail(c, http.StatusInternalServerError, "invalid dump.rdb in backup (original data untouched): "+err.Error())
 				return
 			}
-			// Stage AOF (directory or single file).
-			aofSrcDir := filepath.Join(extractDir, "appendonlydir")
-			stagedAOFDir := filepath.Join(stageRoot, "appendonlydir")
-			stagedAOFFile := filepath.Join(stageRoot, "appendonly.aof")
-			useAOFDir := false
-			if _, err := os.Stat(aofSrcDir); err == nil {
-				if _, err := runShell("cp", "-r", aofSrcDir, stagedAOFDir); err != nil {
-					fail(c, http.StatusInternalServerError, "stage AOF dir failed (original data untouched): "+err.Error())
+			aofDir := filepath.Join(stagedData, "appendonlydir")
+			if _, err := os.Stat(aofDir); err == nil {
+				if nonEmpty, err := dirHasEntries(aofDir); err != nil || !nonEmpty {
+					fail(c, http.StatusInternalServerError, "AOF directory in backup is empty or unreadable (original data untouched)")
 					return
 				}
-				useAOFDir = true
 			} else {
-				if err := copyFile(filepath.Join(extractDir, "appendonly.aof"), stagedAOFFile); err != nil {
-					fail(c, http.StatusInternalServerError, "stage AOF file failed (original data untouched): "+err.Error())
-					return
-				}
-			}
-			// Swap RDB.
-			rdbDst := filepath.Join(dataDir, "dump.rdb")
-			if err := swapInPath(stagedRDB, rdbDst, restorePreservePath(rdbDst)); err != nil {
-				fail(c, http.StatusInternalServerError, err.Error())
-				return
-			}
-			// Swap AOF.
-			if useAOFDir {
-				aofDst := filepath.Join(dataDir, "appendonlydir")
-				if err := swapInPath(stagedAOFDir, aofDst, restorePreservePath(aofDst)); err != nil {
-					fail(c, http.StatusInternalServerError, err.Error())
-					return
-				}
-				os.Remove(filepath.Join(dataDir, "appendonly.aof"))
-			} else {
-				aofDst := filepath.Join(dataDir, "appendonly.aof")
-				if err := swapInPath(stagedAOFFile, aofDst, restorePreservePath(aofDst)); err != nil {
-					fail(c, http.StatusInternalServerError, err.Error())
+				if err := verifyBackupArchiveExists(filepath.Join(stagedData, "appendonly.aof")); err != nil {
+					fail(c, http.StatusInternalServerError, "invalid AOF in backup (original data untouched): "+err.Error())
 					return
 				}
 			}
 		} else {
 			// RDB-only backup: download single file, stage, swap.
-			archivePath := filepath.Join(stageRoot, "dump.rdb")
+			archivePath := filepath.Join(stagedData, "dump.rdb")
 			if err := a.s3.Download(ctx, rdbKey, archivePath); err != nil {
 				fail(c, http.StatusBadRequest, "backup not found in s3 (original data untouched): "+err.Error())
 				return
@@ -1073,30 +1031,31 @@ func (a *Agent) instanceRestore(c *gin.Context) {
 				fail(c, http.StatusInternalServerError, err.Error())
 				return
 			}
-			rdbDst := filepath.Join(dataDir, "dump.rdb")
-			if err := swapInPath(archivePath, rdbDst, restorePreservePath(rdbDst)); err != nil {
-				fail(c, http.StatusInternalServerError, err.Error())
-				return
-			}
-			// 纯 RDB 恢复：现有 AOF 与恢复点不一致，必须移走，否则 Redis 会优先加载 AOF
-			// 而忽略刚恢复的 RDB。同样保留而不是直接删除。
-			for _, aofPath := range []string{
-				filepath.Join(dataDir, "appendonlydir"),
-				filepath.Join(dataDir, "appendonly.aof"),
-			} {
-				if _, err := os.Lstat(aofPath); err == nil {
-					if err := os.Rename(aofPath, restorePreservePath(aofPath)); err != nil {
-						fail(c, http.StatusInternalServerError,
-							"move stale AOF aside failed: "+err.Error())
-						return
-					}
-				}
-			}
+			// stagedData 中没有 AOF；整体替换 dataDir 后不会残留旧 AOF。
 		}
 	}
 
+	if err := a.runtime.Stop(containerName); err != nil {
+		fail(c, http.StatusInternalServerError, "stop container failed: "+err.Error())
+		return
+	}
+	preserve := restorePreservePath(dataDir)
+	if err := swapInPath(stagedData, dataDir, preserve); err != nil {
+		// swap 自身会回滚；仍要把刚停止的原实例重新拉起。
+		startErr := a.runtime.Start(containerName)
+		if startErr != nil {
+			fail(c, http.StatusInternalServerError, err.Error()+"; restart original container also failed: "+startErr.Error())
+			return
+		}
+		fail(c, http.StatusInternalServerError, err.Error())
+		return
+	}
 	if err := a.runtime.Start(containerName); err != nil {
-		fail(c, http.StatusInternalServerError, "start container failed: "+err.Error())
+		// 新数据无法启动时恢复整个旧数据集，再尽力恢复服务。
+		rollbackErr := rollbackSwappedPath(dataDir, preserve)
+		restartErr := a.runtime.Start(containerName)
+		fail(c, http.StatusInternalServerError, fmt.Sprintf(
+			"start restored container failed: %v; rollback=%v; restart_original=%v", err, rollbackErr, restartErr))
 		return
 	}
 	ok(c, nil)

@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"sync"
 	"time"
+
+	"gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/pkg/apitypes"
 )
 
 // Manager 持续从 Server 拉取 ProxySnapshot 并维护后端拓扑。
@@ -17,9 +19,9 @@ import (
 //   - 快照拉取失败时保持最后快照（proxy-design §7.6）
 //   - 拓扑变化时通过 onUpdate 回调通知 proxysvc
 type Manager struct {
-	client   *serverClient
-	pollCfg  PollConfig
-	httpCli  *http.Client
+	client  *serverClient
+	pollCfg PollConfig
+	httpCli *http.Client
 
 	mu      sync.RWMutex
 	topo    *Topology
@@ -122,18 +124,14 @@ func (m *Manager) refresh(ctx context.Context) (bool, error) {
 		return false, nil
 	}
 
-	newTopo := ParseSnapshot(snap)
+	m.applySnapshot(snap)
+	return true, nil
+}
 
-	// 防护：Server 异常返回空快照时不清空现有拓扑（§7.6 扩展）。
-	// 首次快照（topo==nil）允许为空（可能确实还没创建实例）。
-	m.mu.RLock()
-	hasExisting := m.topo != nil && len(m.topo.Groups) > 0
-	m.mu.RUnlock()
-	if hasExisting && len(newTopo.Groups) == 0 {
-		slog.Warn("ignoring empty snapshot from server, keeping last topology",
-			"version", snap.Version, "existing_groups", len(m.topo.Groups))
-		return false, nil
-	}
+// applySnapshot 应用 Server 已成功鉴权并解析的全量快照。空快照也是权威状态：它表示
+// 最后一个组已删除或当前没有可服务 master，必须清掉旧监听和后端，不能继续陈旧路由。
+func (m *Manager) applySnapshot(snap *apitypes.ProxySnapshot) {
+	newTopo := ParseSnapshot(snap)
 
 	m.mu.Lock()
 	oldTopo := m.topo
@@ -156,7 +154,6 @@ func (m *Manager) refresh(ctx context.Context) (bool, error) {
 		"groups", len(newTopo.Groups),
 		"listeners", len(snap.Listeners),
 		"clusters", len(snap.Clusters))
-	return true, nil
 }
 
 // sleepCtx 睡 d，被 ctx 取消时返回 false。

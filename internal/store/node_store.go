@@ -76,6 +76,44 @@ func (d *DB) DeleteServer(name string) error {
 	return d.execWrite(`DELETE FROM servers WHERE name = ?`, name)
 }
 
+// RemoveServerIfUnused 在同一个事务内确认节点存在、确认没有实例引用它，然后删除节点。
+// found=false 表示节点不存在；used=true 表示仍有实例（无论运行或停止）引用该节点。
+func (d *DB) RemoveServerIfUnused(name string) (found, used bool, err error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	tx, err := d.sql.Begin()
+	if err != nil {
+		return false, false, err
+	}
+	defer tx.Rollback() //nolint:errcheck
+
+	var exists int
+	if err := tx.QueryRow(`SELECT COUNT(1) FROM servers WHERE name = ?`, name).Scan(&exists); err != nil {
+		return false, false, err
+	}
+	if exists == 0 {
+		return false, false, nil
+	}
+
+	var refs int
+	if err := tx.QueryRow(`SELECT COUNT(1) FROM instances WHERE server = ?`, name).Scan(&refs); err != nil {
+		return false, false, err
+	}
+	if refs > 0 {
+		return true, true, nil
+	}
+
+	if _, err := tx.Exec(`DELETE FROM servers WHERE name = ?`, name); err != nil {
+		return false, false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return false, false, err
+	}
+	d.bumpGeneration()
+	return true, false, nil
+}
+
 // GetServer 读取单个节点，不存在时返回 nil, nil。
 func (d *DB) GetServer(name string) (*apitypes.NodeServer, error) {
 	row := d.sql.QueryRow(

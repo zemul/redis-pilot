@@ -203,6 +203,27 @@ func TestSwapInPath_TargetDoesNotExist(t *testing.T) {
 	}
 }
 
+func TestRollbackSwappedPath_RestoresWholeDataset(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "data")
+	writeFile(t, filepath.Join(target, "old.rdb"), "OLD")
+	staged := filepath.Join(root, "staging", "data")
+	writeFile(t, filepath.Join(staged, "new.rdb"), "NEW")
+	preserve := filepath.Join(root, "data.before-restore")
+	if err := swapInPath(staged, target, preserve); err != nil {
+		t.Fatal(err)
+	}
+	if err := rollbackSwappedPath(target, preserve); err != nil {
+		t.Fatal(err)
+	}
+	if got := readFile(t, filepath.Join(target, "old.rdb")); got != "OLD" {
+		t.Fatalf("original dataset not restored, got %q", got)
+	}
+	if _, err := os.Stat(filepath.Join(target, "new.rdb")); !os.IsNotExist(err) {
+		t.Fatal("failed restored dataset must not remain at active target")
+	}
+}
+
 // TestSwapInPath_RollsBackWhenStagedMissing 验证放入新数据失败时原数据被挪回原位，
 // 而不是留下一个空目标。
 func TestSwapInPath_RollsBackWhenStagedMissing(t *testing.T) {

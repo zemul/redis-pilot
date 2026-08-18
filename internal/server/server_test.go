@@ -205,6 +205,28 @@ func TestNodeRemove_NotFound(t *testing.T) {
 	}
 }
 
+func TestNodeRemove_RejectsManagedInstances(t *testing.T) {
+	s := newTestServer(t, "")
+	s.db.WriteNode(&apitypes.NodeState{Servers: map[string]*apitypes.NodeServer{
+		"srv1": {Endpoint: "10.0.0.1", AgentPort: 8400},
+	}})
+	s.db.WriteInstances(&apitypes.InstancesState{
+		Groups: map[string]*apitypes.InstanceGroupState{"cache": testGroup("cache")},
+		Instances: map[string]*apitypes.Instance{
+			"cache-1": {Group: "cache", Server: "srv1", DesiredState: "stopped", ObservedStatus: "stopped"},
+		},
+	})
+
+	w := doRequest(s.Router(), "POST", "/node/remove", map[string]string{"name": "srv1"})
+	if w.Code != http.StatusConflict {
+		t.Fatalf("expected 409 for node with managed instance, got %d: %s", w.Code, w.Body.String())
+	}
+	nodes, _ := s.db.ReadNode()
+	if nodes.Servers["srv1"] == nil {
+		t.Fatal("node must remain after rejected removal")
+	}
+}
+
 func TestNodeUpdate_Success(t *testing.T) {
 	s := newTestServer(t, "")
 	r := s.Router()
@@ -468,7 +490,13 @@ func TestInstanceCreate_RoleMaster(t *testing.T) {
 }
 
 func TestInstanceCreate_RoleReplica(t *testing.T) {
+	var createRequests []apitypes.CreateInstanceRequest
 	fakeAgent := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/instance/create" {
+			var req apitypes.CreateInstanceRequest
+			_ = json.NewDecoder(r.Body).Decode(&req)
+			createRequests = append(createRequests, req)
+		}
 		json.NewEncoder(w).Encode(apitypes.APIResponse{Success: true})
 	}))
 	defer fakeAgent.Close()
@@ -481,11 +509,11 @@ func TestInstanceCreate_RoleReplica(t *testing.T) {
 	})
 	doRequest(s.Router(), "POST", "/instance/create", apitypes.CreateInstanceRequest{
 		Name: "redis-m", Category: "persistent", Group: "redis", Engine: "redis", EngineVersion: "6.2", Type: "replication",
-		Server: "srv1", Port: 6379, Memory: "4Gi", CPUs: 2,
+		Server: "srv1", Port: 6379, Memory: "4Gi", CPUs: 2, Password: "group-secret",
 	})
 	doRequest(s.Router(), "POST", "/instance/create", apitypes.CreateInstanceRequest{
-		Name: "redis-r", Category: "persistent", Engine: "redis", Type: "replication",
-		Server: "srv1", Port: 6380, Memory: "4Gi", CPUs: 2, ReplicaOf: "redis-m",
+		Name: "redis-r", Category: "cache", Engine: "redis", Type: "standalone",
+		Server: "srv1", Port: 6380, Memory: "4Gi", CPUs: 2, ReplicaOf: "redis-m", Password: "wrong-secret",
 	})
 	instances, _ := s.db.ReadInstances()
 	if instances.Instances["redis-r"].Role != "replica" {
@@ -496,6 +524,53 @@ func TestInstanceCreate_RoleReplica(t *testing.T) {
 	}
 	if instances.Groups["redis"].EngineVersion != "6.2" {
 		t.Fatalf("expected replica group redis version 6.2, got %q", instances.Groups["redis"].EngineVersion)
+	}
+	if got := instances.Instances["redis-r"].Password; got != "group-secret" {
+		t.Fatalf("replica must inherit group password, got %q", got)
+	}
+	if got := instances.Instances["redis-r"].Persistence.AOF; !got {
+		t.Fatal("replica must inherit persistent category rather than caller category")
+	}
+	if len(createRequests) != 2 || createRequests[1].Password != "group-secret" ||
+		createRequests[1].Category != "persistent" || createRequests[1].Type != "replication" {
+		t.Fatalf("agent replica request did not inherit group settings: %#v", createRequests)
+	}
+}
+
+func TestInstanceReplicate_MovingSingletonDeletesOldGroup(t *testing.T) {
+	fakeAgent := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(apitypes.APIResponse{Success: true})
+	}))
+	defer fakeAgent.Close()
+	agentHost, agentPort := fakeAgentHostPort(fakeAgent.Listener.Addr().String())
+
+	s := newTestServer(t, "")
+	s.db.WriteNode(&apitypes.NodeState{Servers: map[string]*apitypes.NodeServer{
+		"srv1": {Endpoint: agentHost, AgentPort: agentPort, Status: "healthy"},
+	}})
+	s.db.WriteInstances(&apitypes.InstancesState{
+		Groups: map[string]*apitypes.InstanceGroupState{
+			"source": {Type: "standalone", Engine: "redis", EngineVersion: "7", Category: "cache", CurrentMaster: "source-1", Proxy: &apitypes.ProxyConfig{MasterPort: 16500}},
+			"target": {Type: "standalone", Engine: "redis", EngineVersion: "7", Category: "cache", CurrentMaster: "target-1", Proxy: &apitypes.ProxyConfig{MasterPort: 16501}},
+		},
+		Instances: map[string]*apitypes.Instance{
+			"source-1": {Group: "source", Role: "master", Server: "srv1", Port: 6379, Password: "pw", DesiredState: "running", ObservedStatus: "running"},
+			"target-1": {Group: "target", Role: "master", Server: "srv1", Port: 6380, Password: "pw", DesiredState: "running", ObservedStatus: "running"},
+		},
+	})
+
+	w := doRequest(s.Router(), "POST", "/instance/replicate", map[string]string{
+		"name": "source-1", "replica_of": "target-1",
+	})
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	got, _ := s.db.ReadInstances()
+	if got.Groups["source"] != nil {
+		t.Fatalf("empty source group must be removed, got %#v", got.Groups["source"])
+	}
+	if i := got.Instances["source-1"]; i.Group != "target" || i.Role != "replica" || i.ReplicaOf != "target-1" {
+		t.Fatalf("unexpected migrated instance state: %#v", i)
 	}
 }
 
