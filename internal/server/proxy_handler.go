@@ -171,6 +171,7 @@ func (s *Server) buildProxySnapshot() (*apitypes.ProxySnapshot, error) {
 				Cluster:    masterClusterName,
 				Password:   g.password,
 				ReadPolicy: "MASTER",
+				AccessMode: g.accessMode,
 			})
 		}
 
@@ -194,6 +195,7 @@ func (s *Server) buildProxySnapshot() (*apitypes.ProxySnapshot, error) {
 				ReadCluster: readCluster,
 				Password:    g.password,
 				ReadPolicy:  "MASTER",
+				AccessMode:  g.accessMode,
 			})
 		}
 

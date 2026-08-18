@@ -112,6 +112,7 @@ Use ordinal names like order-1, order-2, cache-a, cache-b.`,
 		group, _ := cmd.Flags().GetString("group")
 		replicaOf, _ := cmd.Flags().GetString("replica-of")
 		overrides, _ := cmd.Flags().GetString("config")
+		accessMode, _ := cmd.Flags().GetString("access-mode")
 		if replicaOf == "" && strings.TrimSpace(group) == "" {
 			return fmt.Errorf("--group is required when creating a master or standalone instance")
 		}
@@ -134,6 +135,9 @@ Use ordinal names like order-1, order-2, cache-a, cache-b.`,
 		}
 		if overrides != "" {
 			req["config_overrides"] = parseKV(overrides)
+		}
+		if accessMode != "" {
+			req["access_mode"] = accessMode
 		}
 		return checkResp(client.Post("/instance/create", req))
 	},
@@ -211,6 +215,33 @@ Use --restart to restart the instance when the parameter requires it (e.g. bind,
 	},
 }
 
+var instanceSetAccessModeCmd = &cobra.Command{
+	Use:   "set-access-mode <name> <mode>",
+	Short: "Set group access mode (rw-split | standard)",
+	Long: `Change the access mode for the group that <name> belongs to.
+This affects which port the pseudo-sentinel returns to clients:
+  - standard: returns master port (all traffic goes to master)
+  - rw-split: returns auto port (read/write splitting enabled)
+
+Takes effect on next proxy snapshot poll (within seconds).`,
+	Example: `  # Enable read/write splitting
+  redis-pilot-cli instance set-access-mode order-master rw-split
+
+  # Switch back to standard (all traffic to master)
+  redis-pilot-cli instance set-access-mode order-master standard`,
+	Args: cobra.ExactArgs(2),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		mode := args[1]
+		if mode != "rw-split" && mode != "standard" {
+			return fmt.Errorf("access mode must be 'rw-split' or 'standard', got: %s", mode)
+		}
+		return checkResp(client.Post("/instance/access-mode", map[string]interface{}{
+			"name":        args[0],
+			"access_mode": mode,
+		}))
+	},
+}
+
 var instanceFailoverCmd = &cobra.Command{
 	Use:   "failover <name>",
 	Short: "Trigger failover for the replication group",
@@ -259,6 +290,7 @@ func init() {
 		instanceMetricsCmd,
 		instanceCreateCmd,
 		instanceConfigCmd,
+		instanceSetAccessModeCmd,
 		instanceStartCmd,
 		instanceStopCmd,
 		instanceReplicateCmd,
@@ -286,6 +318,7 @@ func init() {
 	instanceCreateCmd.Flags().String("group", "", "Stable logical group name for master/standalone")
 	instanceCreateCmd.Flags().String("replica-of", "", "Master instance name or address")
 	instanceCreateCmd.Flags().String("config", "", "Config overrides (k=v,k=v)")
+	instanceCreateCmd.Flags().String("access-mode", "", "Access mode: rw-split | standard (default: rw-split for replication, standard for standalone)")
 
 	instanceDeleteCmd.Flags().Bool("clean-data", false, "Also remove data directory")
 

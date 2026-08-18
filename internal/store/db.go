@@ -151,6 +151,7 @@ func (d *DB) migrate() error {
 			engine            TEXT NOT NULL DEFAULT 'redis',
 			engine_version    TEXT NOT NULL DEFAULT '',
 			category          TEXT NOT NULL DEFAULT '',
+			access_mode       TEXT NOT NULL DEFAULT '',
 			current_master    TEXT NOT NULL DEFAULT '',
 			topology_status   TEXT NOT NULL DEFAULT 'degraded',
 			failover_conflict INTEGER NOT NULL DEFAULT 0,
@@ -261,6 +262,9 @@ func (d *DB) migrate() error {
 		{
 			sql:     `ALTER TABLE instances ADD COLUMN observed_status TEXT NOT NULL DEFAULT ''`,
 			postSQL: `UPDATE instances SET observed_status = status WHERE observed_status = '' AND status != ''`,
+		},
+		{
+			sql: `ALTER TABLE instance_groups ADD COLUMN access_mode TEXT NOT NULL DEFAULT ''`,
 		},
 	}
 	for _, m := range alterMigrations {

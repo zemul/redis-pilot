@@ -329,11 +329,16 @@ func (s *Server) instanceCreate(c *gin.Context) {
 				return err
 			}
 			now := time.Now().Format(time.RFC3339)
+			accessMode := req.AccessMode
+			if accessMode == "" {
+				accessMode = "standard"
+			}
 			instances.Groups[groupName] = &apitypes.InstanceGroupState{
 				Type:           req.Type,
 				Engine:         req.Engine,
 				EngineVersion:  req.EngineVersion,
 				Category:       req.Category,
+				AccessMode:     accessMode,
 				CurrentMaster:  req.Name,
 				TopologyStatus: "degraded",
 				Proxy:          ec,
@@ -706,6 +711,57 @@ func (s *Server) instanceConfig(c *gin.Context) {
 	})
 
 	ok(c, nil)
+}
+
+// instanceAccessMode 更新 group 级 access_mode（通过实例名定位 group）。
+func (s *Server) instanceAccessMode(c *gin.Context) {
+	var req struct {
+		Name       string `json:"name" binding:"required"`
+		AccessMode string `json:"access_mode" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		fail(c, http.StatusBadRequest, err.Error())
+		return
+	}
+	if req.AccessMode != "rw-split" && req.AccessMode != "standard" {
+		fail(c, http.StatusBadRequest, "access_mode must be 'rw-split' or 'standard'")
+		return
+	}
+
+	instances, err := s.db.ReadInstances()
+	if err != nil {
+		fail(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+	inst := instances.Instances[req.Name]
+	if inst == nil {
+		fail(c, http.StatusNotFound, "instance not found: "+req.Name)
+		return
+	}
+	group := instances.Groups[inst.Group]
+	if group == nil {
+		fail(c, http.StatusNotFound, "group not found: "+inst.Group)
+		return
+	}
+
+	group.AccessMode = req.AccessMode
+	group.UpdatedAt = time.Now().Format(time.RFC3339)
+	if err := s.db.UpsertGroup(inst.Group, group); err != nil {
+		fail(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	s.audit.Log(store.AuditRecord{
+		Operator: operatorFrom(c),
+		Action:   "instance.access_mode", Level: audit.LevelImportant, Result: "success",
+		Target: map[string]interface{}{"instance": req.Name, "group": inst.Group},
+		Params: map[string]interface{}{"access_mode": req.AccessMode},
+	})
+
+	ok(c, map[string]string{
+		"group":       inst.Group,
+		"access_mode": req.AccessMode,
+	})
 }
 
 // instanceFailover 触发一次故障转移。

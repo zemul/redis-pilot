@@ -16,6 +16,7 @@ type GroupTopology struct {
 	MasterPort   int       // 强制 master 监听口（0=无）
 	AutoBind     string   // auto listener bind 地址
 	MasterBind   string   // master listener bind 地址
+	AccessMode   string   // rw-split | standard（空视为 rw-split）
 }
 
 // Topology 是全量拓扑（所有 group）。
@@ -45,6 +46,11 @@ func ParseSnapshot(snap *apitypes.ProxySnapshot) *Topology {
 		if g == nil {
 			g = &GroupTopology{Name: listener.Group}
 			groups[listener.Group] = g
+		}
+
+		// access_mode：取第一个非空值（同 group 的 listener 值一致）
+		if g.AccessMode == "" && listener.AccessMode != "" {
+			g.AccessMode = listener.AccessMode
 		}
 
 		// 密码：listener 优先，cluster 兜底

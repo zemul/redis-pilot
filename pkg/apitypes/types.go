@@ -81,6 +81,7 @@ type ProxyListener struct {
 	ReadCluster string `json:"read_cluster,omitempty"`
 	Password    string `json:"password,omitempty"`
 	ReadPolicy  string `json:"read_policy"`
+	AccessMode  string `json:"access_mode,omitempty"` // rw-split | standard（空视为 rw-split）
 }
 
 // ProxyCluster describes one logical upstream cluster.
@@ -124,6 +125,7 @@ type InstanceGroupState struct {
 	Engine           string       `yaml:"engine" json:"engine"`
 	EngineVersion    string       `yaml:"engine_version,omitempty" json:"engine_version,omitempty"`
 	Category         string       `yaml:"category" json:"category"`
+	AccessMode       string       `yaml:"access_mode,omitempty" json:"access_mode,omitempty"` // rw-split | standard（空视为 rw-split）
 	CurrentMaster    string       `yaml:"current_master" json:"current_master"`
 	TopologyStatus   string       `yaml:"topology_status" json:"topology_status"` // healthy | degraded
 	FailoverConflict bool         `yaml:"failover_conflict" json:"failover_conflict"`
@@ -381,6 +383,7 @@ type CreateInstanceRequest struct {
 	EngineVersion   string            `json:"engine_version,omitempty"`    // e.g. redis 5 | 6.2 | 7
 	EngineImage     string            `json:"engine_image,omitempty"`      // resolved by Server and consumed by Agent
 	Type            string            `json:"type" binding:"required"`     // standalone | replication
+	AccessMode      string            `json:"access_mode,omitempty"`       // rw-split | standard（空=按 type 推断默认值）
 	Server          string            `json:"server"`                      // 可选，为空时自动调度
 	Port            int               `json:"port"`
 	Memory          string            `json:"memory" binding:"required"`

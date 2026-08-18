@@ -449,3 +449,60 @@ func TestUnknownSentinelSubcommand(t *testing.T) {
 		t.Fatalf("expected ERR unknown sentinel subcommand, got: %q", reply)
 	}
 }
+
+func TestGetMasterAddrByName_AccessModeStandard(t *testing.T) {
+	groups := map[string]*discovery.GroupTopology{
+		"cache": {Name: "cache", AutoPort: 16379, MasterPort: 16500, AccessMode: "standard"},
+	}
+	conn, _ := dialSentinel(t, Config{}, fakeTopo(groups))
+	r := bufio.NewReader(conn)
+
+	sendCmd(conn, "SENTINEL", "get-master-addr-by-name", "cache")
+	reply := readReply(r)
+
+	// access_mode=standard → 应返回 MasterPort 16500
+	if !strings.Contains(reply, "*2\r\n") {
+		t.Fatalf("expected 2-element array, got: %q", reply)
+	}
+	if !strings.Contains(reply, "16500") {
+		t.Fatalf("expected master port 16500, got: %q", reply)
+	}
+	if strings.Contains(reply, "16379") {
+		t.Fatalf("should NOT return auto port 16379, got: %q", reply)
+	}
+}
+
+func TestGetMasterAddrByName_AccessModeRWSplit(t *testing.T) {
+	groups := map[string]*discovery.GroupTopology{
+		"cache": {Name: "cache", AutoPort: 16379, MasterPort: 16500, AccessMode: "rw-split"},
+	}
+	conn, _ := dialSentinel(t, Config{}, fakeTopo(groups))
+	r := bufio.NewReader(conn)
+
+	sendCmd(conn, "SENTINEL", "get-master-addr-by-name", "cache")
+	reply := readReply(r)
+
+	// access_mode=rw-split → 应返回 AutoPort 16379
+	if !strings.Contains(reply, "*2\r\n") {
+		t.Fatalf("expected 2-element array, got: %q", reply)
+	}
+	if !strings.Contains(reply, "16379") {
+		t.Fatalf("expected auto port 16379, got: %q", reply)
+	}
+}
+
+func TestGetMasterAddrByName_AccessModeStandard_FallbackAuto(t *testing.T) {
+	// standard 但没有 MasterPort → 兜底到 AutoPort
+	groups := map[string]*discovery.GroupTopology{
+		"cache": {Name: "cache", AutoPort: 16379, MasterPort: 0, AccessMode: "standard"},
+	}
+	conn, _ := dialSentinel(t, Config{}, fakeTopo(groups))
+	r := bufio.NewReader(conn)
+
+	sendCmd(conn, "SENTINEL", "get-master-addr-by-name", "cache")
+	reply := readReply(r)
+
+	if !strings.Contains(reply, "16379") {
+		t.Fatalf("expected fallback to auto port 16379, got: %q", reply)
+	}
+}

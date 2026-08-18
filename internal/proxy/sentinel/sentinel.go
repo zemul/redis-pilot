@@ -206,7 +206,9 @@ func (s *Server) handleSentinel(conn net.Conn, w *resp.Writer, argv [][]byte) {
 }
 
 // resolve 返回该 group 对客户端暴露的入口地址。
-// 端口优先 AutoPort（读写分离入口），否则 MasterPort。
+// resolve 返回 group 的伪 Sentinel 发现地址。
+// 端口按 access_mode 选择：standard → MasterPort，rw-split/空 → AutoPort。
+// 若首选端口为 0 则兜底到另一个存在的端口。
 // ip 优先配置的 AnnounceIP，否则用连接命中的本地 IP。
 func (s *Server) resolve(group string, conn net.Conn) (ip string, port int, ok bool) {
 	topo := s.topo()
@@ -217,9 +219,17 @@ func (s *Server) resolve(group string, conn net.Conn) (ip string, port int, ok b
 	if g == nil {
 		return "", 0, false
 	}
-	port = g.AutoPort
-	if port == 0 {
+	switch g.AccessMode {
+	case "standard":
 		port = g.MasterPort
+		if port == 0 {
+			port = g.AutoPort
+		}
+	default: // rw-split 或空
+		port = g.AutoPort
+		if port == 0 {
+			port = g.MasterPort
+		}
 	}
 	if port == 0 {
 		return "", 0, false

@@ -11,6 +11,7 @@ type instanceGroup struct {
 	autoPort         int
 	masterPort       int
 	password         string
+	accessMode       string // rw-split | standard（空视为 rw-split）
 	masterEndpoints  []proxyEndpoint
 	replicaEndpoints []proxyEndpoint
 }
@@ -27,6 +28,7 @@ func (s *Server) buildInstanceGroups(instances *apitypes.InstancesState, node *a
 			autoPort:   group.Proxy.AutoPort,
 			masterPort: group.Proxy.MasterPort,
 			password:   "",
+			accessMode: group.AccessMode,
 		}
 		for name, inst := range instances.Instances {
 			// 只有观测到在跑的实例才能接业务流量。用意图判断会把流量
