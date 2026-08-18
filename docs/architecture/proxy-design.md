@@ -24,7 +24,7 @@
 - hash 分片、Redis Cluster 拓扑发现、跨 slot 命令拆分与聚合、prefix 路由、Ketama。
 - 热 key query cache、带宽限流、大 key 拦截（阿里云 proxy 有，本平台自用暂不需要）。
 - TLS（v1 不支持；后续视平台内网加密需求再补）。
-- 客户端侧的伪 Sentinel 服务发现（本轮暂停，后续单独设计；见 §12）。
+- 客户端侧的伪 Sentinel 服务发现不进 v1 连接核心；设计已定稿见 §19，实现排期见 §17 M6。
 
 ## 2. 已确定的设计决策（decision log）
 
@@ -45,6 +45,7 @@
 | D13 | per-client 连接 + 单请求体积 上限 | 对标公有云 proxy 保护机制。per-client 并发连接超阈值 reject 新连接防单客户端耗尽 fd/端口预算（§13）；单 RESP 帧超 `max_request_bytes` reject 防 OOM。均 `proxy.yaml` 可配。 |
 | D14 | 优雅关闭（SIGTERM drain） | 收到 SIGTERM -> 停止 accept -> 等待 inflight 写完成或 `shutdown_timeout`（默认 10s）超时 -> 关闭。SHARED 连接等 FIFO 排空；EXCLUSIVE 连接等当前阻塞命令返回或超时。避免 kill -9 断 inflight 写导致 ambiguous error。 |
 | D15 | 代理级策略：v1 reload-only | deny_commands / master_read_weight 在 `proxy.yaml` 中，变更需重启 proxy。拓扑变化通过快照热更新无需重启。后续可把策略搬进快照 `proxy_config` 字段实现 Server 在线下发（O4）。v1 接受重启频率低（策略稳定后不动）。 |
+| D16 | 伪 Sentinel 用**单一独立端口**，不复用数据端口 | 客户端 sentinel 模式的服务发现是**跨 group** 的（一个端口回答任意 `masterName` 的地址），而数据端口按 D7「端口即路由」**绑定单个 group + 单个密码**。把跨 group 发现塞进单 group 数据端口会破坏 D7 不变式、且鉴权语义讲不清。故整个 proxy 进程加一个 Sentinel 协议端口（默认 26379），所有 group 共用；`get-master-addr-by-name <group>` 返回该 group 的 proxy 数据端口。详见 §19。 |
 
 > D7 补充：密码来源是每 group 的快照 `ProxyCluster.Password`（由 master 实例的
 > requirepass 而来，见 §11）。proxy 侧无任何密码配置，故不存在配置漂移；password 随快照
@@ -225,6 +226,10 @@ open 监听端口 -> 开始 accept。
 §7.4 路径触发 -> client 断连重试。持续失败超阈值（默认 5min）打告警「proxy 与 Server
 失联」。
 
+“失败”不包括合法空快照。已成功鉴权和解析、且版本发生变化的空快照是 Server 的权威
+全量状态（例如最后一个组被删除），Proxy 必须应用并撤销旧监听与后端。否则旧路由会永久
+残留。只有网络/HTTP/解析失败才保留最后快照。
+
 ## 8. 读写分离（D4/D5/D6）
 
 - 读写分离**按 group 显式开**（D6）；未开的 group 所有命令走 master。
@@ -379,7 +384,7 @@ cmd/proxy/    进程入口
 4. **M4 快照接入 + failover**：搬 `discovery`，接 Server 快照，实现 master 切换 close/rebuild。
 5. **M5 池收敛 + 指标**：SHARED 连接真正多路复用（打开 FIFO 解复用 / reorder 或 D11 化简），
    补 §14 指标。
-6. **M6（择机）**：伪 Sentinel 客户端发现、Sentinel 直订阅（O1）、快照原生化简。
+6. **M6（择机）**：伪 Sentinel 客户端发现（设计见 §19）、Sentinel 直订阅（O1）、快照原生化简。
 
 > **迁移 cutover 注记**：测试环境可 M4 验收；**生产 cutover 需 M5**（无池化收敛会撞端口预算）。
 
@@ -408,6 +413,130 @@ cmd/proxy/    进程入口
 | 配置在线热更新 | D15，v1 reload-only | O4 后续 |
 | per-command 指标 | §14，v1 降级 | 后续 |
 | 慢查询日志 | v1 不实现 | 后续 |
+| 伪 Sentinel 服务发现（sentinel 模式客户端零改代码接入） | §19；单一 Sentinel 端口 | 已设计，M6 实现 |
+
+## 19. 伪 Sentinel 服务发现（D16）
+
+> 状态：设计已定稿，实现排期在 §17 M6。目标是让**已经用 Sentinel 模式的客户端零改代码**
+> 接入 Proxy——把 Proxy 自己伪装成一个 Sentinel。
+>
+> 实现代码见 `internal/proxy/sentinel/` 包。
+
+### 19.1 背景与目标
+
+存量业务用的是 sentinel 模式客户端（配置的是「sentinel 地址列表 + masterName」，
+运行时先问 Sentinel 要 master 地址再连数据）。若要它们改用 Proxy，常规做法是把客户端
+从 sentinel 模式改成单点模式、填 Proxy 地址——这需要改客户端代码/配置，成本高。
+
+**目标**：客户端保持 sentinel 模式与代码不变，仅把 sentinel 地址列表指向 Proxy，
+即可让业务流量走 Proxy（继续享受读写分离），且故障转移对客户端透明。
+
+**明确不能做的（澄清一个常见误区）**：不能"把 Proxy 地址配到真 Sentinel 上"。真
+Sentinel 的 `get-master-addr-by-name` 返回的是它**实际监控到的 master ip:port**，没有
+"返回一个我指定的假地址"的配置项；若把 monitor 目标写成 Proxy，Sentinel 会把 Proxy 当
+真 redis 去做故障判定/failover，破坏平台**依赖真 Sentinel 做故障转移**的机制。故正确方向
+是反过来——**让 Proxy 假扮 Sentinel**。
+
+### 19.2 端口模型（D16）
+
+- 整个 Proxy 进程加**一个**独立的 Sentinel 协议监听端口（默认 `26379`），**所有 group 共用**。
+- 不复用数据端口：发现是跨 group 的（一个端口回答任意 `masterName`），数据端口按 D7
+  「端口即路由」绑定单 group + 单密码；混用会破坏 D7 不变式。见 D16。
+- 数据端口（16379+ auto / 16500+ master）沿用现状，不新增。**净增仅此一个 Sentinel 端口。**
+
+### 19.3 发现语义（核心）
+
+Sentinel 发现按 `masterName` 查，约定 **`masterName` == group 名**（与平台 group 命名一致）。
+
+- `SENTINEL get-master-addr-by-name <group>` → 返回**该 group 的 Proxy 数据端口**：
+  - group 若开了读写分离 → 返回其 **auto 端口**（`ProxyListener.Mode==auto` 的 `Port`）。
+    sentinel 客户端把该地址当"master"，读写都发到这个 auto 端口，由 Proxy 内部做读写分离。
+  - group 若只有 master 端口 → 返回 **master 端口**（`Mode==master`）。
+  - 返回的 host 见 §19.5（announce 地址）。
+- `SENTINEL slaves <group>` / `SENTINEL replicas <group>` → **返回空列表**。
+  这样 sentinel-aware 客户端不会绕过 Proxy 自己去连后端 replica 做读——全部流量收敛到
+  Proxy 的 auto 端口，读写分离由 Proxy 统一决策（对齐 §8）。**后端真实拓扑对客户端隐藏。**
+- `SENTINEL master <group>` / `SENTINEL masters` → 返回一条最小 master 描述（name/ip/port/
+  flags=master），满足会读该信息的客户端；ip:port 同 `get-master-addr-by-name`。
+- `SENTINEL sentinels <group>` → v1 返回**空**（客户端用自己配置的 sentinel 列表做 HA）。
+  多 Proxy 互相通告 peer 列表留待后续（需要 Proxy 感知同伴，快照当前不含该信息）。
+
+### 19.4 failover 透明化与 pub/sub
+
+- Proxy 返回给客户端的地址是 **Proxy 自己、永不变**。真 master 切换发生在 Proxy 背后
+  （Proxy 靠快照感知并 rebuild 后端连接，见 §11/§12），客户端看到的地址不变——**failover
+  对客户端完全透明，无重连风暴**。这是伪 Sentinel 相比"客户端直连真 Sentinel"的最大收益。
+- `SUBSCRIBE` / `PSUBSCRIBE` 到 `+switch-master`、`+sdown`、`-sdown`、`+odown` 等频道：
+  **接受订阅**（不报错，避免打断客户端的标准 sentinel 流程）。因 Proxy 地址稳定，v1
+  **不强制推送 `+switch-master`**（推了地址也没变）。可选：后端 master 变化时 best-effort
+  发一条 `+switch-master <group> <proxyip> <port> <proxyip> <port>`（新旧地址相同）以兼容
+  某些坚持重新解析的客户端；不作为正确性依赖。
+
+### 19.5 返回地址（announce）
+
+Proxy 需知道自己对客户端可达的 IP（`bind 0.0.0.0` 时无法可靠自推，NAT 场景更甚）。
+
+- 新增配置 `sentinel_announce_ip`：伪 Sentinel 返回的 host。
+- 留空时**回退为客户端连接命中的本地地址**（请求的 local addr），单网段部署下够用；
+  跨 NAT / 多网卡务必显式配。
+- 端口来自快照对应 group 的数据端口（§19.3），不需额外配。
+
+### 19.6 鉴权
+
+- 伪 Sentinel 端口只暴露"group → Proxy 地址"的拓扑，不暴露数据、不泄露后端 requirepass
+  （数据端口仍按 D7 用各自 group 密码鉴权）。
+- v1 伪 Sentinel 端口的鉴权：新增可选 `sentinel_password`（对标真 Sentinel 的
+  requirepass）。留空 = 发现端口不鉴权。它与数据面/后端密码彼此独立。
+
+### 19.7 命令支持范围
+
+伪 Sentinel 是**只读发现**，不是真 Sentinel 管理面：
+
+- 支持：`SENTINEL get-master-addr-by-name|master|masters|slaves|replicas|sentinels`、
+  `PING`、`SUBSCRIBE`/`PSUBSCRIBE`/`UNSUBSCRIBE`（sentinel 频道）、`INFO`（最小）、
+  `HELLO`（按 D8 逼回 RESP2）、`AUTH`（若配了 `sentinel_password`）、`QUIT`。
+- **拒绝**：`SENTINEL failover|monitor|remove|set|reset` 等管理/变更命令
+  （回 `-ERR unsupported`）——故障转移权威仍是平台真 Sentinel，伪 Sentinel 不接管。
+
+### 19.8 快照映射（复用现有 ProxySnapshot，无 schema 改动）
+
+伪 Sentinel 的全部输入来自现有 `apitypes.ProxySnapshot`（§11）：
+
+- 遍历 `Listeners`，按 `Group` 聚合；每 group 选一个"客户端入口端口"：优先
+  `Mode==auto` 的 `Port`，否则 `Mode==master` 的 `Port`。
+- 该端口 + announce IP 即 `get-master-addr-by-name <group>` 的返回值。
+- 快照热更新时映射随之更新；新增/删除 group 自动反映到发现结果。
+- **不需要新增快照字段**。
+
+### 19.9 配置（proxy.yaml）
+
+```yaml
+# ─── 伪 Sentinel 服务发现（可选） ───
+sentinel_listen: ":26379"      # 伪 Sentinel 监听地址；空 = 关闭该特性
+sentinel_announce_ip: ""       # 返回给客户端的 host；空 = 用连接命中的本地地址
+sentinel_password: ""          # 伪 Sentinel 端口鉴权密码；空 = 不鉴权
+```
+
+### 19.10 部署与接入
+
+- 客户端**唯一改动**：把 sentinel 地址列表指向各 Proxy 的 `sentinel_listen` 端口，
+  `masterName` 保持 = group 名。客户端代码不变。
+- 平台真 Sentinel 继续**纯内部**用于故障转移，不对客户端暴露。
+- 若想做到客户端**零改动**：把 Proxy 的伪 Sentinel 端口部署在客户端当前 sentinel 配置
+  已填的那个 host:port 上（真 Sentinel 挪到内网另一端口）——属部署编排取舍，非协议层要求。
+
+### 19.11 模块落点
+
+- 在 `internal/proxy/` 下新增 `sentinel/` 包：Sentinel 协议应答（复用 `resp` 编解码），
+  持有从 `discovery` 快照派生的 `group → (announce_ip, port)` 映射。
+- `proxysvc` 在 `sentinel_listen` 非空时额外起该 listener，与数据 listener 同生命周期
+  （随快照更新映射、SIGTERM 一并优雅关闭）。
+
+### 19.12 本特性的非目标
+
+- 伪 Sentinel 之间的 peer 自动通告（`SENTINEL sentinels` 返回空）。
+- 任何 Sentinel 管理/变更命令（monitor/failover/set/remove）。
+- RESP3（同 D8）。
 
 ## 参考
 
