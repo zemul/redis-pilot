@@ -24,7 +24,6 @@
 - hash 分片、Redis Cluster 拓扑发现、跨 slot 命令拆分与聚合、prefix 路由、Ketama。
 - 热 key query cache、带宽限流、大 key 拦截（阿里云 proxy 有，本平台自用暂不需要）。
 - TLS（v1 不支持；后续视平台内网加密需求再补）。
-- 客户端侧的伪 Sentinel 服务发现不进 v1 连接核心；设计已定稿见 §19，实现排期见 §17 M6。
 
 ## 2. 已确定的设计决策（decision log）
 
@@ -36,7 +35,7 @@
 | D4 | 读池纳入 master | 读请求在 master + 所有 replica 间按 weight 分摊（master 读权重可调低，因其还要扛写）。 |
 | D5 | 无会话一致性窗口 | 读写分离时读始终走读池（replica + master 按 weight），不保证 read-your-writes。需要强一致读的场景用 MASTER 端口。 |
 | D6 | 读写分离按 group 显式开 | 不是全局默认。未开的 group 走"强制 master"语义。 |
-| D7 | 认证：**按实例（group）来，密码全部来自快照，proxy 不配任何密码** | 每个 group 的 client 面密码 = 该 group 后端自身的 requirepass（快照 `ProxyCluster.Password` 已携带）；client 面与后端面**共用这同一个密码**。后端未设密码则该 group 两面都不鉴权。proxy 靠"客户端连的哪个监听端口 -> 哪个 group -> 哪个密码"判定（与"端口即路由"一致）。AUTH 在 proxy **终结、不透传**（透传会破坏池化）。 |
+| D7 | 认证：**仅 Proxy 前端鉴权，后端实例无密码** | 每个 group 的 client 面密码来自快照 `ProxyListener.Password`（= 该 group 的前端密码，存于 `InstanceGroupState.Password`，仅 Server 持有）。后端面密码来自快照 `ProxyCluster.Password`，在无密码方案下 Server 恒下发空串——实例本身不写 `requirepass`，Proxy→后端直连不发 AUTH。client 面与后端面**已解耦**（历史上曾共用同一密码）。proxy 靠"客户端连的哪个监听端口 -> 哪个 group -> 哪个前端密码"判定（与"端口即路由"一致）。AUTH 在 proxy **终结、不透传**（透传会破坏池化）。 |
 | D8 | 仅支持 RESP2 | 绝大多数客户端默认 RESP2。`HELLO 3` 不应答 3 / 返回错误，逼客户端回落 RESP2。 |
 | D9 | RESP 解析范围最小化 | 请求解析到命令名 + 第一个 key；响应解析到**帧边界**（能定位一条响应结束），不解释 value 内容。 |
 | D10 | replica 全挂时读回落 master | 可用性优先，同时打指标告警。 |
@@ -46,11 +45,13 @@
 | D14 | 优雅关闭（SIGTERM drain） | 收到 SIGTERM -> 停止 accept -> 等待 inflight 写完成或 `shutdown_timeout`（默认 10s）超时 -> 关闭。SHARED 连接等 FIFO 排空；EXCLUSIVE 连接等当前阻塞命令返回或超时。避免 kill -9 断 inflight 写导致 ambiguous error。 |
 | D15 | 代理级策略：v1 reload-only | deny_commands / master_read_weight 在 `proxy.yaml` 中，变更需重启 proxy。拓扑变化通过快照热更新无需重启。后续可把策略搬进快照 `proxy_config` 字段实现 Server 在线下发（O4）。v1 接受重启频率低（策略稳定后不动）。 |
 | D16 | 伪 Sentinel 用**单一独立端口**，不复用数据端口 | 客户端 sentinel 模式的服务发现是**跨 group** 的（一个端口回答任意 `masterName` 的地址），而数据端口按 D7「端口即路由」**绑定单个 group + 单个密码**。把跨 group 发现塞进单 group 数据端口会破坏 D7 不变式、且鉴权语义讲不清。故整个 proxy 进程加一个 Sentinel 协议端口（默认 26379），所有 group 共用；`get-master-addr-by-name <group>` 返回该 group 的 proxy 数据端口。详见 §19。 |
+| D17 | group 级 `access_mode`（`standard`/`rw-split`），**仅用于伪 Sentinel 选择返回端口**；数据端口维持现状 | 对标阿里云「读写分离是实例级架构选型」（§18），但**不改端口分配、不做模式切换机制**（评估后放弃：单端口+切换要引入端口重分配/冷却回收/存量迁移，收益不抵复杂度）。数据端口照旧（replication 双口 auto+master、standalone 单口 master，都照常监听）。`access_mode` 只决定 `get-master-addr-by-name` 返回 auto 口还是 master 口：`rw-split`（主从默认）→auto，`standard`→master。直连客户端不受影响（两个口都在）。默认 `rw-split` 保持既有行为。详见 §20。 |
 
-> D7 补充：密码来源是每 group 的快照 `ProxyCluster.Password`（由 master 实例的
-> requirepass 而来，见 §11）。proxy 侧无任何密码配置，故不存在配置漂移；password 随快照
-> 更新（如轮换 requirepass）在下一次快照生效。v1 只支持 `AUTH <password>`（requirepass
-> 风格）单参形式，不支持 ACL 的 `AUTH <user> <pass>`。
+> D7 补充：前端密码来源是每 group 快照的 `ProxyListener.Password`（= `InstanceGroupState.Password`，
+> 仅存于 Server，见 §11）。后端 `ProxyCluster.Password` 恒空——后端
+> 实例无 `requirepass`。proxy 侧无任何密码配置，故不存在配置漂移；前端密码随快照更新
+> （如轮换）在下一次快照生效，改一处即可，无需触碰实例/Sentinel/复制链路。v1 只支持
+> `AUTH <password>`（requirepass 风格）单参形式，不支持 ACL 的 `AUTH <user> <pass>`。
 
 ## 3. 待定项（OPEN，未拍板）
 
@@ -414,6 +415,7 @@ cmd/proxy/    进程入口
 | per-command 指标 | §14，v1 降级 | 后续 |
 | 慢查询日志 | v1 不实现 | 后续 |
 | 伪 Sentinel 服务发现（sentinel 模式客户端零改代码接入） | §19；单一 Sentinel 端口 | 已设计，M6 实现 |
+| 读写分离作为 group 级选型（standard/rw-split） | §20 `access_mode`；仅决定 sentinel 返回哪个口，双口维持 | D17，已设计 |
 
 ## 19. 伪 Sentinel 服务发现（D16）
 
@@ -443,15 +445,21 @@ Sentinel 的 `get-master-addr-by-name` 返回的是它**实际监控到的 maste
 - 不复用数据端口：发现是跨 group 的（一个端口回答任意 `masterName`），数据端口按 D7
   「端口即路由」绑定单 group + 单密码；混用会破坏 D7 不变式。见 D16。
 - 数据端口（16379+ auto / 16500+ master）沿用现状，不新增。**净增仅此一个 Sentinel 端口。**
+- 数据端口分配维持现状（replication 双口 auto+master、standalone 单口 master，均照常监听）。
+  group 的 `access_mode`（D17，§20）**仅决定伪 Sentinel 广告这两个口中的哪一个**，不改变
+  端口分配、不关闭任一 listener。
 
 ### 19.3 发现语义（核心）
 
 Sentinel 发现按 `masterName` 查，约定 **`masterName` == group 名**（与平台 group 命名一致）。
 
-- `SENTINEL get-master-addr-by-name <group>` → 返回**该 group 的 Proxy 数据端口**：
-  - group 若开了读写分离 → 返回其 **auto 端口**（`ProxyListener.Mode==auto` 的 `Port`）。
-    sentinel 客户端把该地址当"master"，读写都发到这个 auto 端口，由 Proxy 内部做读写分离。
-  - group 若只有 master 端口 → 返回 **master 端口**（`Mode==master`）。
+- `SENTINEL get-master-addr-by-name <group>` → 返回**该 group 的 Proxy 数据端口**，按其
+  `access_mode`（D17，§20）选择：
+  - `access_mode==rw-split`（主从默认）→ 返回 **auto 端口**（`ProxyListener.Mode==auto`）。
+    sentinel 客户端把该地址当"master"，读写都发到 auto 端口，由 Proxy 内部做读写分离。
+  - `access_mode==standard` → 返回 **master 端口**（`Mode==master`），读写都走主
+    （replica 仅作 HA 热备）。
+  - 兜底：目标端口缺失时回退到另一个存在的端口（standalone 只有 master 口，天然返回 master）。
   - 返回的 host 见 §19.5（announce 地址）。
 - `SENTINEL slaves <group>` / `SENTINEL replicas <group>` → **返回空列表**。
   这样 sentinel-aware 客户端不会绕过 Proxy 自己去连后端 replica 做读——全部流量收敛到
@@ -498,15 +506,16 @@ Proxy 需知道自己对客户端可达的 IP（`bind 0.0.0.0` 时无法可靠�
 - **拒绝**：`SENTINEL failover|monitor|remove|set|reset` 等管理/变更命令
   （回 `-ERR unsupported`）——故障转移权威仍是平台真 Sentinel，伪 Sentinel 不接管。
 
-### 19.8 快照映射（复用现有 ProxySnapshot，无 schema 改动）
+### 19.8 快照映射（复用现有 ProxySnapshot，仅新增一个向后兼容字段）
 
-伪 Sentinel 的全部输入来自现有 `apitypes.ProxySnapshot`（§11）：
+伪 Sentinel 的输入来自现有 `apitypes.ProxySnapshot`（§11）：
 
-- 遍历 `Listeners`，按 `Group` 聚合；每 group 选一个"客户端入口端口"：优先
-  `Mode==auto` 的 `Port`，否则 `Mode==master` 的 `Port`。
+- 遍历 `Listeners`，按 `Group` 聚合；每 group 按 `access_mode` 选"客户端入口端口"：
+  `rw-split`→`Mode==auto` 的 `Port`；`standard`→`Mode==master` 的 `Port`；缺失回退另一个。
 - 该端口 + announce IP 即 `get-master-addr-by-name <group>` 的返回值。
 - 快照热更新时映射随之更新；新增/删除 group 自动反映到发现结果。
-- **不需要新增快照字段**。
+- **快照新增一个向后兼容字段** `access_mode`（承载在 `ProxyListener` 上，D17/§20）；旧 proxy
+  忽略未知字段，不影响兼容。除此之外无 schema 改动。
 
 ### 19.9 配置（proxy.yaml）
 
@@ -537,6 +546,53 @@ sentinel_password: ""          # 伪 Sentinel 端口鉴权密码；空 = 不鉴�
 - 伪 Sentinel 之间的 peer 自动通告（`SENTINEL sentinels` 返回空）。
 - 任何 Sentinel 管理/变更命令（monitor/failover/set/remove）。
 - RESP3（同 D8）。
+
+## 20. Group 访问模式 access_mode（D17）
+
+对标阿里云「读写分离是**实例级架构选型**」（§18），把「sentinel 客户端把哪个口当 master」
+做成 **group 级配置**。**本轮只做最小闭环**：不改端口分配、不做模式切换机制——`access_mode`
+仅供伪 Sentinel 决定返回哪个已存在的端口。
+
+> 为什么不做单端口分配 + 模式切换：那会引入端口重分配、释放口冷却回收、存量双口迁移等有状态
+> 逻辑（原 Plan B），边界多、收益（省一个端口）不抵复杂度。评估后放弃，维持双口现状。
+
+### 20.1 access_mode 语义
+
+group 级新增字段 `access_mode`，**只影响伪 Sentinel `get-master-addr-by-name` 的返回**：
+
+| access_mode | sentinel 返回 | 客户端效果 |
+|---|---|---|
+| `rw-split`（主从默认） | auto 口（16379+） | 把 auto 口当 master，读写分离由 Proxy 内部做 |
+| `standard` | master 口（16500+） | 读写都走主，replica 仅作 HA 热备 |
+
+- 数据端口分配**完全不变**：replication 仍同时分配并监听 auto+master 两个口，standalone 仍
+  只有 master 口。`access_mode` 不关闭任何 listener。
+- `standalone` 恒等价 `standard`（只有 master 口，兜底天然返回 master）。
+- `replication` 默认 `rw-split`（保持既有行为）。
+- 直连数据端口的客户端不受影响——两个口都在，想连哪个连哪个。`access_mode` 纯粹是给
+  sentinel 发现用的"把哪个口当 master 广告出去"的提示。
+
+### 20.2 改动落点（thin slice）
+
+- `pkg/apitypes`：`InstanceGroupState` 增 `AccessMode string`；`ProxyListener` 增 `AccessMode string`
+  以随快照下发（空值视为 `rw-split`，兼容存量与旧 proxy）。
+- `internal/server/instance_handler.go`：create 时设默认（replication→`rw-split`，standalone→
+  `standard`）；可选 CLI 参数 `--access-mode` 覆盖。**不需要独立的切换 handler**——即便日后要改，
+  因两个口都在，改字段即可（下次快照生效、sentinel 返回另一个口），无端口重分配。
+- `internal/server/proxy_handler.go`：生成快照时把 group 的 `access_mode` 填进该 group 的
+  `ProxyListener`。
+- `internal/proxy/discovery`：`ParseSnapshot` 把 `access_mode` 读进 `GroupTopology`。
+- `internal/proxy/sentinel`：`resolve()` 按 `GroupTopology.AccessMode` 选 auto/master 口
+  （缺省 `rw-split`，兜底回退另一存在端口）。
+- `cmd/cli`：create 支持 `--access-mode`；status/list 展示（可选）。
+
+### 20.3 本特性的非目标（本轮）
+
+- **模式切换机制**：不做端口重分配、冷却回收、切换 handler（原 Plan B）。字段先支持起来，
+  切换动作日后需要再评估（因两个口都在，未来做切换也很轻，仅改字段 + 客户端重连）。
+- **单端口分配 / 省端口**：不做，维持双口。
+- 三态 `both`（分离读 + 强一致读打主独立入口）：不做。
+- 集群（分片）架构：不支持。
 
 ## 参考
 

@@ -92,7 +92,7 @@
 - `port`: Redis 端口（可选，自动分配）
 - `memory`: 内存规格（如 "4Gi"）
 - `cpus`: CPU 核数
-- `password`: 访问密码
+- `password`: Proxy 前端密码（group 级别，创建 master/standalone 时设置；创建 replica 时忽略）
 - `replica_of`: 主库地址（仅从库，格式 "ip:port"）
 - `config_overrides`: 配置覆盖（键值对）。平台管理的配置项（`replicaof` / `requirepass` /
   `dir` / `min-replicas-to-write` / `rename-command` 等）不允许覆盖，值中不得含换行或 `#`；
@@ -484,7 +484,6 @@ redis-pilot-cli sentinel sync
 | container | TEXT | 容器名 |
 | port | INTEGER | 服务端口 |
 | memory / cpus / disk | — | 资源规格 |
-| password | TEXT | Redis/Kvrocks 密码（明文存储，见安全说明） |
 | config_path / data_path / backup_path | TEXT | 挂载路径 |
 | config_overrides | TEXT (JSON) | 配置覆盖项，如 `{"timeout":"300"}` |
 | backup | TEXT (JSON) | `{"schedule":"0 2 * * *","retention":7}` |
@@ -525,9 +524,9 @@ redis-pilot-cli sentinel sync
   }
 }
 ```
-> `proxy`（`master_port`/`auto_port`）等拓扑/入口相关字段存储在 `instance_groups` 表的 `proxy` 列（JSON），因为它们是实例组级别的属性，不随单个容器变化。
+> `proxy`（`master_port`/`auto_port`）等拓扑/入口相关字段存储在 `instance_groups` 表的 `proxy` 列（JSON），因为它们是实例组级别的属性，不随单个容器变化。`password` 列存储 Proxy 前端密码（客户端→Proxy 鉴权用），同样是 group 级别属性，不下发给 Agent，仅用于生成 Proxy 快照的 `ProxyListener.Password`。
 
-安全说明：`instances.password` 和 `servers.agent_token` 目前明文存储在 `pilot.db` 中；数据目录权限收紧为 `0700`、数据库文件权限收紧为 `0600`（仅属主可访问）以降低本机其他用户读取风险，长期考虑加密存储。
+安全说明：`instance_groups.password` 和 `servers.agent_token` 目前明文存储在 `pilot.db` 中；数据目录权限收紧为 `0700`、数据库文件权限收紧为 `0600`（仅属主可访问）以降低本机其他用户读取风险，长期考虑加密存储。
 
 并发控制：`WithInstances`/`WithServers` 通过 `DB.mu`（`sync.Mutex`）将"读快照 → 修改 → 全量重写"过程串行化，避免并发调用基于同一旧快照互相覆盖丢失更新，不依赖文件锁。
 

@@ -158,7 +158,7 @@ Server: instanceFailover(name="order-2")
 
 `instance replicate` 是 Server 内部用于 drift 修复的底层接口，不对 CLI 暴露。Sentinel 托管组的拓扑变更统一通过 `instance failover` 走 Sentinel 选举完成。
 
-创建从库时，目标组是认证和数据语义的权威来源：Server 强制继承主库密码、组分类、组类型和引擎版本，再把规范化请求发给 Agent。不能允许调用方给同组从库设置独立密码，否则 `masterauth` 无法通过主库认证，Proxy 也无法用组密码连接该从库。
+创建从库时，目标组是数据语义的权威来源：Server 强制继承组分类、组类型和引擎版本，再把规范化请求发给 Agent。注意：当前采用"仅 Proxy 前端鉴权"模型，后端实例无密码——前端密码存于 `InstanceGroupState.Password`（仅用于生成 Proxy 快照的 `ProxyListener.Password`），**不下发给 Agent**，实例配置不写 `requirepass`/`masterauth`，主从复制以无密码方式直连。
 
 #### 4.3.2 Sentinel 自动检测（推荐）
 
@@ -268,11 +268,11 @@ Redis Sentinel 官方机制：failover 完成后，旧主库会被 Sentinel"虚�
 
 `SENTINEL REMOVE <group>` 会清空 Sentinel 对该组的**全部**历史状态，包括这条刚建立的追踪记录。因此 Server 同步 Sentinel 配置（`syncSentinelNode`）时，只有当 Sentinel 当前认知的主库地址与期望地址**不一致**时才执行 `REMOVE`+`MONITOR`；地址已经一致时只允许用 `SENTINEL SET` 调整不影响拓扑追踪状态的参数（`down-after-milliseconds`、`failover-timeout` 等）。
 
-**b. 主库创建时配置文件也必须写 `masterauth`，不能只在从库分支写**
+**b. 后端实例无密码，配置文件不写 `requirepass`/`masterauth`**
 
-在 Sentinel 唯一权威模型下，任何当前是主库的实例都可能在未来被 Sentinel 自动降级为从库，且 Sentinel 只会对它发 `REPLICAOF`，不会代为设置认证信息。如果 `masterauth` 只写在"创建时指定了 `--replica-of`"的分支里，一个从创建起就是主库的实例，配置文件永远没有 `masterauth`，一旦被降级会因为 `NOAUTH` 无法与新主库建立复制连接（`master_link_status` 长期 `down`）。
+当前采用"仅 Proxy 前端鉴权"模型：鉴权只在客户端 → Proxy 这一段完成，后端实例一律无密码。因此实例配置模板不写 `requirepass` 与 `masterauth`，Sentinel 与主从复制均以无密码方式直连实例，安全边界靠网络隔离保证（实例端口只对 Proxy 机器与数据节点互访网段开放）。
 
-因此配置模板中 `masterauth` 与 `requirepass` 同级：只要设置了密码就总是写入，不依赖当前角色。
+> 历史说明：早期方案为"实例带 `requirepass`"，当时要求 `masterauth` 与 `requirepass` 同级总是写入，以避免 master 被 Sentinel 降级为 replica 后因 `NOAUTH` 无法建立复制。改为无密码后此问题自然消失——没有密码就没有降级时的认证缺口。
 
 **c. 检测到主库地址变化后必须等待收尾，不能立即同步**
 
