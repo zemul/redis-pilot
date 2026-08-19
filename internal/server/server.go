@@ -67,7 +67,7 @@ func New(cfg *Config) (*Server, error) {
 	s := &Server{
 		cfg:            cfg,
 		db:             db,
-		log:            logger.New(cfg.Log.Dir, cfg.Log.Stdout),
+		log:            logger.Setup(logger.Config{Dir: cfg.Log.Dir, Stdout: cfg.Log.Stdout, RetentionDays: cfg.Log.RetentionDays, Level: cfg.Log.Level, Component: "server"}),
 		audit:          audit.New(db),
 		alertInstances: make(map[string]bool),
 	}
@@ -123,6 +123,7 @@ func (s *Server) Router() *gin.Engine {
 		instance.GET("/list", s.instanceList)
 		instance.GET("/status", s.instanceStatus)
 		instance.GET("/metrics", s.metricsCollect)
+		instance.GET("/diagnose", s.instanceDiagnose)
 		instance.POST("/create", s.instanceCreate)
 		instance.POST("/delete", s.instanceDelete)
 		instance.POST("/start", s.instanceStart)
@@ -144,7 +145,6 @@ func (s *Server) Router() *gin.Engine {
 	}
 
 	r.GET("/audit/query", s.auditQuery)
-	r.GET("/inventory", s.inventory)
 	r.POST("/reconcile", s.reconcile)
 	r.GET("/metrics", s.metricsCollect)
 

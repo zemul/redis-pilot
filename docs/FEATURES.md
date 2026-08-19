@@ -5,7 +5,7 @@
 - **Server**: 中央管理服务，提供 HTTP API 和定时调度
 - **Agent**: 部署在每台物理服务器上，负责容器生命周期管理
 - **CLI**: 命令行工具，与 Server 交互
-- **状态管理**: 基于 YAML 文件的分布式状态存储
+- **状态管理**: 基于 SQLite（`pilot.db`）的集中状态存储
 
 ---
 
@@ -405,9 +405,6 @@ redis-pilot-cli instance config redis-1 \
 
 redis-pilot-cli instance failover replica-1
   # 触发故障转移（Sentinel 托管组：不保证提升的就是 replica-1）
-
-redis-pilot-cli instance replicate replica-1 --replica-of redis-1
-  # 设置复制关系
 ```
 
 ### 3.3 备份命令

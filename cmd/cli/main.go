@@ -47,7 +47,6 @@ func init() {
 	rootCmd.PersistentFlags().String("token", "", "Auth token")
 	rootCmd.PersistentFlags().String("operator", "", "Operator identifier for audit logs")
 
-	rootCmd.AddCommand(inventoryCmd)
 	rootCmd.AddCommand(instanceCmd)
 	rootCmd.AddCommand(backupCmd)
 	rootCmd.AddCommand(nodeCmd)

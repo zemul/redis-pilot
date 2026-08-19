@@ -156,7 +156,9 @@ Server: instanceFailover(name="order-2")
        name 对应的实例一定成为新主库）
 ```
 
-`instance replicate`（手动指定复制目标）在 Sentinel 托管的组上会被拒绝（409），因为它与 Sentinel 的自动拓扑管理直接冲突；未托管的组仍可使用。
+`instance replicate` 是 Server 内部用于 drift 修复的底层接口，不对 CLI 暴露。Sentinel 托管组的拓扑变更统一通过 `instance failover` 走 Sentinel 选举完成。
+
+创建从库时，目标组是认证和数据语义的权威来源：Server 强制继承主库密码、组分类、组类型和引擎版本，再把规范化请求发给 Agent。不能允许调用方给同组从库设置独立密码，否则 `masterauth` 无法通过主库认证，Proxy 也无法用组密码连接该从库。
 
 #### 4.3.2 Sentinel 自动检测（推荐）
 
@@ -594,9 +596,11 @@ Go 的 `Mutex` 不可重入，持锁路径调错变体会当场卡死整个 Serv
 
 早期实现在组循环里直接 `return err`：任意一组出问题，排在它后面的组这一轮完全不会被配置。最坏的一种是 REMOVE 已执行、MONITOR 失败时返回——该组在这个 Sentinel 节点上处于"已删除且未重建"的无监控状态，失去故障转移能力，同时后面的组也没被处理，一次局部故障扩散成整个节点的配置停滞。现在逐组独立处理，错误汇总后一并返回。
 
-**节点增删改的原子性**
+**节点增删改的原子性与引用约束**
 
 `node add` / `node remove` / `node update` 此前都是 `ReadNode` → 检查 → `WriteNode`，检查与写入之间无互斥：两个同名的并发 `node add` 会双双通过存在性检查，后写的静默覆盖先写的；`node remove` 与 `node update` 并发时，update 可能用过期快照把已删除的节点写回来。三者已改用 `WithNode`（内部走 `store.WithServers`，在数据库互斥锁内完成读-改-写）。
+
+`node remove` 还必须在同一个数据库事务里检查 `instances.server` 引用。只要仍有任何受管实例引用该节点（包括 stopped 实例）就返回 409；“先读实例、再删节点”仍会被并发 create 插入孤儿引用，因此不能拆成两个事务。
 
 **`config_overrides` 的输入边界**
 
@@ -646,6 +650,8 @@ Server / Agent / Proxy 三处 Bearer Token 校验改用 `subtle.ConstantTimeComp
 
 版本相同时请求挂起直到版本变化或超时，超时返回 `304 Not Modified`。收益有两条：故障转移传播到 Proxy 的延迟从"最多一个轮询周期"降到接近即时——在这段窗口里 Proxy 还把写流量发给已经挂掉的旧 master，写请求直接失败，缩短窗口就是缩短写不可用时间；另外快照里含 Redis 明文密码（Proxy 需要它连后端），原来每 2 秒完整传输一次，现在只在真正变化时传输。
 
+成功鉴权、解析且版本变化的空快照同样是权威全量状态，表示最后一个组已删除或当前没有可服务 master。Proxy 必须应用它并关闭旧监听/后端；只有请求失败、超时或响应非法时才保持最后快照。若无条件忽略空快照，删除最后一个组后 Proxy 会永久向旧后端路由。
+
 **关键设计：等的是代际计数器，不是重复重算快照。**
 
 `store.DB` 维护一个 `generation` 原子计数器，每次拓扑写入成功后自增，`Generation()` 对外暴露。挂起期间每 100ms 检查这个内存计数器，只有它变了才重算快照并比对版本。
@@ -685,7 +691,6 @@ Proxy 侧 `http.Client` 刻意不设 `Timeout`（它会连正常挂起一起掐�
 | `redis-diagnose` | "Redis 有问题" | 采集 INFO/SLOWLOG/MEMORY → AI 分析 → 建议 |
 | `redis-status` | "查看 Redis 状态" | 池状态 / 实例状态 / 主从同步状态 |
 | `redis-proxy` | "代理管理" | 查看路由 / 更新配置 / 重载 Proxy |
-| `redis-inventory` | "资源清单" / "端口对应什么" | 从 `instances`/`instance_groups` 表 + `servers` 表派生端口/集群/用途映射表，支持按端口/服务器/引擎查询 |
 | `redis-audit` | "操作记录" / "谁做了什么" | 查询审计日志，支持按时间/实例/操作级别过滤 |
 | `redis-node` | "添加服务器" / "移除服务器" | 维护 `servers` 表，注册/移除/更新服务器信息，纯本地操作 |
 
@@ -716,12 +721,9 @@ redis-diagnose   → agent_exec(status), metrics_collect, AI 分析
 
 redis-status     → state_read, agent_exec(status), node_list
 
-redis-inventory  → state_read, node_list, audit_log_read(只读)
-
 redis-audit      → audit_log_read
 
 redis-node       → node_add, node_remove, node_update, node_list  (纯本地，不调用 Agent API)
 ```
 
 ---
-

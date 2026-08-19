@@ -60,6 +60,17 @@ var instanceMetricsCmd = &cobra.Command{
 	},
 }
 
+var instanceDiagnoseCmd = &cobra.Command{
+	Use:     "diagnose <name>",
+	Short:   "Diagnose instance (INFO + SLOWLOG + MEMORY DOCTOR)",
+	Long:    "Collect diagnostic data from the instance including INFO, SLOWLOG, and MEMORY DOCTOR.",
+	Example: `  redis-pilot-cli instance diagnose galaxy-1`,
+	Args:    cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return checkResp(client.Get("/instance/diagnose?name=" + url.QueryEscape(args[0])))
+	},
+}
+
 	var instanceCreateCmd = &cobra.Command{
 		Use:   "create <name>",
 		Short: "Create an instance",
@@ -264,36 +275,17 @@ master, guaranteeing <name> becomes the new master.`,
 	},
 }
 
-var instanceReplicateCmd = &cobra.Command{
-	Use:   "replicate <name>",
-	Short: "Set replication target",
-	Long: `Make an instance replicate from a master. The instance will sync data from the specified master.
-
-If the target group is managed by Sentinel, this command is rejected — use
-"instance failover" instead. Manually setting a replication target on a
-Sentinel-managed group would conflict with Sentinel's own topology management.`,
-	Example: `  redis-pilot-cli instance replicate order-replica --replica-of order-master`,
-	Args:    cobra.ExactArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
-		replicaOf, _ := cmd.Flags().GetString("replica-of")
-		return checkResp(client.Post("/instance/replicate", map[string]string{
-			"name":       args[0],
-			"replica_of": replicaOf,
-		}))
-	},
-}
-
 func init() {
 	instanceCmd.AddCommand(
 		instanceListCmd,
 		instanceStatusCmd,
 		instanceMetricsCmd,
+		instanceDiagnoseCmd,
 		instanceCreateCmd,
 		instanceConfigCmd,
 		instanceSetAccessModeCmd,
 		instanceStartCmd,
 		instanceStopCmd,
-		instanceReplicateCmd,
 		instanceFailoverCmd,
 		instanceDeleteCmd,
 	)
@@ -327,9 +319,6 @@ func init() {
 	instanceConfigCmd.Flags().String("set", "", "Config entries (k=v,k=v)")
 	instanceConfigCmd.Flags().Bool("restart", false, "Restart to apply")
 	instanceConfigCmd.MarkFlagRequired("set")
-
-	instanceReplicateCmd.Flags().String("replica-of", "", "Master instance name or address")
-	instanceReplicateCmd.MarkFlagRequired("replica-of")
 }
 
 func parseKV(s string) map[string]string {

@@ -198,7 +198,6 @@ podman run -d \
 | | `backup.restore` | 恢复备份 | **关键** |
 | 服务器管理 | `server.register` | 注册服务器 | 重要 |
 | | `server.drain` | 服务器排空 | **关键** |
-| 资源清单 | `inventory.query` | 查询资源清单 | 普通（只读不审计） |
 
 > **关键**级操作：删除实例、故障转移、迁移、恢复备份、服务器排空 — 这些操作影响面大，审计日志必须保留更长时间。
 
@@ -223,9 +222,25 @@ podman run -d \
 
 ## 9. 可观测性
 
-### 9.1 指标采集
+> 本节描述 P1 目标架构，当前实现仍以 Agent 缓存即时 INFO、Server 透传查询为主。详细设计见
+> [可观测性架构](observability.md)。
 
-Agent 定期采集并缓存以下指标，供 `redis-diagnose` 和 `redis-status` 使用：
+### 9.1 数据存储边界
+
+| 数据 | 存储位置 | 说明 |
+|------|----------|------|
+| 数值型时序指标 | Prometheus | Agent、Server、Proxy 通过 `/metrics` 暴露，由 Prometheus 拉取 |
+| 慢查询数量趋势 | Prometheus | Counter 形式，不包含命令参数、Key、客户端地址等高基数信息 |
+| 慢查询明细 | `pilot.db` | 保存时间、耗时、命令、脱敏参数和客户端信息 |
+| 告警、任务、审计 | `pilot.db` | 保存具体事件和状态流转 |
+| 运行日志 | 本地文件；后续可接 Loki | 不写入 SQLite |
+
+`pilot.db` 不保存高频性能采样点。H5 通过 Server 查询网关访问 Prometheus，不直接连接
+Prometheus，也不接受前端传入任意 PromQL。
+
+### 9.2 指标采集
+
+Agent 定期采集并通过 `/metrics` 暴露以下指标；默认 Prometheus 抓取周期为 30 秒：
 
 | 类别 | 指标 | 来源 | 适用 Engine |
 |------|------|------|-------------|
@@ -235,17 +250,34 @@ Agent 定期采集并缓存以下指标，供 `redis-diagnose` 和 `redis-status
 | 持久化 | rdb_last_bgsave_status, aof_last_write_status | INFO persistence | redis |
 | 复制 | master_link_status, master_repl_offset, slave_read_offset | INFO replication | redis / kvrocks |
 | 键空间 | keyspace_hits, keyspace_misses, expires / avg_ttl | INFO stats / keyspace | redis / kvrocks |
-| 慢查询 | slowlog entries | SLOWLOG GET | redis / kvrocks |
+| 慢查询趋势 | slowlog entries total | SLOWLOG GET 后转为受控 Counter | redis / kvrocks |
 | RocksDB | rocksdb_bytes_per_read, rocksdb_num_files_at_level, rocksdb_pending_compaction_bytes | INFO rocksdb | kvrocks |
 | RocksDB 压缩 | rocksdb_compaction_pending, rocksdb_l0_slowdown, rocksdb_l0_stop | INFO rocksdb | kvrocks |
 
-### 9.2 诊断流程
+累计计数器由 PromQL 使用 `rate()` 或区间增量计算。Key、客户端 IP、完整命令参数、Slowlog ID
+和 Task ID 禁止作为 Prometheus label。
+
+### 9.3 保留策略
+
+| 数据 | 默认保留时间 |
+|------|--------------|
+| Prometheus 指标 | 30 天 |
+| 慢查询明细 | 30 天，可配置 7～90 天 |
+| 告警事件 | 180 天 |
+| 普通任务和审计 | 90 天 |
+| 关键任务和审计 | 365 天 |
+| 运行日志 | 7～30 天 |
+
+Prometheus 不可用时，性能趋势和指标告警标记为数据源不可用；实例、备份和拓扑等控制面操作
+继续工作，不回退到 SQLite 保存指标。
+
+### 9.4 诊断流程
 
 ```
 redis-diagnose Skill
   │
-  ├─1. metrics_collect(all instances in group)
-  │   → 从 Agent 拉取各实例 INFO 数据
+  ├─1. metrics_query(all instances in group)
+  │   → Server 查询 Prometheus 历史与即时指标
   │
   ├─2. 数据聚合与异常检测
   │   → 内存使用率 > 80% ？
@@ -290,4 +322,3 @@ redis-diagnose Skill
 - Sentinel 部署需 ≥ 3 节点，quorum ≥ 2
 
 ---
-

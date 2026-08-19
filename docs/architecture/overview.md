@@ -9,6 +9,8 @@
 - [组件详细设计](components.md) — Server / Agent / CLI / Proxy / 存储的详细设计
 - [关键流程](flows.md) — 实例创建、故障转移等关键流程 + Skills 设计
 - [部署与运维](deployment-ops.md) — 持久化目录结构、Podman 规范、安全设计、可观测性、约束与限制
+- [可观测性架构](observability.md) — P1 指标、慢查询、告警的数据边界和查询链路
+- [产品优化路线图](../ROADMAP.md) — Web/H5 信息架构与 P1～P5 优先级
 
 ---
 
@@ -23,7 +25,7 @@
 - **服务器节点化**，实例按资源状态智能分配
 - **实例迁移与故障转移**，跨服务器自动/手动切换
 - **统一代理**，通过 Redis Pilot Proxy 对业务侧暴露标准化接入点
-- **问题诊断与可观测**，采集指标 + AI 辅助分析
+- **问题诊断与可观测**，Prometheus 指标 + 慢查询与告警事件 + 规则诊断
 
 ### 1.2 范围
 
@@ -34,7 +36,8 @@
 | Podman 容器化部署 | 裸金属/VM 部署 |
 | 自研 Proxy 统一代理 | Envoy 等外部代理 |
 | RDB + AOF + S3 备份 | Redis Cluster 管理 |
-| 基础监控与诊断 | 完整 Prometheus/Grafana 体系 |
+| Prometheus 指标存储 + H5 Redis 专项视图 | 通用 Grafana Dashboard 编辑器 |
+| 慢查询明细和告警事件 | 跨业务系统的统一日志与链路追踪平台 |
 
 ### 1.3 设计原则
 
@@ -76,7 +79,7 @@
 │                                                              │
 │  redis-pilot-cli node-list / node-add / node-remove / node-update│
 │  redis-pilot-cli instance-create / delete / start / stop         │
-│  redis-pilot-cli instance-config / promote / replicate           │
+│  redis-pilot-cli instance-config / promote / failover            │
 │  redis-pilot-cli backup-exec / restore / cleanup                 │
 │  redis-pilot-cli backup set-schedule / get-schedule              │
 │  redis-pilot-cli instance metrics                                 │
@@ -133,9 +136,8 @@
 
 - [ ] Agent：主从复制管理（replicate / promote）
 - [ ] Redis Pilot Proxy 集成
-- [ ] 资源清单：从状态文件派生端口/集群/用途映射
-- [ ] Skills：redis-config / redis-scale / redis-proxy / redis-inventory
-- [ ] 验证：主从实例 + 读写分离代理 + 资源清单可查
+- [ ] Skills：redis-config / redis-scale / redis-proxy
+- [ ] 验证：主从实例 + 读写分离代理
 
 ### Phase 3：运维增强
 

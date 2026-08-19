@@ -632,26 +632,15 @@ Key 完全可预测，不需要索引。`backup list` 通过 `ListObjects(prefix
 **Redis 实例恢复（优先 AOF → 回退 RDB）：**
 
 ```
-1. 停止目标实例
-
-2. 判断备份类型：
-   ├─ 备份目录包含 AOF 文件（RDB+AOF 联合备份）：
-   │   a. 将备份的 dump.rdb 复制到 data 目录
-   │   b. 将备份的 appendonly.aof 复制到 AOF 目录
-   │   c. 启动实例（Redis 自动优先加载 AOF，AOF 包含更完整的数据）
-   │   d. 验证数据完整性（DBSIZE / 指定 key 抽查）
-   │   → 恢复完成，无需额外操作
-   │
-   └─ 备份仅包含 RDB 文件：
-       a. 将备份 RDB 文件复制到 data 目录，重命名为 dump.rdb
-       b. 清空 AOF 目录（避免旧 AOF 与 RDB 不一致）
-       c. 临时关闭 AOF：appendonly no
-       d. 启动实例，从 RDB 加载数据
-       e. 验证数据完整性
-       f. 重新开启 AOF：CONFIG SET appendonly yes → BGREWRITEAOF
-       → 恢复完成
-
-3. 验证步骤：
+1. 在目标实例仍运行时下载备份到实例目录下的 .restore-staging/data
+2. 解压并校验：RDB 必须存在且非空；联合备份还必须包含非空 AOF 文件/目录
+3. 校验通过后停止目标实例（停机窗口从这里开始）
+4. 以一次目录 rename 原子替换整个 data 目录：
+   - RDB+AOF 作为同一个数据集切换，不允许出现“新 RDB + 旧 AOF”
+   - 原 data 目录保留为 data.before-restore-<ts>
+   - 仅 RDB 备份的 staged data 不包含 AOF，因此不会残留旧 AOF
+5. 启动实例；若启动失败，撤销目录替换、恢复原 data 并重新启动原实例
+6. 验证步骤：
    - 检查 INFO Server: uptime > 0
    - 检查 INFO Keyspace: keyspace 与预期一致
    - 检查 INFO Persistence: rdb_last_load_status=ok / aof_enabled=1
@@ -661,10 +650,10 @@ Key 完全可预测，不需要索引。`backup list` 通过 `ListObjects(prefix
 **Kvrocks 实例恢复：**
 
 ```
-1. 停止目标实例
-2. 清空数据目录
-3. 解压 checkpoint.tar.gz 到数据目录
-4. 启动实例
+1. 实例运行时下载并校验 checkpoint.tar.gz，解压到 .restore-staging/data/db
+2. 停止目标实例
+3. 原子替换整个 data 目录并保留原目录
+4. 启动实例；启动失败则回滚原目录并重启
 5. 验证数据完整性（DBSIZE / 指定 key 抽查）
 ```
 
@@ -672,127 +661,6 @@ Key 完全可预测，不需要索引。`backup list` 通过 `ListObjects(prefix
 > - AOF 记录了所有写操作，数据完整性高于 RDB（RDB 是定时快照，可能丢失最后一次快照后的写入）
 > - 联合备份时已通过 `BGREWRITEAOF` 生成精简 AOF，恢复效率与 RDB 相当
 > - 仅在 AOF 文件损坏或备份中无 AOF 时，才回退到 RDB 恢复
-
----
-
-### 3.6 资源清单
-
-#### 3.6.1 设计目标
-
-运维需要快速回答：
-- **哪个端口对应哪个集群？**
-- **这个实例做什么用的？**
-- **当前一共分配了多少端口/容器？**
-- **某台服务器上跑了哪些实例？**
-
-#### 3.6.2 清单数据源
-
-资源清单 **不单独维护**，由 `instances`/`instance_groups` 表 + `servers` 表实时派生，确保单一数据源（Single Source of Truth）。
-
-#### 3.6.3 清单视图
-
-**视图 A：端口-实例映射表**（面向网络/防火墙运维）
-
-```yaml
-# 由 Skill: redis-inventory 生成，可输出为 table / yaml / json
-port_inventory:
-  - proxy_port: 16379
-    mode: readwrite
-    instance_group: order
-    engine: kvrocks
-    category: persistent
-    role: group
-    purpose: "订单持久化存储读写入口"
-    backend_servers: ["server-a:6379(master)"]
-
-  - proxy_port: 16380
-    mode: readonly
-    instance_group: order
-    engine: kvrocks
-    category: persistent
-    role: group
-    purpose: "订单只读入口"
-    backend_servers: ["server-b:6379(replica)"]
-
-  - proxy_port: 16381
-    mode: readwrite
-    instance_group: cache-1
-    engine: redis
-    category: cache
-    role: group
-    purpose: "用户会话缓存"
-    backend_servers: ["server-c:6379(master)"]
-```
-
-**视图 B：服务器-实例分布表**（面向容量规划）
-
-```yaml
-server_inventory:
-  server-a:
-    ip: 10.0.1.10
-    instances:
-      - name: order-1
-        engine: kvrocks
-        container_port: 6379
-        memory: 4Gi
-        cpus: 2
-        status: running
-    allocated_memory: 4Gi
-    total_memory: 64Gi
-    utilization: 6.25%
-
-  server-b:
-    ip: 10.0.1.11
-    instances:
-      - name: order-2
-        engine: kvrocks
-        container_port: 6379
-        memory: 4Gi
-        cpus: 2
-        status: running
-    allocated_memory: 4Gi
-    total_memory: 64Gi
-    utilization: 6.25%
-
-  server-c:
-    ip: 10.0.1.12
-    instances:
-      - name: cache-1
-        engine: redis
-        container_port: 6379
-        memory: 2Gi
-        cpus: 1
-        status: running
-    allocated_memory: 2Gi
-    total_memory: 64Gi
-    utilization: 3.125%
-```
-
-**视图 C：全局摘要**（面向管理层/日报）
-
-```
-┌──────────────────────────────────────────────────────┐
-│ 资源清单摘要                                          │
-├──────────┬────────┬──────────┬──────────┬────────────┤
-│ 实例组    │ Engine │ 用途      │ Proxy端口 │ 状态       │
-├──────────┼────────┼──────────┼──────────┼────────────┤
-│ order    │kvrocks │ 订单持久化 │ 16379/80 │ ✅ running │
-│ cache-1  │redis   │ 会话缓存   │ 16381    │ ✅ running │
-├──────────┴────────┴──────────┴──────────┴────────────┤
-│ 总计: 2 实例组 / 3 容器 / 3 服务器                     │
-│ 已分配: 10Gi 内存 / 5 CPU                             │
-└──────────────────────────────────────────────────────┘
-```
-
-#### 3.6.4 清单查询方式
-
-| 查询场景 | 方式 | 说明 |
-|----------|------|------|
-| "端口 16379 是什么" | `redis-inventory --port 16379` | 按端口反查实例 |
-| "server-a 上有什么" | `redis-inventory --server server-a` | 按服务器查实例 |
-| "所有 kvrocks 实例" | `redis-inventory --engine kvrocks` | 按引擎过滤 |
-| "导出完整清单" | `redis-inventory --format yaml` | 输出完整视图 A+B |
-| "每日资源报告" | `redis-inventory --summary` | 输出视图 C |
 
 ---
 
@@ -1022,4 +890,3 @@ Server 启动时：
 | Proxy 重启 | 启动时从 Server 拉取快照恢复拓扑，业务端口不变化 |
 
 ---
-

@@ -7,7 +7,8 @@
 - 单点 & 主从实例创建、配置、删除
 - 服务器节点化与智能调度（跨可用区分布）
 - Redis Pilot Proxy 读写分离
-- 自动备份与恢复
+- 伪 Sentinel 服务发现（sentinel 模式客户端零改代码接入）
+- 自动备份与恢复（S3 兼容对象存储 + 异步备份）
 - Sentinel 事件监听 + 定期 reconcile 的故障转移同步与状态自愈
 - 完整审计日志
 - 支持 Redis 5 / 6.2 / 7 和 Apache Kvrocks 2.15.0（版本由 Server 白名单统一管理）
@@ -133,10 +134,12 @@ redis-pilot-cli instance status my-cache
 │   └── cli/             # CLI 入口
 ├── internal/
 │   ├── server/          # Server: API handler、调度、代理层状态快照
-│   ├── proxy/           # Proxy: HTTP 长轮询拉取快照、Redis 读写分离
-│   ├── agent/           # Agent: 容器管理、健康检查、配置模板
-│   ├── state/           # YAML 状态文件读写 + 文件锁
-│   ├── audit/           # 审计日志（JSONL）
+│   ├── proxy/           # Proxy: HTTP 长轮询拉取快照、Redis 读写分离、伪 Sentinel
+│   ├── agent/           # Agent: 容器管理、健康检查、S3 备份
+│   ├── store/           # pilot.db（SQLite）读写：servers/instance_groups/instances/audit_log 等表
+│   ├── s3/              # S3 兼容对象存储客户端（备份上传/下载/列表/清理）
+│   ├── state/           # 状态辅助纯函数（拓扑计算等）
+│   ├── audit/           # 审计日志（ID/时间戳生成，底层委托 internal/store）
 │   ├── podman/          # Podman API 封装
 │   └── logger/          # 日志
 ├── pkg/apitypes/        # Server ↔ Agent 共享类型
@@ -183,6 +186,12 @@ poll_interval: 2s                         # 两次长轮询请求的最小间隔
 poll_timeout: 5s                          # 网络往返余量，不含服务端挂起时长
 poll_wait: 20s                            # 长轮询挂起上限，0 关闭长轮询退回定期轮询
 metrics_listen: 0.0.0.0:19100             # Prometheus /metrics 地址（空=关闭）
+
+# 伪 Sentinel 服务发现（可选）
+# sentinel 模式客户端零改代码接入：将 sentinel 地址指向此端口，masterName 用 group 名
+sentinel_listen: ":26379"                 # 空=关闭
+sentinel_announce_ip: ""                  # 返回给客户端的 host；空=用连接本地 IP（跨 NAT 必配）
+sentinel_password: ""                     # 发现端口鉴权密码；空=不鉴权
 ```
 
 Proxy 启动后通过 HTTP 长轮询 `GET /api/v1/proxy/snapshot` 从 Server 拉取代理快照，按快照中的后端实例列表动态调整读写分离路由；业务 Redis 流量直接由 Proxy 处理，不经过 Server。完整配置（含 static 模式与连接池参数）见 `configs/proxy.yaml.example`。
@@ -202,6 +211,14 @@ data_dir: /data/redis
 log:
   dir: /opt/redis-pilot-agent/logs
   stdout: true
+backup:
+  s3:
+    endpoint: http://oss.internal:9000   # S3 兼容对象存储地址
+    bucket: redis-pilot-backup
+    access_key: ""
+    secret_key: ""
+    region: ""                           # 可选，部分 S3 实现需要
+    use_ssl: false
 ```
 
 ### CLI (`~/.redis-pilot-cli/config.yaml`)
@@ -223,14 +240,16 @@ redis-pilot-cli node update <name> --json <server.json>
 # 实例
 redis-pilot-cli instance list
 redis-pilot-cli instance status <name>
-redis-pilot-cli instance create <name> --group <group> [--engine redis|kvrocks] [--memory 2Gi] [--type standalone|replication]
+redis-pilot-cli instance create <name> --group <group> [--engine redis|kvrocks] [--memory 2Gi] [--type standalone|replication] [--access-mode standard|rw-split]
 redis-pilot-cli instance delete <name> [--clean-data]
 redis-pilot-cli instance start <name>
 redis-pilot-cli instance stop <name>
 redis-pilot-cli instance config <name> --set key=value[,key=value] [--restart]
 # 注：replicaof / requirepass / dir / min-replicas-to-write / rename-command 等
 # 由平台管理的配置项不允许覆盖，会返回 400。完整清单见 pkg/redisconf/validate.go
-redis-pilot-cli instance replicate <replica> --replica-of <master>
+redis-pilot-cli instance set-access-mode <name> <standard|rw-split>
+# 设置 group 的访问模式：standard=所有流量走 master，rw-split=读写分离
+# 影响伪 Sentinel 返回给客户端的端口选择
 
 # 故障转移（Sentinel 唯一权威：不保证提升指定的那个实例，最终由 Sentinel 选举决定）
 redis-pilot-cli instance failover <name>
@@ -256,4 +275,4 @@ redis-pilot-cli sentinel sync
 - Go 1.25 / Gin
 - Podman（容器运行时）
 - Redis Pilot Proxy（自研 Go 读写分离代理）
-- YAML（状态存储）
+- SQLite（状态存储）
