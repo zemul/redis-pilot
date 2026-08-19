@@ -167,7 +167,8 @@ func (s *Server) sentinelNodeAddress(node string) (string, error) {
 }
 
 func (s *Server) subscribeSentinelSwitchMaster(addr string, onSwitch func(group string)) error {
-	conn, err := net.DialTimeout("tcp", addr, 2*time.Second)
+	dialer := net.Dialer{Timeout: 2 * time.Second, KeepAlive: 60 * time.Second}
+	conn, err := dialer.Dial("tcp", addr)
 	if err != nil {
 		return err
 	}
@@ -177,7 +178,6 @@ func (s *Server) subscribeSentinelSwitchMaster(addr string, onSwitch func(group 
 	}
 	reader := bufio.NewReader(conn)
 	for {
-		_ = conn.SetDeadline(time.Now().Add(5 * time.Minute))
 		reply, err := readRESP(reader)
 		if err != nil {
 			return err
