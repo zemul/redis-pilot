@@ -126,6 +126,9 @@ type InstanceGroupState struct {
 	EngineVersion    string       `yaml:"engine_version,omitempty" json:"engine_version,omitempty"`
 	Category         string       `yaml:"category" json:"category"`
 	AccessMode       string       `yaml:"access_mode,omitempty" json:"access_mode,omitempty"` // rw-split | standard（空视为 rw-split）
+	// Password 是 Proxy 前端密码（客户端 → Proxy 鉴权）。
+	// 实例本身不设 requirepass，鉴权只在 Proxy 前端终结；空串表示不鉴权。
+	Password         string       `yaml:"password,omitempty" json:"password,omitempty"`
 	CurrentMaster    string       `yaml:"current_master" json:"current_master"`
 	TopologyStatus   string       `yaml:"topology_status" json:"topology_status"` // healthy | degraded
 	FailoverConflict bool         `yaml:"failover_conflict" json:"failover_conflict"`
@@ -144,7 +147,6 @@ type Instance struct {
 	Memory          string            `yaml:"memory" json:"memory"`
 	CPUs            float64           `yaml:"cpus" json:"cpus"`
 	Disk            string            `yaml:"disk,omitempty" json:"disk,omitempty"`
-	Password        string            `yaml:"password" json:"password"`
 	ConfigPath      string            `yaml:"config_path" json:"config_path"`
 	DataPath        string            `yaml:"data_path" json:"data_path"`
 	BackupPath      string            `yaml:"backup_path" json:"backup_path"`
@@ -239,8 +241,8 @@ type InstancesState struct {
 	Instances map[string]*Instance           `yaml:"instances" json:"instances"`
 }
 
-// InstanceView 是 Instance 面向对外查询接口的安全投影，不包含 Password 字段，
-// 用于防止 Redis/Kvrocks 明文密码通过只读查询接口（如 /instance/list、/instance/status）泄露。
+// InstanceView 是 Instance 面向对外查询接口的安全投影，
+// 用于提供派生状态（Phase()）等计算字段的序列化形式。
 type InstanceView struct {
 	Group           string            `json:"group"`
 	Role            string            `json:"role"`
@@ -267,7 +269,7 @@ type InstanceView struct {
 	CreatedAt      string `json:"created_at"`
 }
 
-// ToView 将 Instance 转换为不含明文密码的对外展示视图。
+// ToView 将 Instance 转换为对外展示视图（含派生状态字段）。
 func (i *Instance) ToView() *InstanceView {
 	if i == nil {
 		return nil
@@ -296,13 +298,13 @@ func (i *Instance) ToView() *InstanceView {
 	}
 }
 
-// InstancesStateView 是 InstancesState 的对外安全投影，Instances 中不含 Password。
+// InstancesStateView 是 InstancesState 的对外投影，Instances 使用含派生状态的 InstanceView。
 type InstancesStateView struct {
 	Groups    map[string]*InstanceGroupState `json:"groups"`
 	Instances map[string]*InstanceView       `json:"instances"`
 }
 
-// ToView 将 InstancesState 转换为不含明文密码的对外展示视图。
+// ToView 将 InstancesState 转换为对外展示视图。
 func (s *InstancesState) ToView() *InstancesStateView {
 	if s == nil {
 		return nil

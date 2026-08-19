@@ -22,12 +22,13 @@ func TestProxySnapshot(t *testing.T) {
 				"cache": {
 					Type:          "replication",
 					CurrentMaster: "cache-1",
+					Password:      "secret",
 					Proxy:         &apitypes.ProxyConfig{AutoPort: 16379, MasterPort: 16500},
 				},
 			},
 			Instances: map[string]*apitypes.Instance{
 				"cache-1": {
-					Group: "cache", Role: "master", Server: "srv1", Port: 6379, Password: "secret",
+					Group: "cache", Role: "master", Server: "srv1", Port: 6379,
 					DesiredState: "running", ObservedStatus: "running",
 				},
 				"cache-2": {
@@ -60,6 +61,10 @@ func TestProxySnapshot(t *testing.T) {
 		if autoListener.ReadCluster == "" {
 			t.Error("auto listener should have ReadCluster when replicas are running")
 		}
+		// listener 应该带前端密码
+		if autoListener.Password != "secret" {
+			t.Errorf("auto listener password = %q, want %q", autoListener.Password, "secret")
+		}
 	})
 
 	// 降级场景：所有 replica 都停了，auto listener 保留但 ReadCluster 留空，
@@ -77,12 +82,13 @@ func TestProxySnapshot(t *testing.T) {
 				"cache": {
 					Type:          "replication",
 					CurrentMaster: "cache-1",
+					Password:      "secret",
 					Proxy:         &apitypes.ProxyConfig{AutoPort: 16379, MasterPort: 16500},
 				},
 			},
 			Instances: map[string]*apitypes.Instance{
 				"cache-1": {
-					Group: "cache", Role: "master", Server: "srv1", Port: 6379, Password: "secret",
+					Group: "cache", Role: "master", Server: "srv1", Port: 6379,
 					DesiredState: "running", ObservedStatus: "running",
 				},
 				"cache-2": {
@@ -141,12 +147,13 @@ func TestProxySnapshot(t *testing.T) {
 				"cache": {
 					Type:          "standalone",
 					CurrentMaster: "cache-1",
+					Password:      "secret",
 					Proxy:         &apitypes.ProxyConfig{AutoPort: 16379, MasterPort: 16500},
 				},
 			},
 			Instances: map[string]*apitypes.Instance{
 				"cache-1": {
-					Group: "cache", Role: "master", Server: "srv1", Port: 6379, Password: "secret",
+					Group: "cache", Role: "master", Server: "srv1", Port: 6379,
 					DesiredState: "running", ObservedStatus: "running",
 				},
 			},

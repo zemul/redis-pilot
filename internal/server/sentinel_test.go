@@ -53,7 +53,7 @@ func TestBuildSentinelMasters(t *testing.T) {
 		},
 		Instances: map[string]*apitypes.Instance{
 			"order-master": {
-				Group: "order", Role: "master", DesiredState: "running", ObservedStatus: "running", Server: "srv-a", Port: 6379, Password: "secret",
+				Group: "order", Role: "master", DesiredState: "running", ObservedStatus: "running", Server: "srv-a", Port: 6379,
 			},
 			"order-replica": {
 				Group: "order", Role: "replica", DesiredState: "running", ObservedStatus: "running", Server: "srv-b", Port: 6379,
@@ -68,7 +68,8 @@ func TestBuildSentinelMasters(t *testing.T) {
 		t.Fatalf("expected one monitored master, got %#v", masters)
 	}
 	m := masters[0]
-	if m.Group != "order" || m.Host != "10.0.1.10" || m.Port != 6379 || m.Password != "secret" {
+	// 实例无密码：Sentinel 直连实例不带 auth-pass
+	if m.Group != "order" || m.Host != "10.0.1.10" || m.Port != 6379 || m.Password != "" {
 		t.Fatalf("unexpected master: %#v", m)
 	}
 	if m.DownAfterMilliseconds != 6000 || m.FailoverTimeout != 40000 || m.ParallelSyncs != 2 {

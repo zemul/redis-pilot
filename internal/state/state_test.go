@@ -104,7 +104,6 @@ func TestWriteInstances_ThenRead(t *testing.T) {
 				Port:         6379,
 				Memory:       "4Gi",
 				CPUs:         2,
-				Password:     "secret",
 				DesiredState: "running", ObservedStatus: "running",
 			},
 			"redis-1-rep": {

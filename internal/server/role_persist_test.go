@@ -149,13 +149,13 @@ func setupReplicationGroup(t *testing.T, s *Server, agentAddr string, currentMas
 		Instances: map[string]*apitypes.Instance{
 			"order-master": {
 				Group: "order", Server: "srv1", Port: 6379, DesiredState: "running", ObservedStatus: "running",
-				Role: roleFor("order-master", currentMaster), Password: "pw",
+				Role: roleFor("order-master", currentMaster),
 				Container: "redis-order-master",
 				ReplicaOf: replicaOfFor("order-master", currentMaster),
 			},
 			"order-replica": {
 				Group: "order", Server: "srv1", Port: 6380, DesiredState: "running", ObservedStatus: "running",
-				Role: roleFor("order-replica", currentMaster), Password: "pw",
+				Role: roleFor("order-replica", currentMaster),
 				Container: "redis-order-replica",
 				ReplicaOf: replicaOfFor("order-replica", currentMaster),
 			},

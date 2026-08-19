@@ -525,13 +525,14 @@ func TestInstanceCreate_RoleReplica(t *testing.T) {
 	if instances.Groups["redis"].EngineVersion != "6.2" {
 		t.Fatalf("expected replica group redis version 6.2, got %q", instances.Groups["redis"].EngineVersion)
 	}
-	if got := instances.Instances["redis-r"].Password; got != "group-secret" {
-		t.Fatalf("replica must inherit group password, got %q", got)
+	if got := instances.Groups["redis"].Password; got != "group-secret" {
+		t.Fatalf("group must store front password, got %q", got)
 	}
 	if got := instances.Instances["redis-r"].Persistence.AOF; !got {
 		t.Fatal("replica must inherit persistent category rather than caller category")
 	}
-	if len(createRequests) != 2 || createRequests[1].Password != "group-secret" ||
+	// 实例无密码：Agent 收到的 create 请求不带密码（前端密码只留在 Server 用于 Proxy 快照）
+	if len(createRequests) != 2 || createRequests[1].Password != "" ||
 		createRequests[1].Category != "persistent" || createRequests[1].Type != "replication" {
 		t.Fatalf("agent replica request did not inherit group settings: %#v", createRequests)
 	}
@@ -550,12 +551,12 @@ func TestInstanceReplicate_MovingSingletonDeletesOldGroup(t *testing.T) {
 	}})
 	s.db.WriteInstances(&apitypes.InstancesState{
 		Groups: map[string]*apitypes.InstanceGroupState{
-			"source": {Type: "standalone", Engine: "redis", EngineVersion: "7", Category: "cache", CurrentMaster: "source-1", Proxy: &apitypes.ProxyConfig{MasterPort: 16500}},
-			"target": {Type: "standalone", Engine: "redis", EngineVersion: "7", Category: "cache", CurrentMaster: "target-1", Proxy: &apitypes.ProxyConfig{MasterPort: 16501}},
+			"source": {Type: "standalone", Engine: "redis", EngineVersion: "7", Category: "cache", Password: "pw", CurrentMaster: "source-1", Proxy: &apitypes.ProxyConfig{MasterPort: 16500}},
+			"target": {Type: "standalone", Engine: "redis", EngineVersion: "7", Category: "cache", Password: "pw", CurrentMaster: "target-1", Proxy: &apitypes.ProxyConfig{MasterPort: 16501}},
 		},
 		Instances: map[string]*apitypes.Instance{
-			"source-1": {Group: "source", Role: "master", Server: "srv1", Port: 6379, Password: "pw", DesiredState: "running", ObservedStatus: "running"},
-			"target-1": {Group: "target", Role: "master", Server: "srv1", Port: 6380, Password: "pw", DesiredState: "running", ObservedStatus: "running"},
+			"source-1": {Group: "source", Role: "master", Server: "srv1", Port: 6379, DesiredState: "running", ObservedStatus: "running"},
+			"target-1": {Group: "target", Role: "master", Server: "srv1", Port: 6380, DesiredState: "running", ObservedStatus: "running"},
 		},
 	})
 

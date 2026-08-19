@@ -64,7 +64,7 @@ func (d *DB) execWrite(query string, args ...interface{}) error {
 // Open 打开（或创建）dataDir/pilot.db，执行建表迁移后返回。
 //
 // dataDir 和 pilot.db（以及 WAL/SHM 伴生文件）均限制为仅属主可读写（0700/0600），
-// 因为 instances.password 和 servers.agent_token 以明文形式存储在库中，
+// 因为 instance_groups.password 和 servers.agent_token 以明文形式存储在库中，
 // 若目录或文件权限过宽，本机其他用户可直接读取数据库文件窃取凭据。
 func Open(dataDir string) (*DB, error) {
 	if err := os.MkdirAll(dataDir, 0700); err != nil {
@@ -152,6 +152,7 @@ func (d *DB) migrate() error {
 			engine_version    TEXT NOT NULL DEFAULT '',
 			category          TEXT NOT NULL DEFAULT '',
 			access_mode       TEXT NOT NULL DEFAULT '',
+			password          TEXT NOT NULL DEFAULT '',
 			current_master    TEXT NOT NULL DEFAULT '',
 			topology_status   TEXT NOT NULL DEFAULT 'degraded',
 			failover_conflict INTEGER NOT NULL DEFAULT 0,
@@ -171,7 +172,6 @@ func (d *DB) migrate() error {
 			memory           TEXT NOT NULL DEFAULT '',
 			cpus             REAL NOT NULL DEFAULT 0,
 			disk             TEXT NOT NULL DEFAULT '',
-			password         TEXT NOT NULL DEFAULT '',
 			config_path      TEXT NOT NULL DEFAULT '',
 			data_path        TEXT NOT NULL DEFAULT '',
 			backup_path      TEXT NOT NULL DEFAULT '',

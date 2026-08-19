@@ -275,10 +275,8 @@ func (s *Server) instanceCreate(c *gin.Context) {
 			if group.Engine != req.Engine {
 				return fmt.Errorf("replica engine must match master group engine: %s", group.Engine)
 			}
-			// 同组认证与数据语义必须一致。Agent 会用 Password 同时生成 requirepass 和
-			// masterauth；若沿用调用方给从库单独传的密码，容器虽能启动，复制认证和
-			// Proxy 到从库的认证都会失败，Server 却会把它误标为健康。
-			req.Password = master.Password
+			// 实例无密码（鉴权只在 Proxy 前端），Agent 不需要 password 参数。
+			req.Password = ""
 			req.Category = group.Category
 			req.Type = "replication"
 			req.EngineVersion = group.EngineVersion
@@ -339,6 +337,7 @@ func (s *Server) instanceCreate(c *gin.Context) {
 				EngineVersion:  req.EngineVersion,
 				Category:       req.Category,
 				AccessMode:     accessMode,
+				Password:       req.Password,
 				CurrentMaster:  req.Name,
 				TopologyStatus: "degraded",
 				Proxy:          ec,
@@ -356,7 +355,6 @@ func (s *Server) instanceCreate(c *gin.Context) {
 			Memory:          req.Memory,
 			CPUs:            req.CPUs,
 			Disk:            req.Disk,
-			Password:        req.Password,
 			ConfigPath:      dataDir + "/conf",
 			DataPath:        dataDir + "/data",
 			BackupPath:      dataDir + "/backup",
@@ -384,6 +382,8 @@ func (s *Server) instanceCreate(c *gin.Context) {
 
 	// 调用 Agent 创建（传解析后的 ip:port）
 	req.ReplicaOf = resolvedAddr
+	// Proxy 前端密码存储在 group 级别，不下发给 Agent。
+	req.Password = ""
 	client := newAgentClient(srv)
 	if _, err := client.postLong("/instance/create", req); err != nil {
 		// 调用 Agent 清理已创建的资源（best-effort，忽略错误）
@@ -435,8 +435,6 @@ func (s *Server) instanceCreate(c *gin.Context) {
 
 	s.log.Infof("instance created: %s on %s", req.Name, req.Server)
 	s.syncSentinel()
-	// 用 ToView() 剥离密码字段。此前直接返回 inst，创建接口的响应体里带着 Redis 明文密码，
-	// 会被 HTTP 访问日志、反向代理、CLI 调试输出等环节捕获。
 	ok(c, inst.ToView())
 }
 
@@ -677,7 +675,8 @@ func (s *Server) instanceConfig(c *gin.Context) {
 		"type":             groupState.Type,
 		"config_overrides": req.ConfigOverrides,
 		"restart":          req.Restart,
-		"password":         inst.Password,
+		// 实例无密码：不下发给 Agent（详见 instanceCreate）
+		"password":         "",
 		"memory":           inst.Memory,
 		"category":         groupState.Category,
 		"replica_of":       replicaOfAddr,
@@ -1082,7 +1081,7 @@ func (s *Server) instanceReplicate(c *gin.Context) {
 			return fmt.Errorf("group %q is managed by Sentinel; use 'instance failover' to change replication topology instead of setting it directly", target.Group)
 		}
 		if oldGroup.Engine != targetGroup.Engine || oldGroup.EngineVersion != targetGroup.EngineVersion ||
-			oldGroup.Category != targetGroup.Category || source.Password != target.Password {
+			oldGroup.Category != targetGroup.Category || oldGroup.Password != targetGroup.Password {
 			return fmt.Errorf("source instance is incompatible with target group (engine, version, category and password must match)")
 		}
 		if source.Role == "master" && source.Group != target.Group {

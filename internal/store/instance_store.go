@@ -13,7 +13,7 @@ import (
 // GetAllGroups 读取所有实例组。
 func (d *DB) GetAllGroups() (map[string]*apitypes.InstanceGroupState, error) {
 	rows, err := d.sql.Query(
-		`SELECT name, type, engine, engine_version, category, access_mode,
+		`SELECT name, type, engine, engine_version, category, access_mode, password,
 		        current_master, topology_status, failover_conflict, proxy, created_at, updated_at
 		 FROM instance_groups`)
 	if err != nil {
@@ -27,15 +27,16 @@ func (d *DB) GetAllGroups() (map[string]*apitypes.InstanceGroupState, error) {
 func (d *DB) UpsertGroup(name string, g *apitypes.InstanceGroupState) error {
 	proxyJSON, _ := json.Marshal(g.Proxy)
 	return d.execWrite(`
-		INSERT INTO instance_groups(name, type, engine, engine_version, category, access_mode,
+		INSERT INTO instance_groups(name, type, engine, engine_version, category, access_mode, password,
 		    current_master, topology_status, failover_conflict, proxy, created_at, updated_at)
-		VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
 		ON CONFLICT(name) DO UPDATE SET
 			type              = excluded.type,
 			engine            = excluded.engine,
 			engine_version    = excluded.engine_version,
 			category          = excluded.category,
 			access_mode       = excluded.access_mode,
+			password          = excluded.password,
 			current_master    = excluded.current_master,
 			topology_status   = excluded.topology_status,
 			failover_conflict = excluded.failover_conflict,
@@ -43,7 +44,7 @@ func (d *DB) UpsertGroup(name string, g *apitypes.InstanceGroupState) error {
 			created_at        = excluded.created_at,
 			updated_at        = excluded.updated_at`,
 		name,
-		g.Type, g.Engine, g.EngineVersion, g.Category, g.AccessMode,
+		g.Type, g.Engine, g.EngineVersion, g.Category, g.AccessMode, g.Password,
 		g.CurrentMaster, g.TopologyStatus, boolToInt(g.FailoverConflict),
 		string(proxyJSON), g.CreatedAt, g.UpdatedAt,
 	)
@@ -60,7 +61,7 @@ func (d *DB) DeleteGroup(name string) error {
 func (d *DB) GetAllInstances() (map[string]*apitypes.Instance, error) {
 	rows, err := d.sql.Query(
 		`SELECT name, grp, role, server, container, port, memory, cpus, disk,
-		        password, config_path, data_path, backup_path,
+		        config_path, data_path, backup_path,
 		        persistence, config_overrides, replica_of, backup, desired_state, observed_status, lock, created_at
 		 FROM instances`)
 	if err != nil {
@@ -79,9 +80,9 @@ func (d *DB) UpsertInstance(name string, inst *apitypes.Instance) error {
 
 	return d.execWrite(`
 		INSERT INTO instances(name, grp, role, server, container, port, memory, cpus, disk,
-		    password, config_path, data_path, backup_path,
+		    config_path, data_path, backup_path,
 		    persistence, config_overrides, replica_of, backup, desired_state, observed_status, lock, created_at)
-		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 		ON CONFLICT(name) DO UPDATE SET
 			grp              = excluded.grp,
 			role             = excluded.role,
@@ -91,7 +92,6 @@ func (d *DB) UpsertInstance(name string, inst *apitypes.Instance) error {
 			memory           = excluded.memory,
 			cpus             = excluded.cpus,
 			disk             = excluded.disk,
-			password         = excluded.password,
 			config_path      = excluded.config_path,
 			data_path        = excluded.data_path,
 			backup_path      = excluded.backup_path,
@@ -106,7 +106,7 @@ func (d *DB) UpsertInstance(name string, inst *apitypes.Instance) error {
 		name,
 		inst.Group, inst.Role, inst.Server, inst.Container,
 		inst.Port, inst.Memory, inst.CPUs, inst.Disk,
-		inst.Password, inst.ConfigPath, inst.DataPath, inst.BackupPath,
+		inst.ConfigPath, inst.DataPath, inst.BackupPath,
 		string(persistenceJSON), string(overridesJSON),
 		inst.ReplicaOf, string(backupJSON),
 		inst.DesiredState, inst.ObservedStatus, string(lockJSON), inst.CreatedAt,
@@ -122,7 +122,7 @@ func (d *DB) DeleteInstance(name string) error {
 func (d *DB) GetInstance(name string) (*apitypes.Instance, error) {
 	row := d.sql.QueryRow(
 		`SELECT name, grp, role, server, container, port, memory, cpus, disk,
-		        password, config_path, data_path, backup_path,
+		        config_path, data_path, backup_path,
 		        persistence, config_overrides, replica_of, backup, desired_state, observed_status, lock, created_at
 		 FROM instances WHERE name = ?`, name)
 
@@ -171,15 +171,16 @@ func (d *DB) WithInstances(fn func(*apitypes.InstancesState) error) error {
 	for name, g := range st.Groups {
 		proxyJSON, _ := json.Marshal(g.Proxy)
 		if _, err := tx.Exec(`
-			INSERT INTO instance_groups(name, type, engine, engine_version, category, access_mode,
+			INSERT INTO instance_groups(name, type, engine, engine_version, category, access_mode, password,
 			    current_master, topology_status, failover_conflict, proxy, created_at, updated_at)
-			VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
+			VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
 			ON CONFLICT(name) DO UPDATE SET
 				type              = excluded.type,
 				engine            = excluded.engine,
 				engine_version    = excluded.engine_version,
 				category          = excluded.category,
 				access_mode       = excluded.access_mode,
+				password          = excluded.password,
 				current_master    = excluded.current_master,
 				topology_status   = excluded.topology_status,
 				failover_conflict = excluded.failover_conflict,
@@ -187,7 +188,7 @@ func (d *DB) WithInstances(fn func(*apitypes.InstancesState) error) error {
 				created_at        = excluded.created_at,
 				updated_at        = excluded.updated_at`,
 			name,
-			g.Type, g.Engine, g.EngineVersion, g.Category, g.AccessMode,
+			g.Type, g.Engine, g.EngineVersion, g.Category, g.AccessMode, g.Password,
 			g.CurrentMaster, g.TopologyStatus, boolToInt(g.FailoverConflict),
 			string(proxyJSON), g.CreatedAt, g.UpdatedAt,
 		); err != nil {
@@ -211,9 +212,9 @@ func (d *DB) WithInstances(fn func(*apitypes.InstancesState) error) error {
 
 		if _, err := tx.Exec(`
 			INSERT INTO instances(name, grp, role, server, container, port, memory, cpus, disk,
-			    password, config_path, data_path, backup_path,
+			    config_path, data_path, backup_path,
 			    persistence, config_overrides, replica_of, backup, desired_state, observed_status, lock, created_at)
-			VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+			VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 			ON CONFLICT(name) DO UPDATE SET
 				grp              = excluded.grp,
 				role             = excluded.role,
@@ -223,7 +224,6 @@ func (d *DB) WithInstances(fn func(*apitypes.InstancesState) error) error {
 				memory           = excluded.memory,
 				cpus             = excluded.cpus,
 				disk             = excluded.disk,
-				password         = excluded.password,
 				config_path      = excluded.config_path,
 				data_path        = excluded.data_path,
 				backup_path      = excluded.backup_path,
@@ -238,7 +238,7 @@ func (d *DB) WithInstances(fn func(*apitypes.InstancesState) error) error {
 			name,
 			inst.Group, inst.Role, inst.Server, inst.Container,
 			inst.Port, inst.Memory, inst.CPUs, inst.Disk,
-			inst.Password, inst.ConfigPath, inst.DataPath, inst.BackupPath,
+			inst.ConfigPath, inst.DataPath, inst.BackupPath,
 			string(persistenceJSON), string(overridesJSON),
 			inst.ReplicaOf, string(backupJSON),
 			inst.DesiredState, inst.ObservedStatus, string(lockJSON), inst.CreatedAt,
@@ -315,7 +315,7 @@ func loadInstancesState(db *sql.DB) (*apitypes.InstancesState, error) {
 
 	// 读 groups
 	gRows, err := db.Query(
-		`SELECT name, type, engine, engine_version, category, access_mode,
+		`SELECT name, type, engine, engine_version, category, access_mode, password,
 		        current_master, topology_status, failover_conflict, proxy, created_at, updated_at
 		 FROM instance_groups`)
 	if err != nil {
@@ -330,7 +330,7 @@ func loadInstancesState(db *sql.DB) (*apitypes.InstancesState, error) {
 	// 读 instances
 	iRows, err := db.Query(
 		`SELECT name, grp, role, server, container, port, memory, cpus, disk,
-		        password, config_path, data_path, backup_path,
+		        config_path, data_path, backup_path,
 		        persistence, config_overrides, replica_of, backup, desired_state, observed_status, lock, created_at
 		 FROM instances`)
 	if err != nil {
@@ -351,7 +351,7 @@ func loadInstancesStateTx(tx *sql.Tx) (*apitypes.InstancesState, error) {
 	}
 
 	gRows, err := tx.Query(
-		`SELECT name, type, engine, engine_version, category, access_mode,
+		`SELECT name, type, engine, engine_version, category, access_mode, password,
 		        current_master, topology_status, failover_conflict, proxy, created_at, updated_at
 		 FROM instance_groups`)
 	if err != nil {
@@ -365,7 +365,7 @@ func loadInstancesStateTx(tx *sql.Tx) (*apitypes.InstancesState, error) {
 
 	iRows, err := tx.Query(
 		`SELECT name, grp, role, server, container, port, memory, cpus, disk,
-		        password, config_path, data_path, backup_path,
+		        config_path, data_path, backup_path,
 		        persistence, config_overrides, replica_of, backup, desired_state, observed_status, lock, created_at
 		 FROM instances`)
 	if err != nil {
@@ -390,7 +390,7 @@ func scanInstance(row rowScanner) (*apitypes.Instance, error) {
 		&name,
 		&inst.Group, &inst.Role, &inst.Server, &inst.Container,
 		&inst.Port, &inst.Memory, &inst.CPUs, &inst.Disk,
-		&inst.Password, &inst.ConfigPath, &inst.DataPath, &inst.BackupPath,
+		&inst.ConfigPath, &inst.DataPath, &inst.BackupPath,
 		&persistenceJSON, &overridesJSON,
 		&inst.ReplicaOf, &backupJSON,
 		&inst.DesiredState, &inst.ObservedStatus, &lockJSON, &inst.CreatedAt,
@@ -414,7 +414,7 @@ func scanInstances(rows *sql.Rows) (map[string]*apitypes.Instance, error) {
 			&name,
 			&inst.Group, &inst.Role, &inst.Server, &inst.Container,
 			&inst.Port, &inst.Memory, &inst.CPUs, &inst.Disk,
-			&inst.Password, &inst.ConfigPath, &inst.DataPath, &inst.BackupPath,
+			&inst.ConfigPath, &inst.DataPath, &inst.BackupPath,
 			&persistenceJSON, &overridesJSON,
 			&inst.ReplicaOf, &backupJSON,
 			&inst.DesiredState, &inst.ObservedStatus, &lockJSON, &inst.CreatedAt,
@@ -439,7 +439,7 @@ func scanGroups(rows *sql.Rows) (map[string]*apitypes.InstanceGroupState, error)
 		g := &apitypes.InstanceGroupState{}
 		if err := rows.Scan(
 			&name,
-			&g.Type, &g.Engine, &g.EngineVersion, &g.Category, &g.AccessMode,
+			&g.Type, &g.Engine, &g.EngineVersion, &g.Category, &g.AccessMode, &g.Password,
 			&g.CurrentMaster, &g.TopologyStatus, &failoverConflict,
 			&proxyJSON, &g.CreatedAt, &g.UpdatedAt,
 		); err != nil {

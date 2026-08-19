@@ -27,7 +27,7 @@ func (s *Server) buildInstanceGroups(instances *apitypes.InstancesState, node *a
 		g := &instanceGroup{
 			autoPort:   group.Proxy.AutoPort,
 			masterPort: group.Proxy.MasterPort,
-			password:   "",
+			password:   group.Password,
 			accessMode: group.AccessMode,
 		}
 		for name, inst := range instances.Instances {
@@ -43,7 +43,6 @@ func (s *Server) buildInstanceGroups(instances *apitypes.InstancesState, node *a
 			ep := proxyEndpoint{Address: srv.Endpoint, Port: inst.Port}
 			if inst.Role == "master" && group.CurrentMaster == name {
 				g.masterEndpoints = append(g.masterEndpoints, ep)
-				g.password = inst.Password
 			} else if inst.Role == "replica" {
 				g.replicaEndpoints = append(g.replicaEndpoints, ep)
 			}
