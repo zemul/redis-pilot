@@ -696,6 +696,7 @@ func (s *Server) instanceConfig(c *gin.Context) {
 		// 实例无密码：不下发给 Agent（详见 instanceCreate）
 		"password":         "",
 		"memory":           inst.Memory,
+		"engine_version":   groupState.EngineVersion,
 		"category":         groupState.Category,
 		"replica_of":       replicaOfAddr,
 		"port":             inst.Port,

@@ -223,6 +223,104 @@ func TestWriteRedisConfig_WithOverrides(t *testing.T) {
 	}
 }
 
+func TestWriteRedisConfig_Version5(t *testing.T) {
+	dir := t.TempDir()
+	err := writeRedisConfig(dir, RedisConfigParams{
+		Version:         "5",
+		Memory:          "4Gi",
+		MaxmemoryPolicy: "allkeys-lru",
+		Appendonly:      "no",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, _ := os.ReadFile(filepath.Join(dir, "conf", "redis.conf"))
+	content := string(data)
+	// Redis 5 应该用多行 save
+	if !strings.Contains(content, "save 900 1") {
+		t.Error("expected multi-line save for redis 5")
+	}
+	if strings.Contains(content, "save 3600 1 300 100 60 10000") {
+		t.Error("redis 5 should not use single-line save syntax")
+	}
+	// Redis 5 不应有 lazyfree-lazy-user-del
+	if strings.Contains(content, "lazyfree-lazy-user-del") {
+		t.Error("redis 5 should not have lazyfree-lazy-user-del")
+	}
+	// 但应有基础 lazyfree 选项
+	if !strings.Contains(content, "lazyfree-lazy-eviction") {
+		t.Error("redis 5 should have lazyfree-lazy-eviction")
+	}
+}
+
+func TestWriteRedisConfig_Version62(t *testing.T) {
+	dir := t.TempDir()
+	err := writeRedisConfig(dir, RedisConfigParams{
+		Version:         "6.2",
+		Memory:          "4Gi",
+		MaxmemoryPolicy: "allkeys-lru",
+		Appendonly:      "no",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, _ := os.ReadFile(filepath.Join(dir, "conf", "redis.conf"))
+	content := string(data)
+	// Redis 6.2 应该用多行 save
+	if !strings.Contains(content, "save 900 1") {
+		t.Error("expected multi-line save for redis 6.2")
+	}
+	// Redis 6.2 应有 lazyfree-lazy-user-del
+	if !strings.Contains(content, "lazyfree-lazy-user-del") {
+		t.Error("redis 6.2 should have lazyfree-lazy-user-del")
+	}
+	if !strings.Contains(content, "lazyfree-lazy-user-flush") {
+		t.Error("redis 6.2 should have lazyfree-lazy-user-flush")
+	}
+}
+
+func TestWriteRedisConfig_Version7(t *testing.T) {
+	dir := t.TempDir()
+	err := writeRedisConfig(dir, RedisConfigParams{
+		Version:         "7",
+		Memory:          "4Gi",
+		MaxmemoryPolicy: "allkeys-lru",
+		Appendonly:      "no",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, _ := os.ReadFile(filepath.Join(dir, "conf", "redis.conf"))
+	content := string(data)
+	// Redis 7 应该用单行 save
+	if !strings.Contains(content, "save 3600 1 300 100 60 10000") {
+		t.Error("expected single-line save for redis 7")
+	}
+	// Redis 7 应有 lazyfree-lazy-user-del
+	if !strings.Contains(content, "lazyfree-lazy-user-del") {
+		t.Error("redis 7 should have lazyfree-lazy-user-del")
+	}
+}
+
+func TestWriteRedisConfig_DefaultVersion(t *testing.T) {
+	dir := t.TempDir()
+	// 不传 Version，应该默认为 7
+	err := writeRedisConfig(dir, RedisConfigParams{
+		Memory:          "4Gi",
+		MaxmemoryPolicy: "allkeys-lru",
+		Appendonly:      "no",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, _ := os.ReadFile(filepath.Join(dir, "conf", "redis.conf"))
+	content := string(data)
+	if !strings.Contains(content, "save 3600 1 300 100 60 10000") {
+		t.Error("default version should produce redis 7 single-line save")
+	}
+}
+
+
 func TestWriteKvrocksConfig(t *testing.T) {
 	dir := t.TempDir()
 	err := writeKvrocksConfig(dir, KvrocksConfigParams{

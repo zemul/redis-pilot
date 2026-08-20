@@ -262,6 +262,7 @@ func (a *Agent) instanceCreate(c *gin.Context) {
 			aof = "no"
 		}
 		createErr = writeRedisConfig(dataDir, RedisConfigParams{
+			Version:            req.EngineVersion,
 			Port:               req.Port,
 			Password:           req.Password,
 			Memory:             req.Memory,
@@ -415,6 +416,7 @@ type instanceConfigRequest struct {
 	// 刻意不重启容器：重启本身就是要避免的动作，而且此时运行时角色已经是对的，
 	// 需要修正的只有磁盘上那份。
 	RewriteConfigOnly bool   `json:"rewrite_config_only"`
+	EngineVersion     string `json:"engine_version"`
 	Password          string `json:"password"`
 	Memory            string `json:"memory"`
 	Category          string `json:"category"`
@@ -451,6 +453,7 @@ func (a *Agent) writeInstanceConfig(req *instanceConfigRequest) error {
 		aof = "no"
 	}
 	return writeRedisConfig(dataDir, RedisConfigParams{
+		Version:            req.EngineVersion,
 		Port:               req.Port,
 		Password:           req.Password,
 		Memory:             req.Memory,

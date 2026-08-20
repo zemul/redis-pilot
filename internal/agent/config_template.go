@@ -50,7 +50,13 @@ databases 16
 maxmemory {{ .Memory }}
 maxmemory-policy {{ .MaxmemoryPolicy }}
 
+{{ if eq .Version "7" }}
 save 3600 1 300 100 60 10000
+{{ else }}
+save 900 1
+save 300 10
+save 60 10000
+{{ end }}
 rdbcompression yes
 rdbchecksum yes
 dbfilename dump.rdb
@@ -80,6 +86,15 @@ min-replicas-max-lag 10
 rename-command FLUSHDB ""
 rename-command FLUSHALL ""
 rename-command DEBUG ""
+
+lazyfree-lazy-eviction no
+lazyfree-lazy-expire no
+lazyfree-lazy-server-del no
+replica-lazy-flush no
+{{ if ne .Version "5" }}
+lazyfree-lazy-user-del no
+lazyfree-lazy-user-flush no
+{{ end }}
 
 slowlog-log-slower-than 10000
 slowlog-max-len 128
@@ -127,6 +142,7 @@ maxclients 10000
 `))
 
 type RedisConfigParams struct {
+	Version            string // "5", "6.2", "7"
 	Port               int
 	Password           string
 	Memory             string
@@ -153,6 +169,9 @@ type KvrocksConfigParams struct {
 func writeRedisConfig(dataDir string, params RedisConfigParams) error {
 	params.Memory = convertMemoryToBytes(params.Memory)
 	params.ReplicaOf = strings.Replace(params.ReplicaOf, ":", " ", 1)
+	if params.Version == "" {
+		params.Version = "7"
+	}
 	return writeConfig(dataDir, "redis.conf", redisTmpl, params)
 }
 

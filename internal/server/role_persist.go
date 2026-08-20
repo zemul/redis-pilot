@@ -86,6 +86,7 @@ func (s *Server) pushConfigRewrite(
 		// 实例无密码：不下发给 Agent（详见 instanceCreate）
 		"password":            "",
 		"memory":              inst.Memory,
+		"engine_version":      group.EngineVersion,
 		"replica_of":          replicaOfAddr,
 		"port":                inst.Port,
 	})
