@@ -972,7 +972,7 @@ function InstancesView({ groups, query, setQuery, expandedGroups, setExpandedGro
               <tr>
                 <th>实例名称 / 组</th>
                 <th>类别</th>
-                <th>访问模式</th>
+                <th>接入方式</th>
                 <th>引擎版本</th>
                 <th>拓扑角色</th>
                 <th>节点</th>
@@ -1577,6 +1577,12 @@ function MetricsTrendView({ instanceName, requestFn }) {
           title: '复制偏移量',
           data: points.map((p) => p.repl_offset || 0),
           color: '#3b82f6'
+        },
+        {
+          id: 'keys',
+          title: 'Key 数量',
+          data: points.map((p) => p.total_keys || 0),
+          color: '#3b82f6'
         }
       ];
 
@@ -1638,6 +1644,7 @@ function MetricsTrendView({ instanceName, requestFn }) {
           <div className="chart-cell" ref={(el) => { chartRefs.current.frag = el; }}></div>
           <div className="chart-cell" ref={(el) => { chartRefs.current.repl = el; }}></div>
           <div className="chart-cell" ref={(el) => { chartRefs.current.offset = el; }}></div>
+          <div className="chart-cell" ref={(el) => { chartRefs.current.keys = el; }}></div>
         </div>
       )}
     </section>
@@ -1649,7 +1656,7 @@ function InstanceDetailModal({ detail, requestFn, onClose }) {
   const payload = extractMetricsPayload(metrics);
   const info = payload.info || payload.Info || '';
   const sections = parseRedisInfo(info);
-  const [activeTab, setActiveTab] = useState('detail');
+  const [activeTab, setActiveTab] = useState('trend');
   const metricsSummary = [
     ['Redis 版本', metricValue(sections, 'redis_version')],
     ['角色', metricValue(sections, 'role', getField(item, 'role', 'Role', '-'))],
@@ -1684,8 +1691,8 @@ function InstanceDetailModal({ detail, requestFn, onClose }) {
         </div>
         <div className="modal-body">
           <div className="tab-bar">
-            <button className={`tab-btn ${activeTab === 'detail' ? 'active' : ''}`} onClick={() => setActiveTab('detail')}>详情</button>
             <button className={`tab-btn ${activeTab === 'trend' ? 'active' : ''}`} onClick={() => setActiveTab('trend')}>趋势</button>
+            <button className={`tab-btn ${activeTab === 'detail' ? 'active' : ''}`} onClick={() => setActiveTab('detail')}>详情</button>
           </div>
           {activeTab === 'detail' && (
             <>

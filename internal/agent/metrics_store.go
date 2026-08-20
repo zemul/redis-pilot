@@ -51,6 +51,7 @@ func openMetricsStore(dataDir string) (*metricsStore, error) {
 		"ALTER TABLE instance_metrics ADD COLUMN frag_ratio REAL NOT NULL DEFAULT 0",
 		"ALTER TABLE instance_metrics ADD COLUMN repl_link INTEGER NOT NULL DEFAULT 1",
 		"ALTER TABLE instance_metrics ADD COLUMN repl_offset INTEGER NOT NULL DEFAULT 0",
+		"ALTER TABLE instance_metrics ADD COLUMN total_keys INTEGER NOT NULL DEFAULT 0",
 	} {
 		db.Exec(col) // 忽略 "duplicate column" 错误
 	}
@@ -80,10 +81,11 @@ func (ms *metricsStore) record(instance, info string) error {
 		replLink = 0
 	}
 	replOffset := parseInfoField(info, "master_repl_offset")
+	totalKeys := parseKeyspaceTotal(info)
 
 	_, err := ms.db.Exec(
-		`INSERT INTO instance_metrics (ts, instance, mem_used, mem_max, ops_sec, hits, misses, conns, conns_max, frag_ratio, repl_link, repl_offset) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		ts, instance, memUsed, memMax, opsSec, hits, misses, conns, connsMax, fragRatio, replLink, replOffset,
+		`INSERT INTO instance_metrics (ts, instance, mem_used, mem_max, ops_sec, hits, misses, conns, conns_max, frag_ratio, repl_link, repl_offset, total_keys) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		ts, instance, memUsed, memMax, opsSec, hits, misses, conns, connsMax, fragRatio, replLink, replOffset, totalKeys,
 	)
 	return err
 }
@@ -91,7 +93,7 @@ func (ms *metricsStore) record(instance, info string) error {
 // query 返回指定实例在时间范围内的指标。
 func (ms *metricsStore) query(instance string, start, end time.Time) ([]MetricPoint, error) {
 	rows, err := ms.db.Query(
-		`SELECT ts, mem_used, mem_max, ops_sec, hits, misses, conns, conns_max, frag_ratio, repl_link, repl_offset FROM instance_metrics WHERE instance = ? AND ts >= ? AND ts <= ? ORDER BY ts`,
+		`SELECT ts, mem_used, mem_max, ops_sec, hits, misses, conns, conns_max, frag_ratio, repl_link, repl_offset, total_keys FROM instance_metrics WHERE instance = ? AND ts >= ? AND ts <= ? ORDER BY ts`,
 		instance, start.Unix(), end.Unix(),
 	)
 	if err != nil {
@@ -102,7 +104,7 @@ func (ms *metricsStore) query(instance string, start, end time.Time) ([]MetricPo
 	var points []MetricPoint
 	for rows.Next() {
 		var p MetricPoint
-		if err := rows.Scan(&p.Ts, &p.MemUsed, &p.MemMax, &p.OpsSec, &p.Hits, &p.Misses, &p.Conns, &p.ConnsMax, &p.FragRatio, &p.ReplLink, &p.ReplOffset); err != nil {
+		if err := rows.Scan(&p.Ts, &p.MemUsed, &p.MemMax, &p.OpsSec, &p.Hits, &p.Misses, &p.Conns, &p.ConnsMax, &p.FragRatio, &p.ReplLink, &p.ReplOffset, &p.TotalKeys); err != nil {
 			continue
 		}
 		points = append(points, p)
@@ -130,6 +132,34 @@ type MetricPoint struct {
 	FragRatio  float64 `json:"frag_ratio"`
 	ReplLink   int64   `json:"repl_link"`
 	ReplOffset int64   `json:"repl_offset"`
+	TotalKeys  int64   `json:"total_keys"`
+}
+
+// parseKeyspaceTotal 从 INFO 的 Keyspace 部分汇总所有 db 的 keys 数量。
+// 格式：db0:keys=1234,expires=100,avg_ttl=5000
+func parseKeyspaceTotal(info string) int64 {
+	var total int64
+	lines := strings.Split(info, "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "db") {
+			continue
+		}
+		// db0:keys=1234,expires=100,avg_ttl=5000
+		parts := strings.SplitN(line, ":", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		fields := strings.Split(parts[1], ",")
+		for _, f := range fields {
+			if strings.HasPrefix(f, "keys=") {
+				v, _ := strconv.ParseInt(strings.TrimPrefix(f, "keys="), 10, 64)
+				total += v
+				break
+			}
+		}
+	}
+	return total
 }
 
 // parseInfoFieldWithFallback 解析 INFO 字段，如果解析失败或为 0 返回 fallback。
