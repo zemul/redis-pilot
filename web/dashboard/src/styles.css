@@ -2011,3 +2011,26 @@ code {
 }
 .row-modified { background: color-mix(in srgb, var(--accent) 8%, transparent); }
 .row-modified .config-value-input { border-color: var(--accent); }
+
+/* Trend charts */
+.tab-bar { display: flex; gap: 0; border-bottom: 1px solid var(--border); padding: 0 18px; margin: -18px -18px 0 -18px; }
+.tab-btn {
+  padding: 10px 16px;
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--text-2);
+  cursor: pointer;
+  font-size: 13px;
+  margin-bottom: -1px;
+}
+.tab-btn.active { color: var(--accent); border-bottom-color: var(--accent); }
+.tab-btn:hover { color: var(--text-1); }
+.metrics-charts {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+  margin-top: 12px;
+}
+.chart-cell { height: 200px; overflow: hidden; }
+.ghost-button.small.active { background: var(--accent); color: #fff; }

@@ -233,21 +233,38 @@ func (a *Agent) runHealthCheck() {
 	}
 }
 
-// runMetricsCollect 每 60s 采集指标缓存
+// runMetricsCollect 每 60s 采集指标缓存并持久化到 SQLite
 func (a *Agent) runMetricsCollect() {
-	for range time.Tick(60 * time.Second) {
-		containers, err := podmanListContainers()
-		if err != nil {
-			continue
-		}
-		for _, name := range containers {
-			instName := trimPrefix(name)
-			info, err := redisCmd(instName, a.getPassword(instName), "INFO")
-			if err == nil {
-				a.mon.set(instName, info)
+	cleanupTicker := time.NewTicker(6 * time.Hour)
+	defer cleanupTicker.Stop()
+
+	for {
+		select {
+		case <-time.After(60 * time.Second):
+			containers, err := podmanListContainers()
+			if err != nil {
+				continue
+			}
+			for _, name := range containers {
+				instName := trimPrefix(name)
+				info, err := redisCmd(instName, a.getPassword(instName), "INFO")
+				if err == nil {
+					a.mon.set(instName, info)
+					if a.mstore != nil {
+						if err := a.mstore.record(instName, info); err != nil {
+							a.log.Errorf("metrics record %s: %v", instName, err)
+						}
+					}
+				}
+			}
+			a.collectHostMetrics(containers)
+		case <-cleanupTicker.C:
+			if a.mstore != nil {
+				if err := a.mstore.cleanup(30); err != nil {
+					a.log.Errorf("metrics cleanup: %v", err)
+				}
 			}
 		}
-		a.collectHostMetrics(containers)
 	}
 }
 

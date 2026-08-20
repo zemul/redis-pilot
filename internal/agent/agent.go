@@ -49,6 +49,7 @@ type Agent struct {
 	cfg           *Config
 	log           *logger.Logger
 	mon           *monitor
+	mstore        *metricsStore
 	runtime       podman.ContainerRuntime
 	s3            *s3client.Client // nil if S3 not configured
 	passwords     sync.Map         // instanceName -> password
@@ -92,6 +93,14 @@ func New(cfg *Config) *Agent {
 	}
 	a.loadPasswords()
 	agentDataDir = cfg.DataDir
+
+	ms, err := openMetricsStore(cfg.DataDir)
+	if err != nil {
+		a.log.Errorf("metrics store init failed: %v", err)
+	} else {
+		a.mstore = ms
+	}
+
 	return a
 }
 
@@ -171,6 +180,7 @@ func (a *Agent) Router() *gin.Engine {
 		inst.GET("/slowlog", a.instanceSlowlog)
 		inst.GET("/bigkeys", a.instanceBigkeys)
 		inst.GET("/config", a.instanceConfigGet)
+		inst.GET("/metrics", a.instanceMetrics)
 	}
 
 	return r
@@ -981,6 +991,55 @@ func (a *Agent) instanceConfigGet(c *gin.Context) {
 		}
 	}
 	ok(c, gin.H{"config": config})
+}
+
+func (a *Agent) instanceMetrics(c *gin.Context) {
+	name := c.Query("name")
+	if name == "" {
+		fail(c, http.StatusBadRequest, "name is required")
+		return
+	}
+	if err := validateInstanceName(name); err != nil {
+		fail(c, http.StatusBadRequest, err.Error())
+		return
+	}
+	if a.mstore == nil {
+		fail(c, http.StatusInternalServerError, "metrics store not initialized")
+		return
+	}
+
+	// range 参数：1h, 6h, 24h, 7d, 30d，默认 1h
+	rangeStr := c.DefaultQuery("range", "1h")
+	duration := parseRange(rangeStr)
+	end := time.Now()
+	start := end.Add(-duration)
+
+	points, err := a.mstore.query(name, start, end)
+	if err != nil {
+		fail(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if points == nil {
+		points = []MetricPoint{}
+	}
+	ok(c, gin.H{"points": points, "range": rangeStr, "count": len(points)})
+}
+
+func parseRange(s string) time.Duration {
+	switch s {
+	case "1h":
+		return time.Hour
+	case "6h":
+		return 6 * time.Hour
+	case "24h":
+		return 24 * time.Hour
+	case "7d":
+		return 7 * 24 * time.Hour
+	case "30d":
+		return 30 * 24 * time.Hour
+	default:
+		return time.Hour
+	}
 }
 
 func (a *Agent) instanceBackup(c *gin.Context) {

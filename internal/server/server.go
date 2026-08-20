@@ -145,6 +145,7 @@ func (s *Server) Router() *gin.Engine {
 		instance.GET("/list", s.instanceList)
 		instance.GET("/status", s.instanceStatus)
 		instance.GET("/metrics", s.metricsCollect)
+		instance.GET("/metrics/history", s.instanceMetrics)
 		instance.GET("/diagnose", s.instanceDiagnose)
 		instance.GET("/slowlog", s.instanceSlowlog)
 		instance.GET("/bigkeys", s.instanceBigkeys)

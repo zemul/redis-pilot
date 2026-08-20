@@ -9,6 +9,7 @@
     "preview": "vite preview --host 127.0.0.1"
   },
   "dependencies": {
+    "echarts": "^6.1.0",
     "geist": "^1.7.1",
     "lucide-react": "^0.468.0",
     "react": "^19.2.0",

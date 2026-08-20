@@ -115,3 +115,23 @@ func (s *Server) instanceConfigGet(c *gin.Context) {
 	}
 	ok(c, extractAgentData(out))
 }
+
+func (s *Server) instanceMetrics(c *gin.Context) {
+	name := c.Query("name")
+	if name == "" {
+		fail(c, http.StatusBadRequest, "name is required")
+		return
+	}
+	_, srv, err := s.resolveInstance(c, name)
+	if err != nil {
+		return
+	}
+	rangeStr := c.DefaultQuery("range", "1h")
+	agent := newAgentClient(srv)
+	out, err := agent.get("/instance/metrics?name=" + name + "&range=" + rangeStr)
+	if err != nil {
+		fail(c, http.StatusBadGateway, err.Error())
+		return
+	}
+	ok(c, extractAgentData(out))
+}
