@@ -641,35 +641,47 @@ button:disabled {
 /* ---------- Badge(色 + 文字,色盲友好) ---------- */
 .badge {
   min-height: 22px;
-  border: 1px solid var(--border);
+  border: none;
   border-radius: var(--r-control);
-  padding: 2px 8px;
+  padding: 2px 0;
   display: inline-flex;
   align-items: center;
-  gap: 5px;
+  gap: 6px;
   color: var(--ink-secondary);
-  background: var(--surface-2);
+  background: transparent;
   font-size: 12px;
   font-weight: 500;
   white-space: nowrap;
 }
 
+.badge-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--ink-muted);
+  flex-shrink: 0;
+}
+
+.badge.ok .badge-dot { background: #10b981; }
+.badge.warn .badge-dot { background: #f59e0b; }
+.badge.bad .badge-dot { background: #ef4444; }
+
 .badge.ok {
-  color: var(--green-fg);
-  background: var(--green-bg);
-  border-color: var(--green-border);
+  color: var(--ink-secondary);
+  background: transparent;
+  border-color: transparent;
 }
 
 .badge.warn {
-  color: var(--amber-fg);
-  background: var(--amber-bg);
-  border-color: var(--amber-border);
+  color: var(--ink-secondary);
+  background: transparent;
+  border-color: transparent;
 }
 
 .badge.bad {
-  color: var(--red-fg);
-  background: var(--red-bg);
-  border-color: var(--red-border);
+  color: var(--ink-secondary);
+  background: transparent;
+  border-color: transparent;
 }
 
 .subhead {

@@ -368,7 +368,7 @@ function topologyLabel(group, master) {
 
 function StatusBadge({ status, children, metaFn = statusMeta }) {
   const meta = metaFn(status);
-  return <span className={`badge ${meta.tone}`}>{children || meta.label}</span>;
+  return <span className={`badge ${meta.tone}`}><span className="badge-dot"></span>{children || meta.label}</span>;
 }
 
 function IconButton({ icon: Icon, label, onClick, disabled = false }) {
@@ -794,9 +794,9 @@ function DashboardView({ groups, servers, audits }) {
     return st === 'healthy' || st === 'drain';
   }).length;
 
-  const instanceTone = totalInstances === 0 ? 'neutral' : runningInstances === totalInstances ? 'positive' : failedInstances > 0 ? 'alert' : 'warn';
-  const groupTone = totalGroups === 0 ? 'neutral' : healthyGroups === totalGroups ? 'positive' : 'warn';
-  const serverTone = totalServers === 0 ? 'neutral' : healthyServers === totalServers ? 'positive' : 'warn';
+  const instanceTone = totalInstances === 0 ? 'neutral' : failedInstances > 0 ? 'alert' : runningInstances < totalInstances ? 'warn' : 'neutral';
+  const groupTone = totalGroups === 0 ? 'neutral' : healthyGroups < totalGroups ? 'warn' : 'neutral';
+  const serverTone = totalServers === 0 ? 'neutral' : healthyServers < totalServers ? 'warn' : 'neutral';
 
   const instancesPerServer = {};
   for (const inst of allInstances) {
