@@ -40,11 +40,9 @@ func convertMemoryToBytes(mem string) string {
 }
 
 var redisTmpl = template.Must(template.New("redis").Parse(`
-port 6379
+port {{ .Port }}
 bind 0.0.0.0
-{{ if .Password }}requirepass {{ .Password }}
-masterauth {{ .Password }}
-{{ end }}timeout 300
+timeout 300
 tcp-keepalive 60
 loglevel notice
 databases 16
@@ -74,8 +72,8 @@ replica-priority 100
 {{ end }}
 {{ if .AnnounceIP }}
 replica-announce-ip {{ .AnnounceIP }}
-replica-announce-port {{ .AnnouncePort }}
 {{ end }}
+replica-announce-port {{ .AnnouncePort }}
 min-replicas-to-write {{ .MinReplicasToWrite }}
 min-replicas-max-lag 10
 
@@ -92,10 +90,8 @@ maxclients 10000
 
 var kvrocksTmpl = template.Must(template.New("kvrocks").Parse(`
 bind 0.0.0.0
-port 6379
-{{ if .Password }}requirepass {{ .Password }}
-masterauth {{ .Password }}
-{{ end }}timeout 300
+port {{ .Port }}
+timeout 300
 log-level info
 
 dir /data
@@ -121,8 +117,8 @@ slave-priority 100
 {{ end }}
 {{ if .AnnounceIP }}
 replica-announce-ip {{ .AnnounceIP }}
-replica-announce-port {{ .AnnouncePort }}
 {{ end }}
+replica-announce-port {{ .AnnouncePort }}
 slowlog-log-slower-than 10000
 slowlog-max-len 128
 maxclients 10000
@@ -131,6 +127,7 @@ maxclients 10000
 `))
 
 type RedisConfigParams struct {
+	Port               int
 	Password           string
 	Memory             string
 	MaxmemoryPolicy    string
@@ -143,6 +140,7 @@ type RedisConfigParams struct {
 }
 
 type KvrocksConfigParams struct {
+	Port               int
 	Password           string
 	Memory             string
 	ReplicaOf          string

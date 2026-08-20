@@ -155,13 +155,13 @@ func TestInstanceConfig_RewriteOnlyCanPromoteToMaster(t *testing.T) {
 		t.Errorf("落盘为 master 后配置文件仍有 replicaof = %q", got)
 	}
 
-	// master 必须带上 min-replicas-to-write 1，这是 replication 组 master 的写保护
+	// 依赖 Sentinel 故障转移，min-replicas-to-write 统一为 0
 	conf, err := os.ReadFile(filepath.Join(a.cfg.DataDir, "order-1", "conf", "redis.conf"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(conf), "min-replicas-to-write 1") {
-		t.Error("replication 组的 master 应当写入 min-replicas-to-write 1")
+	if !strings.Contains(string(conf), "min-replicas-to-write 0") {
+		t.Error("replication 组的 master 应当写入 min-replicas-to-write 0")
 	}
 }
 

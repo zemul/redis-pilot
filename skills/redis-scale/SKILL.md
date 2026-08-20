@@ -30,9 +30,13 @@ description: 扩容 Redis 实例（加从库或提升配置）
 
 ## 提升配置流程（替换式扩容）
 
-通过创建更高配置的从库，再 promote 为主库来实现扩容。
+通过创建高配从库，确保其为唯一候选后 promote 为主库来实现扩容。
 
-1. 创建高配从库
+**核心原则**：
+- failover 前确保只有一个 replica，使 Sentinel 选举结果确定
+- 全程保持至少一个 replica 存活，避免 min-replicas-to-write 阻断写入
+
+1. 创建高配 replica
    ```
    redis-pilot-cli instance create <new-name> \
      --engine <engine> \
@@ -46,14 +50,27 @@ description: 扩容 Redis 实例（加从库或提升配置）
    ```
    确认 INFO replication 中 master_link_status=up，master_sync_in_progress=0，master_repl_offset 与主库接近
 
-3. 触发故障转移（参数为组内任意实例名，仅用于定位 group；Sentinel 自行选举新主库）
+3. 删除旧 replica（此时新 replica 已就位，master 始终有从库不会拒绝写入）
+   ```
+   redis-pilot-cli instance delete <old-replica> --clean-data
+   ```
+
+4. 触发故障转移（此时只有一个 replica，Sentinel 必然选中它）
    ```
    redis-pilot-cli instance failover <group-内任意实例名>
    ```
 
-4. 删除旧主库
+5. 删除旧主库（已降为 replica）
    ```
-   redis-pilot-cli instance delete <old-master>
+   redis-pilot-cli instance delete <old-master> --clean-data
+   ```
+
+6. 补齐从库（恢复一主 N 从架构）
+   ```
+   redis-pilot-cli instance create <new-replica> \
+     --engine <engine> \
+     --memory <new-memory> \
+     --replica-of <new-master-name>
    ```
 
 ## 参数
@@ -69,4 +86,6 @@ description: 扩容 Redis 实例（加从库或提升配置）
 - 加从库时优先选择与主库不同的服务器（跨机容灾）
 - 缩容（删从库）使用 redis-delete
 - Redis/Proxy 端口由 Server 自动分配和发布，不从 CLI 传 `--port`
-- 提升配置本质是替换式升级：新建高配从库 → 同步 → promote → 清理旧实例
+- 提升配置本质是替换式升级：建高配从库 → 同步 → 删旧从库 → promote → 清理旧主 → 补从库
+- 全程保持至少一个 replica 存活，确保 min-replicas-to-write 不阻断写入
+- 多从场景：先建一个高配 replica 并同步追平，再逐个删除旧 replica，最后 failover

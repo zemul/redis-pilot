@@ -70,7 +70,7 @@ type backupTask struct {
 func New(cfg *Config) *Agent {
 	a := &Agent{
 		cfg:     cfg,
-		log:     logger.New(cfg.Log.Dir, cfg.Log.Stdout),
+		log:     logger.Setup(logger.Config{Dir: cfg.Log.Dir, Stdout: cfg.Log.Stdout, RetentionDays: cfg.Log.RetentionDays, Level: cfg.Log.Level, Component: "agent"}),
 		mon:     newMonitor(),
 		runtime: podman.NewRuntime(),
 	}
@@ -145,6 +145,7 @@ func (a *Agent) Router() *gin.Engine {
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
 	r.Use(gin.Recovery())
+	r.Use(a.requestLogger())
 	r.Use(a.authMiddleware())
 
 	r.GET("/host/resources", a.hostResources)
@@ -165,6 +166,7 @@ func (a *Agent) Router() *gin.Engine {
 		inst.GET("/backup/status", a.instanceBackupStatus)
 		inst.POST("/restore", a.instanceRestore)
 		inst.GET("/backups", a.instanceBackups)
+		inst.GET("/diagnose", a.instanceDiagnose)
 	}
 
 	return r
@@ -193,6 +195,14 @@ func (a *Agent) authMiddleware() gin.HandlerFunc {
 			return
 		}
 		c.Next()
+	}
+}
+
+func (a *Agent) requestLogger() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		start := time.Now()
+		c.Next()
+		a.log.Infof("%s %s %d %dms", c.Request.Method, c.Request.URL.Path, c.Writer.Status(), time.Since(start).Milliseconds())
 	}
 }
 
@@ -233,6 +243,7 @@ func (a *Agent) instanceCreate(c *gin.Context) {
 	var createErr error
 	if req.Engine == "kvrocks" {
 		createErr = writeKvrocksConfig(dataDir, KvrocksConfigParams{
+			Port:               req.Port,
 			Password:           req.Password,
 			Memory:             req.Memory,
 			ReplicaOf:          req.ReplicaOf,
@@ -251,6 +262,7 @@ func (a *Agent) instanceCreate(c *gin.Context) {
 			aof = "no"
 		}
 		createErr = writeRedisConfig(dataDir, RedisConfigParams{
+			Port:               req.Port,
 			Password:           req.Password,
 			Memory:             req.Memory,
 			MaxmemoryPolicy:    policy,
@@ -307,6 +319,7 @@ func (a *Agent) instanceStart(c *gin.Context) {
 		fail(c, http.StatusInternalServerError, err.Error())
 		return
 	}
+	a.log.Infof("instance started: %s", req.Name)
 	ok(c, nil)
 }
 
@@ -331,6 +344,7 @@ func (a *Agent) instanceStop(c *gin.Context) {
 		fail(c, http.StatusInternalServerError, err.Error())
 		return
 	}
+	a.log.Infof("instance stopped: %s", req.Name)
 	ok(c, nil)
 }
 
@@ -371,6 +385,7 @@ func (a *Agent) instanceDelete(c *gin.Context) {
 			}
 		}
 	}
+	a.log.Infof("instance deleted: %s (clean_data=%v)", req.Name, req.CleanData)
 	ok(c, nil)
 }
 
@@ -417,6 +432,7 @@ func (a *Agent) writeInstanceConfig(req *instanceConfigRequest) error {
 	minReplicas := minReplicasToWrite(req.Type, req.ReplicaOf)
 	if req.Engine == "kvrocks" {
 		return writeKvrocksConfig(dataDir, KvrocksConfigParams{
+			Port:               req.Port,
 			Password:           req.Password,
 			Memory:             req.Memory,
 			ReplicaOf:          req.ReplicaOf,
@@ -435,6 +451,7 @@ func (a *Agent) writeInstanceConfig(req *instanceConfigRequest) error {
 		aof = "no"
 	}
 	return writeRedisConfig(dataDir, RedisConfigParams{
+		Port:               req.Port,
 		Password:           req.Password,
 		Memory:             req.Memory,
 		MaxmemoryPolicy:    policy,
@@ -727,6 +744,34 @@ func (a *Agent) instanceStatus(c *gin.Context) {
 		}
 	}
 	ok(c, resp)
+}
+
+func (a *Agent) instanceDiagnose(c *gin.Context) {
+	name := c.Query("name")
+	if name == "" {
+		fail(c, http.StatusBadRequest, "name is required")
+		return
+	}
+	if err := validateInstanceName(name); err != nil {
+		fail(c, http.StatusBadRequest, err.Error())
+		return
+	}
+	pw := a.getPassword(name)
+
+	info, err := redisCmd(name, pw, "INFO")
+	if err != nil {
+		fail(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+	slowlog, _ := redisCmd(name, pw, "SLOWLOG", "GET", "20")
+	memDoctor, _ := redisCmd(name, pw, "MEMORY", "DOCTOR")
+
+	ok(c, gin.H{
+		"info":          info,
+		"slowlog":       slowlog,
+		"memory_doctor": memDoctor,
+		"timestamp":     time.Now().Format(time.RFC3339),
+	})
 }
 
 func (a *Agent) instanceBackup(c *gin.Context) {
@@ -1160,9 +1205,8 @@ func fail(c *gin.Context, code int, err string) {
 
 // minReplicasToWrite returns 1 for replication masters, 0 otherwise.
 func minReplicasToWrite(instType, replicaOf string) int {
-	if instType == "replication" && replicaOf == "" {
-		return 1
-	}
+	// 依赖 Sentinel 秒级故障转移兜底，不用 min-replicas-to-write 牺牲可用性。
+	// 与 AWS ElastiCache / GCP Memorystore 等托管服务保持一致。
 	return 0
 }
 
