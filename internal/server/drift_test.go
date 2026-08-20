@@ -285,8 +285,15 @@ func TestReconcileReplicaDrift_SkipsWhenSentinelDisagrees(t *testing.T) {
 	// Sentinel 认为 master 是 6380，而 Server 记录是 6379。
 	sentinel := newFakeSentinel(t, fmt.Sprintf("%s:6380", agentHost))
 	s.cfg.Sentinel.Enabled = true
-	s.cfg.Sentinel.Nodes = []string{"srv1"}
+	s.cfg.Sentinel.Nodes = []string{"srv1", "sentinel-2", "sentinel-3"}
 	s.cfg.Sentinel.Port = fakeSentinelPort(t, sentinel.addr())
+	// 让 sentinel-2/sentinel-3 也能解析到 fake sentinel 的 host
+	sentinelHost, _ := fakeAgentHostPort(sentinel.addr())
+	s.db.WithNode(func(ns *apitypes.NodeState) error {
+		ns.Servers["sentinel-2"] = &apitypes.NodeServer{Endpoint: sentinelHost}
+		ns.Servers["sentinel-3"] = &apitypes.NodeServer{Endpoint: sentinelHost}
+		return nil
+	})
 
 	s.reconcileReplicaDrift([]replicaDrift{{
 		Instance: "order-replica", Server: "srv1", Group: "order",
@@ -313,8 +320,15 @@ func TestReconcileReplicaDrift_AppliesWhenSentinelAgrees(t *testing.T) {
 
 	sentinel := newFakeSentinel(t, expected)
 	s.cfg.Sentinel.Enabled = true
-	s.cfg.Sentinel.Nodes = []string{"srv1"}
+	s.cfg.Sentinel.Nodes = []string{"srv1", "sentinel-2", "sentinel-3"}
 	s.cfg.Sentinel.Port = fakeSentinelPort(t, sentinel.addr())
+	// 让 sentinel-2/sentinel-3 也能解析到 fake sentinel 的 host
+	sentinelHost, _ := fakeAgentHostPort(sentinel.addr())
+	s.db.WithNode(func(ns *apitypes.NodeState) error {
+		ns.Servers["sentinel-2"] = &apitypes.NodeServer{Endpoint: sentinelHost}
+		ns.Servers["sentinel-3"] = &apitypes.NodeServer{Endpoint: sentinelHost}
+		return nil
+	})
 
 	s.reconcileReplicaDrift([]replicaDrift{{
 		Instance: "order-replica", Server: "srv1", Group: "order",

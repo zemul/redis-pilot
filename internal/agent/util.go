@@ -10,23 +10,49 @@ import (
 	"time"
 )
 
-// redisCmd 通过 podman exec 执行 redis-cli 命令
+// redisCmd 通过宿主机 redis-cli 直连实例执行命令。
+// 端口从实例配置文件自动读取（{dataDir}/{name}/conf/redis.conf 或 kvrocks.conf）。
 func redisCmd(instanceName, password string, args ...string) (string, error) {
-	// 尝试 redis- 和 kvrocks- 前缀
-	for _, prefix := range []string{"redis-", "kvrocks-"} {
-		container := prefix + instanceName
-		cliArgs := []string{"exec", container, "redis-cli"}
-		if password != "" {
-			cliArgs = append(cliArgs, "-a", password, "--no-auth-warning")
+	port := instancePort(instanceName)
+	if port == "" {
+		return "", fmt.Errorf("instance %s not found or not running", instanceName)
+	}
+	cliArgs := []string{"-h", "127.0.0.1", "-p", port}
+	if password != "" {
+		cliArgs = append(cliArgs, "-a", password, "--no-auth-warning")
+	}
+	cliArgs = append(cliArgs, args...)
+	out, err := exec.Command("redis-cli", cliArgs...).CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("redis-cli failed: %s (%w)", strings.TrimSpace(string(out)), err)
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+// instancePort 从实例配置目录读取端口号。
+func instancePort(instanceName string) string {
+	// 尝试 redis.conf 和 kvrocks.conf
+	for _, filename := range []string{"redis.conf", "kvrocks.conf"} {
+		confPath := filepath.Join(agentDataDir, instanceName, "conf", filename)
+		data, err := os.ReadFile(confPath)
+		if err != nil {
+			continue
 		}
-		cliArgs = append(cliArgs, args...)
-		out, err := exec.Command("podman", cliArgs...).CombinedOutput()
-		if err == nil {
-			return strings.TrimSpace(string(out)), nil
+		for _, line := range strings.Split(string(data), "\n") {
+			line = strings.TrimSpace(line)
+			if strings.HasPrefix(line, "port ") {
+				parts := strings.Fields(line)
+				if len(parts) >= 2 {
+					return parts[1]
+				}
+			}
 		}
 	}
-	return "", fmt.Errorf("instance %s not found or not running", instanceName)
+	return ""
 }
+
+// agentDataDir 由 Agent 启动时设置。
+var agentDataDir string
 
 // isRedisErrReply 判断 redis-cli 的输出是否是一条 RESP 错误回复（例如 "ERR ..."）。
 // redis-cli 即使收到服务端的 -ERR 错误回复，进程本身也会以退出码 0 正常结束，

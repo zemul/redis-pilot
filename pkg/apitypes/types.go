@@ -267,6 +267,7 @@ type InstanceView struct {
 	ObservedStatus string `json:"observed_status"`
 	Lock           *Lock  `json:"lock,omitempty"`
 	CreatedAt      string `json:"created_at"`
+	MemoryUsed     int64  `json:"memory_used,omitempty"` // 实时 used_memory（字节），由 Server 缓存注入
 }
 
 // ToView 将 Instance 转换为对外展示视图（含派生状态字段）。

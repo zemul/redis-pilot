@@ -91,6 +91,7 @@ func New(cfg *Config) *Agent {
 		}
 	}
 	a.loadPasswords()
+	agentDataDir = cfg.DataDir
 	return a
 }
 
@@ -167,6 +168,8 @@ func (a *Agent) Router() *gin.Engine {
 		inst.POST("/restore", a.instanceRestore)
 		inst.GET("/backups", a.instanceBackups)
 		inst.GET("/diagnose", a.instanceDiagnose)
+		inst.GET("/slowlog", a.instanceSlowlog)
+		inst.GET("/bigkeys", a.instanceBigkeys)
 	}
 
 	return r
@@ -717,6 +720,7 @@ func (a *Agent) instanceList(c *gin.Context) {
 		"containers":            containers,
 		"configured_replica_of": configured,
 		"runtime_replica_of":    a.mon.replicaOfMap(),
+		"used_memory":           a.mon.usedMemoryMap(),
 	})
 }
 
@@ -774,6 +778,172 @@ func (a *Agent) instanceDiagnose(c *gin.Context) {
 		"slowlog":       slowlog,
 		"memory_doctor": memDoctor,
 		"timestamp":     time.Now().Format(time.RFC3339),
+	})
+}
+
+func (a *Agent) instanceSlowlog(c *gin.Context) {
+	name := c.Query("name")
+	if name == "" {
+		fail(c, http.StatusBadRequest, "name is required")
+		return
+	}
+	if err := validateInstanceName(name); err != nil {
+		fail(c, http.StatusBadRequest, err.Error())
+		return
+	}
+	count := c.DefaultQuery("count", "50")
+	pw := a.getPassword(name)
+
+	raw, err := redisCmd(name, pw, "SLOWLOG", "GET", count)
+	if err != nil {
+		fail(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+	entries := parseSlowlog(raw)
+	ok(c, gin.H{"entries": entries, "raw": raw})
+}
+
+func (a *Agent) instanceBigkeys(c *gin.Context) {
+	name := c.Query("name")
+	if name == "" {
+		fail(c, http.StatusBadRequest, "name is required")
+		return
+	}
+	if err := validateInstanceName(name); err != nil {
+		fail(c, http.StatusBadRequest, err.Error())
+		return
+	}
+	pw := a.getPassword(name)
+
+	// 阈值: string > 100KB, 集合类 > 10000 元素
+	const stringThreshold = 102400
+	const collectionThreshold = 10000
+	const maxDuration = 60 * time.Second
+	const scanCount = "200"
+	const sleepInterval = 10 * time.Millisecond
+
+	var bigKeys []map[string]interface{}
+	cursor := "0"
+	start := time.Now()
+	scanned := 0
+
+	for {
+		if time.Since(start) > maxDuration {
+			break
+		}
+		out, err := redisCmd(name, pw, "SCAN", cursor, "COUNT", scanCount)
+		if err != nil {
+			fail(c, http.StatusInternalServerError, err.Error())
+			return
+		}
+		lines := strings.SplitN(out, "\n", 2)
+		if len(lines) < 2 {
+			break
+		}
+		cursor = strings.TrimSpace(lines[0])
+		keys := strings.Split(strings.TrimSpace(lines[1]), "\n")
+
+		for _, key := range keys {
+			key = strings.TrimSpace(key)
+			if key == "" {
+				continue
+			}
+			scanned++
+			typeOut, err := redisCmd(name, pw, "TYPE", key)
+			if err != nil {
+				continue
+			}
+			keyType := strings.TrimSpace(typeOut)
+
+			var size int64
+			var unit string
+			switch keyType {
+			case "string":
+				lenOut, err := redisCmd(name, pw, "STRLEN", key)
+				if err != nil {
+					continue
+				}
+				size = parseIntFromReply(lenOut)
+				if size <= int64(stringThreshold) {
+					continue
+				}
+				unit = "bytes"
+			case "list":
+				lenOut, err := redisCmd(name, pw, "LLEN", key)
+				if err != nil {
+					continue
+				}
+				size = parseIntFromReply(lenOut)
+				if size <= int64(collectionThreshold) {
+					continue
+				}
+				unit = "elements"
+			case "hash":
+				lenOut, err := redisCmd(name, pw, "HLEN", key)
+				if err != nil {
+					continue
+				}
+				size = parseIntFromReply(lenOut)
+				if size <= int64(collectionThreshold) {
+					continue
+				}
+				unit = "fields"
+			case "set":
+				lenOut, err := redisCmd(name, pw, "SCARD", key)
+				if err != nil {
+					continue
+				}
+				size = parseIntFromReply(lenOut)
+				if size <= int64(collectionThreshold) {
+					continue
+				}
+				unit = "members"
+			case "zset":
+				lenOut, err := redisCmd(name, pw, "ZCARD", key)
+				if err != nil {
+					continue
+				}
+				size = parseIntFromReply(lenOut)
+				if size <= int64(collectionThreshold) {
+					continue
+				}
+				unit = "members"
+			case "stream":
+				lenOut, err := redisCmd(name, pw, "XLEN", key)
+				if err != nil {
+					continue
+				}
+				size = parseIntFromReply(lenOut)
+				if size <= int64(collectionThreshold) {
+					continue
+				}
+				unit = "entries"
+			default:
+				continue
+			}
+			bigKeys = append(bigKeys, map[string]interface{}{
+				"key":       key,
+				"type":      keyType,
+				"size":      size,
+				"size_desc": fmt.Sprintf("%d %s", size, unit),
+			})
+		}
+
+		if cursor == "0" {
+			break
+		}
+		time.Sleep(sleepInterval)
+	}
+
+	ok(c, gin.H{
+		"keys":      bigKeys,
+		"scanned":   scanned,
+		"timeout":   time.Since(start) > maxDuration,
+		"elapsed_ms": time.Since(start).Milliseconds(),
+		"threshold": map[string]interface{}{
+			"string_bytes":        stringThreshold,
+			"collection_elements": collectionThreshold,
+		},
 	})
 }
 

@@ -150,6 +150,39 @@ func (m *monitor) hostResources() map[string]interface{} {
 	}
 }
 
+// usedMemoryMap 返回各实例最近一次 INFO 中解析出的 used_memory（字节）。
+// 只包含最近 120s 内有指标采集的实例。
+func (m *monitor) usedMemoryMap() map[string]int64 {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := make(map[string]int64, len(m.instances))
+	now := time.Now()
+	for name, met := range m.instances {
+		if met == nil || now.Sub(met.UpdatedAt) > 120*time.Second {
+			continue
+		}
+		if v := parseInfoField(met.Info, "used_memory"); v > 0 {
+			out[name] = v
+		}
+	}
+	return out
+}
+
+// parseInfoField 从 Redis INFO 输出中解析一个整数字段。
+func parseInfoField(info, field string) int64 {
+	prefix := field + ":"
+	for _, line := range strings.Split(info, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, prefix) {
+			val := strings.TrimPrefix(line, prefix)
+			val = strings.TrimSpace(val)
+			n, _ := strconv.ParseInt(val, 10, 64)
+			return n
+		}
+	}
+	return 0
+}
+
 // runHealthCheck 每 30s 探测本机实例是否响应，只记录分类结果，不做任何破坏性动作。
 //
 // 刻意不自动重启：重启 Redis/Kvrocks 实例是破坏性且有全局影响的操作——断开所有客户端

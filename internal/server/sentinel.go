@@ -320,26 +320,62 @@ func (s *Server) reconcileSentinelOnce() error {
 	return nil
 }
 
+// querySentinelMaster 查询多数 Sentinel 节点的 master 地址，返回一致答案。
+//
+// 逻辑：并发查询所有可达的 Sentinel 节点，统计返回相同地址的节点数量。
+// 如果某个地址被 >= quorum 个节点返回，则认为该地址可信并返回。
+// 否则返回错误，防止网络分区时拿到陈旧地址驱动错误的 failover。
 func (s *Server) querySentinelMaster(nodeState *apitypes.NodeState, nodes []string, group string) (string, error) {
-	var firstErr error
+	type result struct {
+		addr string
+		err  error
+	}
+	ch := make(chan result, len(nodes))
 	for _, node := range nodes {
 		endpoint := s.sentinelNodeEndpoint(node, nodeState)
 		if endpoint == "" {
+			ch <- result{err: errors.New("no endpoint for node " + node)}
 			continue
 		}
 		addr := fmt.Sprintf("%s:%d", endpoint, s.sentinelPort())
-		master, err := sentinelGetMasterAddr(addr, group)
-		if err == nil {
-			return master, nil
+		go func(a string) {
+			master, err := sentinelGetMasterAddr(a, group)
+			ch <- result{addr: master, err: err}
+		}(addr)
+	}
+
+	votes := make(map[string]int)
+	var reachable int
+	var firstErr error
+	for range nodes {
+		r := <-ch
+		if r.err != nil {
+			if firstErr == nil {
+				firstErr = r.err
+			}
+			continue
 		}
+		reachable++
+		votes[r.addr]++
+	}
+
+	quorum := s.sentinelQuorum()
+
+	// 检查是否有多数派一致的答案
+	for addr, count := range votes {
+		if count >= quorum {
+			return addr, nil
+		}
+	}
+
+	// 没有达成 quorum
+	if reachable == 0 {
 		if firstErr == nil {
-			firstErr = err
+			firstErr = errors.New("no sentinel nodes available")
 		}
+		return "", firstErr
 	}
-	if firstErr == nil {
-		firstErr = errors.New("no sentinel nodes available")
-	}
-	return "", firstErr
+	return "", fmt.Errorf("sentinel quorum not reached for group %s: votes=%v quorum=%d", group, votes, quorum)
 }
 
 func (s *Server) querySentinelStatus(srv *apitypes.NodeServer) (*apitypes.SentinelStatus, error) {

@@ -16,6 +16,7 @@ export default defineConfig({
       '/node': apiTarget,
       '/backup': apiTarget,
       '/audit': apiTarget,
+      '/server': apiTarget,
       '/inventory': apiTarget
     }
   }

@@ -128,6 +128,16 @@ func (d *DB) Close() error {
 	return d.sql.Close()
 }
 
+// Checkpoint 执行 WAL checkpoint（TRUNCATE 模式），将 WAL 内容刷入主数据库文件
+// 并截断 WAL 文件为零字节，防止 WAL 无限增长。
+//
+// 调用时机由上层决定（如定时循环），本方法仅执行 checkpoint 本身。
+// busy_timeout 已在连接参数中设置为 15s，checkpoint 遇到读锁时会自动重试。
+func (d *DB) Checkpoint() error {
+	_, err := d.sql.Exec("PRAGMA wal_checkpoint(TRUNCATE)")
+	return err
+}
+
 // migrate 执行幂等建表。新增字段时追加 ALTER TABLE，不删除旧表。
 func (d *DB) migrate() error {
 	stmts := []string{

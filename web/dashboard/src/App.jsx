@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertCircle,
   AlertTriangle,
@@ -16,6 +16,7 @@ import {
   LayoutDashboard,
   List,
   Menu,
+  MoreVertical,
   Play,
   Plus,
   Power,
@@ -301,6 +302,7 @@ function buildInstanceGroups(instanceState) {
 			? group.instances.find((item) => item.name === group.currentMaster) || group.master || group.instances[0] || null
 			: group.master || group.instances[0] || null;
 		const memory = group.instances.reduce((sum, item) => sum + parseGi(getField(item, 'memory', 'Memory')), 0);
+		const memoryUsed = group.instances.reduce((sum, item) => sum + Number(getField(item, 'memory_used', 'MemoryUsed', 0) || 0), 0);
 		const disk = group.instances.reduce((sum, item) => sum + parseGi(getField(item, 'disk', 'Disk')), 0);
 		const cpus = group.instances.reduce((sum, item) => sum + Number(getField(item, 'cpus', 'CPUs', 0) || 0), 0);
 		return {
@@ -312,7 +314,7 @@ function buildInstanceGroups(instanceState) {
 			engineVersion: getField(group.groupState, 'engine_version', 'EngineVersion', group.engineVersion),
 			category: getField(group.groupState, 'category', 'Category', group.category),
 			type: getField(group.groupState, 'type', 'Type', group.type),
-			resource: { memory, disk, cpus }
+			resource: { memory, memoryUsed, disk, cpus }
 		};
 	});
 }
@@ -384,6 +386,40 @@ function IconButton({ icon: Icon, label, onClick, disabled = false }) {
   );
 }
 
+function MoreMenu({ items }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef(null);
+
+  useEffect(() => {
+    if (!open) return;
+    function handleClick(e) {
+      if (ref.current && !ref.current.contains(e.target)) setOpen(false);
+    }
+    document.addEventListener('mousedown', handleClick);
+    return () => document.removeEventListener('mousedown', handleClick);
+  }, [open]);
+
+  const visibleItems = items.filter(Boolean);
+  if (visibleItems.length === 0) return null;
+
+  return (
+    <div className="more-menu-wrap" ref={ref}>
+      <button className="icon-button" title="更多操作" aria-label="更多操作" type="button" onClick={() => setOpen(!open)}>
+        <MoreVertical size={16} />
+      </button>
+      {open && (
+        <div className="more-menu-dropdown">
+          {visibleItems.map((mi, i) => (
+            <button key={i} className={`more-menu-item${mi.danger ? ' danger' : ''}`} disabled={mi.disabled} onClick={() => { setOpen(false); mi.onClick(); }}>
+              {mi.label}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function powerActionFor(item, group) {
 	const status = getField(item, 'status', 'Status', '');
 	const role = getField(item, 'role', 'Role', '');
@@ -442,6 +478,8 @@ export default function App() {
   const [backupDetail, setBackupDetail] = useState(null);
   const [confirmAction, setConfirmAction] = useState(null);
   const [deleteConfirm, setDeleteConfirm] = useState(null);
+  const [slowlogTarget, setSlowlogTarget] = useState(null);
+  const [bigkeysTarget, setBigkeysTarget] = useState(null);
   const [createOpen, setCreateOpen] = useState(false);
   const [pendingAction, setPendingAction] = useState('');
   const [data, setData] = useState({ instances: {}, servers: {}, audits: [] });
@@ -673,6 +711,8 @@ export default function App() {
 	                  onOpenBackups={openBackupList}
 	                  onPowerAction={changeInstancePower}
 	                  onDelete={(item, group) => setDeleteConfirm({ item, group, cleanData: true })}
+	                  onSlowlog={(item) => setSlowlogTarget(item.name)}
+	                  onBigkeys={(item) => setBigkeysTarget(item.name)}
 	                  onCreate={() => setCreateOpen(true)}
 	                  servers={servers}
 	                  pendingAction={pendingAction}
@@ -692,7 +732,9 @@ export default function App() {
           )}
         </section>
 	      </main>
-	      {detail && <InstanceDetailModal detail={detail} onClose={() => setDetail(null)} />}
+	      {detail && <InstanceDetailModal detail={detail} requestFn={request} onClose={() => setDetail(null)} />}
+	      {slowlogTarget && <SlowlogModal instanceName={slowlogTarget} requestFn={request} onClose={() => setSlowlogTarget(null)} />}
+	      {bigkeysTarget && <BigkeysModal instanceName={bigkeysTarget} requestFn={request} onClose={() => setBigkeysTarget(null)} />}
 	      {backupDetail && <BackupListModal detail={backupDetail} requestFn={request} onRefresh={refresh} onClose={() => setBackupDetail(null)} />}
 	      {confirmAction && (
 	        <ConfirmPowerModal
@@ -855,7 +897,7 @@ function SummaryCell({ label, value, icon: Icon, tone = 'neutral' }) {
   );
 }
 
-function InstancesView({ groups, query, setQuery, expandedGroups, setExpandedGroups, onOpenDetail, onOpenBackups, onPowerAction, onDelete, onCreate, pendingAction }) {
+function InstancesView({ groups, query, setQuery, expandedGroups, setExpandedGroups, onOpenDetail, onOpenBackups, onPowerAction, onDelete, onSlowlog, onBigkeys, onCreate, pendingAction }) {
   const filtered = groups.filter((group) => {
     const text = [
       group.groupName,
@@ -894,18 +936,19 @@ function InstancesView({ groups, query, setQuery, expandedGroups, setExpandedGro
             <thead>
               <tr>
                 <th>实例名称 / 组</th>
+                <th>类别</th>
                 <th>引擎版本</th>
                 <th>拓扑角色</th>
                 <th>节点</th>
                 <th>端口</th>
-                <th>资源</th>
+                <th>内存</th>
                 <th>状态</th>
                 <th className="right">操作</th>
               </tr>
             </thead>
             <tbody>
               {filtered.length === 0 ? (
-                <tr><td colSpan="8"><EmptyState title="暂无实例" /></td></tr>
+                <tr><td colSpan="9"><EmptyState title="暂无实例" /></td></tr>
               ) : filtered.map((group) => (
                 <InstanceGroupRows
                   key={group.groupName}
@@ -916,6 +959,8 @@ function InstancesView({ groups, query, setQuery, expandedGroups, setExpandedGro
 	                onOpenBackups={onOpenBackups}
 	                onPowerAction={onPowerAction}
 	                onDelete={onDelete}
+	                onSlowlog={onSlowlog}
+	                onBigkeys={onBigkeys}
 	                pendingAction={pendingAction}
 	              />
               ))}
@@ -927,13 +972,15 @@ function InstancesView({ groups, query, setQuery, expandedGroups, setExpandedGro
   );
 }
 
-function InstanceGroupRows({ group, expanded, onToggle, onOpenDetail, onOpenBackups, onPowerAction, onDelete, pendingAction }) {
+function InstanceGroupRows({ group, expanded, onToggle, onOpenDetail, onOpenBackups, onPowerAction, onDelete, onSlowlog, onBigkeys, pendingAction }) {
   const master = group.master;
   const hasReplicas = group.replicas.length > 0;
   const topology = topologyLabel(group, master);
-  const isStandalone = topology === '单点';
+  const isStandalone = !hasReplicas;
   const category = group.category ? categoryLabel(group.category) : '';
-  const showInstances = expanded || !hasReplicas;
+
+  const powerAction = master ? powerActionFor(master, group) : null;
+  const isMasterWithReplicas = hasReplicas;
 
   return (
     <>
@@ -950,7 +997,6 @@ function InstanceGroupRows({ group, expanded, onToggle, onOpenDetail, onOpenBack
             <div>
               <div className="group-title">
                 <strong>{group.groupName}</strong>
-                {category && <span className="role-chip subtle">{category}</span>}
               </div>
               <span className="muted">
                 {master ? `主库: ${master.name}` : '主库状态异常'}
@@ -958,15 +1004,38 @@ function InstanceGroupRows({ group, expanded, onToggle, onOpenDetail, onOpenBack
             </div>
           </div>
         </td>
+        <td>{category && <span className="role-chip subtle">{category}</span>}</td>
         <td><span className="engine">{engineLabel(group)}</span></td>
         <td>{topology}</td>
         <td>{master ? getField(master, 'server', 'Server', '-') : '-'}</td>
         <td><ProxyPorts group={group} /></td>
-        <td>{master ? <ResourceValue memory={group.resource.memory} cpus={group.resource.cpus} disk={group.resource.disk} /> : '-'}</td>
+        <td>{master ? <ResourceValue memory={group.resource.memory} memoryUsed={group.resource.memoryUsed} /> : '-'}</td>
         <td><StatusBadge status={group.status} /></td>
-        <td />
+        <td>
+          {isStandalone && master && (
+            <div className="row-actions">
+              <IconButton icon={Info} label="详情与指标" onClick={() => onOpenDetail(master, group)} />
+              <IconButton icon={HardDrive} label="备份列表" onClick={() => onOpenBackups(master, group)} />
+              <MoreMenu items={[
+                { label: '慢查询', onClick: () => onSlowlog(master) },
+                { label: '大 Key 分析', onClick: () => onBigkeys(master) },
+                powerAction && {
+                  label: powerAction.label,
+                  disabled: powerAction.disabledReason || pendingAction === `${powerAction.action}:${master.name}`,
+                  onClick: () => { if (!powerAction.disabledReason) onPowerAction(master, group, powerAction.action); }
+                },
+                {
+                  label: '删除',
+                  danger: true,
+                  disabled: pendingAction === `delete:${master.name}`,
+                  onClick: () => onDelete(master, group)
+                }
+              ]} />
+            </div>
+          )}
+        </td>
       </tr>
-      {showInstances && master && (
+      {expanded && master && (
         <InstanceRow
           item={master}
           group={group}
@@ -975,10 +1044,12 @@ function InstanceGroupRows({ group, expanded, onToggle, onOpenDetail, onOpenBack
           onOpenBackups={onOpenBackups}
           onPowerAction={onPowerAction}
           onDelete={onDelete}
+          onSlowlog={onSlowlog}
+          onBigkeys={onBigkeys}
           pendingAction={pendingAction}
         />
       )}
-      {showInstances && group.replicas.map((replica) => (
+      {expanded && group.replicas.map((replica) => (
         <InstanceRow
           key={replica.name}
           item={replica}
@@ -988,6 +1059,8 @@ function InstanceGroupRows({ group, expanded, onToggle, onOpenDetail, onOpenBack
           onOpenBackups={onOpenBackups}
           onPowerAction={onPowerAction}
           onDelete={onDelete}
+          onSlowlog={onSlowlog}
+          onBigkeys={onBigkeys}
           pendingAction={pendingAction}
         />
       ))}
@@ -1008,16 +1081,23 @@ function ProxyPorts({ group }) {
   );
 }
 
-function ResourceValue({ memory, cpus, disk }) {
+function ResourceValue({ memory, memoryUsed }) {
+  const totalBytes = memory * 1024 * 1024 * 1024;
+  const pct = totalBytes > 0 && memoryUsed > 0 ? (memoryUsed / totalBytes) * 100 : 0;
+  const usedLabel = memoryUsed > 0 ? formatBytes(memoryUsed) : '0MB';
+  const totalLabel = formatBytes(totalBytes);
+  const tone = pct > 80 ? 'bar-danger' : pct > 60 ? 'bar-warn' : 'bar-ok';
   return (
-    <>
-      <span className="mono">{formatGi(memory)} / {cpus || 0}C</span>
-      <span className="muted">磁盘: <span className="mono">{formatGi(disk)}</span></span>
-    </>
+    <div className="mem-bar-wrap">
+      <div className="mem-bar-track">
+        <div className={`mem-bar-fill ${tone}`} style={{ width: `${Math.min(pct, 100)}%` }} />
+      </div>
+      <span className="mem-bar-label mono">{usedLabel} / {totalLabel}</span>
+    </div>
   );
 }
 
-function InstanceRow({ item, group, role, onOpenDetail, onOpenBackups, onPowerAction, onDelete, pendingAction }) {
+function InstanceRow({ item, group, role, onOpenDetail, onOpenBackups, onPowerAction, onDelete, onSlowlog, onBigkeys, pendingAction }) {
   const powerAction = powerActionFor(item, group);
   const isReplica = role === '从库';
   const isMasterWithReplicas = role === '主库' && group.replicas.length > 0;
@@ -1033,36 +1113,50 @@ function InstanceRow({ item, group, role, onOpenDetail, onOpenBackups, onPowerAc
           </div>
         </div>
       </td>
+      <td />
       <td><span className="muted">{engineLabel(group)}</span></td>
       <td>{role}</td>
       <td>{getField(item, 'server', 'Server', '-')}</td>
-      <td><span className="mono">{getField(item, 'port', 'Port', '-')}</span></td>
+      <td />
       <td>
-        <span className="mono">{getField(item, 'memory', 'Memory', '-')} / {getField(item, 'cpus', 'CPUs', '-')}C</span>
-        <span className="muted">磁盘: <span className="mono">{displayValue(getField(item, 'disk', 'Disk'), '0Gi')}</span></span>
+        {(() => {
+          const used = Number(getField(item, 'memory_used', 'MemoryUsed', 0) || 0);
+          const totalGi = parseGi(getField(item, 'memory', 'Memory'));
+          const totalBytes = totalGi * 1024 * 1024 * 1024;
+          const pct = totalBytes > 0 && used > 0 ? (used / totalBytes) * 100 : 0;
+          const usedLabel = used > 0 ? formatBytes(used) : '0MB';
+          const totalLabel = formatBytes(totalBytes);
+          const tone = pct > 80 ? 'bar-danger' : pct > 60 ? 'bar-warn' : 'bar-ok';
+          return (
+            <div className="mem-bar-wrap">
+              <div className="mem-bar-track">
+                <div className={`mem-bar-fill ${tone}`} style={{ width: `${Math.min(pct, 100)}%` }} />
+              </div>
+              <span className="mem-bar-label mono">{usedLabel} / {totalLabel}</span>
+            </div>
+          );
+        })()}
       </td>
       <td><StatusBadge status={getField(item, 'status', 'Status')} /></td>
       <td>
         <div className="row-actions">
           <IconButton icon={Info} label="详情与指标" onClick={() => onOpenDetail(item, group)} />
           <IconButton icon={HardDrive} label="备份列表" onClick={() => onOpenBackups(item, group)} />
-          {powerAction && <IconButton
-            icon={powerAction.icon}
-            label={powerAction.label}
-            disabled={powerAction.disabledReason || pendingAction === `${powerAction.action}:${item.name}`}
-            onClick={() => {
-              if (powerAction.disabledReason) return;
-              onPowerAction(item, group, powerAction.action);
-            }}
-          />}
-          <IconButton
-            icon={Trash2}
-            label={isMasterWithReplicas ? '主库存在从库时不可删除' : '删除实例'}
-            disabled={isMasterWithReplicas ? '主库存在从库时不可删除，请先删除从库' : pendingAction === `delete:${item.name}`}
-            onClick={() => {
-              if (!isMasterWithReplicas) onDelete(item, group);
-            }}
-          />
+          <MoreMenu items={[
+            { label: '慢查询', onClick: () => onSlowlog(item) },
+            { label: '大 Key 分析', onClick: () => onBigkeys(item) },
+            powerAction && {
+              label: powerAction.label,
+              disabled: powerAction.disabledReason || pendingAction === `${powerAction.action}:${item.name}`,
+              onClick: () => { if (!powerAction.disabledReason) onPowerAction(item, group, powerAction.action); }
+            },
+            {
+              label: '删除',
+              danger: true,
+              disabled: isMasterWithReplicas ? '主库存在从库时不可删除，请先删除从库' : pendingAction === `delete:${item.name}`,
+              onClick: () => { if (!isMasterWithReplicas) onDelete(item, group); }
+            }
+          ]} />
         </div>
       </td>
     </tr>
@@ -1358,7 +1452,7 @@ function AuditCard({ log }) {
   );
 }
 
-function InstanceDetailModal({ detail, onClose }) {
+function InstanceDetailModal({ detail, requestFn, onClose }) {
   const { item, group, loading, error, metrics } = detail;
   const payload = extractMetricsPayload(metrics);
   const info = payload.info || payload.Info || '';
@@ -1430,6 +1524,129 @@ function InstanceDetailModal({ detail, onClose }) {
               </>
             )}
           </section>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function SlowlogModal({ instanceName, requestFn, onClose }) {
+  const [entries, setEntries] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    let ignore = false;
+    setLoading(true);
+    setError('');
+    requestFn(`/instance/slowlog?name=${encodeURIComponent(instanceName)}&count=50`)
+      .then((data) => { if (!ignore) setEntries(data?.entries || []); })
+      .catch((err) => { if (!ignore) setError(err.message || String(err)); })
+      .finally(() => { if (!ignore) setLoading(false); });
+    return () => { ignore = true; };
+  }, [instanceName]);
+
+  function reload() {
+    setLoading(true);
+    setError('');
+    requestFn(`/instance/slowlog?name=${encodeURIComponent(instanceName)}&count=50`)
+      .then((data) => setEntries(data?.entries || []))
+      .catch((err) => setError(err.message || String(err)))
+      .finally(() => setLoading(false));
+  }
+
+  return (
+    <div className="modal-backdrop" role="presentation" onMouseDown={onClose}>
+      <section className="modal" role="dialog" aria-modal="true" onMouseDown={(e) => e.stopPropagation()}>
+        <div className="modal-header">
+          <div><h3>慢查询</h3><span>{instanceName}</span></div>
+          <button className="icon-button" onClick={onClose} aria-label="关闭" type="button"><X size={18} /></button>
+        </div>
+        <div className="modal-body">
+          {loading ? <div className="inline-loading">正在加载慢查询...</div> :
+           error ? <div className="notice compact"><AlertCircle size={16} /> {error}</div> :
+           (!entries || entries.length === 0) ? <div className="empty-state">无慢查询记录</div> : (
+            <section>
+              <div className="tab-toolbar">
+                <span className="muted">{entries.length} 条记录</span>
+                <button className="ghost-button small" onClick={reload}><RefreshCw size={14} /> 刷新</button>
+              </div>
+              <table className="detail-table">
+                <thead>
+                  <tr><th>时间</th><th>耗时</th><th>命令</th><th>客户端</th></tr>
+                </thead>
+                <tbody>
+                  {entries.map((e, i) => (
+                    <tr key={i}>
+                      <td className="mono">{e.timestamp ? new Date(e.timestamp * 1000).toLocaleString() : '-'}</td>
+                      <td className="mono">{e.duration_us >= 1000 ? `${(e.duration_us / 1000).toFixed(1)}ms` : `${e.duration_us}µs`}</td>
+                      <td className="mono cmd-cell">{e.command || '-'}</td>
+                      <td className="mono">{e.client || '-'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </section>
+          )}
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function BigkeysModal({ instanceName, requestFn, onClose }) {
+  const [keys, setKeys] = useState(null);
+  const [meta, setMeta] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+
+  function run() {
+    setLoading(true);
+    setError('');
+    requestFn(`/instance/bigkeys?name=${encodeURIComponent(instanceName)}`)
+      .then((data) => { setKeys(data?.keys || []); setMeta({ scanned: data?.scanned, timeout: data?.timeout, elapsed_ms: data?.elapsed_ms }); })
+      .catch((err) => setError(err.message || String(err)))
+      .finally(() => setLoading(false));
+  }
+
+  return (
+    <div className="modal-backdrop" role="presentation" onMouseDown={onClose}>
+      <section className="modal" role="dialog" aria-modal="true" onMouseDown={(e) => e.stopPropagation()}>
+        <div className="modal-header">
+          <div><h3>大 Key 分析</h3><span>{instanceName}</span></div>
+          <button className="icon-button" onClick={onClose} aria-label="关闭" type="button"><X size={18} /></button>
+        </div>
+        <div className="modal-body">
+          <div className="tab-toolbar">
+            <span className="muted">阈值: string &gt; 100KB，集合类 &gt; 10000 元素</span>
+            <button className="ghost-button small" onClick={run} disabled={loading}>
+              {loading ? <><RefreshCw size={14} className="spin" /> 扫描中...</> : <><Play size={14} /> 开始扫描</>}
+            </button>
+          </div>
+          {error && <div className="notice compact"><AlertCircle size={16} /> {error}</div>}
+          {meta && (
+            <div className="muted" style={{ fontSize: 12, marginBottom: 8 }}>
+              已扫描 {meta.scanned} 个 key，耗时 {meta.elapsed_ms}ms
+              {meta.timeout && <span style={{ color: '#f59e0b' }}> （达到 60s 上限，结果可能不完整）</span>}
+            </div>
+          )}
+          {keys && keys.length > 0 && (
+            <table className="detail-table">
+              <thead>
+                <tr><th>Key</th><th>类型</th><th>大小</th></tr>
+              </thead>
+              <tbody>
+                {keys.map((k, i) => (
+                  <tr key={i}>
+                    <td className="mono cmd-cell">{k.key}</td>
+                    <td>{k.type}</td>
+                    <td className="mono">{k.size_desc}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+          {keys && keys.length === 0 && !loading && <div className="empty-state">未发现大 Key</div>}
         </div>
       </section>
     </div>
@@ -1708,13 +1925,21 @@ function ConfirmPowerModal({ detail, loading, onCancel, onConfirm }) {
 function CreateInstanceModal({ servers, groups, requestFn, onRefresh, onClose }) {
   const [form, setForm] = useState({
     group: '', engine: 'redis', engine_version: '', category: 'cache',
-    joinExisting: false, replicaCount: 1,
+    joinExisting: false, replicaCount: 1, access_mode: 'standard',
     memory: '', memory_unit: 'Gi', cpus: '', disk: '', disk_unit: 'Gi',
     server: '', password: '', config_overrides: ''
   });
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
   const [progress, setProgress] = useState(null);
+  const [engines, setEngines] = useState(null);
+
+  useEffect(() => {
+    requestFn('/server/info').then((data) => setEngines(data?.engines || null)).catch(() => {});
+  }, []);
+
+  const currentVersions = engines && engines[form.engine] ? engines[form.engine].versions || [] : [];
+  const defaultVersion = engines && engines[form.engine] ? engines[form.engine].default || '' : '';
 
   const replicaGroups = groups.filter((g) => g.master);
   const isReplica = form.joinExisting;
@@ -1793,7 +2018,8 @@ function CreateInstanceModal({ servers, groups, requestFn, onRefresh, onClose })
         name: `${form.group}-0`,
         type: isStandalone ? 'standalone' : 'replication',
         group: form.group,
-        ...(form.engine_version.trim() ? { engine_version: form.engine_version.trim() } : {})
+        ...(form.engine_version.trim() ? { engine_version: form.engine_version.trim() } : {}),
+        ...(!isStandalone && form.access_mode ? { access_mode: form.access_mode } : {})
       }
     }];
     for (let i = 1; i <= form.replicaCount; i++) {
@@ -1878,10 +2104,19 @@ function CreateInstanceModal({ servers, groups, requestFn, onRefresh, onClose })
                 </select>
               </label>
               <label>引擎版本
-                <input value={form.engine_version} onChange={(e) => update('engine_version', e.target.value)} placeholder="默认" disabled={isReplica} />
+                <select value={form.engine_version} onChange={(e) => update('engine_version', e.target.value)} disabled={isReplica}>
+                  <option value="">默认{defaultVersion ? ` (${defaultVersion})` : ''}</option>
+                  {currentVersions.map((v) => <option key={v} value={v}>{v}</option>)}
+                </select>
               </label>
               <label>副本数量 <span className="req">*</span>
                 <input type="number" min={0} value={form.replicaCount} onChange={(e) => update('replicaCount', Math.max(0, Number(e.target.value) || 0))} />
+              </label>
+              <label>接入方式
+                <select value={form.access_mode} onChange={(e) => update('access_mode', e.target.value)} disabled={isReplica || form.replicaCount === 0}>
+                  <option value="standard">标准（全部走主库）</option>
+                  <option value="rw-split">读写分离</option>
+                </select>
               </label>
             </div>
             {replicaGroups.length > 0 && (

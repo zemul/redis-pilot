@@ -45,6 +45,11 @@ type Server struct {
 	// so reconcile only logs state transitions (ok->alert, alert->ok) instead
 	// of repeating the same alert every 30 seconds.
 	alertInstances map[string]bool
+
+	// memoryUsed 缓存各实例最近一次 reconcile 拿到的 used_memory（字节）。
+	// 由 reconcile 写入，列表接口读取。重启后为空，下一轮 reconcile 自动填充。
+	memoryUsedMu sync.RWMutex
+	memoryUsed   map[string]int64
 }
 
 func New(cfg *Config) (*Server, error) {
@@ -70,9 +75,26 @@ func New(cfg *Config) (*Server, error) {
 		log:            logger.Setup(logger.Config{Dir: cfg.Log.Dir, Stdout: cfg.Log.Stdout, RetentionDays: cfg.Log.RetentionDays, Level: cfg.Log.Level, Component: "server"}),
 		audit:          audit.New(db),
 		alertInstances: make(map[string]bool),
+		memoryUsed:     make(map[string]int64),
 	}
 	s.scheduler = newBackupScheduler(s)
 	return s, nil
+}
+
+// StartWALCheckpointLoop 每 5 分钟执行一次 WAL checkpoint（TRUNCATE），
+// 防止持续写入导致 WAL 文件无限增长。
+//
+// SQLite 的自动 checkpoint 仅在默认阈值（1000 页 ≈ 4MB）满足且没有活跃读者时触发；
+// 长轮询等长连接可能持续持有读事务（snapshot），导致自动 checkpoint 被无限推迟。
+// 显式定期 checkpoint 在 busy_timeout 窗口内重试，能可靠回收 WAL 空间。
+func (s *Server) StartWALCheckpointLoop() {
+	go func() {
+		for range time.Tick(5 * time.Minute) {
+			if err := s.db.Checkpoint(); err != nil {
+				s.log.Errorf("wal checkpoint failed: %v", err)
+			}
+		}
+	}()
 }
 
 // StartReconcileLoop 启动定时状态校验，每 30 秒执行一次
@@ -124,6 +146,8 @@ func (s *Server) Router() *gin.Engine {
 		instance.GET("/status", s.instanceStatus)
 		instance.GET("/metrics", s.metricsCollect)
 		instance.GET("/diagnose", s.instanceDiagnose)
+		instance.GET("/slowlog", s.instanceSlowlog)
+		instance.GET("/bigkeys", s.instanceBigkeys)
 		instance.POST("/create", s.instanceCreate)
 		instance.POST("/delete", s.instanceDelete)
 		instance.POST("/start", s.instanceStart)
@@ -145,6 +169,7 @@ func (s *Server) Router() *gin.Engine {
 	}
 
 	r.GET("/audit/query", s.auditQuery)
+	r.GET("/server/info", s.serverInfo)
 	r.POST("/reconcile", s.reconcile)
 	r.GET("/metrics", s.metricsCollect)
 

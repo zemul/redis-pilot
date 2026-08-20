@@ -96,8 +96,8 @@ lazyfree-lazy-user-del no
 lazyfree-lazy-user-flush no
 {{ end }}
 
-slowlog-log-slower-than 10000
-slowlog-max-len 128
+slowlog-log-slower-than 20000
+slowlog-max-len 1024
 maxclients 10000
 
 {{ .ConfigOverrides }}
@@ -134,8 +134,8 @@ slave-priority 100
 replica-announce-ip {{ .AnnounceIP }}
 {{ end }}
 replica-announce-port {{ .AnnouncePort }}
-slowlog-log-slower-than 10000
-slowlog-max-len 128
+slowlog-log-slower-than 20000
+slowlog-max-len 1024
 maxclients 10000
 
 {{ .ConfigOverrides }}

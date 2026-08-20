@@ -133,13 +133,32 @@ func (s *Server) instanceList(c *gin.Context) {
 				filteredGroups[groupFilter] = g
 			}
 		}
-		ok(c, (&apitypes.InstancesState{
+		view := (&apitypes.InstancesState{
 			Groups:    filteredGroups,
 			Instances: filteredInstances,
-		}).ToView())
+		}).ToView()
+		s.injectMemoryUsed(view)
+		ok(c, view)
 		return
 	}
-	ok(c, state.ToView())
+	view := state.ToView()
+	s.injectMemoryUsed(view)
+	ok(c, view)
+}
+
+
+// injectMemoryUsed 将内存缓存中的 used_memory 注入到列表视图中。
+func (s *Server) injectMemoryUsed(view *apitypes.InstancesStateView) {
+	if view == nil {
+		return
+	}
+	s.memoryUsedMu.RLock()
+	defer s.memoryUsedMu.RUnlock()
+	for name, inst := range view.Instances {
+		if v, ok := s.memoryUsed[name]; ok {
+			inst.MemoryUsed = v
+		}
+	}
 }
 
 func instanceMatchesListFilters(inst *apitypes.Instance, group *apitypes.InstanceGroupState, groupFilter, serverFilter, engineFilter, engineVersionFilter, roleFilter, statusFilter, categoryFilter string) bool {
@@ -1746,4 +1765,20 @@ func parseMemoryGi(s string) int {
 		return (n + 1023) / 1024
 	}
 	return 0
+}
+
+// serverInfo 返回服务器配置信息（可用引擎版本等），供前端创建表单使用。
+func (s *Server) serverInfo(c *gin.Context) {
+	engines := make(map[string]interface{})
+	for name, cfg := range s.cfg.Images {
+		versions := make([]string, 0, len(cfg.Versions))
+		for v := range cfg.Versions {
+			versions = append(versions, v)
+		}
+		engines[name] = map[string]interface{}{
+			"default":  cfg.Default,
+			"versions": versions,
+		}
+	}
+	ok(c, gin.H{"engines": engines})
 }

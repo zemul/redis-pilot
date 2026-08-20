@@ -133,6 +133,16 @@ func (s *Server) runReconcile() ([]ReconcileResult, error) {
 		replicaDrifts = append(replicaDrifts,
 			detectReplicaDrift(node, instances, serverName, instNames, runtimeReplicaOf)...)
 
+		// 缓存实例内存使用
+		usedMemory := parseUsedMemory(apiResp.Data)
+		if len(usedMemory) > 0 {
+			s.memoryUsedMu.Lock()
+			for name, v := range usedMemory {
+				s.memoryUsed[name] = v
+			}
+			s.memoryUsedMu.Unlock()
+		}
+
 		// 逐个对比
 		for _, name := range instNames {
 			inst := instances.Instances[name]
@@ -282,6 +292,30 @@ func parseStringMapField(data interface{}, field string) map[string]string {
 	for name, v := range raw {
 		if s, ok := v.(string); ok {
 			result[name] = s
+		}
+	}
+	return result
+}
+
+// parseUsedMemory 从 Agent /instance/list 响应中提取各实例的 used_memory（字节）。
+func parseUsedMemory(data interface{}) map[string]int64 {
+	result := make(map[string]int64)
+	m, ok := data.(map[string]interface{})
+	if !ok {
+		return result
+	}
+	raw, ok := m["used_memory"].(map[string]interface{})
+	if !ok {
+		return result
+	}
+	for name, v := range raw {
+		switch n := v.(type) {
+		case float64:
+			result[name] = int64(n)
+		case json.Number:
+			if i, err := n.Int64(); err == nil {
+				result[name] = i
+			}
 		}
 	}
 	return result
