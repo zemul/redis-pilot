@@ -1991,3 +1991,23 @@ code {
   align-items: center;
   gap: 4px;
 }
+
+/* Config modal */
+.modal-wide { max-width: 720px; }
+.config-value-input {
+  width: 100%;
+  border: 1px solid transparent;
+  background: transparent;
+  padding: 2px 4px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  border-radius: 3px;
+  transition: border-color 0.15s;
+}
+.config-value-input:focus {
+  outline: none;
+  border-color: var(--accent);
+  background: var(--surface-1);
+}
+.row-modified { background: color-mix(in srgb, var(--accent) 8%, transparent); }
+.row-modified .config-value-input { border-color: var(--accent); }

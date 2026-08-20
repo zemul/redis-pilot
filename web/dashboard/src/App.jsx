@@ -480,6 +480,7 @@ export default function App() {
   const [deleteConfirm, setDeleteConfirm] = useState(null);
   const [slowlogTarget, setSlowlogTarget] = useState(null);
   const [bigkeysTarget, setBigkeysTarget] = useState(null);
+  const [configTarget, setConfigTarget] = useState(null);
   const [createOpen, setCreateOpen] = useState(false);
   const [pendingAction, setPendingAction] = useState('');
   const [data, setData] = useState({ instances: {}, servers: {}, audits: [] });
@@ -713,6 +714,7 @@ export default function App() {
 	                  onDelete={(item, group) => setDeleteConfirm({ item, group, cleanData: true })}
 	                  onSlowlog={(item) => setSlowlogTarget(item.name)}
 	                  onBigkeys={(item) => setBigkeysTarget(item.name)}
+	                  onConfig={(item) => setConfigTarget(item.name)}
 	                  onCreate={() => setCreateOpen(true)}
 	                  servers={servers}
 	                  pendingAction={pendingAction}
@@ -735,6 +737,7 @@ export default function App() {
 	      {detail && <InstanceDetailModal detail={detail} requestFn={request} onClose={() => setDetail(null)} />}
 	      {slowlogTarget && <SlowlogModal instanceName={slowlogTarget} requestFn={request} onClose={() => setSlowlogTarget(null)} />}
 	      {bigkeysTarget && <BigkeysModal instanceName={bigkeysTarget} requestFn={request} onClose={() => setBigkeysTarget(null)} />}
+	      {configTarget && <ConfigModal instanceName={configTarget} requestFn={request} onClose={() => setConfigTarget(null)} />}
 	      {backupDetail && <BackupListModal detail={backupDetail} requestFn={request} onRefresh={refresh} onClose={() => setBackupDetail(null)} />}
 	      {confirmAction && (
 	        <ConfirmPowerModal
@@ -897,7 +900,7 @@ function SummaryCell({ label, value, icon: Icon, tone = 'neutral' }) {
   );
 }
 
-function InstancesView({ groups, query, setQuery, expandedGroups, setExpandedGroups, onOpenDetail, onOpenBackups, onPowerAction, onDelete, onSlowlog, onBigkeys, onCreate, pendingAction }) {
+function InstancesView({ groups, query, setQuery, expandedGroups, setExpandedGroups, onOpenDetail, onOpenBackups, onPowerAction, onDelete, onSlowlog, onBigkeys, onConfig, onCreate, pendingAction }) {
   const filtered = groups.filter((group) => {
     const text = [
       group.groupName,
@@ -961,6 +964,7 @@ function InstancesView({ groups, query, setQuery, expandedGroups, setExpandedGro
 	                onDelete={onDelete}
 	                onSlowlog={onSlowlog}
 	                onBigkeys={onBigkeys}
+	                onConfig={onConfig}
 	                pendingAction={pendingAction}
 	              />
               ))}
@@ -972,7 +976,7 @@ function InstancesView({ groups, query, setQuery, expandedGroups, setExpandedGro
   );
 }
 
-function InstanceGroupRows({ group, expanded, onToggle, onOpenDetail, onOpenBackups, onPowerAction, onDelete, onSlowlog, onBigkeys, pendingAction }) {
+function InstanceGroupRows({ group, expanded, onToggle, onOpenDetail, onOpenBackups, onPowerAction, onDelete, onSlowlog, onBigkeys, onConfig, pendingAction }) {
   const master = group.master;
   const hasReplicas = group.replicas.length > 0;
   const topology = topologyLabel(group, master);
@@ -998,9 +1002,11 @@ function InstanceGroupRows({ group, expanded, onToggle, onOpenDetail, onOpenBack
               <div className="group-title">
                 <strong>{group.groupName}</strong>
               </div>
-              <span className="muted">
-                {master ? `主库: ${master.name}` : '主库状态异常'}
-              </span>
+              {(hasReplicas || !master || master.name !== group.groupName) && (
+                <span className="muted">
+                  {master ? `主库: ${master.name}` : '主库状态异常'}
+                </span>
+              )}
             </div>
           </div>
         </td>
@@ -1017,6 +1023,7 @@ function InstanceGroupRows({ group, expanded, onToggle, onOpenDetail, onOpenBack
               <IconButton icon={Info} label="详情与指标" onClick={() => onOpenDetail(master, group)} />
               <IconButton icon={HardDrive} label="备份列表" onClick={() => onOpenBackups(master, group)} />
               <MoreMenu items={[
+                { label: '修改配置', onClick: () => onConfig(master) },
                 { label: '慢查询', onClick: () => onSlowlog(master) },
                 { label: '大 Key 分析', onClick: () => onBigkeys(master) },
                 powerAction && {
@@ -1046,6 +1053,7 @@ function InstanceGroupRows({ group, expanded, onToggle, onOpenDetail, onOpenBack
           onDelete={onDelete}
           onSlowlog={onSlowlog}
           onBigkeys={onBigkeys}
+          onConfig={onConfig}
           pendingAction={pendingAction}
         />
       )}
@@ -1061,6 +1069,7 @@ function InstanceGroupRows({ group, expanded, onToggle, onOpenDetail, onOpenBack
           onDelete={onDelete}
           onSlowlog={onSlowlog}
           onBigkeys={onBigkeys}
+          onConfig={onConfig}
           pendingAction={pendingAction}
         />
       ))}
@@ -1097,7 +1106,7 @@ function ResourceValue({ memory, memoryUsed }) {
   );
 }
 
-function InstanceRow({ item, group, role, onOpenDetail, onOpenBackups, onPowerAction, onDelete, onSlowlog, onBigkeys, pendingAction }) {
+function InstanceRow({ item, group, role, onOpenDetail, onOpenBackups, onPowerAction, onDelete, onSlowlog, onBigkeys, onConfig, pendingAction }) {
   const powerAction = powerActionFor(item, group);
   const isReplica = role === '从库';
   const isMasterWithReplicas = role === '主库' && group.replicas.length > 0;
@@ -1143,6 +1152,7 @@ function InstanceRow({ item, group, role, onOpenDetail, onOpenBackups, onPowerAc
           <IconButton icon={Info} label="详情与指标" onClick={() => onOpenDetail(item, group)} />
           <IconButton icon={HardDrive} label="备份列表" onClick={() => onOpenBackups(item, group)} />
           <MoreMenu items={[
+            { label: '修改配置', onClick: () => onConfig(item) },
             { label: '慢查询', onClick: () => onSlowlog(item) },
             { label: '大 Key 分析', onClick: () => onBigkeys(item) },
             powerAction && {
@@ -1653,6 +1663,135 @@ function BigkeysModal({ instanceName, requestFn, onClose }) {
   );
 }
 
+function ConfigModal({ instanceName, requestFn, onClose }) {
+  const VISIBLE_KEYS = [
+    'maxmemory', 'maxmemory-policy', 'hz', 'timeout', 'tcp-keepalive', 'tcp-backlog',
+    'databases', 'maxclients', 'slowlog-log-slower-than', 'slowlog-max-len',
+    'loglevel', 'latency-tracking', 'activedefrag', 'active-defrag-enabled',
+    'active-defrag-ignore-bytes', 'active-defrag-threshold-lower', 'active-defrag-threshold-upper',
+    'active-defrag-cycle-min', 'active-defrag-cycle-max',
+    'lazyfree-lazy-eviction', 'lazyfree-lazy-expire', 'lazyfree-lazy-server-del',
+    'no-appendfsync-on-rewrite', 'auto-aof-rewrite-percentage', 'auto-aof-rewrite-min-size',
+    'aof-use-rdb-preamble', 'save', 'rdbcompression', 'rdbchecksum',
+    'list-max-ziplist-size', 'list-max-listpack-size', 'zset-max-ziplist-entries', 'zset-max-ziplist-value',
+    'zset-max-listpack-entries', 'zset-max-listpack-value',
+    'hash-max-ziplist-entries', 'hash-max-ziplist-value', 'hash-max-listpack-entries', 'hash-max-listpack-value',
+    'set-max-intset-entries', 'set-max-listpack-entries',
+    'notify-keyspace-events', 'client-output-buffer-limit',
+    'proto-max-bulk-len', 'lua-time-limit', 'min-replicas-to-write', 'min-replicas-max-lag',
+    'io-threads', 'io-threads-do-reads',
+    // kvrocks
+    'rocksdb.compression', 'rocksdb.write_buffer_size', 'rocksdb.max_write_buffer_number',
+    'rocksdb.target_file_size_base', 'rocksdb.max_background_compactions', 'rocksdb.max_background_flushes',
+    'rocksdb.block_size', 'rocksdb.metadata_block_size', 'rocksdb.enable_blob_files',
+  ];
+  const visibleSet = new Set(VISIBLE_KEYS);
+
+  const [config, setConfig] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [filter, setFilter] = useState('');
+  const [edits, setEdits] = useState({});
+  const [saving, setSaving] = useState(false);
+  const [saveResult, setSaveResult] = useState('');
+
+  useEffect(() => {
+    let ignore = false;
+    setLoading(true);
+    setError('');
+    requestFn(`/instance/config?name=${encodeURIComponent(instanceName)}`)
+      .then((data) => { if (!ignore) setConfig(data?.config || {}); })
+      .catch((err) => { if (!ignore) setError(err.message || String(err)); })
+      .finally(() => { if (!ignore) setLoading(false); });
+    return () => { ignore = true; };
+  }, [instanceName]);
+
+  const filteredKeys = config ? Object.keys(config).filter((k) => visibleSet.has(k) && (!filter || k.includes(filter))).sort() : [];
+  const hasEdits = Object.keys(edits).length > 0;
+
+  function handleEdit(key, value) {
+    if (value === config[key]) {
+      const next = { ...edits };
+      delete next[key];
+      setEdits(next);
+    } else {
+      setEdits({ ...edits, [key]: value });
+    }
+  }
+
+  async function handleSave() {
+    setSaving(true);
+    setSaveResult('');
+    try {
+      await requestFn('/instance/config', {
+        method: 'POST',
+        body: JSON.stringify({ name: instanceName, config_overrides: edits })
+      });
+      setSaveResult(`已保存 ${Object.keys(edits).length} 项配置`);
+      // 更新本地 config 状态
+      setConfig((prev) => ({ ...prev, ...edits }));
+      setEdits({});
+    } catch (err) {
+      setSaveResult(`保存失败: ${err.message || String(err)}`);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="modal-backdrop" role="presentation" onMouseDown={onClose}>
+      <section className="modal modal-wide" role="dialog" aria-modal="true" onMouseDown={(e) => e.stopPropagation()}>
+        <div className="modal-header">
+          <div><h3>修改配置</h3><span>{instanceName}</span></div>
+          <button className="icon-button" onClick={onClose} aria-label="关闭" type="button"><X size={18} /></button>
+        </div>
+        <div className="modal-body">
+          {loading ? <div className="inline-loading">正在加载配置...</div> :
+           error ? <div className="notice compact"><AlertCircle size={16} /> {error}</div> : (
+            <>
+              <div className="tab-toolbar">
+                <input value={filter} onChange={(e) => setFilter(e.target.value)} placeholder="搜索配置项..." style={{ flex: 1, maxWidth: 300 }} />
+                <span className="muted">{filteredKeys.length} 项</span>
+                {hasEdits && (
+                  <button className="ghost-button small" onClick={handleSave} disabled={saving}>
+                    {saving ? '保存中...' : `保存 ${Object.keys(edits).length} 项修改`}
+                  </button>
+                )}
+              </div>
+              {saveResult && <div className="notice compact" style={{ marginBottom: 8 }}>{saveResult}</div>}
+              <div className="table-scroll" style={{ maxHeight: 480 }}>
+                <table className="detail-table">
+                  <thead>
+                    <tr><th style={{ width: '40%' }}>配置项</th><th>值</th></tr>
+                  </thead>
+                  <tbody>
+                    {filteredKeys.map((key) => {
+                      const current = edits[key] !== undefined ? edits[key] : config[key];
+                      const modified = edits[key] !== undefined;
+                      return (
+                        <tr key={key} className={modified ? 'row-modified' : ''}>
+                          <td className="mono">{key}</td>
+                          <td>
+                            <input
+                              className="config-value-input"
+                              value={current}
+                              onChange={(e) => handleEdit(key, e.target.value)}
+                            />
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </>
+          )}
+        </div>
+      </section>
+    </div>
+  );
+}
+
 function BackupListModal({ detail, requestFn, onRefresh, onClose }) {
   const { item, group, loading, error, backups } = detail;
   const [execLoading, setExecLoading] = useState(false);
@@ -2010,12 +2149,13 @@ function CreateInstanceModal({ servers, groups, requestFn, onRefresh, onClose })
     }
 
     const isStandalone = form.replicaCount === 0;
+    const masterName = isStandalone ? form.group : `${form.group}-0`;
     const list = [{
-      name: `${form.group}-0`,
+      name: masterName,
       role: isStandalone ? '单点' : '主库',
       payload: {
         ...base,
-        name: `${form.group}-0`,
+        name: masterName,
         type: isStandalone ? 'standalone' : 'replication',
         group: form.group,
         ...(form.engine_version.trim() ? { engine_version: form.engine_version.trim() } : {}),
@@ -2026,7 +2166,7 @@ function CreateInstanceModal({ servers, groups, requestFn, onRefresh, onClose })
       const name = `${form.group}-${i}`;
       list.push({
         name, role: '副本',
-        payload: { ...base, name, type: 'replication', replica_of: `${form.group}-0` }
+        payload: { ...base, name, type: 'replication', replica_of: masterName }
       });
     }
     return list;
@@ -2036,7 +2176,7 @@ function CreateInstanceModal({ servers, groups, requestFn, onRefresh, onClose })
 
   async function handleSubmit() {
     setError('');
-    if (!form.group.trim()) { setError(isReplica ? '请选择实例组' : '请填写实例组名'); return; }
+    if (!form.group.trim()) { setError(isReplica ? '请选择实例组' : '请填写名称'); return; }
     if (!form.memory.trim()) { setError('请填写内存'); return; }
 
     setSubmitting(true);
@@ -2081,7 +2221,7 @@ function CreateInstanceModal({ servers, groups, requestFn, onRefresh, onClose })
           <section>
             <h4><Info size={16} /> 基本信息</h4>
             <div className="form-grid">
-              <label>实例组 <span className="req">*</span>
+              <label>{isReplica ? '实例组' : '名称'} <span className="req">*</span>
                 {isReplica ? (
                   <select value={form.group} onChange={(e) => update('group', e.target.value)}>
                     <option value="">选择组</option>

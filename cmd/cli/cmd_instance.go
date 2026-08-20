@@ -125,7 +125,7 @@ Use ordinal names like order-1, order-2, cache-a, cache-b.`,
 		overrides, _ := cmd.Flags().GetString("config")
 		accessMode, _ := cmd.Flags().GetString("access-mode")
 		if replicaOf == "" && strings.TrimSpace(group) == "" {
-			return fmt.Errorf("--group is required when creating a master or standalone instance")
+			group = args[0]
 		}
 
 		req := map[string]interface{}{

@@ -24,7 +24,7 @@ description: 备份和恢复 Redis/Kvrocks 实例
    redis-pilot-cli backup list <name>
    ```
 
-## 恢复流程
+## 恢复流程（单点）
 
 1. 查看可用备份
    ```
@@ -37,6 +37,38 @@ description: 备份和恢复 Redis/Kvrocks 实例
    ```
 
 3. 验证实例状态
+   ```
+   redis-pilot-cli instance status <name>
+   ```
+
+## 恢复流程（主从）
+
+1. 查看拓扑，确认主从关系
+   ```
+   redis-pilot-cli instance status <name>
+   ```
+
+2. 查看可用备份
+   ```
+   redis-pilot-cli backup list <name>
+   ```
+
+3. 停止所有从库
+   ```
+   redis-pilot-cli instance stop <replica-name>
+   ```
+
+4. 恢复主库（命令内部自动完成 停止主库 → 替换数据 → 启动主库）
+   ```
+   redis-pilot-cli backup restore <name> --backup-ts <backup-timestamp>
+   ```
+
+5. 启动从库（自动触发全量同步，从主库拉取恢复后的完整数据）
+   ```
+   redis-pilot-cli instance start <replica-name>
+   ```
+
+6. 验证同步状态，确认从库同步完成
    ```
    redis-pilot-cli instance status <name>
    ```

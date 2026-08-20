@@ -96,3 +96,22 @@ func extractAgentData(raw []byte) json.RawMessage {
 	}
 	return resp.Data
 }
+
+func (s *Server) instanceConfigGet(c *gin.Context) {
+	name := c.Query("name")
+	if name == "" {
+		fail(c, http.StatusBadRequest, "name is required")
+		return
+	}
+	_, srv, err := s.resolveInstance(c, name)
+	if err != nil {
+		return
+	}
+	agent := newAgentClient(srv)
+	out, err := agent.get("/instance/config?name=" + name)
+	if err != nil {
+		fail(c, http.StatusBadGateway, err.Error())
+		return
+	}
+	ok(c, extractAgentData(out))
+}

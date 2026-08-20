@@ -148,6 +148,7 @@ func (s *Server) Router() *gin.Engine {
 		instance.GET("/diagnose", s.instanceDiagnose)
 		instance.GET("/slowlog", s.instanceSlowlog)
 		instance.GET("/bigkeys", s.instanceBigkeys)
+		instance.GET("/config", s.instanceConfigGet)
 		instance.POST("/create", s.instanceCreate)
 		instance.POST("/delete", s.instanceDelete)
 		instance.POST("/start", s.instanceStart)

@@ -170,6 +170,7 @@ func (a *Agent) Router() *gin.Engine {
 		inst.GET("/diagnose", a.instanceDiagnose)
 		inst.GET("/slowlog", a.instanceSlowlog)
 		inst.GET("/bigkeys", a.instanceBigkeys)
+		inst.GET("/config", a.instanceConfigGet)
 	}
 
 	return r
@@ -945,6 +946,41 @@ func (a *Agent) instanceBigkeys(c *gin.Context) {
 			"collection_elements": collectionThreshold,
 		},
 	})
+}
+
+func (a *Agent) instanceConfigGet(c *gin.Context) {
+	name := c.Query("name")
+	if name == "" {
+		fail(c, http.StatusBadRequest, "name is required")
+		return
+	}
+	if err := validateInstanceName(name); err != nil {
+		fail(c, http.StatusBadRequest, err.Error())
+		return
+	}
+	pw := a.getPassword(name)
+
+	raw, err := redisCmd(name, pw, "CONFIG", "GET", "*")
+	if err != nil {
+		fail(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if isRedisErrReply(raw) {
+		fail(c, http.StatusInternalServerError, raw)
+		return
+	}
+
+	// redis-cli 输出为交替的 key\nvalue\n 行
+	lines := strings.Split(raw, "\n")
+	config := make(map[string]string)
+	for i := 0; i+1 < len(lines); i += 2 {
+		k := strings.TrimSpace(lines[i])
+		v := strings.TrimSpace(lines[i+1])
+		if k != "" {
+			config[k] = v
+		}
+	}
+	ok(c, gin.H{"config": config})
 }
 
 func (a *Agent) instanceBackup(c *gin.Context) {
