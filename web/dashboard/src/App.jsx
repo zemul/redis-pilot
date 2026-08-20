@@ -262,6 +262,7 @@ function buildInstanceGroups(instanceState) {
 				engine: getField(groupState, 'engine', 'Engine', getField(item, 'engine', 'Engine', '-')),
 				engineVersion: getField(groupState, 'engine_version', 'EngineVersion', ''),
 				category: getField(groupState, 'category', 'Category', ''),
+				access_mode: getField(groupState, 'access_mode', 'AccessMode', 'standard'),
 				type: getField(groupState, 'type', 'Type', ''),
 				currentMaster: getField(groupState, 'current_master', 'CurrentMaster', ''),
 				proxy: getField(groupState, 'proxy', 'Proxy', null),
@@ -288,6 +289,7 @@ function buildInstanceGroups(instanceState) {
 				engine: getField(groupState, 'engine', 'Engine', '-'),
 				engineVersion: getField(groupState, 'engine_version', 'EngineVersion', ''),
 				category: getField(groupState, 'category', 'Category', ''),
+				access_mode: getField(groupState, 'access_mode', 'AccessMode', 'standard'),
 				type: getField(groupState, 'type', 'Type', ''),
 				currentMaster: getField(groupState, 'current_master', 'CurrentMaster', ''),
 				proxy: getField(groupState, 'proxy', 'Proxy', null),
@@ -491,6 +493,7 @@ export default function App() {
   const [slowlogTarget, setSlowlogTarget] = useState(null);
   const [bigkeysTarget, setBigkeysTarget] = useState(null);
   const [configTarget, setConfigTarget] = useState(null);
+  const [accessModeTarget, setAccessModeTarget] = useState(null);
   const [createOpen, setCreateOpen] = useState(false);
   const [pendingAction, setPendingAction] = useState('');
   const [data, setData] = useState({ instances: {}, servers: {}, audits: [] });
@@ -620,6 +623,23 @@ export default function App() {
     }
   }
 
+  async function toggleAccessMode(group, mode) {
+    if (!mode) {
+      setAccessModeTarget(group);
+      return;
+    }
+    try {
+      await request('/instance/access-mode', {
+        method: 'POST',
+        body: JSON.stringify({ name: group.groupName, access_mode: mode })
+      });
+      setAccessModeTarget(null);
+      await refresh();
+    } catch (err) {
+      setError(err.message || String(err));
+    }
+  }
+
   async function executeDelete() {
     if (!deleteConfirm) return;
     const { item, cleanData } = deleteConfirm;
@@ -725,6 +745,7 @@ export default function App() {
 	                  onSlowlog={(item) => setSlowlogTarget(item.name)}
 	                  onBigkeys={(item) => setBigkeysTarget(item.name)}
 	                  onConfig={(item) => setConfigTarget(item.name)}
+	                  onToggleAccessMode={toggleAccessMode}
 	                  onCreate={() => setCreateOpen(true)}
 	                  servers={servers}
 	                  pendingAction={pendingAction}
@@ -748,6 +769,7 @@ export default function App() {
 	      {slowlogTarget && <SlowlogModal instanceName={slowlogTarget} requestFn={request} onClose={() => setSlowlogTarget(null)} />}
 	      {bigkeysTarget && <BigkeysModal instanceName={bigkeysTarget} requestFn={request} onClose={() => setBigkeysTarget(null)} />}
 	      {configTarget && <ConfigModal instanceName={configTarget} requestFn={request} onClose={() => setConfigTarget(null)} />}
+	      {accessModeTarget && <AccessModeModal group={accessModeTarget} onConfirm={(mode) => toggleAccessMode(accessModeTarget, mode)} onClose={() => setAccessModeTarget(null)} />}
 	      {backupDetail && <BackupListModal detail={backupDetail} requestFn={request} onRefresh={refresh} onClose={() => setBackupDetail(null)} />}
 	      {confirmAction && (
 	        <ConfirmPowerModal
@@ -910,7 +932,7 @@ function SummaryCell({ label, value, icon: Icon, tone = 'neutral' }) {
   );
 }
 
-function InstancesView({ groups, query, setQuery, expandedGroups, setExpandedGroups, onOpenDetail, onOpenBackups, onPowerAction, onDelete, onSlowlog, onBigkeys, onConfig, onCreate, pendingAction }) {
+function InstancesView({ groups, query, setQuery, expandedGroups, setExpandedGroups, onOpenDetail, onOpenBackups, onPowerAction, onDelete, onSlowlog, onBigkeys, onConfig, onToggleAccessMode, onCreate, pendingAction }) {
   const filtered = groups.filter((group) => {
     const text = [
       group.groupName,
@@ -950,6 +972,7 @@ function InstancesView({ groups, query, setQuery, expandedGroups, setExpandedGro
               <tr>
                 <th>实例名称 / 组</th>
                 <th>类别</th>
+                <th>访问模式</th>
                 <th>引擎版本</th>
                 <th>拓扑角色</th>
                 <th>节点</th>
@@ -975,6 +998,7 @@ function InstancesView({ groups, query, setQuery, expandedGroups, setExpandedGro
 	                onSlowlog={onSlowlog}
 	                onBigkeys={onBigkeys}
 	                onConfig={onConfig}
+	                onToggleAccessMode={onToggleAccessMode}
 	                pendingAction={pendingAction}
 	              />
               ))}
@@ -986,7 +1010,7 @@ function InstancesView({ groups, query, setQuery, expandedGroups, setExpandedGro
   );
 }
 
-function InstanceGroupRows({ group, expanded, onToggle, onOpenDetail, onOpenBackups, onPowerAction, onDelete, onSlowlog, onBigkeys, onConfig, pendingAction }) {
+function InstanceGroupRows({ group, expanded, onToggle, onOpenDetail, onOpenBackups, onPowerAction, onDelete, onSlowlog, onBigkeys, onConfig, onToggleAccessMode, pendingAction }) {
   const master = group.master;
   const hasReplicas = group.replicas.length > 0;
   const topology = topologyLabel(group, master);
@@ -1021,6 +1045,7 @@ function InstanceGroupRows({ group, expanded, onToggle, onOpenDetail, onOpenBack
           </div>
         </td>
         <td>{category && <span className="role-chip subtle">{category}</span>}</td>
+        <td>{group.access_mode === 'rw-split' ? '读写分离' : '标准'}</td>
         <td><span className="engine">{engineLabel(group)}</span></td>
         <td>{topology}</td>
         <td>{master ? getField(master, 'server', 'Server', '-') : '-'}</td>
@@ -1034,6 +1059,7 @@ function InstanceGroupRows({ group, expanded, onToggle, onOpenDetail, onOpenBack
               <IconButton icon={HardDrive} label="备份列表" onClick={() => onOpenBackups(master, group)} />
               <MoreMenu items={[
                 { label: '修改配置', onClick: () => onConfig(master) },
+                { label: '修改接入方式', onClick: () => onToggleAccessMode(group, null) },
                 { label: '慢查询', onClick: () => onSlowlog(master) },
                 { label: '大 Key 分析', onClick: () => onBigkeys(master) },
                 powerAction && {
@@ -1064,6 +1090,7 @@ function InstanceGroupRows({ group, expanded, onToggle, onOpenDetail, onOpenBack
           onSlowlog={onSlowlog}
           onBigkeys={onBigkeys}
           onConfig={onConfig}
+          onToggleAccessMode={onToggleAccessMode}
           pendingAction={pendingAction}
         />
       )}
@@ -1080,6 +1107,7 @@ function InstanceGroupRows({ group, expanded, onToggle, onOpenDetail, onOpenBack
           onSlowlog={onSlowlog}
           onBigkeys={onBigkeys}
           onConfig={onConfig}
+          onToggleAccessMode={onToggleAccessMode}
           pendingAction={pendingAction}
         />
       ))}
@@ -1116,7 +1144,7 @@ function ResourceValue({ memory, memoryUsed }) {
   );
 }
 
-function InstanceRow({ item, group, role, onOpenDetail, onOpenBackups, onPowerAction, onDelete, onSlowlog, onBigkeys, onConfig, pendingAction }) {
+function InstanceRow({ item, group, role, onOpenDetail, onOpenBackups, onPowerAction, onDelete, onSlowlog, onBigkeys, onConfig, onToggleAccessMode, pendingAction }) {
   const powerAction = powerActionFor(item, group);
   const isReplica = role === '从库';
   const isMasterWithReplicas = role === '主库' && group.replicas.length > 0;
@@ -1132,6 +1160,7 @@ function InstanceRow({ item, group, role, onOpenDetail, onOpenBackups, onPowerAc
           </div>
         </div>
       </td>
+      <td />
       <td />
       <td><span className="muted">{engineLabel(group)}</span></td>
       <td>{role}</td>
@@ -1163,6 +1192,7 @@ function InstanceRow({ item, group, role, onOpenDetail, onOpenBackups, onPowerAc
           <IconButton icon={HardDrive} label="备份列表" onClick={() => onOpenBackups(item, group)} />
           <MoreMenu items={[
             { label: '修改配置', onClick: () => onConfig(item) },
+            !isReplica && { label: '修改接入方式', onClick: () => onToggleAccessMode(group, null) },
             { label: '慢查询', onClick: () => onSlowlog(item) },
             { label: '大 Key 分析', onClick: () => onBigkeys(item) },
             powerAction && {
@@ -1821,6 +1851,36 @@ function BigkeysModal({ instanceName, requestFn, onClose }) {
             </table>
           )}
           {keys && keys.length === 0 && !loading && <div className="empty-state">未发现大 Key</div>}
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function AccessModeModal({ group, onConfirm, onClose }) {
+  const [mode, setMode] = useState(group.access_mode || 'standard');
+
+  return (
+    <div className="modal-backdrop" role="presentation" onMouseDown={onClose}>
+      <section className="confirm-modal" role="dialog" aria-modal="true" onMouseDown={(e) => e.stopPropagation()}>
+        <div className="modal-header">
+          <div><h3>修改接入方式</h3><span>{group.groupName}</span></div>
+          <button className="icon-button" onClick={onClose} aria-label="关闭" type="button"><X size={18} /></button>
+        </div>
+        <div className="modal-body" style={{ padding: 18 }}>
+          <p style={{ fontSize: 13, color: 'var(--ink-secondary)', margin: '0 0 12px' }}>当前：{group.access_mode === 'rw-split' ? '读写分离' : '标准'}</p>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8, cursor: 'pointer' }}>
+            <input type="radio" name="access_mode" value="standard" checked={mode === 'standard'} onChange={() => setMode('standard')} />
+            <span><strong>标准</strong> — 所有流量走主库</span>
+          </label>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
+            <input type="radio" name="access_mode" value="rw-split" checked={mode === 'rw-split'} onChange={() => setMode('rw-split')} />
+            <span><strong>读写分离</strong> — 读请求分发到从库</span>
+          </label>
+          <div style={{ marginTop: 16, display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+            <button className="ghost-button small" onClick={onClose}>取消</button>
+            <button className="ghost-button small active" disabled={mode === (group.access_mode || 'standard')} onClick={() => onConfirm(mode)}>确认修改</button>
+          </div>
         </div>
       </section>
     </div>

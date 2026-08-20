@@ -2044,3 +2044,16 @@ code {
 }
 .chart-cell { height: 200px; overflow: hidden; }
 .ghost-button.small.active { background: var(--accent); color: #fff; }
+
+/* Inline select for table cells */
+.inline-select {
+  border: none;
+  background: transparent;
+  color: var(--ink-secondary);
+  font-size: 12px;
+  cursor: pointer;
+  padding: 2px 4px;
+  border-radius: 4px;
+}
+.inline-select:hover { background: var(--surface-2); }
+.inline-select:focus { outline: 1px solid var(--accent); }
