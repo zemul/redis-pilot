@@ -389,6 +389,8 @@ function IconButton({ icon: Icon, label, onClick, disabled = false }) {
 function MoreMenu({ items }) {
   const [open, setOpen] = useState(false);
   const ref = useRef(null);
+  const btnRef = useRef(null);
+  const [pos, setPos] = useState({ top: 0, right: 0 });
 
   useEffect(() => {
     if (!open) return;
@@ -399,16 +401,24 @@ function MoreMenu({ items }) {
     return () => document.removeEventListener('mousedown', handleClick);
   }, [open]);
 
+  function toggle() {
+    if (!open && btnRef.current) {
+      const rect = btnRef.current.getBoundingClientRect();
+      setPos({ top: rect.bottom + 4, right: window.innerWidth - rect.right });
+    }
+    setOpen(!open);
+  }
+
   const visibleItems = items.filter(Boolean);
   if (visibleItems.length === 0) return null;
 
   return (
     <div className="more-menu-wrap" ref={ref}>
-      <button className="icon-button" title="更多操作" aria-label="更多操作" type="button" onClick={() => setOpen(!open)}>
+      <button ref={btnRef} className="icon-button" title="更多操作" aria-label="更多操作" type="button" onClick={toggle}>
         <MoreVertical size={16} />
       </button>
       {open && (
-        <div className="more-menu-dropdown">
+        <div className="more-menu-dropdown" style={{ position: 'fixed', top: pos.top, right: pos.right }}>
           {visibleItems.map((mi, i) => (
             <button key={i} className={`more-menu-item${mi.danger ? ' danger' : ''}`} disabled={mi.disabled} onClick={() => { setOpen(false); mi.onClick(); }}>
               {mi.label}
