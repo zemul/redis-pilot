@@ -100,6 +100,8 @@ slowlog-log-slower-than 20000
 slowlog-max-len 1024
 maxclients 10000
 
+activedefrag {{ if eq .Version "5" }}no{{ else }}yes{{ end }}
+
 {{ .ConfigOverrides }}
 `))
 
