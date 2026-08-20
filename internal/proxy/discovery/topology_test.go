@@ -68,8 +68,11 @@ func TestParseSnapshot_SingleGroup(t *testing.T) {
 	if g.ReplicaAddrs[1] != "10.0.0.3:6379" {
 		t.Errorf("ReplicaAddrs[1] = %q, want 10.0.0.3:6379", g.ReplicaAddrs[1])
 	}
-	if g.Password != "secret123" {
-		t.Errorf("Password = %q, want secret123", g.Password)
+	if g.FrontPassword != "secret123" {
+		t.Errorf("FrontPassword = %q, want secret123 (from listener)", g.FrontPassword)
+	}
+	if g.BackendPassword != "secret123" {
+		t.Errorf("BackendPassword = %q, want secret123 (from cluster)", g.BackendPassword)
 	}
 	if g.AutoPort != 16379 {
 		t.Errorf("AutoPort = %d, want 16379", g.AutoPort)
@@ -135,16 +138,19 @@ func TestParseSnapshot_MultiGroup(t *testing.T) {
 	if g1.MasterAddr != "10.0.0.1:6379" {
 		t.Errorf("g1 MasterAddr = %q", g1.MasterAddr)
 	}
-	if g1.Password != "pw1" {
-		t.Errorf("g1 Password = %q, want pw1", g1.Password)
+	if g1.BackendPassword != "pw1" {
+		t.Errorf("g1 BackendPassword = %q, want pw1", g1.BackendPassword)
+	}
+	if g1.FrontPassword != "" {
+		t.Errorf("g1 FrontPassword = %q, want empty (listener has no password)", g1.FrontPassword)
 	}
 
 	g2 := topo.Groups["g2"]
 	if g2.MasterAddr != "10.0.0.2:6379" {
 		t.Errorf("g2 MasterAddr = %q", g2.MasterAddr)
 	}
-	if g2.Password != "" {
-		t.Errorf("g2 Password = %q, want empty", g2.Password)
+	if g2.BackendPassword != "" {
+		t.Errorf("g2 BackendPassword = %q, want empty", g2.BackendPassword)
 	}
 }
 

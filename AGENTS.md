@@ -25,8 +25,7 @@ redis-pilot/
   │   ├── server/   # Server 入口
   │   ├── agent/    # Agent 入口
   │   ├── proxy/    # Proxy 入口（自研 Go 读写分离代理）
-  │   ├── cli/      # CLI 入口
-  │   └── migrate/  # 一次性迁移工具：旧版 pool-state.yaml/instances-state.yaml -> pilot.db
+  │   └── cli/      # CLI 入口
   ├── internal/
   │   ├── store/    # pilot.db（SQLite）读写：servers/instance_groups/instances/audit_log 等表
   │   ├── state/    # 状态辅助纯函数（锁、拓扑计算），状态读写直接使用 internal/store
@@ -47,7 +46,7 @@ redis-pilot/
 - `proxy.yaml`：Proxy 的 Server 连接信息（`server_endpoint`/`server_token`）、长轮询参数（`poll_interval`/`poll_timeout`/`poll_wait`）、`metrics_listen`
 - `~/.redis-pilot-cli/config.yaml`：CLI 配置，Server 地址默认 127.0.0.1:8080
 
-> 服务器节点和实例的完整状态不再使用独立 YAML 文件，统一存储在 `data_dir/pilot.db`（SQLite）。旧版 `pool-state.yaml`/`instances-state.yaml` 仅由 `cmd/migrate` 一次性迁移使用。
+> 服务器节点和实例的完整状态不再使用独立 YAML 文件，统一存储在 `data_dir/pilot.db`（SQLite）。
 
 ## 认证
 - CLI -> Server：Bearer Token，Token 为空则跳过鉴权

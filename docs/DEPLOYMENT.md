@@ -334,8 +334,10 @@ poll_wait: 20s             # 长轮询挂起上限，0 关闭长轮询退回定�
 metrics_listen: ":19100"   # Prometheus /metrics 地址（空 = 关闭）
 ```
 
-> Proxy 快照中包含连接后端 Redis/Kvrocks 所需的明文密码，生产环境务必设置 `server_token`，
-> 并在 `server.yaml` 中配置相同的 token，否则任何能访问 Server API 的网络主体都可拉取全部密码。
+> 采用"仅 Proxy 前端鉴权"模型：后端实例无密码，Proxy 快照只含**前端密码**
+> （`ProxyListener.Password`，客户端 → Proxy 校验用），不含后端连接密码。生产环境仍务必
+> 设置 `server_token` 并在 `server.yaml` 配置相同 token，否则任何能访问 Server API 的
+> 网络主体都可拉取前端密码。此外**必须**在主机层强制网络隔离，禁止业务网段直连无密码实例端口。
 
 配置字段说明：
 
@@ -670,7 +672,7 @@ curl http://localhost:8080/sentinel/status
 
 - **一次只下线一个数据节点**：3 个 Sentinel + quorum=2，下线一台后剩余 2 台仍可达成 quorum。但同时下线两台将导致自动故障转移不可用。
 - **Sentinel 节点应跨 zone 部署**：通过 labels 标记可用区，确保数据节点 A/B/C 分布在不同故障域。
-- **requirepass 配置**：如果 Redis/Kvrocks 实例启用了 `requirepass`，必须通过 Server 下发 `sentinel auth-pass`，否则 Sentinel 能检测端口存活但无法执行故障转移。
+- **无密码后端 + 网络隔离**：后端实例无 `requirepass`，Sentinel 无鉴权直连实例。安全边界靠主机层网络隔离保证——实例端口只允许 Proxy 机器与数据节点互访网段访问，业务网段一律禁止直连。
 
 ---
 

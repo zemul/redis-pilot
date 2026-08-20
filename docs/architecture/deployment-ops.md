@@ -134,13 +134,14 @@ podman run -d \
 
 ### 8.2 认证
 
-- Redis 实例启用 `requirepass`
+- 后端实例无密码（`requirepass` 不写），鉴权只在客户端 → Proxy 前端由 Proxy 校验
+- 依赖主机层网络隔离作为后端安全边界
 - Agent API 使用 Token 认证
-- Proxy 代理可配置 Redis AUTH
+- Proxy 前端可配置 AUTH 密码（快照 `ProxyListener.Password`）
 
 ### 8.3 敏感信息
 
-- 密码在状态文件中脱敏存储
+- 前端密码在状态文件中脱敏存储
 - Agent 间通信使用 HTTPS
 - 备份文件可配置加密
 

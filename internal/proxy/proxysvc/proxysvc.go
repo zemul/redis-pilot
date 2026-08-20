@@ -80,6 +80,7 @@ type listenerEntry struct {
 	group    string
 	mode     string
 	port     int
+	bind     string
 }
 
 type sessionEntry struct {
@@ -280,23 +281,84 @@ func (p *Proxy) onTopologyChange(newTopo, oldTopo *discovery.Topology) {
 	if oldTopo == nil {
 		return
 	}
-	for name, newGroup := range newTopo.Groups {
-		var oldGroup *discovery.GroupTopology
-		if oldTopo != nil {
-			oldGroup = oldTopo.Groups[name]
-		}
-		if newGroup.MasterChanged(oldGroup) {
-			oldAddr := "none"
-			if oldGroup != nil {
-				oldAddr = oldGroup.MasterAddr
-			}
-			slog.Info("master changed, closing sessions", "group", name, "old", oldAddr, "new", newGroup.MasterAddr)
+
+	// 处理已删除的 group：清理连接池和会话
+	for name := range oldTopo.Groups {
+		if _, ok := newTopo.Groups[name]; !ok {
+			slog.Info("group removed, closing pools and sessions", "group", name)
 			p.closePoolsForGroup(name)
 			p.closeSessionsForGroup(name)
 			p.metrics.IncBackendDown(name)
 		}
 	}
+
+	for name, newGroup := range newTopo.Groups {
+		oldGroup := oldTopo.Groups[name]
+
+		// 密码变更（前端或后端）：关闭旧连接池和所有会话，新连接会用新密码重建
+		if newGroup.PasswordChanged(oldGroup) {
+			slog.Info("password changed, closing pools and sessions", "group", name)
+			p.closePoolsForGroup(name)
+			p.closeSessionsForGroup(name)
+			continue // 池已全部销毁，无需再检查 master/replica 变更
+		}
+
+		// Master 变更：关闭全部池和会话
+		if newGroup.MasterChanged(oldGroup) {
+			oldAddr := "none"
+			if oldGroup != nil {
+				oldAddr = oldGroup.MasterAddr
+			}
+			slog.Info("master changed, closing pools and sessions", "group", name, "old", oldAddr, "new", newGroup.MasterAddr)
+			p.closePoolsForGroup(name)
+			p.closeSessionsForGroup(name)
+			p.metrics.IncBackendDown(name)
+			continue // 池已全部销毁
+		}
+
+		// 从库列表变更：增量更新 replica 连接池
+		if newGroup.ReplicasChanged(oldGroup) {
+			slog.Info("replicas changed, updating replica pools", "group", name,
+				"old_count", len(oldGroup.ReplicaAddrs), "new_count", len(newGroup.ReplicaAddrs))
+			p.updateReplicaPools(name, newGroup)
+		}
+	}
+
 	p.updateListeners(newTopo)
+}
+
+// updateReplicaPools 增量更新 group 的 replica 连接池：关闭已移除的、创建新增的。
+func (p *Proxy) updateReplicaPools(group string, g *discovery.GroupTopology) {
+	p.poolsMu.Lock()
+	defer p.poolsMu.Unlock()
+
+	pools, ok := p.pools[group]
+	if !ok {
+		return // 池尚未创建，下次 getOrCreatePools 时会用新拓扑创建
+	}
+
+	// 构建新地址集合
+	newSet := make(map[string]struct{}, len(g.ReplicaAddrs))
+	for _, addr := range g.ReplicaAddrs {
+		newSet[addr] = struct{}{}
+	}
+
+	// 关闭已移除的 replica 池
+	for addr, rp := range pools.replicas {
+		if _, ok := newSet[addr]; !ok {
+			rp.Close()
+			delete(pools.replicas, addr)
+			slog.Info("closed removed replica pool", "group", group, "addr", addr)
+		}
+	}
+
+	// 创建新增的 replica 池
+	for _, addr := range g.ReplicaAddrs {
+		if _, ok := pools.replicas[addr]; !ok {
+			pools.replicas[addr] = backend.NewPool(addr, g.BackendPassword, p.cfg.ConnectTimeout, p.cfg.PoolSize, p.cfg.IdleTimeout)
+			slog.Info("created new replica pool", "group", group, "addr", addr)
+		}
+	}
 }
 
 func (p *Proxy) openListeners(topo *discovery.Topology) {
@@ -334,7 +396,7 @@ func (p *Proxy) updateListeners(topo *discovery.Topology) {
 func (p *Proxy) ensureListenerLocked(group, mode, bind string, port int) {
 	key := group + ":" + mode
 	if existing, ok := p.listeners[key]; ok {
-		if existing.port == port {
+		if existing.port == port && existing.bind == bind {
 			return
 		}
 		existing.listener.Close()
@@ -349,7 +411,7 @@ func (p *Proxy) ensureListenerLocked(group, mode, bind string, port int) {
 		slog.Error("listen failed", "addr", addr, "group", group, "mode", mode, "err", err)
 		return
 	}
-	entry := &listenerEntry{listener: ln, group: group, mode: mode, port: port}
+	entry := &listenerEntry{listener: ln, group: group, mode: mode, port: port, bind: bind}
 	p.listeners[key] = entry
 	p.wg.Add(1)
 	go func() {
@@ -394,7 +456,7 @@ func (p *Proxy) handleConnDiscovery(conn net.Conn, group, mode string) {
 		Group:             group,
 		MasterAddr:        g.MasterAddr,
 		ReplicaAddrs:      g.ReplicaAddrs,
-		Password:          g.Password,
+		Password:          g.FrontPassword,
 		ConnectTimeout:    p.cfg.ConnectTimeout,
 		MasterReadWeight:  p.cfg.MasterReadWeight,
 		MaxRequestBytes:   p.cfg.MaxRequestBytes,
@@ -405,7 +467,7 @@ func (p *Proxy) handleConnDiscovery(conn net.Conn, group, mode string) {
 
 	sess, err := session.New(conn, sessCfg, pools.master, pools.replicas, p.metrics)
 	if err != nil {
-		slog.Error("session create failed", "err", err)
+		slog.Error("session create failed", "group", group, "client", conn.RemoteAddr(), "err", err)
 		return
 	}
 
@@ -415,9 +477,12 @@ func (p *Proxy) handleConnDiscovery(conn net.Conn, group, mode string) {
 	defer p.sessions.Delete(id)
 
 	p.metrics.IncClientConnTotal(group)
+	slog.Debug("client connected", "group", group, "client", conn.RemoteAddr(), "session", id)
 	if err := sess.Serve(); err != nil {
-		slog.Error("session ended", "err", err)
+		slog.Warn("session error", "group", group, "client", conn.RemoteAddr(), "session", id, "err", err)
 		p.metrics.IncError(group)
+	} else {
+		slog.Debug("client disconnected", "group", group, "client", conn.RemoteAddr(), "session", id)
 	}
 }
 
@@ -439,13 +504,16 @@ func (p *Proxy) handleConnStatic(conn net.Conn) {
 
 	sess, err := session.New(conn, sessCfg, pools.master, pools.replicas, p.metrics)
 	if err != nil {
-		slog.Error("session create failed", "err", err)
+		slog.Error("session create failed", "client", conn.RemoteAddr(), "err", err)
 		return
 	}
 
+	slog.Debug("client connected", "mode", "static", "client", conn.RemoteAddr())
 	if err := sess.Serve(); err != nil {
-		slog.Error("session ended", "err", err)
+		slog.Warn("session error", "mode", "static", "client", conn.RemoteAddr(), "err", err)
 		p.metrics.IncError("_static")
+	} else {
+		slog.Debug("client disconnected", "mode", "static", "client", conn.RemoteAddr())
 	}
 }
 
@@ -457,11 +525,11 @@ func (p *Proxy) getOrCreatePools(group string, g *discovery.GroupTopology) *grou
 		return pools
 	}
 	pools := &groupPools{
-		master: backend.NewPool(g.MasterAddr, g.Password, p.cfg.ConnectTimeout, p.cfg.PoolSize, p.cfg.IdleTimeout),
+		master: backend.NewPool(g.MasterAddr, g.BackendPassword, p.cfg.ConnectTimeout, p.cfg.PoolSize, p.cfg.IdleTimeout),
 		replicas: make(map[string]*backend.Pool),
 	}
 	for _, addr := range g.ReplicaAddrs {
-		pools.replicas[addr] = backend.NewPool(addr, g.Password, p.cfg.ConnectTimeout, p.cfg.PoolSize, p.cfg.IdleTimeout)
+		pools.replicas[addr] = backend.NewPool(addr, g.BackendPassword, p.cfg.ConnectTimeout, p.cfg.PoolSize, p.cfg.IdleTimeout)
 	}
 	p.pools[group] = pools
 	slog.Info("created pools", "group", group, "master", g.MasterAddr, "replicas", len(g.ReplicaAddrs))

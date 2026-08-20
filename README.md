@@ -196,11 +196,17 @@ sentinel_password: ""                     # 发现端口鉴权密码；空=不�
 
 Proxy 启动后通过 HTTP 长轮询 `GET /api/v1/proxy/snapshot` 从 Server 拉取代理快照，按快照中的后端实例列表动态调整读写分离路由；业务 Redis 流量直接由 Proxy 处理，不经过 Server。完整配置（含 static 模式与连接池参数）见 `configs/proxy.yaml.example`。
 
-> **安全提示**：proxy snapshot 中包含 Redis 明文密码（用于 Proxy 与后端建立连接）。
-> 该快照由 Server 的 `/api/v1/proxy/snapshot` 接口返回。若 Server 未设置 `token` 鉴权，
-> 任何能访问 Server 端口的网络主体都可拉取全部密码。生产环境请务必为 Server
-> 设置 `token`（并在 `proxy.yaml` 中配置相同的 `server_token`），并将 Server
-> 端口限制在可信网段/回环地址。
+> **安全模型（仅 Proxy 前端鉴权）**：后端 Redis/Kvrocks 实例**一律不设密码**，鉴权只在
+> 客户端 → Proxy 这一段由 Proxy 校验前端密码（快照 `ProxyListener.Password`）完成；
+> Proxy → 实例、Sentinel → 实例、主从复制全部以无密码方式直连。这把安全边界从"每个实例
+> 的密码"整体挪到了"网络隔离 + Proxy 前端鉴权"两处。
+>
+> 因此**必须**在主机层强制网络隔离：实例端口只允许从 Proxy 机器和数据节点互访网段访问，
+> 业务网段一律不可直连实例——否则无密码实例等于对内网完全敞开。伪 Sentinel 返回给客户端的
+> 也是 Proxy 端口，sentinel 模式客户端同样经 Proxy 前端鉴权，不会绕过。
+>
+> 快照仍含前端密码（`/api/v1/proxy/snapshot` 返回），生产环境请为 Server 设置 `token`
+> （并在 `proxy.yaml` 中配置相同的 `server_token`），并将 Server 端口限制在可信网段/回环地址。
 
 ### Agent (`agent.yaml`)
 

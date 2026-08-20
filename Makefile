@@ -21,7 +21,7 @@ dashboard:
 	cd $(DASHBOARD_DIR) && npm run build
 
 $(BINS):
-	go build $(GOFLAGS) -ldflags '$(LDFLAGS)' -o $(OUT)/redis-$@ ./cmd/$@
+	go build $(GOFLAGS) -ldflags '$(LDFLAGS)' -o $(OUT)/redis-pilot-$@ ./cmd/$@
 
 clean:
 	rm -rf $(OUT)
@@ -33,7 +33,7 @@ deploy: build-linux deploy-server deploy-agent deploy-cli deploy-proxy
 
 deploy-server:
 	ssh $(DEPLOY_SERVER) systemctl stop redis-pilot-server || true
-	scp bin/redis-server $(DEPLOY_SERVER):/opt/redis-pilot-server/redis-pilot-server
+	scp bin/redis-pilot-server $(DEPLOY_SERVER):/opt/redis-pilot-server/redis-pilot-server
 	ssh $(DEPLOY_SERVER) systemctl daemon-reload
 	ssh $(DEPLOY_SERVER) systemctl start redis-pilot-server
 
@@ -41,7 +41,7 @@ deploy-agent:
 	@for h in $(DEPLOY_AGENTS); do \
 		echo "→ agent $$h"; \
 		ssh $$h systemctl stop redis-pilot-agent || true; \
-		scp bin/redis-agent $$h:/opt/redis-pilot-agent/redis-pilot-agent; \
+		scp bin/redis-pilot-agent $$h:/opt/redis-pilot-agent/redis-pilot-agent; \
 		ssh $$h systemctl daemon-reload; \
 		ssh $$h systemctl start redis-pilot-agent; \
 	done
@@ -49,14 +49,14 @@ deploy-agent:
 deploy-cli:
 	@for h in $(DEPLOY_AGENTS); do \
 		echo "→ cli $$h"; \
-		scp bin/redis-cli $$h:/usr/local/bin/redis-pilot-cli; \
+		scp bin/redis-pilot-cli $$h:/usr/local/bin/redis-pilot-cli; \
 	done
 
 deploy-proxy:
-	ssh $(DEPLOY_SERVER) systemctl stop redis-pilot || true
-	scp bin/redis-proxy $(DEPLOY_SERVER):/opt/redis-pilot/redis-pilot
+	ssh $(DEPLOY_SERVER) systemctl stop redis-pilot-proxy || true
+	scp bin/redis-pilot-proxy $(DEPLOY_SERVER):/opt/redis-pilot-proxy/redis-pilot-proxy
 	ssh $(DEPLOY_SERVER) systemctl daemon-reload
-	ssh $(DEPLOY_SERVER) systemctl start redis-pilot
+	ssh $(DEPLOY_SERVER) systemctl start redis-pilot-proxy
 
 setup:
 	bash scripts/setup.sh

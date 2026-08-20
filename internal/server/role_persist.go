@@ -83,7 +83,8 @@ func (s *Server) pushConfigRewrite(
 		"category":            group.Category,
 		"config_overrides":    inst.ConfigOverrides,
 		"rewrite_config_only": true,
-		"password":            inst.Password,
+		// 实例无密码：不下发给 Agent（详见 instanceCreate）
+		"password":            "",
 		"memory":              inst.Memory,
 		"replica_of":          replicaOfAddr,
 		"port":                inst.Port,

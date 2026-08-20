@@ -206,7 +206,7 @@ func (p *Pool) getSharedConn() *UpstreamConn {
 	if p.totalShared < p.maxSize {
 		conn, err := p.dialLocked()
 		if err != nil {
-			slog.Error("pool dial failed", "addr", p.addr, "err", err)
+			slog.Warn("pool dial failed", "addr", p.addr, "pool_size", p.totalShared, "max", p.maxSize, "err", err)
 			return nil
 		}
 		conn.StartReadLoop()

@@ -7,8 +7,10 @@ import (
 )
 
 type LogConfig struct {
-	Dir    string `yaml:"dir"`    // 日志目录，为空则不写文件
-	Stdout bool   `yaml:"stdout"` // 是否同时输出到 stdout
+	Dir           string `yaml:"dir"`            // 日志目录，为空则不写文件
+	Stdout        bool   `yaml:"stdout"`         // 是否同时输出到 stdout
+	RetentionDays int    `yaml:"retention_days"` // 日志保留天数，0 = 不清理
+	Level         string `yaml:"level"`          // debug/info/warn/error（默认 info）
 }
 
 // PortRange 端口范围配置

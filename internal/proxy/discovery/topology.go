@@ -8,15 +8,20 @@ import (
 
 // GroupTopology 是一个 group 的后端拓扑。
 type GroupTopology struct {
-	Name         string
-	Password     string
-	MasterAddr   string   // host:port
-	ReplicaAddrs []string  // []host:port
-	AutoPort     int       // 读写分离监听口（0=无）
-	MasterPort   int       // 强制 master 监听口（0=无）
-	AutoBind     string   // auto listener bind 地址
-	MasterBind   string   // master listener bind 地址
-	AccessMode   string   // rw-split | standard（空视为 rw-split）
+	Name string
+	// FrontPassword 是客户端 → Proxy 的鉴权密码（来自 snapshot 的 listener.Password）。
+	// 这是本方案下唯一存在的密码：Proxy 校验客户端，后端实例本身无密码。
+	FrontPassword string
+	// BackendPassword 是 Proxy → 后端实例的鉴权密码（来自 snapshot 的 cluster.Password）。
+	// 实例无密码方案下 Server 恒下发空串；保留字段以兼容"实例带密码"的历史/静态部署。
+	BackendPassword string
+	MasterAddr      string   // host:port
+	ReplicaAddrs    []string // []host:port
+	AutoPort        int      // 读写分离监听口（0=无）
+	MasterPort      int      // 强制 master 监听口（0=无）
+	AutoBind        string   // auto listener bind 地址
+	MasterBind      string   // master listener bind 地址
+	AccessMode      string   // rw-split | standard（空视为 rw-split）
 }
 
 // Topology 是全量拓扑（所有 group）。
@@ -31,7 +36,7 @@ type Topology struct {
 //   - listener.Mode=="master" -> master 端口；其 Cluster 指向 master 集群
 //   - listener.Mode=="auto"   -> auto 端口；其 Cluster 指向 master 集群，
 //     ReadCluster 指向 replica 集群
-//   - 密码取 listener.Password 或 cluster.Password
+//   - 前端密码取 listener.Password（客户端→Proxy）；后端密码取 cluster.Password（Proxy→实例）
 func ParseSnapshot(snap *apitypes.ProxySnapshot) *Topology {
 	// 构建 cluster 查找表
 	clusters := make(map[string]*apitypes.ProxyCluster)
@@ -53,9 +58,9 @@ func ParseSnapshot(snap *apitypes.ProxySnapshot) *Topology {
 			g.AccessMode = listener.AccessMode
 		}
 
-		// 密码：listener 优先，cluster 兜底
+		// 前端密码：客户端连 Proxy 时用，来自 listener.Password
 		if listener.Password != "" {
-			g.Password = listener.Password
+			g.FrontPassword = listener.Password
 		}
 
 		switch listener.Mode {
@@ -66,8 +71,8 @@ func ParseSnapshot(snap *apitypes.ProxySnapshot) *Topology {
 				if g.MasterAddr == "" && len(c.Endpoints) > 0 {
 					g.MasterAddr = endpointAddr(c.Endpoints[0])
 				}
-				if g.Password == "" {
-					g.Password = c.Password
+				if g.BackendPassword == "" {
+					g.BackendPassword = c.Password
 				}
 			}
 
@@ -79,8 +84,8 @@ func ParseSnapshot(snap *apitypes.ProxySnapshot) *Topology {
 				if g.MasterAddr == "" && len(c.Endpoints) > 0 {
 					g.MasterAddr = endpointAddr(c.Endpoints[0])
 				}
-				if g.Password == "" {
-					g.Password = c.Password
+				if g.BackendPassword == "" {
+					g.BackendPassword = c.Password
 				}
 			}
 			// replica 端点从 ReadCluster 取
@@ -108,4 +113,40 @@ func (g *GroupTopology) MasterChanged(old *GroupTopology) bool {
 		return true // 新 group
 	}
 	return g.MasterAddr != old.MasterAddr
+}
+
+// ReplicasChanged 比较从库列表是否变化（增减或地址变动）。
+func (g *GroupTopology) ReplicasChanged(old *GroupTopology) bool {
+	if old == nil {
+		return len(g.ReplicaAddrs) > 0
+	}
+	if len(g.ReplicaAddrs) != len(old.ReplicaAddrs) {
+		return true
+	}
+	oldSet := make(map[string]struct{}, len(old.ReplicaAddrs))
+	for _, addr := range old.ReplicaAddrs {
+		oldSet[addr] = struct{}{}
+	}
+	for _, addr := range g.ReplicaAddrs {
+		if _, ok := oldSet[addr]; !ok {
+			return true
+		}
+	}
+	return false
+}
+
+// PasswordChanged 比较前端或后端密码是否变化。
+func (g *GroupTopology) PasswordChanged(old *GroupTopology) bool {
+	if old == nil {
+		return false
+	}
+	return g.FrontPassword != old.FrontPassword || g.BackendPassword != old.BackendPassword
+}
+
+// BindChanged 比较监听 bind 地址是否变化。
+func (g *GroupTopology) BindChanged(old *GroupTopology) bool {
+	if old == nil {
+		return false
+	}
+	return g.AutoBind != old.AutoBind || g.MasterBind != old.MasterBind
 }

@@ -57,6 +57,7 @@ type Session struct {
 	mode          Mode
 	authed        bool
 	exclusiveConn *backend.UpstreamConn // EXCLUSIVE 模式下的独占连接
+	pinnedBySelect bool                 // SELECT 触发的永久 pin，事务结束后不释放连接
 
 	// Pipeline read-ahead: command read from buffer but not yet processed
 	// (because it couldn't be batched with the previous group).
@@ -171,31 +172,41 @@ func (s *Session) Serve() error {
 				return err
 			}
 			if !d.Pin {
-				// EXEC/DISCARD：还池
-				if s.exclusiveConn != nil {
+				// EXEC/DISCARD/UNWATCH：退出事务模式
+				if s.pinnedBySelect {
+					// SELECT 触发的永久 pin：保持独占连接，仅退出事务状态
+					// 连接仍在非默认 DB 上，不能还池
+					s.mode = ModeExclusive
+				} else if s.exclusiveConn != nil {
 					s.masterPool.ReleaseExclusive(s.exclusiveConn)
 					s.metrics.DecExclusive(s.cfg.Group)
 					s.exclusiveConn = nil
+					s.mode = ModeNormal
+				} else {
+					s.mode = ModeNormal
 				}
-				s.mode = ModeNormal
 			}
 
 		case route.ClassBlocking:
 			// 阻塞命令：获取独占连接 -> 转发 -> 等响应 -> 还池
-			conn, err := s.masterPool.AcquireExclusive()
-			if err != nil {
-				return err
+			if s.exclusiveConn == nil {
+				conn, err := s.masterPool.AcquireExclusive()
+				if err != nil {
+					return err
+				}
+				s.exclusiveConn = conn
+				s.metrics.IncExclusive(s.cfg.Group)
 			}
-			s.exclusiveConn = conn
-			s.metrics.IncExclusive(s.cfg.Group)
 			s.mode = ModeExclusive
 			if err := s.forwardAndRelay(raw, s.masterPool); err != nil {
 				return err
 			}
-			s.masterPool.ReleaseExclusive(s.exclusiveConn)
-			s.metrics.DecExclusive(s.cfg.Group)
-			s.exclusiveConn = nil
-			s.mode = ModeNormal
+			if !s.pinnedBySelect {
+				s.masterPool.ReleaseExclusive(s.exclusiveConn)
+				s.metrics.DecExclusive(s.cfg.Group)
+				s.exclusiveConn = nil
+				s.mode = ModeNormal
+			}
 
 		default:
 			// WRITE / READ / MASTER_ONLY / ADMIN
@@ -399,6 +410,7 @@ func (s *Session) handleConnState(argv [][]byte, raw []byte, d route.Decision) e
 			s.exclusiveConn = nil
 		}
 		s.mode = ModeNormal
+		s.pinnedBySelect = false
 		s.authed = s.cfg.Password == ""
 		return s.clientWriter.WriteSimpleString("RESET")
 
@@ -416,6 +428,7 @@ func (s *Session) handleConnState(argv [][]byte, raw []byte, d route.Decision) e
 			s.metrics.IncExclusive(s.cfg.Group)
 		}
 		s.mode = ModeExclusive
+		s.pinnedBySelect = true
 		return s.forwardExclusive(raw)
 
 	default:

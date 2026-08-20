@@ -241,6 +241,12 @@ func (s *Server) instanceCreate(c *gin.Context) {
 	var masterName string
 	groupName := req.Group
 
+	// 生成 sessionID 用于创建期间加操作锁，防止并发删除导致孤儿容器
+	sessionID := c.GetHeader("X-Session-ID")
+	if sessionID == "" {
+		sessionID = fmt.Sprintf("create-%d", time.Now().UnixNano())
+	}
+
 	// 原子操作：检查冲突 → 调度 → 分配端口 → 写入 creating 状态
 	var resolvedAddr string // replica_of 解析后的 ip:port，用于 Agent 调用
 	err = s.db.WithInstances(func(instances *apitypes.InstancesState) error {
@@ -367,6 +373,13 @@ func (s *Server) instanceCreate(c *gin.Context) {
 			CreatedAt:    time.Now().Format(time.RFC3339),
 		}
 		instances.Instances[req.Name] = inst
+		// 加操作锁：阻止并发删除在 Agent 创建完成前删掉记录导致孤儿容器
+		inst.Lock = &apitypes.Lock{
+			HeldBy:     sessionID,
+			Operation:  "create",
+			AcquiredAt: time.Now().Format(time.RFC3339),
+			Timeout:    600, // 创建可能较慢（拉镜像等），给足超时
+		}
 		state.RecalculateGroupTopology(instances, groupName)
 
 		return nil
@@ -398,6 +411,7 @@ func (s *Server) instanceCreate(c *gin.Context) {
 				// 意图不变（用户仍然要这个实例），但已确认容器不存在。
 				// 这是观测而非意图：Phase() 会推导为 "failed"
 				i.ObservedStatus = apitypes.ObservedMissing
+				state.ReleaseLock(i, sessionID)
 				state.RecalculateGroupTopology(instances, i.Group)
 			}
 			return nil
@@ -414,6 +428,7 @@ func (s *Server) instanceCreate(c *gin.Context) {
 	if err := s.db.WithInstances(func(instances *apitypes.InstancesState) error {
 		if i := instances.Instances[req.Name]; i != nil {
 			i.ObservedStatus = apitypes.ObservedRunning
+			state.ReleaseLock(i, sessionID)
 			state.RecalculateGroupTopology(instances, i.Group)
 		}
 		return nil
@@ -461,6 +476,9 @@ func (s *Server) instanceDelete(c *gin.Context) {
 		i, exists := is.Instances[req.Name]
 		if !exists {
 			return fmt.Errorf("not found: %s", req.Name)
+		}
+		if i.Phase() == "creating" {
+			return fmt.Errorf("instance %s is still being created, please wait for creation to finish before deleting", req.Name)
 		}
 		inst = *i
 		if g := is.Groups[i.Group]; g != nil {

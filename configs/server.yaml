@@ -40,5 +40,6 @@ sentinel:
   parallel_syncs: 1
 
 log:
-  dir: /opt/redis-pilot-server/logs   # 为空则不写文件
+  dir: /data/logs/redis-pilot-server    # 为空则不写文件
   stdout: true
+  retention_days: 30                    # 日志保留天数，0 = 不清理

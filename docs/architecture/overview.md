@@ -182,7 +182,6 @@
 # 基础
 port {{ port }}
 bind 0.0.0.0
-requirepass {{ password }}
 timeout 300
 tcp-keepalive 60
 loglevel notice
@@ -244,7 +243,6 @@ maxclients 10000
 # 基础
 bind 0.0.0.0
 port {{ port }}
-requirepass {{ password }}
 timeout 300
 tcp-keepalive 60
 loglevel info
@@ -310,5 +308,5 @@ Proxy 对每个后端维护健康状态机：
 | DOWN | 失败超阈值 / 快照移除 | 移出读池，drain 连接 |
 
 - master 切换由快照长轮询感知：快照 `Version` 变化 -> Proxy 收到新拓扑 -> 旧 master Backend 标 DOWN 并主动 close 其池内所有连接 -> 新 master 建池
-- `requirepass` 认证：Proxy 从快照中获取每个 group 的密码（后端 requirepass），AUTH 在 Proxy 终结不透传
+- 前端鉴权：Proxy 从快照获取每个 group 的**前端密码**（`ProxyListener.Password`）校验客户端；后端实例无密码，Proxy→后端不发 AUTH。AUTH 在 Proxy 终结不透传
 - replica 全挂时读回落 master（可用性优先），同时打指标告警

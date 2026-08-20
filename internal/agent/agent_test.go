@@ -160,7 +160,6 @@ func TestWriteRedisConfig_Cache(t *testing.T) {
 	}
 	content := string(data)
 	checks := []string{
-		"requirepass mypass",
 		"maxmemory 4294967296",
 		"maxmemory-policy allkeys-lru",
 		"appendonly no",
@@ -169,6 +168,13 @@ func TestWriteRedisConfig_Cache(t *testing.T) {
 		if !strings.Contains(content, c) {
 			t.Errorf("expected %q in config", c)
 		}
+	}
+	// 实例无密码：鉴权只在 Proxy 前端，配置文件不写 requirepass/masterauth
+	if strings.Contains(content, "requirepass") {
+		t.Error("instance config must not contain requirepass (auth terminates at Proxy front)")
+	}
+	if strings.Contains(content, "masterauth") {
+		t.Error("instance config must not contain masterauth")
 	}
 	if strings.Contains(content, "replicaof") {
 		t.Error("cache config should not contain replicaof")
@@ -192,8 +198,9 @@ func TestWriteRedisConfig_Persistent(t *testing.T) {
 	if !strings.Contains(content, "replicaof 10.0.0.1 6379") {
 		t.Error("expected replicaof in config")
 	}
-	if !strings.Contains(content, "masterauth pass") {
-		t.Error("expected masterauth in replica config")
+	// 实例无密码：master 无 requirepass，replica 也无需 masterauth
+	if strings.Contains(content, "masterauth") {
+		t.Error("replica config must not contain masterauth (master has no requirepass)")
 	}
 	if !strings.Contains(content, "appendonly yes") {
 		t.Error("expected appendonly yes")
@@ -228,14 +235,15 @@ func TestWriteKvrocksConfig(t *testing.T) {
 	}
 	data, _ := os.ReadFile(filepath.Join(dir, "conf", "kvrocks.conf"))
 	content := string(data)
-	if !strings.Contains(content, "requirepass kvpass") {
-		t.Error("expected requirepass")
+	// 实例无密码：鉴权只在 Proxy 前端，配置文件不写 requirepass/masterauth
+	if strings.Contains(content, "requirepass") {
+		t.Error("kvrocks config must not contain requirepass (auth terminates at Proxy front)")
 	}
 	if !strings.Contains(content, "slaveof 10.0.0.2 6666") {
 		t.Error("expected slaveof in config")
 	}
-	if !strings.Contains(content, "masterauth kvpass") {
-		t.Error("expected masterauth in kvrocks replica config so replication can authenticate against a password-protected master")
+	if strings.Contains(content, "masterauth") {
+		t.Error("kvrocks replica config must not contain masterauth (master has no requirepass)")
 	}
 	if !strings.Contains(content, "max-db-size 4294967296") {
 		t.Error("expected max-db-size")
@@ -536,8 +544,9 @@ func TestInstanceCreate_Redis_FullFlow(t *testing.T) {
 	// 验证配置文件
 	conf, _ := os.ReadFile(filepath.Join(a.cfg.DataDir, "myinst", "conf", "redis.conf"))
 	content := string(conf)
-	if !strings.Contains(content, "requirepass pass123") {
-		t.Error("expected password in config")
+	// 实例无密码：鉴权只在 Proxy 前端，配置文件不写 requirepass
+	if strings.Contains(content, "requirepass") {
+		t.Error("instance config must not contain requirepass (auth terminates at Proxy front)")
 	}
 	if !strings.Contains(content, "maxmemory-policy allkeys-lru") {
 		t.Error("cache should use allkeys-lru")
@@ -618,8 +627,8 @@ func TestInstanceCreate_Kvrocks_FullFlow(t *testing.T) {
 
 	// 验证 kvrocks 配置
 	conf, _ := os.ReadFile(filepath.Join(a.cfg.DataDir, "kvinst", "conf", "kvrocks.conf"))
-	if !strings.Contains(string(conf), "requirepass kvpass") {
-		t.Error("expected password in kvrocks config")
+	if strings.Contains(string(conf), "requirepass") {
+		t.Error("kvrocks config must not contain requirepass (auth terminates at Proxy front)")
 	}
 
 	if !fake.hasCalled("Create:kvrocks:kvrocks-kvinst") {
@@ -740,39 +749,34 @@ func TestInstanceList_FullFlow(t *testing.T) {
 	}
 }
 
-// TestWriteRedisConfig_MasterAlsoGetsMasterAuth 验证即使实例当前创建为 master
-// （没有 ReplicaOf），只要设置了密码，配置文件也应该写入 masterauth。
+// TestWriteRedisConfig_NoAuthWritten 验证实例配置在无密码方案下不写任何鉴权指令。
 //
-// 回归背景：在"Sentinel 唯一权威"的故障转移模型下，任何当前是 master 的实例都可能
-// 在未来的 failover 中被 Sentinel 自动降级为 replica（Sentinel 会直接对它下发
-// REPLICAOF，不会主动帮它设置认证信息）。此前 masterauth 只写在 ReplicaOf 分支里，
-// 导致这种"master 创建时从未想到自己以后可能变成 replica"的实例，配置文件永远没有
-// masterauth，一旦被降级，运行时 CONFIG SET masterauth 也没有被设置（Sentinel 不管
-// 这件事），复制握手会因为 NOAUTH 失败，旧 master 表面上执行了 REPLICAOF 但实际上
-// 永远同步不上数据（master_link_status 长期 down）。
-func TestWriteRedisConfig_MasterAlsoGetsMasterAuth(t *testing.T) {
+// 背景：改为"仅 Proxy 前端鉴权"后，后端实例一律无密码——鉴权只在客户端→Proxy 这一段
+// 由 Proxy 校验前端密码完成。实例本身不写 requirepass/masterauth，Sentinel 与主从复制
+// 都以无密码方式直连实例（依赖网络隔离作为边界）。因此即便传入 Password，模板也不应把
+// 它落进配置文件。
+func TestWriteRedisConfig_NoAuthWritten(t *testing.T) {
 	dir := t.TempDir()
 	err := writeRedisConfig(dir, RedisConfigParams{
 		Password:        "pass",
 		Memory:          "8Gi",
 		MaxmemoryPolicy: "noeviction",
 		Appendonly:      "yes",
-		// 注意：没有设置 ReplicaOf，模拟这个实例当前是 master。
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	data, _ := os.ReadFile(filepath.Join(dir, "conf", "redis.conf"))
 	content := string(data)
-	if strings.Contains(content, "replicaof") {
-		t.Error("master config should not contain replicaof")
+	if strings.Contains(content, "requirepass") {
+		t.Error("instance config must not contain requirepass (auth terminates at Proxy front)")
 	}
-	if !strings.Contains(content, "masterauth pass") {
-		t.Error("expected masterauth to be present even for a master instance, so it can later be safely demoted by Sentinel without an auth gap")
+	if strings.Contains(content, "masterauth") {
+		t.Error("instance config must not contain masterauth (backend is passwordless)")
 	}
 }
 
-func TestWriteKvrocksConfig_MasterAlsoGetsMasterAuth(t *testing.T) {
+func TestWriteKvrocksConfig_NoAuthWritten(t *testing.T) {
 	dir := t.TempDir()
 	err := writeKvrocksConfig(dir, KvrocksConfigParams{
 		Password: "kvpass",
@@ -783,10 +787,10 @@ func TestWriteKvrocksConfig_MasterAlsoGetsMasterAuth(t *testing.T) {
 	}
 	data, _ := os.ReadFile(filepath.Join(dir, "conf", "kvrocks.conf"))
 	content := string(data)
-	if strings.Contains(content, "slaveof") {
-		t.Error("master config should not contain slaveof")
+	if strings.Contains(content, "requirepass") {
+		t.Error("kvrocks config must not contain requirepass (auth terminates at Proxy front)")
 	}
-	if !strings.Contains(content, "masterauth kvpass") {
-		t.Error("expected masterauth to be present even for a master instance, so it can later be safely demoted by Sentinel without an auth gap")
+	if strings.Contains(content, "masterauth") {
+		t.Error("kvrocks config must not contain masterauth (backend is passwordless)")
 	}
 }

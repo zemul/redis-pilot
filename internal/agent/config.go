@@ -7,8 +7,10 @@ import (
 )
 
 type LogConfig struct {
-	Dir    string `yaml:"dir"`
-	Stdout bool   `yaml:"stdout"`
+	Dir           string `yaml:"dir"`
+	Stdout        bool   `yaml:"stdout"`
+	RetentionDays int    `yaml:"retention_days"`
+	Level         string `yaml:"level"` // debug/info/warn/error（默认 info）
 }
 
 type S3Config struct {

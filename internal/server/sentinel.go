@@ -968,10 +968,12 @@ func (s *Server) buildSentinelMasters(node *apitypes.NodeState, instances *apity
 			continue
 		}
 		masters = append(masters, apitypes.SentinelMaster{
-			Group:                 groupName,
-			Host:                  endpoint,
-			Port:                  inst.Port,
-			Password:              inst.Password,
+			Group: groupName,
+			Host:  endpoint,
+			Port:  inst.Port,
+			// Sentinel 直连后端实例做监控/选举，实例本身无密码，故不下发 auth-pass。
+			// 鉴权只在 Proxy 前端终结。
+			Password:              "",
 			DownAfterMilliseconds: s.sentinelDownAfter(),
 			FailoverTimeout:       s.sentinelFailoverTimeout(),
 			ParallelSyncs:         s.sentinelParallelSyncs(),

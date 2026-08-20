@@ -22,12 +22,13 @@ import (
 	"strings"
 	"time"
 
+	"gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/internal/logger"
 	"gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/internal/proxy/config"
 	"gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/internal/proxy/proxysvc"
 )
 
 func main() {
-	// 初始化 slog（text handler，输出到 stderr，默认包含时间戳）
+	// 临时 slog，加载配置后会被 logger.Setup 覆盖
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, nil)))
 
 	configPath := flag.String("config", "", "config file path (YAML)")
@@ -69,6 +70,20 @@ func main() {
 			os.Exit(1)
 		}
 		slog.Info("config loaded", "path", *configPath)
+	}
+
+	// --- 初始化统一日志 ---
+	{
+		logCfg := logger.Config{Stdout: true, Component: "proxy"} // 默认输出到 stdout
+		if fc != nil {
+			if fc.Log.Dir != "" || fc.Log.RetentionDays > 0 {
+				logCfg.Dir = fc.Log.Dir
+				logCfg.Stdout = fc.Log.Stdout
+				logCfg.RetentionDays = fc.Log.RetentionDays
+			}
+			logCfg.Level = fc.Log.Level
+		}
+		logger.Setup(logCfg)
 	}
 
 	// --- 检测哪些 flag 被显式设置 ---

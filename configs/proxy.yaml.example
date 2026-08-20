@@ -29,6 +29,12 @@ idle_timeout: 5m             # 空闲连接回收超时（§13）
 metrics_listen: ":19100"    # Prometheus /metrics 地址（空 = 关闭）
 max_request_bytes: 16777216 # 单条命令最大字节数（D13，默认 16MB）
 
+# ─── 日志 ───
+log:
+  dir: /data/logs/redis-pilot-proxy    # 为空则不写文件，仅输出到 stdout
+  stdout: true
+  retention_days: 30                   # 日志保留天数，0 = 不清理
+
 # ─── 伪 Sentinel 服务发现（可选，proxy-design §19） ───
 # 让 sentinel 模式客户端零改代码接入：客户端把 sentinel 地址列表指向本端口，
 # masterName 用 group 名；get-master-addr-by-name 返回该 group 的 Proxy 数据端口。

@@ -2,8 +2,9 @@ port: 8400
 token: ""
 data_dir: /data/redis
 log:
-  dir: /opt/redis-pilot-agent/logs
+  dir: /data/logs/redis-pilot-agent
   stdout: true
+  retention_days: 30
 backup:
   s3:
     endpoint: http://oss.internal:9000

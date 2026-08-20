@@ -199,17 +199,17 @@ func (s *Server) buildProxySnapshot() (*apitypes.ProxySnapshot, error) {
 			})
 		}
 
+		// 后端集群不带密码：实例本身无 requirepass，鉴权只在 Proxy 前端（Listener.Password）
+		// 终结。若此处下发密码，Proxy 会对无密码实例发 AUTH 而失败。
 		if len(g.masterEndpoints) > 0 {
 			snapshot.Clusters = append(snapshot.Clusters, apitypes.ProxyCluster{
 				Name:      masterClusterName,
-				Password:  g.password,
 				Endpoints: proxyEndpoints(g.masterEndpoints),
 			})
 		}
 		if g.autoPort > 0 && len(g.replicaEndpoints) > 0 {
 			snapshot.Clusters = append(snapshot.Clusters, apitypes.ProxyCluster{
 				Name:      replicaClusterName,
-				Password:  g.password,
 				Endpoints: proxyEndpoints(g.replicaEndpoints),
 			})
 		}

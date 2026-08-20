@@ -779,7 +779,7 @@ sentinel parallel-syncs {{ master.group }} {{ master.parallel_syncs | default(1)
 {% endfor %}
 ```
 
-如果 Redis/Kvrocks 实例启用了 `requirepass`，必须配置 `sentinel auth-pass`。否则 Sentinel 能检测端口存活，但无法执行 INFO、REPLICAOF、故障转移等命令。
+当前采用"仅 Proxy 前端鉴权"模型：后端实例无 `requirepass`，Server 下发的 `master.password` 恒为空，故 `sentinel auth-pass` 分支不会渲染，Sentinel 以无密码方式直连实例执行 INFO、REPLICAOF、故障转移。上面的 `{% if master.password %}` 条件保留是为了兼容"实例带密码"的历史/静态部署——一旦实例启用了 `requirepass`，则必须配置 `sentinel auth-pass`，否则 Sentinel 能检测端口存活但无法执行故障转移命令。
 
 #### 3.7.4 Podman 容器规范
 
@@ -885,7 +885,7 @@ Server 启动时：
 |------|------|
 | Redis 主库容器停止 | Sentinel 提升从库，Proxy 写入口切到新 master，Server 状态最终同步 |
 | Kvrocks 主库容器停止 | 行为同 Redis，需验证 `ROLE` / Sentinel failover / replication 状态兼容 |
-| Redis/Kvrocks 配置 requirepass | Sentinel auth-pass 生效，failover 成功 |
+| 实例无密码（默认）| Sentinel 无鉴权直连实例，failover 成功；鉴权只在 Proxy 前端 |
 | Sentinel 节点少于 quorum | 不发生自动故障转移，系统发出降级告警 |
 | Proxy 重启 | 启动时从 Server 拉取快照恢复拓扑，业务端口不变化 |
 

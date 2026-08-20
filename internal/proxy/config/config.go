@@ -46,12 +46,23 @@ type FileConfig struct {
 	SentinelAnnounceIP string `yaml:"sentinel_announce_ip"`
 	SentinelPassword   string `yaml:"sentinel_password"`
 
+	// 日志
+	Log LogConfig `yaml:"log"`
+
 	// 通用
 	MasterReadWeight  int      `yaml:"master_read_weight"`
 	PoolSize          int      `yaml:"pool_size"`
 	IdleTimeout       Duration `yaml:"idle_timeout"`
 	MetricsListen     string   `yaml:"metrics_listen"`
 	MaxRequestBytes   int      `yaml:"max_request_bytes"`
+}
+
+// LogConfig 日志配置。
+type LogConfig struct {
+	Dir           string `yaml:"dir"`
+	Stdout        bool   `yaml:"stdout"`
+	RetentionDays int    `yaml:"retention_days"`
+	Level         string `yaml:"level"` // debug/info/warn/error（默认 info）
 }
 
 // Load 读取并解析 YAML 配置文件。
