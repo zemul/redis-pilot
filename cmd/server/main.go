@@ -29,6 +29,9 @@ func main() {
 	if err != nil {
 		log.Fatalf("init server: %v", err)
 	}
+	if err := s.InitAdmin(); err != nil {
+		log.Fatalf("init admin: %v", err)
+	}
 	s.StartWALCheckpointLoop()
 	s.StartReconcileLoop()
 	s.StartSentinelReconcileLoop()

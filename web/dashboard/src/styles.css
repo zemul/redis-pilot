@@ -2057,3 +2057,156 @@ code {
 }
 .inline-select:hover { background: var(--surface-2); }
 .inline-select:focus { outline: 1px solid var(--accent); }
+
+/* ─── Login Page ──────────────────────────────────────────────────────────── */
+.login-page {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg);
+  padding: 1rem;
+}
+.login-form {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 2.5rem 2rem;
+  width: 100%;
+  max-width: 360px;
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+}
+.login-brand {
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.25rem;
+  color: var(--accent);
+}
+.login-brand h1 { font-size: 1.5rem; margin: 0.5rem 0 0; color: var(--text); }
+.login-brand p { font-size: 0.85rem; color: var(--text-2); margin: 0; }
+.login-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  font-size: 0.85rem;
+  color: var(--text-2);
+}
+.login-form input {
+  padding: 0.6rem 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 0.9rem;
+  background: var(--bg);
+  color: var(--text);
+}
+.login-form input:focus { outline: none; border-color: var(--accent); }
+.login-button { width: 100%; justify-content: center; padding: 0.7rem; }
+.login-error {
+  background: var(--red-bg, #fef2f2);
+  color: var(--red, #dc2626);
+  border: 1px solid var(--red-border, #fecaca);
+  border-radius: 6px;
+  padding: 0.5rem 0.75rem;
+  font-size: 0.85rem;
+}
+
+/* ─── Toolbar User ────────────────────────────────────────────────────────── */
+.toolbar-user {
+  font-size: 0.85rem;
+  color: var(--text-2);
+  padding: 0.25rem 0.5rem;
+  background: var(--surface-2);
+  border-radius: 4px;
+}
+
+/* ─── User Management ─────────────────────────────────────────────────────── */
+.user-management { display: flex; flex-direction: column; gap: 1rem; }
+.panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+.panel-header h3 { display: flex; align-items: center; gap: 0.5rem; margin: 0; }
+.header-actions { display: flex; gap: 0.5rem; }
+.inline-form {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.75rem;
+  background: var(--surface-2);
+  border-radius: 6px;
+}
+.inline-form input {
+  padding: 0.45rem 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-size: 0.85rem;
+  background: var(--bg);
+  color: var(--text);
+}
+.icon-button.danger { color: var(--red, #dc2626); background: none; border: none; cursor: pointer; padding: 0.25rem; border-radius: 4px; }
+.icon-button.danger:hover { background: var(--red-bg, #fef2f2); }
+
+/* ─── Token Reveal ────────────────────────────────────────────────────────── */
+.modal-form {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+.modal-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  font-size: 0.85rem;
+  color: var(--text-2);
+}
+.modal-form input {
+  padding: 0.6rem 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 0.9rem;
+  background: var(--bg);
+  color: var(--text);
+}
+.modal-form input:focus { outline: none; border-color: var(--accent); }
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}
+.token-cell {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+.token-cell code {
+  font-size: 0.8rem;
+  word-break: break-all;
+}
+.token-cell .icon-button {
+  opacity: 0.4;
+  transition: opacity 0.15s;
+  flex-shrink: 0;
+}
+.token-cell .icon-button:hover { opacity: 1; }
+.token-reveal {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+.token-reveal p { margin: 0; font-size: 0.85rem; color: var(--text-2); }
+.token-value {
+  font-size: 0.8rem;
+  background: var(--bg);
+  padding: 0.35rem 0.5rem;
+  border-radius: 4px;
+  word-break: break-all;
+  flex: 1;
+  min-width: 200px;
+}

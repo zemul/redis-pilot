@@ -1,6 +1,17 @@
 port: 8080
-token: ""
 data_dir: /opt/redis-pilot-server/state
+
+# JWT 签名密钥，为空则使用内置默认值（仅限本地开发；生产环境务必显式配置）
+jwt_secret: ""
+
+# 内部组件通信 token：Proxy 拉取快照时携带，须与 proxy.yaml 的 server_token 一致
+# 为空则跳过校验（快照含实例地址与密码，生产环境务必配置）
+internal_token: ""
+
+# 初始管理员账号（仅首次启动、users 表为空时生效）
+admin:
+  username: admin
+  password: admin
 
 # 端口分配范围
 ports:

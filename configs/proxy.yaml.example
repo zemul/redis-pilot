@@ -7,7 +7,7 @@
 # ─── Discovery 模式（与 static 模式二选一） ───
 # 从 Server 拉取快照，动态驱动 listener 和连接池。
 # server_endpoint: "http://127.0.0.1:8080"
-# server_token: ""
+# server_token: ""      # 与 server.yaml 的 internal_token 保持一致，Proxy 拉快照时携带
 # poll_interval: 2s
 # poll_timeout: 5s
 # poll_wait: 20s

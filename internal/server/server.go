@@ -126,13 +126,36 @@ func (s *Server) Router() *gin.Engine {
 	r.Use(gin.Recovery())
 	r.Use(s.requestLogger())
 
+	// ── 公开路由（无需认证）───────────────────────────────────────────────
+	r.POST("/auth/login", s.authLogin)
 	r.GET("/", s.dashboardIndex)
 	r.GET("/dashboard", s.dashboardIndex)
 	r.GET("/dashboard/*filepath", s.dashboardAsset)
 
-	r.Use(s.authMiddleware())
+	// ── 内部组件路由（静态 internal_token 校验）──────────────────────────
+	// Proxy 拉快照：机器凭证走配置文件（server.yaml 的 internal_token 与
+	// proxy.yaml 的 server_token 一致），与用户体系（JWT / 页面签发 rpt_ token）分离。
+	internal := r.Group("")
+	internal.Use(s.internalTokenMiddleware())
+	internal.GET("/proxy/snapshot", s.proxySnapshot)
+	internal.GET("/api/v1/proxy/snapshot", s.proxySnapshot)
 
-	node := r.Group("/node")
+	// ── 需要认证的路由（JWT 或 API Token）────────────────────────────────
+	authed := r.Group("")
+	authed.Use(s.unifiedAuthMiddleware())
+
+	// 用户与 Token 管理
+	authed.GET("/auth/me", s.authMe)
+	authed.POST("/auth/user/create", s.authUserCreate)
+	authed.GET("/auth/user/list", s.authUserList)
+	authed.POST("/auth/user/delete", s.authUserDelete)
+	authed.POST("/auth/change-password", s.authChangePassword)
+	authed.POST("/auth/token/create", s.authTokenCreate)
+	authed.GET("/auth/token/list", s.authTokenList)
+	authed.POST("/auth/token/delete", s.authTokenDelete)
+
+	// 节点管理
+	node := authed.Group("/node")
 	{
 		node.GET("/list", s.nodeQuery)
 		node.POST("/add", s.nodeAdd)
@@ -140,7 +163,8 @@ func (s *Server) Router() *gin.Engine {
 		node.POST("/update", s.nodeUpdate)
 	}
 
-	instance := r.Group("/instance")
+	// 实例管理
+	instance := authed.Group("/instance")
 	{
 		instance.GET("/list", s.instanceList)
 		instance.GET("/status", s.instanceStatus)
@@ -160,7 +184,8 @@ func (s *Server) Router() *gin.Engine {
 		instance.POST("/replicate", s.instanceReplicate)
 	}
 
-	backup := r.Group("/backup")
+	// 备份
+	backup := authed.Group("/backup")
 	{
 		backup.POST("/exec", s.backupExec)
 		backup.GET("/status", s.backupStatus)
@@ -170,15 +195,13 @@ func (s *Server) Router() *gin.Engine {
 		backup.POST("/schedule", s.backupSetSchedule)
 	}
 
-	r.GET("/audit/query", s.auditQuery)
-	r.GET("/server/info", s.serverInfo)
-	r.POST("/reconcile", s.reconcile)
-	r.GET("/metrics", s.metricsCollect)
+	authed.GET("/audit/query", s.auditQuery)
+	authed.GET("/server/info", s.serverInfo)
+	authed.POST("/reconcile", s.reconcile)
+	authed.GET("/metrics", s.metricsCollect)
 
-	r.GET("/proxy/snapshot", s.proxySnapshot)
-	r.GET("/api/v1/proxy/snapshot", s.proxySnapshot)
-
-	sentinel := r.Group("/sentinel")
+	// Sentinel 管理
+	sentinel := authed.Group("/sentinel")
 	{
 		sentinel.POST("/event", s.sentinelEvent)
 		sentinel.GET("/status", s.sentinelStatus)
@@ -196,9 +219,13 @@ func (s *Server) requestLogger() gin.HandlerFunc {
 	}
 }
 
-func (s *Server) authMiddleware() gin.HandlerFunc {
+// internalTokenMiddleware 校验内部组件（Proxy）携带的静态 internal_token。
+// 机器凭证与用户体系分离：不查库、不依赖登录态，server.yaml 的 internal_token
+// 与 proxy.yaml 的 server_token 两侧保持一致即可；为空则跳过校验（本地开发便捷，
+// 快照含实例地址与密码，生产环境务必配置）。
+func (s *Server) internalTokenMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		if s.cfg.Token == "" {
+		if s.cfg.InternalToken == "" {
 			c.Next()
 			return
 		}
@@ -207,7 +234,7 @@ func (s *Server) authMiddleware() gin.HandlerFunc {
 		// 用 subtle.ConstantTimeCompare 而非 !=：字符串比较在首个不同字节处短路，
 		// 耗时随匹配前缀长度变化。这条路径的可利用性很低（网络抖动远大于纳秒级差异），
 		// 改动成本也极低，按纵深防御处理。
-		if subtle.ConstantTimeCompare([]byte(token), []byte(s.cfg.Token)) != 1 {
+		if subtle.ConstantTimeCompare([]byte(token), []byte(s.cfg.InternalToken)) != 1 {
 			c.AbortWithStatusJSON(http.StatusUnauthorized, apitypes.APIResponse{Error: "unauthorized"})
 			return
 		}

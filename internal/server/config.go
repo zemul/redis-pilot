@@ -42,14 +42,21 @@ type EngineImageConfig struct {
 	Versions map[string]string `yaml:"versions"`
 }
 
+type AdminConfig struct {
+	Username string `yaml:"username"`
+	Password string `yaml:"password"`
+}
+
 type Config struct {
-	Port     int                          `yaml:"port"`
-	Token    string                       `yaml:"token"`
-	DataDir  string                       `yaml:"data_dir"`
-	Ports    PortConfig                   `yaml:"ports"`
-	Images   map[string]EngineImageConfig `yaml:"images"`
-	Sentinel SentinelConfig               `yaml:"sentinel"`
-	Log      LogConfig                    `yaml:"log"`
+	Port          int                          `yaml:"port"`
+	DataDir       string                       `yaml:"data_dir"`
+	JWTSecret     string                       `yaml:"jwt_secret"`
+	InternalToken string                       `yaml:"internal_token"`
+	Admin         AdminConfig                  `yaml:"admin"`
+	Ports         PortConfig                   `yaml:"ports"`
+	Images        map[string]EngineImageConfig `yaml:"images"`
+	Sentinel      SentinelConfig               `yaml:"sentinel"`
+	Log           LogConfig                    `yaml:"log"`
 }
 
 func LoadConfig(path string) (*Config, error) {
@@ -87,6 +94,12 @@ func LoadConfig(path string) (*Config, error) {
 		return nil, err
 	}
 	normalizeImageConfig(cfg)
+	if cfg.Admin.Username == "" {
+		cfg.Admin.Username = "admin"
+	}
+	if cfg.Admin.Password == "" {
+		cfg.Admin.Password = "admin"
+	}
 	return cfg, nil
 }
 

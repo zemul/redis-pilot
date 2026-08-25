@@ -12,6 +12,7 @@ export default defineConfig({
   },
   server: {
     proxy: {
+      '/auth': apiTarget,
       '/instance': apiTarget,
       '/node': apiTarget,
       '/backup': apiTarget,

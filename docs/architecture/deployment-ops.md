@@ -134,9 +134,10 @@ podman run -d \
 
 ### 8.2 认证
 
-- 后端实例无密码（`requirepass` 不写），鉴权只在客户端 → Proxy 前端由 Proxy 校验
+- 后端实例无密码（`requirepass` 不写），鉴权只在客户端 -> Proxy 前端由 Proxy 校验
 - 依赖主机层网络隔离作为后端安全边界
-- Agent API 使用 Token 认证
+- Server API：用户体系（JWT 登录 / 页面签发 rpt_ API Token）；内部组件走静态 token（Proxy 的 `internal_token`/`server_token`）
+- Agent API 使用 per-node Token 认证（`agent_token`）
 - Proxy 前端可配置 AUTH 密码（快照 `ProxyListener.Password`）
 
 ### 8.3 敏感信息

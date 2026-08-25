@@ -138,7 +138,7 @@ func TestSentinelEventEndpoint(t *testing.T) {
 			},
 		},
 	})
-	w := doRequest(s.Router(), "POST", "/sentinel/event", map[string]interface{}{
+	w := doAuthRequest(s.Router(), "POST", "/sentinel/event", map[string]interface{}{
 		"event":      "+switch-master",
 		"group":      "order",
 		"old_master": "10.0.1.10:6379",

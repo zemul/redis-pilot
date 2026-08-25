@@ -3,6 +3,9 @@ package server
 import (
 	"bufio"
 	"bytes"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -19,18 +22,22 @@ import (
 )
 
 // newTestServer 创建一个用于测试的 Server，dataDir 指向临时目录
+// token 参数已废弃（保留签名兼容），内部自动初始化 admin 用户。
 func newTestServer(t *testing.T, token string) *Server {
 	t.Helper()
 	dir := t.TempDir()
 	cfg := &Config{
 		Port:    8080,
-		Token:   token,
 		DataDir: dir,
+		Admin:   AdminConfig{Username: "admin", Password: "test"},
 		Log:     LogConfig{Dir: dir + "/log", Stdout: false},
 	}
 	s, err := New(cfg)
 	if err != nil {
 		t.Fatalf("server.New: %v", err)
+	}
+	if err := s.InitAdmin(); err != nil {
+		t.Fatalf("InitAdmin: %v", err)
 	}
 	t.Cleanup(func() { s.db.Close() })
 	return s
@@ -46,6 +53,25 @@ func doRequest(router http.Handler, method, path string, body interface{}) *http
 	w := httptest.NewRecorder()
 	router.ServeHTTP(w, req)
 	return w
+}
+
+// doAuthRequest 带认证的请求 — 自动生成 admin JWT（适用于大多数测试）
+// 签名匹配 doRequest，直接替换使用。内部使用默认 jwt secret。
+func doAuthRequest(router http.Handler, method, path string, body interface{}) *httptest.ResponseRecorder {
+	// 使用默认 jwt secret 生成 admin token（与 Server 的 jwtSecret() 一致）
+	token := makeTestJWT("admin", []byte("redis-pilot-default-jwt-secret"))
+	return doRequestWithAuth(router, method, path, token, body)
+}
+
+func makeTestJWT(username string, secret []byte) string {
+	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"HS256","typ":"JWT"}`))
+	claims := fmt.Sprintf(`{"sub":"%s","exp":%d,"iat":%d}`, username, time.Now().Add(72*time.Hour).Unix(), time.Now().Unix())
+	payload := base64.RawURLEncoding.EncodeToString([]byte(claims))
+	msg := header + "." + payload
+	mac := hmac.New(sha256.New, secret)
+	mac.Write([]byte(msg))
+	sig := base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
+	return msg + "." + sig
 }
 
 func doRequestWithAuth(router http.Handler, method, path, token string, body interface{}) *httptest.ResponseRecorder {
@@ -74,26 +100,37 @@ func parseResponse(t *testing.T, w *httptest.ResponseRecorder) apitypes.APIRespo
 
 // ---------- Auth Middleware ----------
 
+// testJWT 为测试生成一个有效的 JWT
+func testJWT(t *testing.T, s *Server) string {
+	t.Helper()
+	token, err := s.jwtSign("admin")
+	if err != nil {
+		t.Fatalf("jwtSign: %v", err)
+	}
+	return token
+}
+
 func TestAuthMiddleware_NoToken(t *testing.T) {
 	s := newTestServer(t, "")
 	r := s.Router()
 	w := doRequest(r, "GET", "/node/list", nil)
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d", w.Code)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 without token, got %d", w.Code)
 	}
 }
 
-func TestAuthMiddleware_ValidToken(t *testing.T) {
-	s := newTestServer(t, "secret")
+func TestAuthMiddleware_ValidJWT(t *testing.T) {
+	s := newTestServer(t, "")
 	r := s.Router()
-	w := doRequestWithAuth(r, "GET", "/node/list", "secret", nil)
+	jwt := testJWT(t, s)
+	w := doRequestWithAuth(r, "GET", "/node/list", jwt, nil)
 	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d", w.Code)
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
 	}
 }
 
 func TestAuthMiddleware_InvalidToken(t *testing.T) {
-	s := newTestServer(t, "secret")
+	s := newTestServer(t, "")
 	r := s.Router()
 	w := doRequestWithAuth(r, "GET", "/node/list", "wrong", nil)
 	if w.Code != http.StatusUnauthorized {
@@ -102,7 +139,7 @@ func TestAuthMiddleware_InvalidToken(t *testing.T) {
 }
 
 func TestAuthMiddleware_MissingToken(t *testing.T) {
-	s := newTestServer(t, "secret")
+	s := newTestServer(t, "")
 	r := s.Router()
 	w := doRequest(r, "GET", "/node/list", nil)
 	if w.Code != http.StatusUnauthorized {
@@ -111,7 +148,7 @@ func TestAuthMiddleware_MissingToken(t *testing.T) {
 }
 
 func TestDashboard_NoAuthRequired(t *testing.T) {
-	s := newTestServer(t, "secret")
+	s := newTestServer(t, "")
 	r := s.Router()
 	w := doRequest(r, "GET", "/dashboard", nil)
 	if w.Code != http.StatusOK {
@@ -125,12 +162,70 @@ func TestDashboard_NoAuthRequired(t *testing.T) {
 	}
 }
 
+// ---------- Internal Token Middleware ----------
+
+// newInternalTokenTestServer 创建配置了 internal_token 的 Server。
+func newInternalTokenTestServer(t *testing.T, internalToken string) *Server {
+	t.Helper()
+	dir := t.TempDir()
+	cfg := &Config{
+		Port:          8080,
+		DataDir:       dir,
+		InternalToken: internalToken,
+		Admin:         AdminConfig{Username: "admin", Password: "test"},
+		Log:           LogConfig{Dir: dir + "/log", Stdout: false},
+	}
+	s, err := New(cfg)
+	if err != nil {
+		t.Fatalf("server.New: %v", err)
+	}
+	if err := s.InitAdmin(); err != nil {
+		t.Fatalf("InitAdmin: %v", err)
+	}
+	t.Cleanup(func() { s.db.Close() })
+	return s
+}
+
+func TestInternalToken_Required(t *testing.T) {
+	s := newInternalTokenTestServer(t, "secret-internal")
+	r := s.Router()
+
+	// 无 token -> 401
+	if w := doRequest(r, "GET", "/proxy/snapshot", nil); w.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 without internal token, got %d", w.Code)
+	}
+	// 错误 token -> 401
+	if w := doRequestWithAuth(r, "GET", "/proxy/snapshot", "wrong", nil); w.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 with wrong internal token, got %d", w.Code)
+	}
+	// 用户体系 JWT 不放行内部路由（人/机器凭证分离）
+	jwt := testJWT(t, s)
+	if w := doRequestWithAuth(r, "GET", "/proxy/snapshot", jwt, nil); w.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 with user JWT on internal route, got %d", w.Code)
+	}
+	// 正确 internal token -> 200（两个别名路径行为一致）
+	if w := doRequestWithAuth(r, "GET", "/proxy/snapshot", "secret-internal", nil); w.Code != http.StatusOK {
+		t.Fatalf("expected 200 with correct internal token, got %d: %s", w.Code, w.Body.String())
+	}
+	if w := doRequestWithAuth(r, "GET", "/api/v1/proxy/snapshot", "secret-internal", nil); w.Code != http.StatusOK {
+		t.Fatalf("expected 200 on alias path, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestInternalToken_EmptySkipsAuth(t *testing.T) {
+	s := newTestServer(t, "")
+	r := s.Router()
+	if w := doRequest(r, "GET", "/proxy/snapshot", nil); w.Code != http.StatusOK {
+		t.Fatalf("expected 200 without token when internal_token empty, got %d", w.Code)
+	}
+}
+
 // ---------- Node Handlers ----------
 
 func TestNodeQuery_Empty(t *testing.T) {
 	s := newTestServer(t, "")
 	r := s.Router()
-	w := doRequest(r, "GET", "/node/list", nil)
+	w := doAuthRequest(r, "GET", "/node/list", nil)
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", w.Code)
 	}
@@ -151,13 +246,13 @@ func TestNodeAdd_Success(t *testing.T) {
 			"status":     "healthy",
 		},
 	}
-	w := doRequest(r, "POST", "/node/add", body)
+	w := doAuthRequest(r, "POST", "/node/add", body)
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
 	}
 
 	// 验证写入
-	w = doRequest(r, "GET", "/node/list", nil)
+	w = doAuthRequest(r, "GET", "/node/list", nil)
 	resp := parseResponse(t, w)
 	data, _ := json.Marshal(resp.Data)
 	var node apitypes.NodeState
@@ -174,8 +269,8 @@ func TestNodeAdd_Duplicate(t *testing.T) {
 		"name":   "srv1",
 		"server": map[string]interface{}{"endpoint": "10.0.0.1", "agent_port": 8400},
 	}
-	doRequest(r, "POST", "/node/add", body)
-	w := doRequest(r, "POST", "/node/add", body)
+	doAuthRequest(r, "POST", "/node/add", body)
+	w := doAuthRequest(r, "POST", "/node/add", body)
 	if w.Code != http.StatusConflict {
 		t.Fatalf("expected 409, got %d", w.Code)
 	}
@@ -185,12 +280,12 @@ func TestNodeRemove_Success(t *testing.T) {
 	s := newTestServer(t, "")
 	r := s.Router()
 	// 先添加
-	doRequest(r, "POST", "/node/add", map[string]interface{}{
+	doAuthRequest(r, "POST", "/node/add", map[string]interface{}{
 		"name":   "srv1",
 		"server": map[string]interface{}{"endpoint": "10.0.0.1", "agent_port": 8400},
 	})
 	// 再删除
-	w := doRequest(r, "POST", "/node/remove", map[string]interface{}{"name": "srv1"})
+	w := doAuthRequest(r, "POST", "/node/remove", map[string]interface{}{"name": "srv1"})
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", w.Code)
 	}
@@ -199,7 +294,7 @@ func TestNodeRemove_Success(t *testing.T) {
 func TestNodeRemove_NotFound(t *testing.T) {
 	s := newTestServer(t, "")
 	r := s.Router()
-	w := doRequest(r, "POST", "/node/remove", map[string]interface{}{"name": "nonexistent"})
+	w := doAuthRequest(r, "POST", "/node/remove", map[string]interface{}{"name": "nonexistent"})
 	if w.Code != http.StatusNotFound {
 		t.Fatalf("expected 404, got %d", w.Code)
 	}
@@ -217,7 +312,7 @@ func TestNodeRemove_RejectsManagedInstances(t *testing.T) {
 		},
 	})
 
-	w := doRequest(s.Router(), "POST", "/node/remove", map[string]string{"name": "srv1"})
+	w := doAuthRequest(s.Router(), "POST", "/node/remove", map[string]string{"name": "srv1"})
 	if w.Code != http.StatusConflict {
 		t.Fatalf("expected 409 for node with managed instance, got %d: %s", w.Code, w.Body.String())
 	}
@@ -230,11 +325,11 @@ func TestNodeRemove_RejectsManagedInstances(t *testing.T) {
 func TestNodeUpdate_Success(t *testing.T) {
 	s := newTestServer(t, "")
 	r := s.Router()
-	doRequest(r, "POST", "/node/add", map[string]interface{}{
+	doAuthRequest(r, "POST", "/node/add", map[string]interface{}{
 		"name":   "srv1",
 		"server": map[string]interface{}{"endpoint": "10.0.0.1", "agent_port": 8400, "status": "healthy"},
 	})
-	w := doRequest(r, "POST", "/node/update", map[string]interface{}{
+	w := doAuthRequest(r, "POST", "/node/update", map[string]interface{}{
 		"name":   "srv1",
 		"server": map[string]interface{}{"endpoint": "10.0.0.2", "agent_port": 8400, "status": "drain"},
 	})
@@ -246,7 +341,7 @@ func TestNodeUpdate_Success(t *testing.T) {
 func TestNodeUpdate_NotFound(t *testing.T) {
 	s := newTestServer(t, "")
 	r := s.Router()
-	w := doRequest(r, "POST", "/node/update", map[string]interface{}{
+	w := doAuthRequest(r, "POST", "/node/update", map[string]interface{}{
 		"name":   "nonexistent",
 		"server": map[string]interface{}{"endpoint": "10.0.0.1"},
 	})
@@ -260,7 +355,7 @@ func TestNodeUpdate_NotFound(t *testing.T) {
 func TestInstanceList_Empty(t *testing.T) {
 	s := newTestServer(t, "")
 	r := s.Router()
-	w := doRequest(r, "GET", "/instance/list", nil)
+	w := doAuthRequest(r, "GET", "/instance/list", nil)
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", w.Code)
 	}
@@ -315,7 +410,7 @@ func TestInstanceList_FilterCommonFields(t *testing.T) {
 		t.Fatalf("write instances: %v", err)
 	}
 
-	w := doRequest(s.Router(), "GET", "/instance/list?server=redis02&engine=redis&role=replica&status=running&category=persistent&engine_version=7", nil)
+	w := doAuthRequest(s.Router(), "GET", "/instance/list?server=redis02&engine=redis&role=replica&status=running&category=persistent&engine_version=7", nil)
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
 	}
@@ -339,7 +434,7 @@ func TestInstanceList_FilterCommonFields(t *testing.T) {
 func TestInstanceStatus_NotFound(t *testing.T) {
 	s := newTestServer(t, "")
 	r := s.Router()
-	w := doRequest(r, "GET", "/instance/status?name=nonexistent", nil)
+	w := doAuthRequest(r, "GET", "/instance/status?name=nonexistent", nil)
 	if w.Code != http.StatusNotFound {
 		t.Fatalf("expected 404, got %d", w.Code)
 	}
@@ -348,7 +443,7 @@ func TestInstanceStatus_NotFound(t *testing.T) {
 func TestInstanceStatus_MissingName(t *testing.T) {
 	s := newTestServer(t, "")
 	r := s.Router()
-	w := doRequest(r, "GET", "/instance/status", nil)
+	w := doAuthRequest(r, "GET", "/instance/status", nil)
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400, got %d", w.Code)
 	}
@@ -368,7 +463,7 @@ func TestInstanceCreate_DuplicateName(t *testing.T) {
 		},
 	})
 
-	w := doRequest(r, "POST", "/instance/create", apitypes.CreateInstanceRequest{
+	w := doAuthRequest(r, "POST", "/instance/create", apitypes.CreateInstanceRequest{
 		Name:     "redis-1",
 		Category: "cache",
 		Group:    "cache",
@@ -385,7 +480,7 @@ func TestInstanceCreate_DuplicateName(t *testing.T) {
 func TestInstanceCreate_ServerNotFound(t *testing.T) {
 	s := newTestServer(t, "")
 	r := s.Router()
-	w := doRequest(r, "POST", "/instance/create", apitypes.CreateInstanceRequest{
+	w := doAuthRequest(r, "POST", "/instance/create", apitypes.CreateInstanceRequest{
 		Name:     "redis-1",
 		Category: "cache",
 		Group:    "cache",
@@ -429,7 +524,7 @@ func TestInstanceCreate_WithFakeAgent(t *testing.T) {
 		},
 	})
 
-	w := doRequest(r, "POST", "/instance/create", apitypes.CreateInstanceRequest{
+	w := doAuthRequest(r, "POST", "/instance/create", apitypes.CreateInstanceRequest{
 		Name:     "redis-1",
 		Category: "cache",
 		Group:    "cache",
@@ -479,7 +574,7 @@ func TestInstanceCreate_RoleMaster(t *testing.T) {
 			"srv1": {Endpoint: agentHost, AgentPort: agentPort, Status: "healthy"},
 		},
 	})
-	doRequest(s.Router(), "POST", "/instance/create", apitypes.CreateInstanceRequest{
+	doAuthRequest(s.Router(), "POST", "/instance/create", apitypes.CreateInstanceRequest{
 		Name: "redis-m", Category: "persistent", Group: "redis", Engine: "redis", EngineVersion: "6.2", Type: "replication",
 		Server: "srv1", Port: 6379, Memory: "4Gi", CPUs: 2,
 	})
@@ -507,11 +602,11 @@ func TestInstanceCreate_RoleReplica(t *testing.T) {
 			"srv1": {Endpoint: agentHost, AgentPort: agentPort, Status: "healthy"},
 		},
 	})
-	doRequest(s.Router(), "POST", "/instance/create", apitypes.CreateInstanceRequest{
+	doAuthRequest(s.Router(), "POST", "/instance/create", apitypes.CreateInstanceRequest{
 		Name: "redis-m", Category: "persistent", Group: "redis", Engine: "redis", EngineVersion: "6.2", Type: "replication",
 		Server: "srv1", Port: 6379, Memory: "4Gi", CPUs: 2, Password: "group-secret",
 	})
-	doRequest(s.Router(), "POST", "/instance/create", apitypes.CreateInstanceRequest{
+	doAuthRequest(s.Router(), "POST", "/instance/create", apitypes.CreateInstanceRequest{
 		Name: "redis-r", Category: "cache", Engine: "redis", Type: "standalone",
 		Server: "srv1", Port: 6380, Memory: "4Gi", CPUs: 2, ReplicaOf: "redis-m", Password: "wrong-secret",
 	})
@@ -560,7 +655,7 @@ func TestInstanceReplicate_MovingSingletonDeletesOldGroup(t *testing.T) {
 		},
 	})
 
-	w := doRequest(s.Router(), "POST", "/instance/replicate", map[string]string{
+	w := doAuthRequest(s.Router(), "POST", "/instance/replicate", map[string]string{
 		"name": "source-1", "replica_of": "target-1",
 	})
 	if w.Code != http.StatusOK {
@@ -578,7 +673,7 @@ func TestInstanceReplicate_MovingSingletonDeletesOldGroup(t *testing.T) {
 func TestInstanceDelete_NotFound(t *testing.T) {
 	s := newTestServer(t, "")
 	r := s.Router()
-	w := doRequest(r, "POST", "/instance/delete", map[string]interface{}{"name": "nonexistent"})
+	w := doAuthRequest(r, "POST", "/instance/delete", map[string]interface{}{"name": "nonexistent"})
 	if w.Code != http.StatusNotFound {
 		t.Fatalf("expected 404, got %d", w.Code)
 	}
@@ -614,7 +709,7 @@ func TestInstanceDelete_WithFakeAgent(t *testing.T) {
 		},
 	})
 
-	w := doRequest(r, "POST", "/instance/delete", map[string]interface{}{"name": "redis-1"})
+	w := doAuthRequest(r, "POST", "/instance/delete", map[string]interface{}{"name": "redis-1"})
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
 	}
@@ -664,7 +759,7 @@ func TestReconcile_AllConsistent(t *testing.T) {
 		},
 	})
 
-	w := doRequest(s.Router(), "POST", "/reconcile", nil)
+	w := doAuthRequest(s.Router(), "POST", "/reconcile", nil)
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
 	}
@@ -698,7 +793,7 @@ func TestReconcile_CreatingButRunning(t *testing.T) {
 		},
 	})
 
-	doRequest(s.Router(), "POST", "/reconcile", nil)
+	doAuthRequest(s.Router(), "POST", "/reconcile", nil)
 
 	instances, _ := s.db.ReadInstances()
 	if instances.Instances["redis-1"].Phase() != "running" {
@@ -728,7 +823,7 @@ func TestReconcile_RunningButStopped(t *testing.T) {
 		},
 	})
 
-	doRequest(s.Router(), "POST", "/reconcile", nil)
+	doAuthRequest(s.Router(), "POST", "/reconcile", nil)
 
 	instances, _ := s.db.ReadInstances()
 	if instances.Instances["redis-1"].Phase() != "unexpected_stopped" {
@@ -757,7 +852,7 @@ func TestReconcile_RunningButMissing(t *testing.T) {
 		},
 	})
 
-	doRequest(s.Router(), "POST", "/reconcile", nil)
+	doAuthRequest(s.Router(), "POST", "/reconcile", nil)
 
 	instances, _ := s.db.ReadInstances()
 	if instances.Instances["redis-1"].Phase() != "failed" {
@@ -787,7 +882,7 @@ func TestReconcile_FailedButRunning(t *testing.T) {
 		},
 	})
 
-	doRequest(s.Router(), "POST", "/reconcile", nil)
+	doAuthRequest(s.Router(), "POST", "/reconcile", nil)
 
 	instances, _ := s.db.ReadInstances()
 	if instances.Instances["redis-1"].Phase() != "running" {
@@ -875,7 +970,7 @@ func TestInstanceFailover_DirectFallback_DemotesOldMaster(t *testing.T) {
 		},
 	})
 
-	w := doRequest(r, "POST", "/instance/failover", map[string]string{"name": "order-replica"})
+	w := doAuthRequest(r, "POST", "/instance/failover", map[string]string{"name": "order-replica"})
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
 	}
@@ -954,7 +1049,7 @@ func TestInstanceFailover_DirectFallback_OldMasterUnreachable(t *testing.T) {
 		},
 	})
 
-	w := doRequest(r, "POST", "/instance/failover", map[string]string{"name": "order-replica"})
+	w := doAuthRequest(r, "POST", "/instance/failover", map[string]string{"name": "order-replica"})
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected promote to succeed even if old master is unreachable, got %d: %s", w.Code, w.Body.String())
 	}
@@ -1215,7 +1310,7 @@ func TestInstanceFailover_SentinelManaged_TriggersRealFailoverAndSyncsState(t *t
 	})
 
 	r := s.Router()
-	w := doRequest(r, "POST", "/instance/failover", map[string]string{"name": "order-replica"})
+	w := doAuthRequest(r, "POST", "/instance/failover", map[string]string{"name": "order-replica"})
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
 	}
@@ -1275,7 +1370,7 @@ func TestInstanceReplicate_RejectedOnSentinelManagedGroup(t *testing.T) {
 	})
 
 	r := s.Router()
-	w := doRequest(r, "POST", "/instance/replicate", map[string]string{
+	w := doAuthRequest(r, "POST", "/instance/replicate", map[string]string{
 		"name":       "order-replica",
 		"replica_of": "order-master",
 	})

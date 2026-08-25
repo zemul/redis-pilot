@@ -13,8 +13,10 @@ import {
   GitMerge,
   HardDrive,
   Info,
+  Key,
   LayoutDashboard,
   List,
+  LogOut,
   Menu,
   MoreVertical,
   Play,
@@ -27,15 +29,19 @@ import {
   SlidersHorizontal,
   ShieldCheck,
   Trash2,
+  Users,
   X
 } from 'lucide-react';
+import { LoginPage, UserManagement, TokenManagement, getStoredAuth, clearStoredAuth, authHeaders } from './Auth.jsx';
 
 const TABS = [
   { id: 'dashboard', label: '大盘看板', icon: LayoutDashboard },
   { id: 'instances', label: '实例管理', icon: Database },
   { id: 'alerts', label: '异常总览', icon: AlertTriangle },
   { id: 'servers', label: '服务器节点', icon: Server },
-  { id: 'audit', label: '操作审计', icon: List }
+  { id: 'audit', label: '操作审计', icon: List },
+  { id: 'users', label: '用户管理', icon: Users },
+  { id: 'tokens', label: '密钥管理', icon: Key }
 ];
 
 function normalizeMap(value, upperKey, lowerKey) {
@@ -482,7 +488,7 @@ function EmptyState({ icon: Icon = Database, title, detail }) {
 export default function App() {
   const [activeTab, setActiveTab] = useState('dashboard');
   const [mobileOpen, setMobileOpen] = useState(false);
-  const [token, setToken] = useState(() => localStorage.getItem('redisPilotToken') || '');
+  const [auth, setAuth] = useState(() => getStoredAuth());
   const [query, setQuery] = useState('');
   const [expandedGroups, setExpandedGroups] = useState({});
   const [auditFilters, setAuditFilters] = useState({ from: '', to: '', group: '', instance: '', level: '', action: '' });
@@ -506,17 +512,21 @@ export default function App() {
   const activeTitle = TABS.find((tab) => tab.id === activeTab)?.label || '大盘看板';
 
   async function request(path, options = {}) {
-    const headers = token ? { Authorization: `Bearer ${token}` } : {};
+    const headers = authHeaders();
     const response = await fetch(path, {
       ...options,
       headers: {
         ...headers,
-        'X-Operator': 'dashboard',
+        'X-Operator': auth?.username || 'dashboard',
         ...(options.body ? { 'Content-Type': 'application/json' } : {}),
         ...(options.headers || {})
       }
     });
-    if (response.status === 401) throw new Error('接口鉴权失败，请输入 server.yaml 中配置的 token。');
+    if (response.status === 401) {
+      clearStoredAuth();
+      setAuth(null);
+      throw new Error('登录已过期，请重新登录');
+    }
     if (!response.ok) throw new Error(`请求失败：${response.status} ${path}`);
     const body = await response.json();
     if (body.error) throw new Error(body.error);
@@ -574,9 +584,9 @@ export default function App() {
     };
   }, []);
 
-  function saveToken() {
-    localStorage.setItem('redisPilotToken', token.trim());
-    refresh();
+  function handleLogout() {
+    clearStoredAuth();
+    setAuth(null);
   }
 
   async function openInstanceDetail(item, group) {
@@ -693,6 +703,10 @@ export default function App() {
     </nav>
   );
 
+  if (!auth) {
+    return <LoginPage onLogin={(data) => setAuth({ token: data.token, username: data.username })} />;
+  }
+
   return (
     <div className="app-shell">
       <header className="mobile-header">
@@ -718,8 +732,9 @@ export default function App() {
         <header className="topbar">
           <h2>{activeTitle}</h2>
           <div className="toolbar">
-            <button className="primary-button" onClick={refresh}>
-              <RefreshCw size={16} /> 刷新
+            <span className="toolbar-user">{auth.username}</span>
+            <button className="ghost-button" onClick={handleLogout}>
+              <LogOut size={16} /> 退出
             </button>
           </div>
         </header>
@@ -760,6 +775,12 @@ export default function App() {
                   setFilters={setAuditFilters}
                   onApply={refresh}
                 />
+              )}
+              {activeTab === 'users' && (
+                <UserManagement request={request} />
+              )}
+              {activeTab === 'tokens' && (
+                <TokenManagement request={request} />
               )}
             </>
           )}

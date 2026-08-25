@@ -41,7 +41,7 @@ redis-pilot/
 ```
 
 ## 配置文件
-- `server.yaml`：Server 监听端口、CLI 鉴权 Token（空则不鉴权）、Redis/Kvrocks 版本白名单、`data_dir`（`pilot.db` 存放目录）
+- `server.yaml`：Server 监听端口、`jwt_secret`（JWT 签名）、`internal_token`（内部组件通信）、初始管理员账号、Redis/Kvrocks 版本白名单、`data_dir`（`pilot.db` 存放目录）
 - `agent.yaml`：Agent 监听端口、鉴权 Token（空则不鉴权）、S3 备份存储配置（`backup.s3`：endpoint/bucket/access_key/secret_key）
 - `proxy.yaml`：Proxy 的 Server 连接信息（`server_endpoint`/`server_token`）、长轮询参数（`poll_interval`/`poll_timeout`/`poll_wait`）、`metrics_listen`
 - `~/.redis-pilot-cli/config.yaml`：CLI 配置，Server 地址默认 127.0.0.1:8080
@@ -49,9 +49,9 @@ redis-pilot/
 > 服务器节点和实例的完整状态不再使用独立 YAML 文件，统一存储在 `data_dir/pilot.db`（SQLite）。
 
 ## 认证
-- CLI -> Server：Bearer Token，Token 为空则跳过鉴权
-- Server -> Agent：Bearer Token，Token 为空则跳过鉴权
-- Proxy -> Server：Bearer Token（`server_token`），Proxy 拉取快照时携带；Token 为空则跳过鉴权
+- 人 -> Server：登录签发 JWT（HS256，72h），仅用于浏览器会话；页面「用户管理」可自助创建/吊销 `rpt_` 前缀 API Token（存 `user_tokens` 表），CLI/脚本长期使用 API Token
+- Proxy -> Server：静态 token（`server.yaml` 的 `internal_token` 与 `proxy.yaml` 的 `server_token` 一致），为空则跳过校验
+- Server -> Agent：per-node `agent_token`（`servers` 表登记值与目标机 `agent.yaml` 的 `token` 一致），为空则不鉴权
 
 ## 开发顺序
 1. Server（状态存储读写 + HTTP API）

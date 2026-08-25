@@ -1,4 +1,5 @@
 port: 8400
+# Server 调用本 Agent 的鉴权 Token，须与 node/add 登记的 agent_token 一致，为空则不鉴权
 token: ""
 data_dir: /data/redis
 log:

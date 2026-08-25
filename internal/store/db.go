@@ -231,6 +231,28 @@ func (d *DB) migrate() error {
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status)`,
 
+		// ── 用户 ────────────────────────────────────────────────────────────
+		`CREATE TABLE IF NOT EXISTS users (
+			id          INTEGER PRIMARY KEY AUTOINCREMENT,
+			username    TEXT NOT NULL UNIQUE,
+			password    TEXT NOT NULL,
+			created_at  TEXT NOT NULL DEFAULT '',
+			created_by  TEXT NOT NULL DEFAULT 'system'
+		)`,
+
+		// ── 用户 API Token ──────────────────────────────────────────────────
+		`CREATE TABLE IF NOT EXISTS user_tokens (
+			id          INTEGER PRIMARY KEY AUTOINCREMENT,
+			token       TEXT NOT NULL UNIQUE,
+			username    TEXT NOT NULL,
+			name        TEXT NOT NULL DEFAULT '',
+			description TEXT NOT NULL DEFAULT '',
+			created_at  TEXT NOT NULL DEFAULT '',
+			expires_at  TEXT NOT NULL DEFAULT ''
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_user_tokens_username ON user_tokens(username)`,
+		`CREATE INDEX IF NOT EXISTS idx_user_tokens_token ON user_tokens(token)`,
+
 		// ── 备份记录（预留） ─────────────────────────────────────────────────
 		`CREATE TABLE IF NOT EXISTS backup_records (
 			id           TEXT PRIMARY KEY,
@@ -275,6 +297,12 @@ func (d *DB) migrate() error {
 		},
 		{
 			sql: `ALTER TABLE instance_groups ADD COLUMN access_mode TEXT NOT NULL DEFAULT ''`,
+		},
+		{
+			sql: `ALTER TABLE user_tokens ADD COLUMN expires_at TEXT NOT NULL DEFAULT ''`,
+		},
+		{
+			sql: `ALTER TABLE user_tokens ADD COLUMN description TEXT NOT NULL DEFAULT ''`,
 		},
 	}
 	for _, m := range alterMigrations {

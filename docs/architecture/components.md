@@ -61,12 +61,26 @@
 
 #### 认证
 
+用户体系（人 -> Server）：
+
 ```yaml
 # server.yaml
 port: 8080
-token: ""           # CLI 调用 Server 的鉴权 Token，为空则不鉴权
+jwt_secret: ""        # JWT 签名密钥，为空则使用内置默认值（仅限本地开发）
+internal_token: ""    # 内部组件（Proxy）通信 token，与 proxy.yaml 的 server_token 一致
+admin:                # 初始管理员（仅首次启动、users 表为空时生效）
+  username: admin
+  password: admin
 data_dir: /opt/redis-server/state
 ```
+
+- Dashboard 登录签发 JWT（HS256，72h 过期），仅用于浏览器会话；用户与 `rpt_` 前缀 API Token 存 `pilot.db` 的 `users` / `user_tokens` 表，页面「用户管理」可自助创建/吊销
+- CLI 长期凭证使用页面创建的 API Token（Bearer）
+
+内部组件（机器凭证走配置文件，与用户体系分离）：
+
+- Proxy -> Server：`server.yaml` 的 `internal_token` 与 `proxy.yaml` 的 `server_token` 两侧一致，为空则跳过校验（快照含实例地址与密码，生产环境务必配置）
+- Server -> Agent：per-node `agent_token`（每节点独立，泄露只影响单台）
 
 ```yaml
 # 以下字段现存储于 pilot.db 的 servers 表（每行对应一台服务器，含 Agent 连接信息）
@@ -86,7 +100,7 @@ CLI 配置：
 ```yaml
 # ~/.redis-pilot-cli/config.yaml
 server: 127.0.0.1:8080   # 默认连接本机 Server
-token: ""                # 为空则不鉴权
+token: ""                # 填页面创建的 rpt_ API Token
 ```
 
 CLI Token 优先级（从高到低）：`--token` 参数 > `REDIS_SERVER_TOKEN` 环境变量 > 配置文件。

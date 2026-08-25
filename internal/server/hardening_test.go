@@ -104,7 +104,7 @@ func TestNodeAdd_ConcurrentSameNameYieldsExactlyOneWinner(t *testing.T) {
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()
-			w := doRequest(r, "POST", "/node/add", map[string]interface{}{
+			w := doAuthRequest(r, "POST", "/node/add", map[string]interface{}{
 				"name": "srv-race",
 				"server": map[string]interface{}{
 					"endpoint":   fmt.Sprintf("10.0.1.%d", idx+1),
@@ -141,7 +141,7 @@ func TestNodeRemove_ConcurrentWithUpdateDoesNotResurrect(t *testing.T) {
 	s := newTestServer(t, "")
 	r := s.Router()
 
-	if w := doRequest(r, "POST", "/node/add", map[string]interface{}{
+	if w := doAuthRequest(r, "POST", "/node/add", map[string]interface{}{
 		"name":   "srv-1",
 		"server": map[string]interface{}{"endpoint": "10.0.1.10", "agent_port": 8400},
 	}); w.Code != http.StatusOK {
@@ -153,11 +153,11 @@ func TestNodeRemove_ConcurrentWithUpdateDoesNotResurrect(t *testing.T) {
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		removeCode = doRequest(r, "POST", "/node/remove", map[string]interface{}{"name": "srv-1"}).Code
+		removeCode = doAuthRequest(r, "POST", "/node/remove", map[string]interface{}{"name": "srv-1"}).Code
 	}()
 	go func() {
 		defer wg.Done()
-		updateCode = doRequest(r, "POST", "/node/update", map[string]interface{}{
+		updateCode = doAuthRequest(r, "POST", "/node/update", map[string]interface{}{
 			"name":   "srv-1",
 			"server": map[string]interface{}{"endpoint": "10.0.1.99", "agent_port": 8400},
 		}).Code
