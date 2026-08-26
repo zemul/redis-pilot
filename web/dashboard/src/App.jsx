@@ -411,6 +411,49 @@ function IconButton({ icon: Icon, label, onClick, disabled = false }) {
   );
 }
 
+function UserMenu({ username, onLogout, onNavigate }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef(null);
+
+  useEffect(() => {
+    if (!open) return;
+    function handleClick(e) {
+      if (ref.current && !ref.current.contains(e.target)) setOpen(false);
+    }
+    document.addEventListener('mousedown', handleClick);
+    return () => document.removeEventListener('mousedown', handleClick);
+  }, [open]);
+
+  return (
+    <div className="relative inline-flex" ref={ref}>
+      <button
+        type="button"
+        className="h-[34px] rounded-md border border-gray-200 px-3 bg-white text-gray-700 font-medium text-[13px] inline-flex items-center gap-1.5 hover:bg-gray-50 hover:border-gray-300 transition-colors cursor-pointer"
+        onClick={() => setOpen(!open)}
+      >
+        {username}
+        <ChevronDown size={14} className={`text-gray-400 transition-transform ${open ? 'rotate-180' : ''}`} />
+      </button>
+      {open && (
+        <div className="absolute right-0 top-[calc(100%+4px)] z-50 min-w-[120px] bg-white border border-gray-200 rounded-md shadow-lg py-1">
+          <button
+            className="block w-full px-3.5 py-1.5 text-left text-[13px] whitespace-nowrap border-0 bg-transparent cursor-pointer text-gray-700 hover:bg-gray-100"
+            onClick={() => { setOpen(false); onNavigate('tokens'); }}
+          >
+            <Key size={13} className="inline -mt-0.5 mr-1.5" />密钥管理
+          </button>
+          <button
+            className="block w-full px-3.5 py-1.5 text-left text-[13px] whitespace-nowrap border-0 bg-transparent cursor-pointer text-red-600 hover:bg-red-50"
+            onClick={() => { setOpen(false); onLogout(); }}
+          >
+            <LogOut size={13} className="inline -mt-0.5 mr-1.5" />退出登录
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function MoreMenu({ items }) {
   const [open, setOpen] = useState(false);
   const ref = useRef(null);
@@ -790,10 +833,7 @@ function AppShell() {
         <header className="sticky top-0 z-20 min-h-[64px] px-7 py-3.5 flex items-center justify-between gap-4 border-b border-gray-200 bg-white/90 backdrop-blur-sm max-md:static max-md:flex-col max-md:items-start max-md:p-4">
           <h2 className="m-0 text-xl font-semibold tracking-tight">{activeTitle}</h2>
           <div className="flex items-center justify-end gap-2 flex-wrap">
-            <span className="text-sm text-gray-500 px-2 py-0.5 bg-gray-100 rounded">{auth.username}</span>
-            <button className="h-[34px] rounded-md border border-gray-200 px-3 bg-white text-gray-900 font-medium text-[13px] inline-flex items-center gap-1.5 hover:bg-gray-50 hover:border-gray-300 transition-colors" onClick={handleLogout}>
-              <LogOut size={16} /> 退出
-            </button>
+            <UserMenu username={auth.username} onLogout={handleLogout} onNavigate={setActiveTab} />
           </div>
         </header>
 
