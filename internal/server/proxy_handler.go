@@ -147,6 +147,7 @@ func (s *Server) buildProxySnapshot() (*apitypes.ProxySnapshot, error) {
 
 	snapshot := &apitypes.ProxySnapshot{
 		GeneratedAt: time.Now().Format(time.RFC3339),
+		AnnounceIP:  s.cfg.ProxyPublicEndpoint,
 		Listeners:   make([]apitypes.ProxyListener, 0),
 		Clusters:    make([]apitypes.ProxyCluster, 0),
 	}
@@ -238,11 +239,13 @@ func proxyEndpoints(endpoints []proxyEndpoint) []apitypes.ProxyEndpoint {
 
 func proxySnapshotVersion(snapshot *apitypes.ProxySnapshot) string {
 	stable := struct {
-		Listeners []apitypes.ProxyListener `json:"listeners"`
-		Clusters  []apitypes.ProxyCluster  `json:"clusters"`
+		AnnounceIP string                   `json:"announce_ip"`
+		Listeners  []apitypes.ProxyListener `json:"listeners"`
+		Clusters   []apitypes.ProxyCluster  `json:"clusters"`
 	}{
-		Listeners: snapshot.Listeners,
-		Clusters:  snapshot.Clusters,
+		AnnounceIP: snapshot.AnnounceIP,
+		Listeners:  snapshot.Listeners,
+		Clusters:   snapshot.Clusters,
 	}
 	data, _ := json.Marshal(stable)
 	sum := sha256.Sum256(data)

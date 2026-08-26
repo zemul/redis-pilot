@@ -1767,7 +1767,7 @@ func parseMemoryGi(s string) int {
 	return 0
 }
 
-// serverInfo 返回服务器配置信息（可用引擎版本等），供前端创建表单使用。
+// serverInfo 返回服务器配置信息（可用引擎版本、Proxy 对外域名等），供前端使用。
 func (s *Server) serverInfo(c *gin.Context) {
 	engines := make(map[string]interface{})
 	for name, cfg := range s.cfg.Images {
@@ -1780,5 +1780,8 @@ func (s *Server) serverInfo(c *gin.Context) {
 			"versions": versions,
 		}
 	}
-	ok(c, gin.H{"engines": engines})
+	ok(c, gin.H{
+		"engines":               engines,
+		"proxy_public_endpoint": s.cfg.ProxyPublicEndpoint,
+	})
 }

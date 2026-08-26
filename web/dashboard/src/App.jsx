@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { Routes, Route, Navigate, useNavigate, useParams } from 'react-router-dom';
 import {
   AlertCircle,
   AlertTriangle,
@@ -7,7 +8,9 @@ import {
   ChevronDown,
   ChevronRight,
   CheckCircle2,
+  Check,
   Clock,
+  Copy,
   Cpu,
   Database,
   GitMerge,
@@ -375,12 +378,13 @@ function topologyLabel(group, master) {
 	return type === 'standalone' ? '单点' : `1主 ${group.replicas.length}从`;
 }
 
-const dotColor = { ok: 'bg-emerald-500', warn: 'bg-amber-500', bad: 'bg-red-500', neutral: 'bg-gray-400' };
+const dotColor = { ok: 'bg-emerald-400', warn: 'bg-amber-500', bad: 'bg-red-500', neutral: 'bg-gray-300' };
 
 function StatusBadge({ status, children, metaFn = statusMeta }) {
   const meta = metaFn(status);
+  const textTone = { ok: 'text-gray-500', warn: 'text-amber-600', bad: 'text-red-600', neutral: 'text-gray-500' };
   return (
-    <span className="inline-flex items-center gap-1.5 text-xs font-medium text-gray-600 whitespace-nowrap">
+    <span className={`inline-flex items-center gap-1.5 text-xs font-medium whitespace-nowrap ${textTone[meta.tone] || textTone.neutral}`}>
       <span className={`w-2 h-2 rounded-full shrink-0 ${dotColor[meta.tone] || dotColor.neutral}`} />
       {children || meta.label}
     </span>
@@ -504,7 +508,20 @@ function EmptyState({ icon: Icon = Database, title, detail }) {
 }
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState('dashboard');
+  return (
+    <Routes>
+      <Route path="/:tab?" element={<AppShell />} />
+    </Routes>
+  );
+}
+
+const VALID_TABS = TABS.map((tab) => tab.id);
+
+function AppShell() {
+  const { tab } = useParams();
+  const navigate = useNavigate();
+  const activeTab = tab || 'dashboard';
+  const setActiveTab = (id) => navigate(id === 'dashboard' ? '/' : `/${id}`);
   const [mobileOpen, setMobileOpen] = useState(false);
   const [auth, setAuth] = useState(() => getStoredAuth());
   const [query, setQuery] = useState('');
@@ -521,6 +538,7 @@ export default function App() {
   const [createOpen, setCreateOpen] = useState(false);
   const [pendingAction, setPendingAction] = useState('');
   const [data, setData] = useState({ instances: {}, servers: {}, audits: [], sentinel: null });
+  const [serverInfo, setServerInfo] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
 
@@ -573,6 +591,11 @@ export default function App() {
       setLoading(false);
     }
   }
+
+  useEffect(() => {
+    if (!auth) return;
+    request('/server/info').then((data) => setServerInfo(data)).catch(() => {});
+  }, [auth]);
 
   useEffect(() => {
     let ignore = false;
@@ -733,6 +756,10 @@ export default function App() {
     return <LoginPage onLogin={(data) => setAuth({ token: data.token, username: data.username })} />;
   }
 
+  if (tab && !VALID_TABS.includes(tab)) {
+    return <Navigate to="/" replace />;
+  }
+
   return (
     <div className="min-h-screen grid grid-cols-[248px_minmax(0,1fr)] max-md:block">
       {/* Mobile header */}
@@ -776,10 +803,11 @@ export default function App() {
             <div className="border border-gray-200 rounded-lg bg-white min-h-[260px] grid place-items-center text-gray-400">正在读取服务状态...</div>
           ) : (
             <>
-              {activeTab === 'dashboard' && <DashboardView groups={instanceGroups} servers={servers} audits={data.audits} sentinel={data.sentinel} />}
+              {activeTab === 'dashboard' && <DashboardView groups={instanceGroups} servers={servers} audits={data.audits} sentinel={data.sentinel} publicHost={serverInfo?.proxy_public_endpoint} />}
               {activeTab === 'instances' && (
                 <InstancesView
                   groups={instanceGroups}
+                  publicHost={serverInfo?.proxy_public_endpoint}
                   query={query}
                   setQuery={setQuery}
                   expandedGroups={expandedGroups}
@@ -797,7 +825,7 @@ export default function App() {
                   pendingAction={pendingAction}
                 />
               )}
-              {activeTab === 'alerts' && <AlertsView groups={instanceGroups} servers={servers} />}
+              {activeTab === 'alerts' && <AlertsView groups={instanceGroups} servers={servers} publicHost={serverInfo?.proxy_public_endpoint} />}
               {activeTab === 'servers' && <ServersView servers={servers} />}
               {activeTab === 'audit' && (
                 <AuditView
@@ -852,7 +880,7 @@ export default function App() {
   );
 }
 
-function DashboardView({ groups, servers, audits, sentinel }) {
+function DashboardView({ groups, servers, audits, sentinel, publicHost }) {
   const allInstances = groups.flatMap((g) => g.instances);
   const totalInstances = allInstances.length;
   const runningInstances = allInstances.filter((inst) => getField(inst, 'status', 'Status') === 'running').length;
@@ -930,7 +958,7 @@ function DashboardView({ groups, servers, audits, sentinel }) {
                             <><strong className="font-medium">{master.name}</strong> <span className="text-gray-400">{getField(master, 'server', 'Server', '-')}</span></>
                           ) : <span className="text-gray-400">-</span>}
                         </td>
-                        <td className="px-4 py-3 text-[13px]"><ProxyPorts group={group} /></td>
+                        <td className="px-4 py-3 text-[13px]"><ProxyPorts group={group} publicHost={publicHost} /></td>
                         <td className="px-4 py-3 text-[13px]"><span className={`font-mono tabular-nums ${running === total ? '' : 'text-amber-600'}`}>{running}/{total}</span></td>
                         <td className="px-4 py-3 text-[13px]"><StatusBadge status={group.status} /></td>
                       </tr>
@@ -1046,7 +1074,7 @@ function SummaryCell({ label, value, icon: Icon, tone = 'neutral' }) {
   );
 }
 
-function InstancesView({ groups, query, setQuery, expandedGroups, setExpandedGroups, onOpenDetail, onOpenBackups, onPowerAction, onDelete, onSlowlog, onBigkeys, onConfig, onToggleAccessMode, onCreate, pendingAction }) {
+function InstancesView({ groups, publicHost, query, setQuery, expandedGroups, setExpandedGroups, onOpenDetail, onOpenBackups, onPowerAction, onDelete, onSlowlog, onBigkeys, onConfig, onToggleAccessMode, onCreate, pendingAction }) {
   const filtered = groups.filter((group) => {
     const text = [
       group.groupName,
@@ -1087,8 +1115,7 @@ function InstancesView({ groups, query, setQuery, expandedGroups, setExpandedGro
                 <th className="px-4 py-2.5 border-b border-gray-200 text-left text-xs font-medium text-gray-400 bg-gray-50">实例名称 / 组</th>
                 <th className="px-4 py-2.5 border-b border-gray-200 text-left text-xs font-medium text-gray-400 bg-gray-50">类别</th>
                 <th className="px-4 py-2.5 border-b border-gray-200 text-left text-xs font-medium text-gray-400 bg-gray-50">接入方式</th>
-                <th className="px-4 py-2.5 border-b border-gray-200 text-left text-xs font-medium text-gray-400 bg-gray-50">引擎版本</th>
-                <th className="px-4 py-2.5 border-b border-gray-200 text-left text-xs font-medium text-gray-400 bg-gray-50">拓扑</th>
+                <th className="px-4 py-2.5 border-b border-gray-200 text-left text-xs font-medium text-gray-400 bg-gray-50">引擎 / 拓扑</th>
                 <th className="px-4 py-2.5 border-b border-gray-200 text-left text-xs font-medium text-gray-400 bg-gray-50">节点</th>
                 <th className="px-4 py-2.5 border-b border-gray-200 text-left text-xs font-medium text-gray-400 bg-gray-50">端口</th>
                 <th className="px-4 py-2.5 border-b border-gray-200 text-left text-xs font-medium text-gray-400 bg-gray-50">内存</th>
@@ -1098,13 +1125,14 @@ function InstancesView({ groups, query, setQuery, expandedGroups, setExpandedGro
             </thead>
             <tbody>
               {filtered.length === 0 ? (
-                <tr><td colSpan="10"><EmptyState title="暂无实例" /></td></tr>
+                <tr><td colSpan="9"><EmptyState title="暂无实例" /></td></tr>
               ) : filtered.map((group) => (
                 <InstanceGroupRows
                   key={group.groupName}
                   group={group}
                   expanded={expandedGroups[group.groupName] === true}
                   onToggle={() => toggleGroup(group.groupName)}
+                  publicHost={publicHost}
                   onOpenDetail={onOpenDetail}
                   onOpenBackups={onOpenBackups}
                   onPowerAction={onPowerAction}
@@ -1124,7 +1152,7 @@ function InstancesView({ groups, query, setQuery, expandedGroups, setExpandedGro
   );
 }
 
-function InstanceGroupRows({ group, expanded, onToggle, onOpenDetail, onOpenBackups, onPowerAction, onDelete, onSlowlog, onBigkeys, onConfig, onToggleAccessMode, pendingAction }) {
+function InstanceGroupRows({ group, expanded, onToggle, publicHost, onOpenDetail, onOpenBackups, onPowerAction, onDelete, onSlowlog, onBigkeys, onConfig, onToggleAccessMode, pendingAction }) {
   const master = group.master;
   const hasReplicas = group.replicas.length > 0;
   const topology = topologyLabel(group, master);
@@ -1146,7 +1174,7 @@ function InstanceGroupRows({ group, expanded, onToggle, onOpenDetail, onOpenBack
               <span className="w-5" />
             )}
             <div>
-              <strong className="font-semibold">{group.groupName}</strong>
+              <strong className="font-semibold text-gray-900">{group.groupName}</strong>
               {(hasReplicas || !master || master.name !== group.groupName) && (
                 <span className="text-[11px] text-gray-400 block mt-0.5">
                   {master ? `主库: ${master.name}` : '主库状态异常'}
@@ -1155,12 +1183,14 @@ function InstanceGroupRows({ group, expanded, onToggle, onOpenDetail, onOpenBack
             </div>
           </div>
         </td>
-        <td className="px-4 py-2.5 text-[13px]">{category && <span className="border border-gray-200 rounded px-1.5 py-0.5 bg-white text-gray-400 text-[11px] font-medium">{category}</span>}</td>
+        <td className="px-4 py-2.5 text-[13px] text-gray-500">{category}</td>
         <td className="px-4 py-2.5 text-[13px] text-gray-500">{group.access_mode === 'rw-split' ? '读写分离' : '标准'}</td>
-        <td className="px-4 py-2.5 text-[13px]"><span className="rounded px-1.5 py-0.5 bg-gray-100 text-gray-500 font-mono text-[11px] font-medium border border-gray-200">{engineLabel(group)}</span></td>
-        <td className="px-4 py-2.5 text-[13px] text-gray-500">{topology}</td>
+        <td className="px-4 py-2.5 text-[13px] text-gray-700">
+          {engineLabel(group)}
+          <span className="text-[11px] text-gray-400 block mt-0.5">{topology}</span>
+        </td>
         <td className="px-4 py-2.5 text-[13px] text-gray-500 font-mono">{master ? getField(master, 'server', 'Server', '-') : '-'}</td>
-        <td className="px-4 py-2.5 text-[13px]"><ProxyPorts group={group} /></td>
+        <td className="px-4 py-2.5 text-[13px]"><ProxyPorts group={group} publicHost={publicHost} /></td>
         <td className="px-4 py-2.5 text-[13px]">{master ? <ResourceValue memory={group.resource.memory} memoryUsed={group.resource.memoryUsed} /> : '-'}</td>
         <td className="px-4 py-2.5 text-[13px]"><StatusBadge status={group.status} /></td>
         <td className="px-4 py-2.5 text-[13px]">
@@ -1226,16 +1256,60 @@ function InstanceGroupRows({ group, expanded, onToggle, onOpenDetail, onOpenBack
   );
 }
 
-function ProxyPorts({ group }) {
+function CopyableEndpoint({ host, port, className = '' }) {
+  const [copied, setCopied] = useState(false);
+  const text = host ? `${host}:${port}` : String(port);
+
+  async function handleCopy(event) {
+    event.stopPropagation();
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1200);
+    } catch {
+      // 剪贴板权限不可用时静默失败，不影响页面其他功能
+    }
+  }
+
+  return (
+    <span className={`inline-flex items-center gap-1 group ${className}`}>
+      <span className="font-mono tabular-nums">{text}</span>
+      <button
+        type="button"
+        className="w-4 h-4 inline-flex items-center justify-center text-gray-300 hover:text-gray-600 opacity-0 group-hover:opacity-100 transition-opacity cursor-pointer border-0 bg-transparent p-0"
+        onClick={handleCopy}
+        title="复制连接地址"
+      >
+        {copied ? <Check size={12} className="text-emerald-500" /> : <Copy size={12} />}
+      </button>
+    </span>
+  );
+}
+
+function ProxyPorts({ group, publicHost }) {
   const proxy = getField(group, 'proxy', 'Proxy', {}) || {};
   const masterPort = proxy.master_port || proxy.MasterPort;
   const autoPort = proxy.auto_port || proxy.AutoPort;
+  const isRwSplit = group.access_mode === 'rw-split';
+  if (!masterPort && !autoPort) return <span className="text-gray-400">-</span>;
+  // standard 模式下客户端统一走主库端口，auto_port 仅为兜底，不展示避免误导
+  if (!isRwSplit) {
+    const port = masterPort || autoPort;
+    return <CopyableEndpoint host={publicHost} port={port} className="text-gray-700 text-[13px]" />;
+  }
   return (
-    <>
-      {autoPort && <span className="text-gray-400 text-xs">读写 <span className="font-mono tabular-nums">{autoPort}</span></span>}
-      {masterPort && <span className="text-gray-400 text-xs">主库 <span className="font-mono tabular-nums">{masterPort}</span></span>}
-      {!masterPort && !autoPort && <span className="text-gray-400">-</span>}
-    </>
+    <div className="flex flex-col gap-0.5">
+      {autoPort && (
+        <span className="text-gray-700 text-[13px]">
+          读写 <CopyableEndpoint host={publicHost} port={autoPort} />
+        </span>
+      )}
+      {masterPort && (
+        <span className="text-gray-400 text-xs">
+          主库 <CopyableEndpoint host={publicHost} port={masterPort} />
+        </span>
+      )}
+    </div>
   );
 }
 
@@ -1265,20 +1339,17 @@ function InstanceRow({ item, group, role, onOpenDetail, onOpenBackups, onPowerAc
       <td className="px-4 py-2.5 text-[13px]">
         <div className="flex items-center gap-2.5 pl-8">
           {isReplica && <span className="w-3.5 h-3.5 border-l border-b border-gray-300 rounded-bl shrink-0 -translate-y-0.5" />}
-          <div>
-            <strong className="font-medium block">{item.name}</strong>
-            <span className="text-[11px] text-gray-400 block mt-0.5">{getField(item, 'server', 'Server', '-')}</span>
-          </div>
+          <strong className="font-medium">{item.name}</strong>
         </div>
       </td>
       <td className="px-4 py-2.5 text-[13px]" />
       <td className="px-4 py-2.5 text-[13px]" />
-      <td className="px-4 py-2.5 text-[13px] text-gray-400">{engineLabel(group)}</td>
-      <td className="px-4 py-2.5 text-[13px] text-gray-500">{role}</td>
-      <td className="px-4 py-2.5 text-[13px] text-gray-500 font-mono">{getField(item, 'server', 'Server', '-')}</td>
-      <td className="px-4 py-2.5 text-[13px]" />
       <td className="px-4 py-2.5 text-[13px]">
-        {(() => {
+        <span className={`text-[11px] font-medium px-1.5 py-0.5 rounded ${isReplica ? 'bg-gray-100 text-gray-500' : 'bg-gray-900 text-white'}`}>{role}</span>
+      </td>
+      <td className="px-4 py-2.5 text-[13px] text-gray-500 font-mono">{getField(item, 'server', 'Server', '-')}</td>
+      <td className="px-4 py-2.5 text-[13px] text-gray-500 font-mono">{getField(item, 'port', 'Port', '-')}</td>
+      <td className="px-4 py-2.5 text-[13px]">        {(() => {
           const used = Number(getField(item, 'memory_used', 'MemoryUsed', 0) || 0);
           const totalGi = parseGi(getField(item, 'memory', 'Memory'));
           const totalBytes = totalGi * 1024 * 1024 * 1024;
@@ -1313,7 +1384,7 @@ function InstanceRow({ item, group, role, onOpenDetail, onOpenBackups, onPowerAc
   );
 }
 
-function AlertsView({ groups, servers }) {
+function AlertsView({ groups, servers, publicHost }) {
   const badTone = (status) => instanceStatusTone(status) === 'bad';
 
   const instanceAlerts = [];

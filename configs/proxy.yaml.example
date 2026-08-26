@@ -38,6 +38,7 @@ log:
 # ─── 伪 Sentinel 服务发现（可选，proxy-design §19） ───
 # 让 sentinel 模式客户端零改代码接入：客户端把 sentinel 地址列表指向本端口，
 # masterName 用 group 名；get-master-addr-by-name 返回该 group 的 Proxy 数据端口。
+# 返回给客户端的 host（announce IP）完全由 Server 通过快照下发
+# （server.yaml 的 proxy_public_endpoint），本文件不提供本地配置项。
 # sentinel_listen: ":26379"       # 空 = 关闭
-# sentinel_announce_ip: ""        # 返回给客户端的 host；空 = 用连接命中的本地 IP（跨 NAT 必配）
 # sentinel_password: ""           # 发现端口鉴权密码；空 = 不鉴权

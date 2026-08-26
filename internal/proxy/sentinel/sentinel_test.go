@@ -20,6 +20,16 @@ func fakeTopo(groups map[string]*discovery.GroupTopology) TopoFunc {
 	}
 }
 
+// fakeTopoWithAnnounceIP 同 fakeTopo，但额外携带 AnnounceIP（模拟 Server 快照下发的值）。
+func fakeTopoWithAnnounceIP(groups map[string]*discovery.GroupTopology, announceIP string) TopoFunc {
+	return func() *discovery.Topology {
+		if groups == nil {
+			return nil
+		}
+		return &discovery.Topology{Groups: groups, Version: "test-v1", AnnounceIP: announceIP}
+	}
+}
+
 // dialSentinel 启动一个伪 Sentinel 并返回与其对话的 TCP 连接。
 func dialSentinel(t *testing.T, cfg Config, topo TopoFunc) (net.Conn, *Server) {
 	t.Helper()
@@ -151,7 +161,7 @@ func TestGetMasterAddrByName_AnnounceIP(t *testing.T) {
 	groups := map[string]*discovery.GroupTopology{
 		"order": {Name: "order", AutoPort: 16379},
 	}
-	conn, _ := dialSentinel(t, Config{AnnounceIP: "10.0.0.9"}, fakeTopo(groups))
+	conn, _ := dialSentinel(t, Config{}, fakeTopoWithAnnounceIP(groups, "10.0.0.9"))
 	r := bufio.NewReader(conn)
 
 	sendCmd(conn, "SENTINEL", "get-master-addr-by-name", "order")
@@ -182,7 +192,7 @@ func TestMaster(t *testing.T) {
 	groups := map[string]*discovery.GroupTopology{
 		"order": {Name: "order", AutoPort: 16379},
 	}
-	conn, _ := dialSentinel(t, Config{AnnounceIP: "10.0.0.1"}, fakeTopo(groups))
+	conn, _ := dialSentinel(t, Config{}, fakeTopoWithAnnounceIP(groups, "10.0.0.1"))
 	r := bufio.NewReader(conn)
 
 	sendCmd(conn, "SENTINEL", "master", "order")
@@ -365,7 +375,7 @@ func TestMasters(t *testing.T) {
 		"order": {Name: "order", AutoPort: 16379},
 		"cache": {Name: "cache", AutoPort: 16380},
 	}
-	conn, _ := dialSentinel(t, Config{AnnounceIP: "10.0.0.1"}, fakeTopo(groups))
+	conn, _ := dialSentinel(t, Config{}, fakeTopoWithAnnounceIP(groups, "10.0.0.1"))
 	r := bufio.NewReader(conn)
 
 	sendCmd(conn, "SENTINEL", "masters")

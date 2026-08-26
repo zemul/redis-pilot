@@ -43,9 +43,8 @@ type Config struct {
 	PollWait      time.Duration
 
 	// 伪 Sentinel（proxy-design §19）
-	SentinelListen     string
-	SentinelAnnounceIP string
-	SentinelPassword   string
+	SentinelListen   string
+	SentinelPassword string
 
 	// Static 模式（M3 兼容）
 	Listen       string
@@ -211,7 +210,6 @@ func (p *Proxy) listenAndServeDiscovery() error {
 		}
 		p.sentinel = sentinel.New(sentinel.Config{
 			Listen:          p.cfg.SentinelListen,
-			AnnounceIP:      p.cfg.SentinelAnnounceIP,
 			Password:        p.cfg.SentinelPassword,
 			MaxRequestBytes: p.cfg.MaxRequestBytes,
 		}, p.discovery.Topology)

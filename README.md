@@ -156,6 +156,10 @@ redis-pilot-cli instance status my-cache
 port: 8080
 token: ""                    # Bearer Token，空则不鉴权
 data_dir: /opt/redis-pilot-server/state
+# Proxy 对外域名/IP（不含端口）。由 Server 统一管理并通过快照（/api/v1/proxy/snapshot）
+# 下发给 Proxy（用作伪 Sentinel 应答 host）和 Dashboard（拼接展示完整连接地址）；
+# 为空则 Proxy 退化为用连接命中的本地 IP，Dashboard 仅展示端口
+proxy_public_endpoint: ""
 ports:
   redis:          { start: 6379,  end: 6499  }
   proxy_auto:     { start: 16379, end: 16499 }
@@ -189,8 +193,9 @@ metrics_listen: 0.0.0.0:19100             # Prometheus /metrics 地址（空=关
 
 # 伪 Sentinel 服务发现（可选）
 # sentinel 模式客户端零改代码接入：将 sentinel 地址指向此端口，masterName 用 group 名
+# 返回给客户端的 host（announce IP）完全由 Server 通过快照下发（server.yaml 的
+# proxy_public_endpoint），不支持本地配置或覆盖
 sentinel_listen: ":26379"                 # 空=关闭
-sentinel_announce_ip: ""                  # 返回给客户端的 host；空=用连接本地 IP（跨 NAT 必配）
 sentinel_password: ""                     # 发现端口鉴权密码；空=不鉴权
 ```
 

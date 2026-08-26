@@ -18,7 +18,6 @@ type TopoFunc func() *discovery.Topology
 // Config 是伪 Sentinel 的配置。
 type Config struct {
 	Listen          string // 监听地址，如 ":26379"；空 = 不启用
-	AnnounceIP      string // 返回给客户端的 host；空 = 用连接命中的本地 IP
 	Password        string // 发现端口鉴权密码；空 = 不鉴权
 	MaxRequestBytes int    // 单命令上限
 }
@@ -209,7 +208,8 @@ func (s *Server) handleSentinel(conn net.Conn, w *resp.Writer, argv [][]byte) {
 // resolve 返回 group 的伪 Sentinel 发现地址。
 // 端口按 access_mode 选择：standard → MasterPort，rw-split/空 → AutoPort。
 // 若首选端口为 0 则兜底到另一个存在的端口。
-// ip 优先配置的 AnnounceIP，否则用连接命中的本地 IP。
+// ip 来自快照的 AnnounceIP（Server 的 proxy_public_endpoint），
+// 完全由 Server 下发，不做本地兜底或覆盖；为空则退化为连接命中的本地 IP。
 func (s *Server) resolve(group string, conn net.Conn) (ip string, port int, ok bool) {
 	topo := s.topo()
 	if topo == nil {
@@ -234,7 +234,7 @@ func (s *Server) resolve(group string, conn net.Conn) (ip string, port int, ok b
 	if port == 0 {
 		return "", 0, false
 	}
-	ip = s.cfg.AnnounceIP
+	ip = topo.AnnounceIP
 	if ip == "" {
 		ip = localIP(conn)
 	}

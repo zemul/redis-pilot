@@ -82,6 +82,37 @@ data_dir: /opt/redis-server/state
 - Proxy -> Server：`server.yaml` 的 `internal_token` 与 `proxy.yaml` 的 `server_token` 两侧一致，为空则跳过校验（快照含实例地址与密码，生产环境务必配置）
 - Server -> Agent：per-node `agent_token`（每节点独立，泄露只影响单台）
 
+#### Proxy 对外域名的统一管理与展示
+
+Proxy 对客户端暴露的域名/IP（伪 Sentinel 应答的 announce host）与后端 Redis/Kvrocks 实际运行的
+节点（`servers` 表的 `endpoint`）是两套独立的网络地址，物理上通常是不同的机器：
+
+- **节点 endpoint**：Redis/Kvrocks 容器所在的物理机器，仅供运维/诊断定位实例位置，业务不应直连
+- **Proxy 对外域名**：业务真正的连接入口，客户端应始终通过 `<Proxy 域名>:<Proxy 端口>` 访问，不经过后端节点
+
+早期 Dashboard 曾直接把"节点名 + Proxy 端口"拼接展示，形似一个可连接地址（如 `redis02:16500`），
+但 `redis02` 只是后端节点名，16500 是 Proxy 监听的端口，两者拼接产生的地址在多数部署下并不可达，
+容易误导用户直连后端节点。
+
+**Proxy 对外域名完全由 Server 统一管理，通过既有的 `/api/v1/proxy/snapshot` 快照下发**，是唯一权威
+来源，不允许 Proxy 本地配置覆盖或兜底——这与 Server 作为"全局状态唯一写入点"的原则一致：
+
+```yaml
+# server.yaml
+proxy_public_endpoint: "redis-proxy-dev.dev.ihuman.com"
+```
+
+Server 生成快照（`buildProxySnapshot`）时把该值填入 `ProxySnapshot.AnnounceIP` 字段，两个消费方：
+
+1. **Proxy**：`discovery.ParseSnapshot` 解析出 `Topology.AnnounceIP`，伪 Sentinel 的
+   `resolve()` 用它作为 `SENTINEL get-master-addr-by-name` 应答的 host。Proxy 侧
+   `proxy.yaml` **没有** `sentinel_announce_ip` 配置项（已移除），完全依赖快照下发；
+   若 `proxy_public_endpoint` 为空，退化为连接命中的本地 IP（跨 NAT 环境下不可用，生产环境务必配置）
+2. **Dashboard**：通过既有的 `GET /server/info` 接口读取同一个值，拼出
+   `<proxy_public_endpoint>:<port>` 作为可复制的完整连接地址，与"节点"列（后端物理位置）严格分列展示
+
+单一配置源、双消费方，避免了"Server 和 Proxy 各自配置、需要手动保持一致"的漂移风险。
+
 ```yaml
 # 以下字段现存储于 pilot.db 的 servers 表（每行对应一台服务器，含 Agent 连接信息）
 # servers 表：

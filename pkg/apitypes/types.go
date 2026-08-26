@@ -65,6 +65,11 @@ type ProxyConfig struct {
 type ProxySnapshot struct {
 	Version     string          `json:"version"`
 	GeneratedAt string          `json:"generated_at"`
+	// AnnounceIP 是 Proxy 对外暴露的域名/IP（不含端口），由 Server 的
+	// server.yaml 的 proxy_public_endpoint 统一配置分发。伪 Sentinel
+	// 协议应答 SENTINEL get-master-addr-by-name 时使用该值作为返回的
+	// host；为空时退化为连接命中的本地 IP（跨 NAT 环境下不可用）。
+	AnnounceIP  string          `json:"announce_ip,omitempty"`
 	Listeners   []ProxyListener `json:"listeners"`
 	Clusters    []ProxyCluster  `json:"clusters"`
 }

@@ -54,8 +54,8 @@ func main() {
 	metricsListen := flag.String("metrics-listen", ":19100", "Prometheus /metrics HTTP listen address (empty = disabled)")
 
 	// 伪 Sentinel（proxy-design §19）
+	// AnnounceIP 完全由 Server 通过 /api/v1/proxy/snapshot 下发，无本地 flag/配置。
 	sentinelListen := flag.String("sentinel-listen", "", "pseudo-sentinel listen address (empty = disabled)")
-	sentinelAnnounceIP := flag.String("sentinel-announce-ip", "", "IP returned by pseudo-sentinel (empty = connection local IP)")
 	sentinelPassword := flag.String("sentinel-password", "", "pseudo-sentinel auth password (empty = no auth)")
 
 	flag.Parse()
@@ -155,9 +155,6 @@ func main() {
 		if fc.SentinelListen != "" {
 			cfg.SentinelListen = fc.SentinelListen
 		}
-		if fc.SentinelAnnounceIP != "" {
-			cfg.SentinelAnnounceIP = fc.SentinelAnnounceIP
-		}
 		if fc.SentinelPassword != "" {
 			cfg.SentinelPassword = fc.SentinelPassword
 		}
@@ -216,9 +213,6 @@ func main() {
 	}
 	if setFlags["sentinel-listen"] {
 		cfg.SentinelListen = *sentinelListen
-	}
-	if setFlags["sentinel-announce-ip"] {
-		cfg.SentinelAnnounceIP = *sentinelAnnounceIP
 	}
 	if setFlags["sentinel-password"] {
 		cfg.SentinelPassword = *sentinelPassword

@@ -484,9 +484,11 @@ Sentinel 发现按 `masterName` 查，约定 **`masterName` == group 名**（与
 
 Proxy 需知道自己对客户端可达的 IP（`bind 0.0.0.0` 时无法可靠自推，NAT 场景更甚）。
 
-- 新增配置 `sentinel_announce_ip`：伪 Sentinel 返回的 host。
-- 留空时**回退为客户端连接命中的本地地址**（请求的 local addr），单网段部署下够用；
-  跨 NAT / 多网卡务必显式配。
+- announce host 完全由 Server 通过 `/api/v1/proxy/snapshot` 快照下发（`ProxySnapshot.AnnounceIP`，
+  来自 `server.yaml` 的 `proxy_public_endpoint`），Proxy 侧**不提供**本地配置项，不做兜底覆盖。
+  Server 是唯一权威来源，避免 Server/Proxy 两处配置独立维护、手动同步出现漂移。
+- 若 Server 未配置 `proxy_public_endpoint`（快照 `AnnounceIP` 为空），回退为**客户端连接命中的
+  本地地址**（请求的 local addr），单网段部署下够用；跨 NAT / 多网卡务必在 `server.yaml` 显式配置。
 - 端口来自快照对应 group 的数据端口（§19.3），不需额外配。
 
 ### 19.6 鉴权
@@ -522,8 +524,9 @@ Proxy 需知道自己对客户端可达的 IP（`bind 0.0.0.0` 时无法可靠�
 ```yaml
 # ─── 伪 Sentinel 服务发现（可选） ───
 sentinel_listen: ":26379"      # 伪 Sentinel 监听地址；空 = 关闭该特性
-sentinel_announce_ip: ""       # 返回给客户端的 host；空 = 用连接命中的本地地址
 sentinel_password: ""          # 伪 Sentinel 端口鉴权密码；空 = 不鉴权
+# announce host 完全由 Server 通过快照下发（server.yaml 的 proxy_public_endpoint），
+# 本文件不提供 sentinel_announce_ip 配置项。
 ```
 
 ### 19.10 部署与接入

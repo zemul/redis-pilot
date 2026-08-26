@@ -48,15 +48,20 @@ type AdminConfig struct {
 }
 
 type Config struct {
-	Port          int                          `yaml:"port"`
-	DataDir       string                       `yaml:"data_dir"`
-	JWTSecret     string                       `yaml:"jwt_secret"`
-	InternalToken string                       `yaml:"internal_token"`
-	Admin         AdminConfig                  `yaml:"admin"`
-	Ports         PortConfig                   `yaml:"ports"`
-	Images        map[string]EngineImageConfig `yaml:"images"`
-	Sentinel      SentinelConfig               `yaml:"sentinel"`
-	Log           LogConfig                    `yaml:"log"`
+	Port                int                          `yaml:"port"`
+	DataDir             string                       `yaml:"data_dir"`
+	JWTSecret           string                       `yaml:"jwt_secret"`
+	InternalToken       string                       `yaml:"internal_token"`
+	Admin               AdminConfig                  `yaml:"admin"`
+	Ports               PortConfig                   `yaml:"ports"`
+	Images              map[string]EngineImageConfig `yaml:"images"`
+	Sentinel            SentinelConfig               `yaml:"sentinel"`
+	Log                 LogConfig                    `yaml:"log"`
+	// ProxyPublicEndpoint 是 Proxy 对外暴露的域名/IP（不含端口）。由 Server 统一
+	// 管理并通过 /api/v1/proxy/snapshot 快照下发给 Proxy（用作伪 Sentinel 应答
+	// host）和 Dashboard（拼接展示完整连接地址 <ProxyPublicEndpoint>:<port>）。
+	// Proxy 侧不提供本地配置项，完全依赖此值，不做兜底或覆盖。
+	ProxyPublicEndpoint string `yaml:"proxy_public_endpoint"`
 }
 
 func LoadConfig(path string) (*Config, error) {

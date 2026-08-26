@@ -28,6 +28,9 @@ type GroupTopology struct {
 type Topology struct {
 	Groups  map[string]*GroupTopology // group name -> topology
 	Version string
+	// AnnounceIP 是 Proxy 对外暴露的域名/IP（来自 Server 的
+	// server.yaml 的 proxy_public_endpoint），伪 Sentinel 应答时使用。
+	AnnounceIP string
 }
 
 // ParseSnapshot 将 ProxySnapshot 解析为 Topology。
@@ -99,7 +102,7 @@ func ParseSnapshot(snap *apitypes.ProxySnapshot) *Topology {
 		}
 	}
 
-	return &Topology{Groups: groups, Version: snap.Version}
+	return &Topology{Groups: groups, Version: snap.Version, AnnounceIP: snap.AnnounceIP}
 }
 
 // endpointAddr 将 ProxyEndpoint 转为 "host:port" 字符串。

@@ -8,6 +8,13 @@ jwt_secret: ""
 # 为空则跳过校验（快照含实例地址与密码，生产环境务必配置）
 internal_token: ""
 
+# Proxy 对外暴露的域名/IP（不含端口）。由 Server 统一管理并通过快照
+# （/api/v1/proxy/snapshot）下发给 Proxy（用作伪 Sentinel 应答 host）和
+# Dashboard（拼接展示完整连接地址 <proxy_public_endpoint>:<port>）。
+# Proxy 侧不提供本地配置项，完全依赖此值，不做兜底或覆盖；
+# 为空则 Proxy 退化为用连接命中的本地 IP，Dashboard 仅展示端口。
+proxy_public_endpoint: ""
+
 # 初始管理员账号（仅首次启动、users 表为空时生效）
 admin:
   username: admin

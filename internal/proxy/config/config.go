@@ -42,9 +42,10 @@ type FileConfig struct {
 	Password string   `yaml:"password"`
 
 	// 伪 Sentinel 服务发现（proxy-design §19）
-	SentinelListen     string `yaml:"sentinel_listen"`
-	SentinelAnnounceIP string `yaml:"sentinel_announce_ip"`
-	SentinelPassword   string `yaml:"sentinel_password"`
+	// AnnounceIP 完全由 Server 通过 /api/v1/proxy/snapshot 下发（server.yaml
+	// 的 proxy_public_endpoint），不支持本地配置覆盖。
+	SentinelListen   string `yaml:"sentinel_listen"`
+	SentinelPassword string `yaml:"sentinel_password"`
 
 	// 日志
 	Log LogConfig `yaml:"log"`
