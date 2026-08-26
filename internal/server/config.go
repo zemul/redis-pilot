@@ -62,6 +62,9 @@ type Config struct {
 	// host）和 Dashboard（拼接展示完整连接地址 <ProxyPublicEndpoint>:<port>）。
 	// Proxy 侧不提供本地配置项，完全依赖此值，不做兜底或覆盖。
 	ProxyPublicEndpoint string `yaml:"proxy_public_endpoint"`
+	// ProxySentinelPort 是伪 Sentinel 对外暴露的端口号（如 26379）。
+	// 仅用于 Dashboard 展示完整 Sentinel 接入地址，不影响 Proxy 的实际监听行为。
+	ProxySentinelPort int `yaml:"proxy_sentinel_port"`
 }
 
 func LoadConfig(path string) (*Config, error) {

@@ -848,6 +848,7 @@ function AppShell() {
                 <InstancesView
                   groups={instanceGroups}
                   publicHost={serverInfo?.proxy_public_endpoint}
+                  sentinelPort={serverInfo?.proxy_sentinel_port}
                   query={query}
                   setQuery={setQuery}
                   expandedGroups={expandedGroups}
@@ -888,7 +889,7 @@ function AppShell() {
       {slowlogTarget && <SlowlogModal instanceName={slowlogTarget} requestFn={request} onClose={() => setSlowlogTarget(null)} />}
       {bigkeysTarget && <BigkeysModal instanceName={bigkeysTarget} requestFn={request} onClose={() => setBigkeysTarget(null)} />}
       {configTarget && <ConfigModal instanceName={configTarget} requestFn={request} onClose={() => setConfigTarget(null)} />}
-      {accessModeTarget && <AccessModeModal group={accessModeTarget} onConfirm={(mode) => toggleAccessMode(accessModeTarget, mode)} onClose={() => setAccessModeTarget(null)} />}
+      {accessModeTarget && <AccessModeModal group={accessModeTarget} publicHost={serverInfo?.proxy_public_endpoint} sentinelPort={serverInfo?.proxy_sentinel_port} onConfirm={(mode) => toggleAccessMode(accessModeTarget, mode)} onClose={() => setAccessModeTarget(null)} />}
       {backupDetail && <BackupListModal detail={backupDetail} requestFn={request} onRefresh={refresh} onClose={() => setBackupDetail(null)} />}
       {confirmAction && (
         <ConfirmPowerModal
@@ -1114,7 +1115,7 @@ function SummaryCell({ label, value, icon: Icon, tone = 'neutral' }) {
   );
 }
 
-function InstancesView({ groups, publicHost, query, setQuery, expandedGroups, setExpandedGroups, onOpenDetail, onOpenBackups, onPowerAction, onDelete, onSlowlog, onBigkeys, onConfig, onToggleAccessMode, onCreate, pendingAction }) {
+function InstancesView({ groups, publicHost, sentinelPort, query, setQuery, expandedGroups, setExpandedGroups, onOpenDetail, onOpenBackups, onPowerAction, onDelete, onSlowlog, onBigkeys, onConfig, onToggleAccessMode, onCreate, pendingAction }) {
   const filtered = groups.filter((group) => {
     const text = [
       group.groupName,
@@ -1141,7 +1142,7 @@ function InstancesView({ groups, publicHost, query, setQuery, expandedGroups, se
       <div className="border border-gray-200 rounded-lg bg-white min-h-[52px] px-4 py-2.5 flex items-center justify-between gap-3 max-md:flex-col max-md:items-stretch">
         <div className="min-w-[240px] w-[min(380px,100%)] h-[34px] border border-gray-200 rounded-md flex items-center gap-2 px-2.5 bg-white text-gray-400 focus-within:border-gray-900 focus-within:shadow-[0_0_0_3px_rgba(0,0,0,0.08)] transition-all max-md:w-full max-md:min-w-0">
           <Search size={15} />
-          <input className="w-full border-0 outline-0 bg-transparent text-[13px] text-gray-900 placeholder:text-gray-400" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索实例组、节点或端口..." />
+          <input className="w-full border-0 outline-0 bg-transparent text-[13px] text-gray-900 placeholder:text-gray-400" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索实例组、节点..." />
         </div>
         <button className="h-[32px] rounded-md px-3 bg-gray-900 text-white font-medium text-[12px] inline-flex items-center gap-1.5 hover:bg-gray-700 transition-colors border-0 cursor-pointer" onClick={onCreate}>
           <Plus size={14} /> 创建实例
@@ -1157,7 +1158,7 @@ function InstancesView({ groups, publicHost, query, setQuery, expandedGroups, se
                 <th className="px-4 py-2.5 border-b border-gray-200 text-left text-xs font-medium text-gray-400 bg-gray-50">接入方式</th>
                 <th className="px-4 py-2.5 border-b border-gray-200 text-left text-xs font-medium text-gray-400 bg-gray-50">引擎 / 拓扑</th>
                 <th className="px-4 py-2.5 border-b border-gray-200 text-left text-xs font-medium text-gray-400 bg-gray-50">节点</th>
-                <th className="px-4 py-2.5 border-b border-gray-200 text-left text-xs font-medium text-gray-400 bg-gray-50">端口</th>
+                <th className="px-4 py-2.5 border-b border-gray-200 text-left text-xs font-medium text-gray-400 bg-gray-50">接入点</th>
                 <th className="px-4 py-2.5 border-b border-gray-200 text-left text-xs font-medium text-gray-400 bg-gray-50">内存</th>
                 <th className="px-4 py-2.5 border-b border-gray-200 text-left text-xs font-medium text-gray-400 bg-gray-50">状态</th>
                 <th className="px-4 py-2.5 border-b border-gray-200 text-right text-xs font-medium text-gray-400 bg-gray-50">操作</th>
@@ -1173,6 +1174,7 @@ function InstancesView({ groups, publicHost, query, setQuery, expandedGroups, se
                   expanded={expandedGroups[group.groupName] === true}
                   onToggle={() => toggleGroup(group.groupName)}
                   publicHost={publicHost}
+                  sentinelPort={sentinelPort}
                   onOpenDetail={onOpenDetail}
                   onOpenBackups={onOpenBackups}
                   onPowerAction={onPowerAction}
@@ -1192,7 +1194,7 @@ function InstancesView({ groups, publicHost, query, setQuery, expandedGroups, se
   );
 }
 
-function InstanceGroupRows({ group, expanded, onToggle, publicHost, onOpenDetail, onOpenBackups, onPowerAction, onDelete, onSlowlog, onBigkeys, onConfig, onToggleAccessMode, pendingAction }) {
+function InstanceGroupRows({ group, expanded, onToggle, publicHost, sentinelPort, onOpenDetail, onOpenBackups, onPowerAction, onDelete, onSlowlog, onBigkeys, onConfig, onToggleAccessMode, pendingAction }) {
   const master = group.master;
   const hasReplicas = group.replicas.length > 0;
   const topology = topologyLabel(group, master);
@@ -1214,7 +1216,7 @@ function InstanceGroupRows({ group, expanded, onToggle, publicHost, onOpenDetail
               <span className="w-5" />
             )}
             <div>
-              <strong className="font-semibold text-gray-900">{group.groupName}</strong>
+              <CopyableText text={group.groupName} className="font-semibold text-gray-900" />
               {(hasReplicas || !master || master.name !== group.groupName) && (
                 <span className="text-[11px] text-gray-400 block mt-0.5">
                   {master ? `主库: ${master.name}` : '主库状态异常'}
@@ -1240,7 +1242,7 @@ function InstanceGroupRows({ group, expanded, onToggle, publicHost, onOpenDetail
               <IconButton icon={HardDrive} label="备份列表" onClick={() => onOpenBackups(master, group)} />
               <MoreMenu items={[
                 { label: '修改配置', onClick: () => onConfig(master) },
-                { label: '修改接入方式', onClick: () => onToggleAccessMode(group, null) },
+                { label: '接入信息', onClick: () => onToggleAccessMode(group, null) },
                 { label: '慢查询', onClick: () => onSlowlog(master) },
                 { label: '大 Key 分析', onClick: () => onBigkeys(master) },
                 powerAction && {
@@ -1293,6 +1295,33 @@ function InstanceGroupRows({ group, expanded, onToggle, publicHost, onOpenDetail
         />
       ))}
     </>
+  );
+}
+
+function CopyableText({ text, className = '', children }) {
+  const [copied, setCopied] = useState(false);
+
+  async function handleCopy(event) {
+    event.stopPropagation();
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1200);
+    } catch {}
+  }
+
+  return (
+    <span className={`inline-flex items-center gap-1 group ${className}`}>
+      {children || <span>{text}</span>}
+      <button
+        type="button"
+        className="w-4 h-4 inline-flex items-center justify-center text-gray-300 hover:text-gray-600 opacity-0 group-hover:opacity-100 transition-opacity cursor-pointer border-0 bg-transparent p-0"
+        onClick={handleCopy}
+        title="复制"
+      >
+        {copied ? <Check size={12} className="text-emerald-500" /> : <Copy size={12} />}
+      </button>
+    </span>
   );
 }
 
@@ -1379,7 +1408,7 @@ function InstanceRow({ item, group, role, onOpenDetail, onOpenBackups, onPowerAc
       <td className="px-4 py-2.5 text-[13px]">
         <div className="flex items-center gap-2.5 pl-8">
           {isReplica && <span className="w-3.5 h-3.5 border-l border-b border-gray-300 rounded-bl shrink-0 -translate-y-0.5" />}
-          <strong className="font-medium">{item.name}</strong>
+          <CopyableText text={item.name} className="font-medium" />
         </div>
       </td>
       <td className="px-4 py-2.5 text-[13px]" />
@@ -1388,7 +1417,7 @@ function InstanceRow({ item, group, role, onOpenDetail, onOpenBackups, onPowerAc
         <span className={`text-[11px] font-medium px-1.5 py-0.5 rounded ${isReplica ? 'bg-gray-100 text-gray-500' : 'bg-gray-900 text-white'}`}>{role}</span>
       </td>
       <td className="px-4 py-2.5 text-[13px] text-gray-500 font-mono">{getField(item, 'server', 'Server', '-')}</td>
-      <td className="px-4 py-2.5 text-[13px] text-gray-500 font-mono">{getField(item, 'port', 'Port', '-')}</td>
+      <td className="px-4 py-2.5 text-[13px]" />
       <td className="px-4 py-2.5 text-[13px]">        {(() => {
           const used = Number(getField(item, 'memory_used', 'MemoryUsed', 0) || 0);
           const totalGi = parseGi(getField(item, 'memory', 'Memory'));
@@ -1403,7 +1432,7 @@ function InstanceRow({ item, group, role, onOpenDetail, onOpenBackups, onPowerAc
           <IconButton icon={HardDrive} label="备份列表" onClick={() => onOpenBackups(item, group)} />
           <MoreMenu items={[
             { label: '修改配置', onClick: () => onConfig(item) },
-            !isReplica && { label: '修改接入方式', onClick: () => onToggleAccessMode(group, null) },
+            !isReplica && { label: '接入信息', onClick: () => onToggleAccessMode(group, null) },
             { label: '慢查询', onClick: () => onSlowlog(item) },
             { label: '大 Key 分析', onClick: () => onBigkeys(item) },
             powerAction && {
@@ -2085,29 +2114,62 @@ function BigkeysModal({ instanceName, requestFn, onClose }) {
   );
 }
 
-function AccessModeModal({ group, onConfirm, onClose }) {
+function AccessModeModal({ group, publicHost, sentinelPort, onConfirm, onClose }) {
   const [mode, setMode] = useState(group.access_mode || 'standard');
+  const proxy = getField(group, 'proxy', 'Proxy', {}) || {};
+  const masterPort = proxy.master_port || proxy.MasterPort;
+  const autoPort = proxy.auto_port || proxy.AutoPort;
+  const isRwSplit = group.access_mode === 'rw-split';
+  const directEndpoint = publicHost ? `${publicHost}:${isRwSplit ? (autoPort || masterPort) : (masterPort || autoPort)}` : (isRwSplit ? autoPort : masterPort) || '-';
+  const sentinelEndpoint = publicHost && sentinelPort ? `${publicHost}:${sentinelPort}` : null;
 
   return (
     <div className="fixed inset-0 z-40 p-7 grid place-items-center bg-black/40 animate-[fadeIn_0.15s_ease-out]" role="presentation" onMouseDown={onClose}>
-      <section className="w-[min(460px,100%)] border border-gray-200 rounded-xl bg-white shadow-lg overflow-hidden animate-[slideUp_0.18s_cubic-bezier(0.16,1,0.3,1)]" role="dialog" aria-modal="true" onMouseDown={(e) => e.stopPropagation()}>
+      <section className="w-[min(500px,100%)] border border-gray-200 rounded-xl bg-white shadow-lg overflow-hidden animate-[slideUp_0.18s_cubic-bezier(0.16,1,0.3,1)]" role="dialog" aria-modal="true" onMouseDown={(e) => e.stopPropagation()}>
         <div className="min-h-[62px] px-4 py-4 border-b border-gray-200 flex items-center justify-between gap-3">
-          <div><h3 className="m-0 text-base font-semibold">修改接入方式</h3><span className="block mt-0.5 text-xs text-gray-400">{group.groupName}</span></div>
+          <div><h3 className="m-0 text-base font-semibold">接入信息</h3><span className="block mt-0.5 text-xs text-gray-400">{group.groupName}</span></div>
           <button className="w-8 h-8 rounded-md border border-gray-200 bg-white text-gray-500 inline-flex items-center justify-center hover:bg-gray-50 transition-colors" onClick={onClose} aria-label="关闭" type="button"><X size={18} /></button>
         </div>
-        <div className="p-4">
-          <p className="text-[13px] text-gray-500 m-0 mb-3">当前：{group.access_mode === 'rw-split' ? '读写分离' : '标准'}</p>
-          <label className="flex items-center gap-2 mb-2 cursor-pointer">
-            <input type="radio" name="access_mode" value="standard" checked={mode === 'standard'} onChange={() => setMode('standard')} />
-            <span className="text-[13px]"><strong className="font-medium">标准</strong> — 所有流量走主库</span>
-          </label>
-          <label className="flex items-center gap-2 cursor-pointer">
-            <input type="radio" name="access_mode" value="rw-split" checked={mode === 'rw-split'} onChange={() => setMode('rw-split')} />
-            <span className="text-[13px]"><strong className="font-medium">读写分离</strong> — 读请求分发到从库</span>
-          </label>
-          <div className="mt-4 flex justify-end gap-2">
-            <button className="h-[34px] rounded-md border border-gray-200 px-3 bg-white text-gray-900 font-medium text-[13px] hover:bg-gray-50 cursor-pointer transition-colors" onClick={onClose}>取消</button>
-            <button className="h-[34px] rounded-md px-3 bg-gray-900 text-white font-medium text-[13px] hover:bg-gray-700 border-0 cursor-pointer transition-colors disabled:opacity-50" disabled={mode === (group.access_mode || 'standard')} onClick={() => onConfirm(mode)}>确认修改</button>
+        <div className="p-4 space-y-4">
+          {/* 接入点信息 */}
+          <div className="space-y-2.5">
+            <h4 className="m-0 text-[13px] font-medium text-gray-700">Redis 直连</h4>
+            <div className="bg-gray-50 rounded-md px-3 py-2">
+              <CopyableText text={directEndpoint} className="text-[13px] font-mono text-gray-900" />
+            </div>
+          </div>
+
+          {sentinelEndpoint && (
+            <div className="space-y-2.5">
+              <h4 className="m-0 text-[13px] font-medium text-gray-700">Sentinel 模式</h4>
+              <div className="bg-gray-50 rounded-md px-3 py-2 space-y-1.5">
+                <div className="flex items-center justify-between">
+                  <span className="text-[12px] text-gray-500">Sentinel 地址</span>
+                  <CopyableText text={sentinelEndpoint} className="text-[13px] font-mono text-gray-900" />
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-[12px] text-gray-500">Master Name</span>
+                  <CopyableText text={group.groupName} className="text-[13px] font-mono text-gray-900" />
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* 接入方式切换 */}
+          <div className="pt-3 border-t border-gray-100">
+            <h4 className="m-0 mb-2.5 text-[13px] font-medium text-gray-700">接入方式</h4>
+            <label className="flex items-center gap-2 mb-2 cursor-pointer">
+              <input type="radio" name="access_mode" value="standard" checked={mode === 'standard'} onChange={() => setMode('standard')} />
+              <span className="text-[13px]"><strong className="font-medium">标准</strong> — 所有流量走主库</span>
+            </label>
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input type="radio" name="access_mode" value="rw-split" checked={mode === 'rw-split'} onChange={() => setMode('rw-split')} />
+              <span className="text-[13px]"><strong className="font-medium">读写分离</strong> — 读请求分发到从库</span>
+            </label>
+            <div className="mt-3 flex justify-end gap-2">
+              <button className="h-[34px] rounded-md border border-gray-200 px-3 bg-white text-gray-900 font-medium text-[13px] hover:bg-gray-50 cursor-pointer transition-colors" onClick={onClose}>关闭</button>
+              <button className="h-[34px] rounded-md px-3 bg-gray-900 text-white font-medium text-[13px] hover:bg-gray-700 border-0 cursor-pointer transition-colors disabled:opacity-50" disabled={mode === (group.access_mode || 'standard')} onClick={() => onConfirm(mode)}>切换模式</button>
+            </div>
           </div>
         </div>
       </section>

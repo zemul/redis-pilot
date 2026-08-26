@@ -1783,5 +1783,6 @@ func (s *Server) serverInfo(c *gin.Context) {
 	ok(c, gin.H{
 		"engines":               engines,
 		"proxy_public_endpoint": s.cfg.ProxyPublicEndpoint,
+		"proxy_sentinel_port":   s.cfg.ProxySentinelPort,
 	})
 }
