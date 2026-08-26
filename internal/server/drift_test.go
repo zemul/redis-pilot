@@ -11,7 +11,7 @@ import (
 // auditResultsFor 返回某个 action 下所有审计记录的 result，最近的在前。
 func auditResultsFor(t *testing.T, s *Server, action string) []string {
 	t.Helper()
-	records, err := s.audit.Query(store.AuditFilter{Action: action, Limit: 50})
+	records, _, err := s.audit.Query(store.AuditFilter{Action: action, Limit: 50})
 	if err != nil {
 		t.Fatalf("query audit: %v", err)
 	}

@@ -32,6 +32,7 @@ type AuditFilter struct {
 	Level    string
 	Action   string
 	Limit    int
+	Offset   int
 }
 
 // InsertAudit 写入一条审计记录。
@@ -61,7 +62,7 @@ func (d *DB) InsertAudit(r AuditRecord) error {
 }
 
 // QueryAudit 按条件查询审计日志，结果按时间倒序。
-func (d *DB) QueryAudit(f AuditFilter) ([]AuditRecord, error) {
+func (d *DB) QueryAudit(f AuditFilter) ([]AuditRecord, int, error) {
 	if f.Limit <= 0 {
 		f.Limit = 30
 	}
@@ -95,17 +96,26 @@ func (d *DB) QueryAudit(f AuditFilter) ([]AuditRecord, error) {
 		args = append(args, f.Instance)
 	}
 
+	whereCl := strings.Join(where, " AND ")
+
+	// Count total
+	var total int
+	countQuery := fmt.Sprintf(`SELECT COUNT(*) FROM audit_log WHERE %s`, whereCl)
+	if err := d.sql.QueryRow(countQuery, args...).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+
 	query := fmt.Sprintf(`
 		SELECT id, ts, operator, action, level, target, params, result, duration_ms, detail
 		FROM audit_log
 		WHERE %s
 		ORDER BY ts DESC
-		LIMIT ?`, strings.Join(where, " AND "))
-	args = append(args, f.Limit)
+		LIMIT ? OFFSET ?`, whereCl)
+	args = append(args, f.Limit, f.Offset)
 
 	rows, err := d.sql.Query(query, args...)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	defer rows.Close()
 
@@ -118,11 +128,11 @@ func (d *DB) QueryAudit(f AuditFilter) ([]AuditRecord, error) {
 			&targetJSON, &paramsJSON,
 			&r.Result, &r.DurationMs, &r.Detail,
 		); err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 		json.Unmarshal([]byte(targetJSON), &r.Target) //nolint:errcheck
 		json.Unmarshal([]byte(paramsJSON), &r.Params) //nolint:errcheck
 		results = append(results, r)
 	}
-	return results, rows.Err()
+	return results, total, rows.Err()
 }

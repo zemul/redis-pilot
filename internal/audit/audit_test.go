@@ -39,7 +39,7 @@ func TestQueryReturnsNewestRecordsFirst(t *testing.T) {
 		}
 	}
 
-	records, err := logger.Query(store.AuditFilter{From: "20260517", To: "20260518", Limit: 3})
+	records, _, err := logger.Query(store.AuditFilter{From: "20260517", To: "20260518", Limit: 3})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -66,7 +66,7 @@ func TestQueryFilterByAction(t *testing.T) {
 		logger.Log(r) //nolint:errcheck
 	}
 
-	records, err := logger.Query(store.AuditFilter{Action: "instance.create", Limit: 10})
+	records, _, err := logger.Query(store.AuditFilter{Action: "instance.create", Limit: 10})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -85,7 +85,7 @@ func TestQueryFilterByLevel(t *testing.T) {
 		logger.Log(r) //nolint:errcheck
 	}
 
-	records, err := logger.Query(store.AuditFilter{Level: "critical", Limit: 10})
+	records, _, err := logger.Query(store.AuditFilter{Level: "critical", Limit: 10})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -106,7 +106,7 @@ func TestQueryFilterByGroup(t *testing.T) {
 		logger.Log(r) //nolint:errcheck
 	}
 
-	records, err := logger.Query(store.AuditFilter{Group: "order", Limit: 10})
+	records, _, err := logger.Query(store.AuditFilter{Group: "order", Limit: 10})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -243,6 +243,11 @@ func (s *Server) internalTokenMiddleware() gin.HandlerFunc {
 }
 
 func operatorFrom(c *gin.Context) string {
+	if user, ok := c.Get("auth_user"); ok {
+		if s, _ := user.(string); s != "" {
+			return s
+		}
+	}
 	if op := c.GetHeader("X-Operator"); op != "" {
 		return op
 	}

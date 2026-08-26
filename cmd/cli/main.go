@@ -25,9 +25,6 @@ var rootCmd = &cobra.Command{
 		if t, _ := cmd.Flags().GetString("token"); t != "" {
 			cfg.Token = t
 		}
-		if o, _ := cmd.Flags().GetString("operator"); o != "" {
-			cfg.Operator = o
-		}
 		client = cli.NewClient(cfg)
 	},
 }
@@ -45,7 +42,6 @@ func init() {
 
 	rootCmd.PersistentFlags().String("server", "", "Server address (default: config or 127.0.0.1:8080)")
 	rootCmd.PersistentFlags().String("token", "", "Auth token")
-	rootCmd.PersistentFlags().String("operator", "", "Operator identifier for audit logs")
 
 	rootCmd.AddCommand(instanceCmd)
 	rootCmd.AddCommand(backupCmd)

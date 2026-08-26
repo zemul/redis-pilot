@@ -150,7 +150,7 @@ function formatAuditDate(value) {
 	return String(value).replaceAll('-', '');
 }
 
-function auditQuery(filters) {
+function auditQuery(filters, page = 1, pageSize = 30) {
 	const params = new URLSearchParams();
 	if (filters.from) params.set('from', formatAuditDate(filters.from));
 	if (filters.to) params.set('to', formatAuditDate(filters.to));
@@ -158,8 +158,9 @@ function auditQuery(filters) {
 	if (filters.instance) params.set('instance', filters.instance.trim());
 	if (filters.level) params.set('level', filters.level);
 	if (filters.action) params.set('action', filters.action.trim());
-	const query = params.toString();
-	return query ? `/audit/query?${query}` : '/audit/query';
+	params.set('page', String(page));
+	params.set('page_size', String(pageSize));
+	return `/audit/query?${params.toString()}`;
 }
 
 function parseGi(value) {
@@ -374,15 +375,27 @@ function topologyLabel(group, master) {
 	return type === 'standalone' ? '单点' : `1主 ${group.replicas.length}从`;
 }
 
+const dotColor = { ok: 'bg-emerald-500', warn: 'bg-amber-500', bad: 'bg-red-500', neutral: 'bg-gray-400' };
+
 function StatusBadge({ status, children, metaFn = statusMeta }) {
   const meta = metaFn(status);
-  return <span className={`badge ${meta.tone}`}><span className="badge-dot"></span>{children || meta.label}</span>;
+  return (
+    <span className="inline-flex items-center gap-1.5 text-xs font-medium text-gray-600 whitespace-nowrap">
+      <span className={`w-2 h-2 rounded-full shrink-0 ${dotColor[meta.tone] || dotColor.neutral}`} />
+      {children || meta.label}
+    </span>
+  );
+}
+
+function StatusDot({ status }) {
+  const meta = statusMeta(status);
+  return <span className={`w-[7px] h-[7px] rounded-full shrink-0 ${dotColor[meta.tone] || dotColor.neutral}`} />;
 }
 
 function IconButton({ icon: Icon, label, onClick, disabled = false }) {
   return (
     <button
-      className="icon-button"
+      className="w-8 h-8 rounded-md border border-gray-200 bg-white text-gray-500 inline-flex items-center justify-center hover:bg-gray-50 hover:border-gray-300 hover:text-gray-900 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
       disabled={disabled}
       title={typeof disabled === 'string' ? disabled : disabled ? `${label}暂未开放` : label}
       aria-label={label}
@@ -421,14 +434,19 @@ function MoreMenu({ items }) {
   if (visibleItems.length === 0) return null;
 
   return (
-    <div className="more-menu-wrap" ref={ref}>
-      <button ref={btnRef} className="icon-button" title="更多操作" aria-label="更多操作" type="button" onClick={toggle}>
+    <div className="relative inline-flex" ref={ref}>
+      <button ref={btnRef} className="w-8 h-8 rounded-md border border-gray-200 bg-white text-gray-500 inline-flex items-center justify-center hover:bg-gray-50 hover:border-gray-300 hover:text-gray-900 transition-colors" title="更多操作" aria-label="更多操作" type="button" onClick={toggle}>
         <MoreVertical size={16} />
       </button>
       {open && (
-        <div className="more-menu-dropdown" style={{ position: 'fixed', top: pos.top, right: pos.right }}>
+        <div className="fixed z-50 min-w-[100px] bg-white border border-gray-200 rounded-md shadow-lg py-1" style={{ top: pos.top, right: pos.right }}>
           {visibleItems.map((mi, i) => (
-            <button key={i} className={`more-menu-item${mi.danger ? ' danger' : ''}`} disabled={mi.disabled} onClick={() => { setOpen(false); mi.onClick(); }}>
+            <button
+              key={i}
+              className={`block w-full px-3.5 py-1.5 text-left text-[13px] whitespace-nowrap border-0 bg-transparent cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed ${mi.danger ? 'text-red-600 hover:bg-red-50' : 'text-gray-700 hover:bg-gray-100'}`}
+              disabled={mi.disabled}
+              onClick={() => { setOpen(false); mi.onClick(); }}
+            >
               {mi.label}
             </button>
           ))}
@@ -461,15 +479,15 @@ function powerActionFor(item, group) {
 
 function ProgressBar({ label, current, max, unit = '' }) {
   const percent = max > 0 ? Math.min(100, Math.round((current / max) * 100)) : 0;
-  const tone = percent >= 90 ? 'danger' : percent >= 80 ? 'warn' : '';
+  const barColor = percent >= 90 ? 'bg-red-500' : percent >= 80 ? 'bg-amber-500' : 'bg-gray-900';
   return (
-    <div className="progress">
-      <div className="progress-label">
-        <span>{label}</span>
-        <span className="mono">{current || 0}{unit} / {max || 0}{unit}</span>
+    <div className="grid gap-1.5">
+      <div className="flex items-center justify-between gap-3 text-xs text-gray-500">
+        <span className="inline-flex items-center gap-1.5">{label}</span>
+        <span className="font-mono tabular-nums">{current || 0}{unit} / {max || 0}{unit}</span>
       </div>
-      <div className="progress-track">
-        <span className={tone} style={{ width: `${percent}%` }} />
+      <div className="h-1.5 rounded-full bg-gray-100 overflow-hidden">
+        <span className={`block h-full rounded-full transition-all duration-300 ${barColor}`} style={{ width: `${percent}%` }} />
       </div>
     </div>
   );
@@ -477,10 +495,10 @@ function ProgressBar({ label, current, max, unit = '' }) {
 
 function EmptyState({ icon: Icon = Database, title, detail }) {
   return (
-    <div className="empty-state">
-      <Icon size={36} />
-      <strong>{title}</strong>
-      {detail && <span>{detail}</span>}
+    <div className="min-h-[200px] p-7 grid place-items-center content-center gap-2 text-center text-gray-400">
+      <Icon size={36} className="text-gray-300" />
+      <strong className="text-gray-500 font-medium">{title}</strong>
+      {detail && <span className="text-[13px]">{detail}</span>}
     </div>
   );
 }
@@ -502,7 +520,7 @@ export default function App() {
   const [accessModeTarget, setAccessModeTarget] = useState(null);
   const [createOpen, setCreateOpen] = useState(false);
   const [pendingAction, setPendingAction] = useState('');
-  const [data, setData] = useState({ instances: {}, servers: {}, audits: [] });
+  const [data, setData] = useState({ instances: {}, servers: {}, audits: [], sentinel: null });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
 
@@ -537,15 +555,17 @@ export default function App() {
     setLoading(true);
     setError('');
     try {
-      const [instanceData, nodeData, auditData] = await Promise.all([
+      const [instanceData, nodeData, auditData, sentinelData] = await Promise.all([
         request('/instance/list'),
         request('/node/list'),
-        request(auditQuery(auditFilters))
+        request(auditQuery(auditFilters, 1, 6)),
+        request('/sentinel/status').catch(() => null)
       ]);
       setData({
         instances: instanceData || {},
         servers: nodeData || {},
-        audits: auditData?.records || auditData?.Records || []
+        audits: auditData?.records || auditData?.Records || [],
+        sentinel: sentinelData
       });
     } catch (err) {
       setError(err.message || String(err));
@@ -560,16 +580,18 @@ export default function App() {
       setLoading(true);
       setError('');
       try {
-        const [instanceData, nodeData, auditData] = await Promise.all([
+        const [instanceData, nodeData, auditData, sentinelData] = await Promise.all([
           request('/instance/list'),
           request('/node/list'),
-          request(auditQuery(auditFilters))
+          request(auditQuery(auditFilters, 1, 6)),
+          request('/sentinel/status').catch(() => null)
         ]);
         if (!ignore) {
           setData({
             instances: instanceData || {},
             servers: nodeData || {},
-            audits: auditData?.records || auditData?.Records || []
+            audits: auditData?.records || auditData?.Records || [],
+            sentinel: sentinelData
           });
         }
       } catch (err) {
@@ -683,19 +705,23 @@ export default function App() {
   }
 
   const nav = (
-    <nav className="nav">
+    <nav className="grid gap-0.5">
       {TABS.map((tab) => {
         const Icon = tab.icon;
         return (
           <button
             key={tab.id}
-            className={activeTab === tab.id ? 'active' : ''}
+            className={`min-h-[40px] rounded-md px-3 flex items-center gap-3 text-left text-sm font-medium cursor-pointer border-0 transition-colors ${
+              activeTab === tab.id
+                ? 'bg-gray-900 text-white'
+                : 'bg-transparent text-gray-500 hover:bg-gray-100 hover:text-gray-900'
+            }`}
             onClick={() => {
               setActiveTab(tab.id);
               setMobileOpen(false);
             }}
           >
-            <Icon size={19} />
+            <Icon size={19} className={activeTab === tab.id ? 'text-white' : 'text-gray-400'} />
             <span>{tab.label}</span>
           </button>
         );
@@ -708,72 +734,76 @@ export default function App() {
   }
 
   return (
-    <div className="app-shell">
-      <header className="mobile-header">
-        <div className="mobile-brand"><Database size={22} /> Redis Pilot</div>
-        <button className="mobile-menu-button" onClick={() => setMobileOpen(!mobileOpen)} aria-label="导航">
+    <div className="min-h-screen grid grid-cols-[248px_minmax(0,1fr)] max-md:block">
+      {/* Mobile header */}
+      <header className="hidden max-md:flex sticky top-0 z-20 h-[52px] px-3.5 items-center justify-between bg-white border-b border-gray-200">
+        <div className="inline-flex items-center gap-2 font-semibold text-[15px]"><Database size={22} className="text-gray-900" /> Redis Pilot</div>
+        <button className="w-[38px] h-[34px] rounded-md border border-gray-200 bg-white text-gray-900 inline-flex items-center justify-center" onClick={() => setMobileOpen(!mobileOpen)} aria-label="导航">
           {mobileOpen ? <X size={22} /> : <Menu size={22} />}
         </button>
       </header>
-      {mobileOpen && <div className="mobile-nav">{nav}</div>}
+      {mobileOpen && <div className="fixed inset-x-0 top-[52px] z-10 p-3 bg-white border-b border-gray-200 shadow-sm md:hidden">{nav}</div>}
 
-      <aside className="sidebar">
-        <div className="brand">
-          <div className="brand-mark"><Database size={24} /></div>
+      {/* Sidebar */}
+      <aside className="sticky top-0 h-screen p-5 px-3.5 bg-white border-r border-gray-200 flex flex-col max-md:hidden">
+        <div className="flex items-center gap-3 px-2 pb-6">
+          <div className="w-[34px] h-[34px] rounded-md grid place-items-center bg-gray-900 text-white shrink-0">
+            <Database size={24} />
+          </div>
           <div>
-            <h1>Redis Pilot</h1>
-            <p>多实例管理平台</p>
+            <h1 className="m-0 text-[15px] font-semibold leading-tight tracking-tight text-gray-900">Redis Pilot</h1>
+            <p className="mt-0.5 text-xs text-gray-400 font-medium">多实例管理平台</p>
           </div>
         </div>
         {nav}
       </aside>
 
-      <main className="main">
-        <header className="topbar">
-          <h2>{activeTitle}</h2>
-          <div className="toolbar">
-            <span className="toolbar-user">{auth.username}</span>
-            <button className="ghost-button" onClick={handleLogout}>
+      {/* Main */}
+      <main className="min-w-0">
+        <header className="sticky top-0 z-20 min-h-[64px] px-7 py-3.5 flex items-center justify-between gap-4 border-b border-gray-200 bg-white/90 backdrop-blur-sm max-md:static max-md:flex-col max-md:items-start max-md:p-4">
+          <h2 className="m-0 text-xl font-semibold tracking-tight">{activeTitle}</h2>
+          <div className="flex items-center justify-end gap-2 flex-wrap">
+            <span className="text-sm text-gray-500 px-2 py-0.5 bg-gray-100 rounded">{auth.username}</span>
+            <button className="h-[34px] rounded-md border border-gray-200 px-3 bg-white text-gray-900 font-medium text-[13px] inline-flex items-center gap-1.5 hover:bg-gray-50 hover:border-gray-300 transition-colors" onClick={handleLogout}>
               <LogOut size={16} /> 退出
             </button>
           </div>
         </header>
 
-        <section className="content">
-          {error && <div className="notice"><AlertCircle size={16} /> {error}</div>}
+        <section className="p-7 max-md:p-4">
+          {error && <div className="mb-4 border border-red-200 rounded-md px-3 py-2.5 flex items-center gap-2 bg-red-50 text-red-700 text-[13px]"><AlertCircle size={16} className="shrink-0" /> {error}</div>}
           {loading ? (
-            <div className="panel loading">正在读取服务状态...</div>
+            <div className="border border-gray-200 rounded-lg bg-white min-h-[260px] grid place-items-center text-gray-400">正在读取服务状态...</div>
           ) : (
             <>
-              {activeTab === 'dashboard' && <DashboardView groups={instanceGroups} servers={servers} audits={data.audits} />}
-	              {activeTab === 'instances' && (
-	                <InstancesView
-	                  groups={instanceGroups}
-	                  query={query}
-	                  setQuery={setQuery}
-	                  expandedGroups={expandedGroups}
-	                  setExpandedGroups={setExpandedGroups}
-	                  onOpenDetail={openInstanceDetail}
-	                  onOpenBackups={openBackupList}
-	                  onPowerAction={changeInstancePower}
-	                  onDelete={(item, group) => setDeleteConfirm({ item, group, cleanData: true })}
-	                  onSlowlog={(item) => setSlowlogTarget(item.name)}
-	                  onBigkeys={(item) => setBigkeysTarget(item.name)}
-	                  onConfig={(item) => setConfigTarget(item.name)}
-	                  onToggleAccessMode={toggleAccessMode}
-	                  onCreate={() => setCreateOpen(true)}
-	                  servers={servers}
-	                  pendingAction={pendingAction}
-	                />
-	              )}
+              {activeTab === 'dashboard' && <DashboardView groups={instanceGroups} servers={servers} audits={data.audits} sentinel={data.sentinel} />}
+              {activeTab === 'instances' && (
+                <InstancesView
+                  groups={instanceGroups}
+                  query={query}
+                  setQuery={setQuery}
+                  expandedGroups={expandedGroups}
+                  setExpandedGroups={setExpandedGroups}
+                  onOpenDetail={openInstanceDetail}
+                  onOpenBackups={openBackupList}
+                  onPowerAction={changeInstancePower}
+                  onDelete={(item, group) => setDeleteConfirm({ item, group, cleanData: true })}
+                  onSlowlog={(item) => setSlowlogTarget(item.name)}
+                  onBigkeys={(item) => setBigkeysTarget(item.name)}
+                  onConfig={(item) => setConfigTarget(item.name)}
+                  onToggleAccessMode={toggleAccessMode}
+                  onCreate={() => setCreateOpen(true)}
+                  servers={servers}
+                  pendingAction={pendingAction}
+                />
+              )}
               {activeTab === 'alerts' && <AlertsView groups={instanceGroups} servers={servers} />}
               {activeTab === 'servers' && <ServersView servers={servers} />}
               {activeTab === 'audit' && (
                 <AuditView
-                  audits={data.audits}
                   filters={auditFilters}
                   setFilters={setAuditFilters}
-                  onApply={refresh}
+                  request={request}
                 />
               )}
               {activeTab === 'users' && (
@@ -785,44 +815,44 @@ export default function App() {
             </>
           )}
         </section>
-	      </main>
-	      {detail && <InstanceDetailModal detail={detail} requestFn={request} onClose={() => setDetail(null)} />}
-	      {slowlogTarget && <SlowlogModal instanceName={slowlogTarget} requestFn={request} onClose={() => setSlowlogTarget(null)} />}
-	      {bigkeysTarget && <BigkeysModal instanceName={bigkeysTarget} requestFn={request} onClose={() => setBigkeysTarget(null)} />}
-	      {configTarget && <ConfigModal instanceName={configTarget} requestFn={request} onClose={() => setConfigTarget(null)} />}
-	      {accessModeTarget && <AccessModeModal group={accessModeTarget} onConfirm={(mode) => toggleAccessMode(accessModeTarget, mode)} onClose={() => setAccessModeTarget(null)} />}
-	      {backupDetail && <BackupListModal detail={backupDetail} requestFn={request} onRefresh={refresh} onClose={() => setBackupDetail(null)} />}
-	      {confirmAction && (
-	        <ConfirmPowerModal
-	          detail={confirmAction}
-	          loading={pendingAction === `${confirmAction.action}:${confirmAction.item.name}`}
-	          onCancel={() => setConfirmAction(null)}
-	          onConfirm={executeInstancePower}
-	        />
-	      )}
-	      {deleteConfirm && (
-	        <DeleteConfirmModal
-	          detail={deleteConfirm}
-	          loading={pendingAction === `delete:${deleteConfirm.item.name}`}
-	          onCancel={() => setDeleteConfirm(null)}
-	          onConfirm={executeDelete}
-	          onToggleClean={(v) => setDeleteConfirm((prev) => ({ ...prev, cleanData: v }))}
-	        />
-	      )}
-	      {createOpen && (
-	        <CreateInstanceModal
-	          servers={servers}
-	          groups={instanceGroups}
-	          requestFn={request}
+      </main>
+      {detail && <InstanceDetailModal detail={detail} requestFn={request} onClose={() => setDetail(null)} />}
+      {slowlogTarget && <SlowlogModal instanceName={slowlogTarget} requestFn={request} onClose={() => setSlowlogTarget(null)} />}
+      {bigkeysTarget && <BigkeysModal instanceName={bigkeysTarget} requestFn={request} onClose={() => setBigkeysTarget(null)} />}
+      {configTarget && <ConfigModal instanceName={configTarget} requestFn={request} onClose={() => setConfigTarget(null)} />}
+      {accessModeTarget && <AccessModeModal group={accessModeTarget} onConfirm={(mode) => toggleAccessMode(accessModeTarget, mode)} onClose={() => setAccessModeTarget(null)} />}
+      {backupDetail && <BackupListModal detail={backupDetail} requestFn={request} onRefresh={refresh} onClose={() => setBackupDetail(null)} />}
+      {confirmAction && (
+        <ConfirmPowerModal
+          detail={confirmAction}
+          loading={pendingAction === `${confirmAction.action}:${confirmAction.item.name}`}
+          onCancel={() => setConfirmAction(null)}
+          onConfirm={executeInstancePower}
+        />
+      )}
+      {deleteConfirm && (
+        <DeleteConfirmModal
+          detail={deleteConfirm}
+          loading={pendingAction === `delete:${deleteConfirm.item.name}`}
+          onCancel={() => setDeleteConfirm(null)}
+          onConfirm={executeDelete}
+          onToggleClean={(v) => setDeleteConfirm((prev) => ({ ...prev, cleanData: v }))}
+        />
+      )}
+      {createOpen && (
+        <CreateInstanceModal
+          servers={servers}
+          groups={instanceGroups}
+          requestFn={request}
           onRefresh={refresh}
           onClose={() => setCreateOpen(false)}
-	        />
-	      )}
-	    </div>
-	  );
-	}
+        />
+      )}
+    </div>
+  );
+}
 
-function DashboardView({ groups, servers, audits }) {
+function DashboardView({ groups, servers, audits, sentinel }) {
   const allInstances = groups.flatMap((g) => g.instances);
   const totalInstances = allInstances.length;
   const runningInstances = allInstances.filter((inst) => getField(inst, 'status', 'Status') === 'running').length;
@@ -848,33 +878,41 @@ function DashboardView({ groups, servers, audits }) {
   }
 
   return (
-    <div className="stack">
-      <section className="panel summary-strip">
+    <div className="grid gap-4">
+      {/* Summary strip */}
+      <section className="border border-gray-200 rounded-lg bg-white overflow-hidden grid grid-cols-4 max-lg:grid-cols-2 max-md:grid-cols-1">
         <SummaryCell label="实例状态" value={totalInstances ? `${runningInstances}/${totalInstances}` : '0'} icon={Database} tone={instanceTone} />
         <SummaryCell label="拓扑健康" value={totalGroups ? `${healthyGroups}/${totalGroups}` : '0'} icon={GitMerge} tone={groupTone} />
         <SummaryCell label="服务器" value={totalServers ? `${healthyServers}/${totalServers}` : '0'} icon={Server} tone={serverTone} />
+        {sentinel && sentinel.enabled && (() => {
+          const onlineNodes = sentinel.nodes ? sentinel.nodes.filter((n) => n.status?.running).length : 0;
+          const totalNodes = sentinel.nodes?.length || 0;
+          const sentinelTone = totalNodes === 0 ? 'neutral' : onlineNodes < sentinel.quorum ? 'alert' : onlineNodes < totalNodes ? 'warn' : 'neutral';
+          return <SummaryCell label="Sentinel" value={`${onlineNodes}/${totalNodes}`} icon={ShieldCheck} tone={sentinelTone} />;
+        })()}
       </section>
 
-      <div className="dashboard-grid">
-        <section className="panel">
-          <div className="panel-header">
-            <h3>实例组概览</h3>
-            <Database size={18} />
+      <div className="grid grid-cols-[minmax(0,1.15fr)_minmax(360px,0.85fr)] gap-4 max-lg:grid-cols-1">
+        {/* Instance groups table */}
+        <section className="border border-gray-200 rounded-lg bg-white overflow-hidden">
+          <div className="min-h-[54px] px-4 py-3 border-b border-gray-200 flex items-center justify-between gap-3">
+            <h3 className="m-0 text-[15px] font-semibold">实例组概览</h3>
+            <Database size={18} className="text-gray-400" />
           </div>
           {groups.length === 0 ? (
-            <div className="panel-body"><EmptyState title="暂无实例组" detail="创建实例后会在这里展示运行状态。" /></div>
+            <div className="p-4"><EmptyState title="暂无实例组" detail="创建实例后会在这里展示运行状态。" /></div>
           ) : (
-            <div className="table-scroll">
-              <table>
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[920px] border-collapse">
                 <thead>
                   <tr>
-                    <th>实例组</th>
-                    <th>引擎</th>
-                    <th>拓扑</th>
-                    <th>主库</th>
-                    <th>代理端口</th>
-                    <th>实例</th>
-                    <th>状态</th>
+                    <th className="px-4 py-3 border-b border-gray-200 text-left text-xs font-medium text-gray-400 bg-gray-50">实例组</th>
+                    <th className="px-4 py-3 border-b border-gray-200 text-left text-xs font-medium text-gray-400 bg-gray-50">引擎</th>
+                    <th className="px-4 py-3 border-b border-gray-200 text-left text-xs font-medium text-gray-400 bg-gray-50">拓扑</th>
+                    <th className="px-4 py-3 border-b border-gray-200 text-left text-xs font-medium text-gray-400 bg-gray-50">主库</th>
+                    <th className="px-4 py-3 border-b border-gray-200 text-left text-xs font-medium text-gray-400 bg-gray-50">代理端口</th>
+                    <th className="px-4 py-3 border-b border-gray-200 text-left text-xs font-medium text-gray-400 bg-gray-50">实例</th>
+                    <th className="px-4 py-3 border-b border-gray-200 text-left text-xs font-medium text-gray-400 bg-gray-50">状态</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -883,18 +921,18 @@ function DashboardView({ groups, servers, audits }) {
                     const running = group.instances.filter((inst) => getField(inst, 'status', 'Status') === 'running').length;
                     const total = group.instances.length;
                     return (
-                      <tr key={group.groupName}>
-                        <td><strong>{group.groupName}</strong></td>
-                        <td><span className="muted">{engineLabel(group)}</span></td>
-                        <td>{topologyLabel(group, master)}</td>
-                        <td>
+                      <tr key={group.groupName} className="border-b border-gray-200 last:border-b-0">
+                        <td className="px-4 py-3 text-[13px]"><strong className="font-medium">{group.groupName}</strong></td>
+                        <td className="px-4 py-3 text-[13px] text-gray-400">{engineLabel(group)}</td>
+                        <td className="px-4 py-3 text-[13px]">{topologyLabel(group, master)}</td>
+                        <td className="px-4 py-3 text-[13px]">
                           {master ? (
-                            <><strong>{master.name}</strong><span className="muted">{getField(master, 'server', 'Server', '-')}</span></>
-                          ) : <span className="muted">-</span>}
+                            <><strong className="font-medium">{master.name}</strong> <span className="text-gray-400">{getField(master, 'server', 'Server', '-')}</span></>
+                          ) : <span className="text-gray-400">-</span>}
                         </td>
-                        <td><ProxyPorts group={group} /></td>
-                        <td><span className={`mono ${running === total ? '' : 'text-warn'}`}>{running}/{total}</span></td>
-                        <td><StatusBadge status={group.status} /></td>
+                        <td className="px-4 py-3 text-[13px]"><ProxyPorts group={group} /></td>
+                        <td className="px-4 py-3 text-[13px]"><span className={`font-mono tabular-nums ${running === total ? '' : 'text-amber-600'}`}>{running}/{total}</span></td>
+                        <td className="px-4 py-3 text-[13px]"><StatusBadge status={group.status} /></td>
                       </tr>
                     );
                   })}
@@ -904,34 +942,73 @@ function DashboardView({ groups, servers, audits }) {
           )}
         </section>
 
-        <div className="stack">
-          <section className="panel">
-            <div className="panel-header">
-              <h3>服务器状态</h3>
-              <Server size={18} />
+        {/* Right column */}
+        <div className="grid gap-4">
+          {/* Server status */}
+          <section className="border border-gray-200 rounded-lg bg-white overflow-hidden">
+            <div className="min-h-[54px] px-4 py-3 border-b border-gray-200 flex items-center justify-between gap-3">
+              <h3 className="m-0 text-[15px] font-semibold">服务器状态</h3>
+              <Server size={18} className="text-gray-400" />
             </div>
-            <div className="panel-body list">
+            <div>
               {servers.length === 0 ? <EmptyState icon={Server} title="暂无服务器" /> :
                 servers.map((s) => (
-                  <div key={s.name} className="server-row">
+                  <div key={s.name} className="flex items-center gap-3 px-4 py-3 border-b border-gray-200 last:border-b-0">
                     <StatusBadge status={getField(s, 'status', 'Status')} />
-                    <div>
-                      <strong>{s.name}</strong>
-                      <code className="muted">{getField(s, 'endpoint', 'Endpoint', '-')}</code>
+                    <div className="flex flex-col gap-0.5 flex-1 min-w-0">
+                      <strong className="text-[13px] font-medium">{s.name}</strong>
+                      <code className="text-gray-400 font-mono text-xs">{getField(s, 'endpoint', 'Endpoint', '-')}</code>
                     </div>
-                    <span className="muted">{instancesPerServer[s.name] || 0} 个实例</span>
+                    <span className="text-gray-400 text-xs">{instancesPerServer[s.name] || 0} 个实例</span>
                   </div>
                 ))
               }
             </div>
           </section>
 
-          <section className="panel">
-            <div className="panel-header">
-              <h3>最近操作</h3>
-              <Clock size={18} />
+          {/* Sentinel status */}
+          {sentinel && sentinel.enabled && (
+            <section className="border border-gray-200 rounded-lg bg-white overflow-hidden">
+              <div className="min-h-[54px] px-4 py-3 border-b border-gray-200 flex items-center justify-between gap-3">
+                <h3 className="m-0 text-[15px] font-semibold">Sentinel 集群</h3>
+                <ShieldCheck size={18} className="text-gray-400" />
+              </div>
+              <div className="px-4 py-3 border-b border-gray-200 flex items-center justify-between">
+                <span className="text-[13px] text-gray-500">节点状态</span>
+                <div className="flex items-center gap-3">
+                  <span className="text-[13px] font-mono font-medium">
+                    在线 {sentinel.nodes ? sentinel.nodes.filter((n) => n.status?.running).length : 0}/{sentinel.nodes?.length || 0}
+                  </span>
+                  <span className="text-[12px] text-gray-400">quorum={sentinel.quorum}</span>
+                </div>
+              </div>
+              {(sentinel.nodes || []).map((node) => {
+                const isOnline = node.status?.running;
+                const masters = node.status?.masters || [];
+                return (
+                  <div key={node.name} className="flex items-center gap-3 px-4 py-3 border-b border-gray-200 last:border-b-0">
+                    <span className={`inline-block w-2 h-2 rounded-full shrink-0 ${isOnline ? 'bg-emerald-500' : 'bg-red-500'}`} />
+                    <div className="flex flex-col gap-0.5 flex-1 min-w-0">
+                      <strong className="text-[13px] font-medium">{node.name}</strong>
+                      {isOnline ? (
+                        <span className="text-gray-400 text-xs">监控 {masters.length} 个 master</span>
+                      ) : (
+                        <span className="text-red-500 text-xs">{node.error || '离线'}</span>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </section>
+          )}
+
+          {/* Recent audit */}
+          <section className="border border-gray-200 rounded-lg bg-white overflow-hidden">
+            <div className="min-h-[54px] px-4 py-3 border-b border-gray-200 flex items-center justify-between gap-3">
+              <h3 className="m-0 text-[15px] font-semibold">最近操作</h3>
+              <Clock size={18} className="text-gray-400" />
             </div>
-            <div className="panel-body audit-list">
+            <div>
               {(audits || []).slice(0, 6).map((log, index) => (
                 <AuditCard key={log.id || log.ID || index} log={log} />
               ))}
@@ -945,10 +1022,26 @@ function DashboardView({ groups, servers, audits }) {
 }
 
 function SummaryCell({ label, value, icon: Icon, tone = 'neutral' }) {
+  const toneStyles = {
+    neutral: '',
+    warn: '',
+    alert: 'relative bg-red-50',
+  };
+  const valueTone = {
+    neutral: 'text-gray-900',
+    warn: 'text-amber-600',
+    alert: 'text-red-700',
+  };
+  const labelTone = {
+    neutral: 'text-gray-400',
+    warn: 'text-gray-400',
+    alert: 'text-red-600',
+  };
   return (
-    <div className={`summary-cell tone-${tone}`}>
-      <span className="summary-label"><Icon size={15} /> {label}</span>
-      <span className="summary-value">{value}</span>
+    <div className={`px-5 py-4 border-r border-gray-200 last:border-r-0 flex flex-col gap-2.5 max-md:border-r-0 max-md:border-b max-md:last:border-b-0 ${toneStyles[tone] || ''}`}>
+      {tone === 'alert' && <span className="absolute inset-x-0 top-0 h-0.5 bg-red-500" />}
+      <span className={`inline-flex items-center gap-1.5 text-[13px] font-medium ${labelTone[tone] || 'text-gray-400'}`}><Icon size={15} /> {label}</span>
+      <span className={`font-mono text-[34px] font-semibold leading-none tracking-tight tabular-nums ${valueTone[tone] || 'text-gray-900'}`}>{value}</span>
     </div>
   );
 }
@@ -976,52 +1069,52 @@ function InstancesView({ groups, query, setQuery, expandedGroups, setExpandedGro
   }
 
   return (
-    <div className="stack">
-      <div className="panel table-toolbar">
-        <div className="search-box">
-          <Search size={17} />
-          <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索实例组、节点或端口..." />
+    <div className="grid gap-4">
+      <div className="border border-gray-200 rounded-lg bg-white min-h-[52px] px-4 py-2.5 flex items-center justify-between gap-3 max-md:flex-col max-md:items-stretch">
+        <div className="min-w-[240px] w-[min(380px,100%)] h-[34px] border border-gray-200 rounded-md flex items-center gap-2 px-2.5 bg-white text-gray-400 focus-within:border-gray-900 focus-within:shadow-[0_0_0_3px_rgba(0,0,0,0.08)] transition-all max-md:w-full max-md:min-w-0">
+          <Search size={15} />
+          <input className="w-full border-0 outline-0 bg-transparent text-[13px] text-gray-900 placeholder:text-gray-400" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索实例组、节点或端口..." />
         </div>
-        <button className="primary-button" onClick={onCreate}>
-          <Plus size={16} /> 创建实例
+        <button className="h-[32px] rounded-md px-3 bg-gray-900 text-white font-medium text-[12px] inline-flex items-center gap-1.5 hover:bg-gray-700 transition-colors border-0 cursor-pointer" onClick={onCreate}>
+          <Plus size={14} /> 创建实例
         </button>
       </div>
-      <section className="panel table-panel">
-        <div className="table-scroll">
-          <table>
+      <section className="border border-gray-200 rounded-lg bg-white overflow-hidden">
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-[920px] border-collapse">
             <thead>
               <tr>
-                <th>实例名称 / 组</th>
-                <th>类别</th>
-                <th>接入方式</th>
-                <th>引擎版本</th>
-                <th>拓扑角色</th>
-                <th>节点</th>
-                <th>端口</th>
-                <th>内存</th>
-                <th>状态</th>
-                <th className="right">操作</th>
+                <th className="px-4 py-2.5 border-b border-gray-200 text-left text-xs font-medium text-gray-400 bg-gray-50">实例名称 / 组</th>
+                <th className="px-4 py-2.5 border-b border-gray-200 text-left text-xs font-medium text-gray-400 bg-gray-50">类别</th>
+                <th className="px-4 py-2.5 border-b border-gray-200 text-left text-xs font-medium text-gray-400 bg-gray-50">接入方式</th>
+                <th className="px-4 py-2.5 border-b border-gray-200 text-left text-xs font-medium text-gray-400 bg-gray-50">引擎版本</th>
+                <th className="px-4 py-2.5 border-b border-gray-200 text-left text-xs font-medium text-gray-400 bg-gray-50">拓扑</th>
+                <th className="px-4 py-2.5 border-b border-gray-200 text-left text-xs font-medium text-gray-400 bg-gray-50">节点</th>
+                <th className="px-4 py-2.5 border-b border-gray-200 text-left text-xs font-medium text-gray-400 bg-gray-50">端口</th>
+                <th className="px-4 py-2.5 border-b border-gray-200 text-left text-xs font-medium text-gray-400 bg-gray-50">内存</th>
+                <th className="px-4 py-2.5 border-b border-gray-200 text-left text-xs font-medium text-gray-400 bg-gray-50">状态</th>
+                <th className="px-4 py-2.5 border-b border-gray-200 text-right text-xs font-medium text-gray-400 bg-gray-50">操作</th>
               </tr>
             </thead>
             <tbody>
               {filtered.length === 0 ? (
-                <tr><td colSpan="9"><EmptyState title="暂无实例" /></td></tr>
+                <tr><td colSpan="10"><EmptyState title="暂无实例" /></td></tr>
               ) : filtered.map((group) => (
                 <InstanceGroupRows
                   key={group.groupName}
                   group={group}
                   expanded={expandedGroups[group.groupName] === true}
-	                onToggle={() => toggleGroup(group.groupName)}
-	                onOpenDetail={onOpenDetail}
-	                onOpenBackups={onOpenBackups}
-	                onPowerAction={onPowerAction}
-	                onDelete={onDelete}
-	                onSlowlog={onSlowlog}
-	                onBigkeys={onBigkeys}
-	                onConfig={onConfig}
-	                onToggleAccessMode={onToggleAccessMode}
-	                pendingAction={pendingAction}
-	              />
+                  onToggle={() => toggleGroup(group.groupName)}
+                  onOpenDetail={onOpenDetail}
+                  onOpenBackups={onOpenBackups}
+                  onPowerAction={onPowerAction}
+                  onDelete={onDelete}
+                  onSlowlog={onSlowlog}
+                  onBigkeys={onBigkeys}
+                  onConfig={onConfig}
+                  onToggleAccessMode={onToggleAccessMode}
+                  pendingAction={pendingAction}
+                />
               ))}
             </tbody>
           </table>
@@ -1039,43 +1132,40 @@ function InstanceGroupRows({ group, expanded, onToggle, onOpenDetail, onOpenBack
   const category = group.category ? categoryLabel(group.category) : '';
 
   const powerAction = master ? powerActionFor(master, group) : null;
-  const isMasterWithReplicas = hasReplicas;
 
   return (
     <>
-      <tr className={hasReplicas ? 'group-row clickable' : 'group-row'} onClick={hasReplicas ? onToggle : undefined}>
-        <td>
-          <div className="group-cell">
+      <tr className={`border-b border-gray-200 last:border-b-0 ${hasReplicas ? 'cursor-pointer hover:bg-gray-50' : 'hover:bg-gray-50'}`} onClick={hasReplicas ? onToggle : undefined}>
+        <td className="px-4 py-2.5 text-[13px]">
+          <div className="flex items-center gap-2.5">
             {hasReplicas ? (
-              <button className="expand-button" type="button" aria-label={expanded ? '折叠实例组' : '展开实例组'}>
-                {expanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
+              <button className="w-5 h-5 rounded inline-flex items-center justify-center bg-transparent text-gray-400 border-0 cursor-pointer hover:text-gray-900 transition-colors" type="button">
+                {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
               </button>
             ) : (
-              <span className="expand-placeholder" />
+              <span className="w-5" />
             )}
             <div>
-              <div className="group-title">
-                <strong>{group.groupName}</strong>
-              </div>
+              <strong className="font-semibold">{group.groupName}</strong>
               {(hasReplicas || !master || master.name !== group.groupName) && (
-                <span className="muted">
+                <span className="text-[11px] text-gray-400 block mt-0.5">
                   {master ? `主库: ${master.name}` : '主库状态异常'}
                 </span>
               )}
             </div>
           </div>
         </td>
-        <td>{category && <span className="role-chip subtle">{category}</span>}</td>
-        <td>{group.access_mode === 'rw-split' ? '读写分离' : '标准'}</td>
-        <td><span className="engine">{engineLabel(group)}</span></td>
-        <td>{topology}</td>
-        <td>{master ? getField(master, 'server', 'Server', '-') : '-'}</td>
-        <td><ProxyPorts group={group} /></td>
-        <td>{master ? <ResourceValue memory={group.resource.memory} memoryUsed={group.resource.memoryUsed} /> : '-'}</td>
-        <td><StatusBadge status={group.status} /></td>
-        <td>
+        <td className="px-4 py-2.5 text-[13px]">{category && <span className="border border-gray-200 rounded px-1.5 py-0.5 bg-white text-gray-400 text-[11px] font-medium">{category}</span>}</td>
+        <td className="px-4 py-2.5 text-[13px] text-gray-500">{group.access_mode === 'rw-split' ? '读写分离' : '标准'}</td>
+        <td className="px-4 py-2.5 text-[13px]"><span className="rounded px-1.5 py-0.5 bg-gray-100 text-gray-500 font-mono text-[11px] font-medium border border-gray-200">{engineLabel(group)}</span></td>
+        <td className="px-4 py-2.5 text-[13px] text-gray-500">{topology}</td>
+        <td className="px-4 py-2.5 text-[13px] text-gray-500 font-mono">{master ? getField(master, 'server', 'Server', '-') : '-'}</td>
+        <td className="px-4 py-2.5 text-[13px]"><ProxyPorts group={group} /></td>
+        <td className="px-4 py-2.5 text-[13px]">{master ? <ResourceValue memory={group.resource.memory} memoryUsed={group.resource.memoryUsed} /> : '-'}</td>
+        <td className="px-4 py-2.5 text-[13px]"><StatusBadge status={group.status} /></td>
+        <td className="px-4 py-2.5 text-[13px]">
           {isStandalone && master && (
-            <div className="row-actions">
+            <div className="flex justify-end gap-1">
               <IconButton icon={Info} label="详情与指标" onClick={() => onOpenDetail(master, group)} />
               <IconButton icon={HardDrive} label="备份列表" onClick={() => onOpenBackups(master, group)} />
               <MoreMenu items={[
@@ -1142,9 +1232,9 @@ function ProxyPorts({ group }) {
   const autoPort = proxy.auto_port || proxy.AutoPort;
   return (
     <>
-      {autoPort && <span className="muted">读写 <span className="mono">{autoPort}</span></span>}
-      {masterPort && <span className="muted">主库 <span className="mono">{masterPort}</span></span>}
-      {!masterPort && !autoPort && <span className="muted">-</span>}
+      {autoPort && <span className="text-gray-400 text-xs">读写 <span className="font-mono tabular-nums">{autoPort}</span></span>}
+      {masterPort && <span className="text-gray-400 text-xs">主库 <span className="font-mono tabular-nums">{masterPort}</span></span>}
+      {!masterPort && !autoPort && <span className="text-gray-400">-</span>}
     </>
   );
 }
@@ -1154,13 +1244,13 @@ function ResourceValue({ memory, memoryUsed }) {
   const pct = totalBytes > 0 && memoryUsed > 0 ? (memoryUsed / totalBytes) * 100 : 0;
   const usedLabel = memoryUsed > 0 ? formatBytes(memoryUsed) : '0MB';
   const totalLabel = formatBytes(totalBytes);
-  const tone = pct > 80 ? 'bar-danger' : pct > 60 ? 'bar-warn' : 'bar-ok';
+  const tone = pct > 80 ? 'bg-red-500' : pct > 60 ? 'bg-amber-500' : 'bg-emerald-500';
   return (
-    <div className="mem-bar-wrap">
-      <div className="mem-bar-track">
-        <div className={`mem-bar-fill ${tone}`} style={{ width: `${Math.min(pct, 100)}%` }} />
+    <div className="flex flex-col gap-0.5 min-w-[100px]">
+      <div className="h-1.5 rounded-full bg-gray-100 overflow-hidden">
+        <div className={`h-full rounded-full transition-all duration-300 ${tone}`} style={{ width: `${Math.min(pct, 100)}%` }} />
       </div>
-      <span className="mem-bar-label mono">{usedLabel} / {totalLabel}</span>
+      <span className="font-mono tabular-nums text-[11px] text-gray-500">{usedLabel} / {totalLabel}</span>
     </div>
   );
 }
@@ -1171,44 +1261,33 @@ function InstanceRow({ item, group, role, onOpenDetail, onOpenBackups, onPowerAc
   const isMasterWithReplicas = role === '主库' && group.replicas.length > 0;
 
   return (
-    <tr className={isReplica ? 'replica-row' : 'master-row'}>
-      <td>
-        <div className={isReplica ? 'replica-cell' : 'master-cell'}>
-          {isReplica && <span className="replica-branch" />}
+    <tr className="border-b border-gray-200 last:border-b-0 hover:bg-gray-50 bg-gray-50/50">
+      <td className="px-4 py-2.5 text-[13px]">
+        <div className="flex items-center gap-2.5 pl-8">
+          {isReplica && <span className="w-3.5 h-3.5 border-l border-b border-gray-300 rounded-bl shrink-0 -translate-y-0.5" />}
           <div>
-            <strong>{item.name}</strong>
-            <span className="muted">{getField(item, 'server', 'Server', '-')}</span>
+            <strong className="font-medium block">{item.name}</strong>
+            <span className="text-[11px] text-gray-400 block mt-0.5">{getField(item, 'server', 'Server', '-')}</span>
           </div>
         </div>
       </td>
-      <td />
-      <td />
-      <td><span className="muted">{engineLabel(group)}</span></td>
-      <td>{role}</td>
-      <td>{getField(item, 'server', 'Server', '-')}</td>
-      <td />
-      <td>
+      <td className="px-4 py-2.5 text-[13px]" />
+      <td className="px-4 py-2.5 text-[13px]" />
+      <td className="px-4 py-2.5 text-[13px] text-gray-400">{engineLabel(group)}</td>
+      <td className="px-4 py-2.5 text-[13px] text-gray-500">{role}</td>
+      <td className="px-4 py-2.5 text-[13px] text-gray-500 font-mono">{getField(item, 'server', 'Server', '-')}</td>
+      <td className="px-4 py-2.5 text-[13px]" />
+      <td className="px-4 py-2.5 text-[13px]">
         {(() => {
           const used = Number(getField(item, 'memory_used', 'MemoryUsed', 0) || 0);
           const totalGi = parseGi(getField(item, 'memory', 'Memory'));
           const totalBytes = totalGi * 1024 * 1024 * 1024;
-          const pct = totalBytes > 0 && used > 0 ? (used / totalBytes) * 100 : 0;
-          const usedLabel = used > 0 ? formatBytes(used) : '0MB';
-          const totalLabel = formatBytes(totalBytes);
-          const tone = pct > 80 ? 'bar-danger' : pct > 60 ? 'bar-warn' : 'bar-ok';
-          return (
-            <div className="mem-bar-wrap">
-              <div className="mem-bar-track">
-                <div className={`mem-bar-fill ${tone}`} style={{ width: `${Math.min(pct, 100)}%` }} />
-              </div>
-              <span className="mem-bar-label mono">{usedLabel} / {totalLabel}</span>
-            </div>
-          );
+          return <ResourceValue memory={totalGi} memoryUsed={used} />;
         })()}
       </td>
-      <td><StatusBadge status={getField(item, 'status', 'Status')} /></td>
-      <td>
-        <div className="row-actions">
+      <td className="px-4 py-2.5 text-[13px]"><StatusBadge status={getField(item, 'status', 'Status')} /></td>
+      <td className="px-4 py-2.5 text-[13px]">
+        <div className="flex justify-end gap-1">
           <IconButton icon={Info} label="详情与指标" onClick={() => onOpenDetail(item, group)} />
           <IconButton icon={HardDrive} label="备份列表" onClick={() => onOpenBackups(item, group)} />
           <MoreMenu items={[
@@ -1236,9 +1315,7 @@ function InstanceRow({ item, group, role, onOpenDetail, onOpenBackups, onPowerAc
 
 function AlertsView({ groups, servers }) {
   const badTone = (status) => instanceStatusTone(status) === 'bad';
-  const warnTone = (status) => instanceStatusTone(status) === 'warn';
 
-  // Instance-level anomalies
   const instanceAlerts = [];
   for (const group of groups) {
     for (const inst of group.instances) {
@@ -1256,12 +1333,10 @@ function AlertsView({ groups, servers }) {
     }
   }
 
-  // Group-level topology anomalies
   const groupAlerts = groups.filter(
     (g) => g.status === 'degraded' || g.status === 'failover_conflict'
   );
 
-  // Server-level anomalies
   const serverAlerts = servers.filter(
     (s) => getField(s, 'status', 'Status') === 'unhealthy'
   );
@@ -1269,46 +1344,46 @@ function AlertsView({ groups, servers }) {
   const total = instanceAlerts.length + groupAlerts.length + serverAlerts.length;
 
   return (
-    <div className="stack">
-      <section className="panel summary-strip">
+    <div className="grid gap-4">
+      <section className="border border-gray-200 rounded-lg bg-white overflow-hidden grid grid-cols-4 max-lg:grid-cols-2 max-md:grid-cols-1">
         <SummaryCell label="实例异常" value={instanceAlerts.length} icon={AlertCircle} tone={instanceAlerts.length > 0 ? 'alert' : 'neutral'} />
         <SummaryCell label="拓扑降级" value={groupAlerts.length} icon={GitMerge} tone={groupAlerts.length > 0 ? 'alert' : 'neutral'} />
         <SummaryCell label="节点异常" value={serverAlerts.length} icon={Server} tone={serverAlerts.length > 0 ? 'alert' : 'neutral'} />
       </section>
 
       {total === 0 ? (
-        <section className="panel">
+        <section className="border border-gray-200 rounded-lg bg-white">
           <EmptyState icon={ShieldCheck} title="一切正常" detail="当前没有检测到异常。" />
         </section>
       ) : (
         <>
           {instanceAlerts.length > 0 && (
-            <section className="panel">
-              <div className="panel-header">
-                <h3>实例异常</h3>
-                <AlertCircle size={18} />
+            <section className="border border-gray-200 rounded-lg bg-white overflow-hidden">
+              <div className="min-h-[54px] px-4 py-3 border-b border-gray-200 flex items-center justify-between gap-3">
+                <h3 className="m-0 text-[15px] font-semibold">实例异常</h3>
+                <AlertCircle size={18} className="text-gray-400" />
               </div>
-              <div className="table-scroll">
-                <table>
+              <div className="overflow-x-auto">
+                <table className="w-full min-w-[920px] border-collapse">
                   <thead>
                     <tr>
-                      <th>实例</th>
-                      <th>实例组</th>
-                      <th>节点</th>
-                      <th>状态</th>
-                      <th>期望</th>
-                      <th>观测</th>
+                      <th className="px-4 py-3 border-b border-gray-200 text-left text-xs font-medium text-gray-400 bg-gray-50">实例</th>
+                      <th className="px-4 py-3 border-b border-gray-200 text-left text-xs font-medium text-gray-400 bg-gray-50">实例组</th>
+                      <th className="px-4 py-3 border-b border-gray-200 text-left text-xs font-medium text-gray-400 bg-gray-50">节点</th>
+                      <th className="px-4 py-3 border-b border-gray-200 text-left text-xs font-medium text-gray-400 bg-gray-50">状态</th>
+                      <th className="px-4 py-3 border-b border-gray-200 text-left text-xs font-medium text-gray-400 bg-gray-50">期望</th>
+                      <th className="px-4 py-3 border-b border-gray-200 text-left text-xs font-medium text-gray-400 bg-gray-50">观测</th>
                     </tr>
                   </thead>
                   <tbody>
                     {instanceAlerts.map((a, i) => (
-                      <tr key={i}>
-                        <td className="mono">{a.instance}</td>
-                        <td>{a.group}</td>
-                        <td>{a.server}</td>
-                        <td><StatusBadge status={a.status} /></td>
-                        <td className="muted">{a.desired}</td>
-                        <td className="muted">{a.observed}</td>
+                      <tr key={i} className="border-b border-gray-200 last:border-b-0">
+                        <td className="px-4 py-3 text-[13px] font-mono">{a.instance}</td>
+                        <td className="px-4 py-3 text-[13px]">{a.group}</td>
+                        <td className="px-4 py-3 text-[13px]">{a.server}</td>
+                        <td className="px-4 py-3 text-[13px]"><StatusBadge status={a.status} /></td>
+                        <td className="px-4 py-3 text-[13px] text-gray-400">{a.desired}</td>
+                        <td className="px-4 py-3 text-[13px] text-gray-400">{a.observed}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -1318,18 +1393,18 @@ function AlertsView({ groups, servers }) {
           )}
 
           {groupAlerts.length > 0 && (
-            <section className="panel">
-              <div className="panel-header">
-                <h3>拓扑异常</h3>
-                <GitMerge size={18} />
+            <section className="border border-gray-200 rounded-lg bg-white overflow-hidden">
+              <div className="min-h-[54px] px-4 py-3 border-b border-gray-200 flex items-center justify-between gap-3">
+                <h3 className="m-0 text-[15px] font-semibold">拓扑异常</h3>
+                <GitMerge size={18} className="text-gray-400" />
               </div>
-              <div className="panel-body list">
+              <div>
                 {groupAlerts.map((g) => (
-                  <div key={g.groupName} className="alert-item">
+                  <div key={g.groupName} className="flex items-center gap-3 px-4 py-3 border-b border-gray-200 last:border-b-0">
                     <StatusBadge status={g.status} />
-                    <div>
-                      <strong>{g.groupName}</strong>
-                      <span className="muted">{topologyLabel(g)}</span>
+                    <div className="flex flex-col gap-0.5">
+                      <strong className="text-[13px] font-medium">{g.groupName}</strong>
+                      <span className="text-xs text-gray-400">{topologyLabel(g)}</span>
                     </div>
                   </div>
                 ))}
@@ -1338,18 +1413,18 @@ function AlertsView({ groups, servers }) {
           )}
 
           {serverAlerts.length > 0 && (
-            <section className="panel">
-              <div className="panel-header">
-                <h3>节点异常</h3>
-                <Server size={18} />
+            <section className="border border-gray-200 rounded-lg bg-white overflow-hidden">
+              <div className="min-h-[54px] px-4 py-3 border-b border-gray-200 flex items-center justify-between gap-3">
+                <h3 className="m-0 text-[15px] font-semibold">节点异常</h3>
+                <Server size={18} className="text-gray-400" />
               </div>
-              <div className="panel-body list">
+              <div>
                 {serverAlerts.map((s) => (
-                  <div key={s.name} className="alert-item">
+                  <div key={s.name} className="flex items-center gap-3 px-4 py-3 border-b border-gray-200 last:border-b-0">
                     <StatusBadge status={getField(s, 'status', 'Status')} />
-                    <div>
-                      <strong>{s.name}</strong>
-                      <code className="muted">{getField(s, 'endpoint', 'Endpoint', '-')}</code>
+                    <div className="flex flex-col gap-0.5">
+                      <strong className="text-[13px] font-medium">{s.name}</strong>
+                      <code className="text-xs text-gray-400 font-mono">{getField(s, 'endpoint', 'Endpoint', '-')}</code>
                     </div>
                   </div>
                 ))}
@@ -1364,11 +1439,11 @@ function AlertsView({ groups, servers }) {
 
 function ServersView({ servers }) {
   if (servers.length === 0) {
-    return <section className="panel"><EmptyState icon={Server} title="暂无服务器" detail="节点会从 pool-state.yaml 展示。" /></section>;
+    return <section className="border border-gray-200 rounded-lg bg-white"><EmptyState icon={Server} title="暂无服务器" detail="节点会从 pool-state.yaml 展示。" /></section>;
   }
 
   return (
-    <div className="server-grid">
+    <div className="grid grid-cols-3 gap-4 max-lg:grid-cols-2 max-md:grid-cols-1">
       {servers.map((server) => <ServerCard key={server.name} server={server} />)}
     </div>
   );
@@ -1381,19 +1456,19 @@ function ServerCard({ server }) {
   const instances = getField(server, 'instances', 'Instances', []) || [];
 
   return (
-    <section className="panel server-card">
-      <div className="server-head">
+    <section className="border border-gray-200 rounded-lg bg-white p-4">
+      <div className="flex justify-between items-start gap-3">
         <div>
-          <h3>{server.name}</h3>
-          <code>{getField(server, 'endpoint', 'Endpoint', '-')}</code>
+          <h3 className="m-0 mb-1 text-base font-semibold">{server.name}</h3>
+          <code className="text-gray-400 font-mono text-xs">{getField(server, 'endpoint', 'Endpoint', '-')}</code>
         </div>
         <StatusBadge status={getField(server, 'status', 'Status')} />
       </div>
-      <div className="chip-line">
-        {Object.keys(labels).length === 0 ? <span className="chip">无标签</span> :
-          Object.entries(labels).map(([key, value]) => <span className="chip" key={key}>{key}: {value}</span>)}
+      <div className="mt-3 flex flex-wrap gap-1.5">
+        {Object.keys(labels).length === 0 ? <span className="rounded-md px-2 py-0.5 bg-gray-100 text-gray-500 text-xs font-medium border border-gray-200">无标签</span> :
+          Object.entries(labels).map(([key, value]) => <span className="rounded-md px-2 py-0.5 bg-gray-100 text-gray-500 text-xs font-medium border border-gray-200" key={key}>{key}: {value}</span>)}
       </div>
-      <div className="resource-block">
+      <div className="mt-4 border-t border-gray-200 pt-4 grid gap-3.5">
         <ProgressBar
           label={<><Cpu size={13} /> CPU Core</>}
           current={Number(allocated.cpu_cores || allocated.CPUCores || 0)}
@@ -1412,96 +1487,152 @@ function ServerCard({ server }) {
           unit="Gi"
         />
       </div>
-      <div className="muted">实例: {instances.length ? instances.join(', ') : '暂无'}</div>
+      <div className="mt-3 text-xs text-gray-400">实例: {instances.length ? instances.join(', ') : '暂无'}</div>
     </section>
   );
 }
 
-function AuditView({ audits, filters, setFilters, onApply }) {
-  const records = audits || [];
+function AuditView({ filters, setFilters, request }) {
+  const [records, setRecords] = useState([]);
+  const [total, setTotal] = useState(0);
+  const [page, setPage] = useState(1);
+  const [loading, setLoading] = useState(true);
+  const pageSize = 30;
+
+  async function fetchAudit(p = page) {
+    setLoading(true);
+    try {
+      const data = await request(auditQuery(filters, p, pageSize));
+      setRecords(data?.records || data?.Records || []);
+      setTotal(data?.total || 0);
+    } catch { /* ignore */ }
+    setLoading(false);
+  }
+
+  useEffect(() => { fetchAudit(1); setPage(1); }, []);
+
   function updateFilter(key, value) {
     setFilters((current) => ({ ...current, [key]: value }));
   }
   function resetFilters() {
     setFilters({ from: '', to: '', group: '', instance: '', level: '', action: '' });
   }
+  function handleApply() {
+    setPage(1);
+    fetchAudit(1);
+  }
+  function goPage(p) {
+    setPage(p);
+    fetchAudit(p);
+  }
+
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
+
   return (
-    <div className="stack">
-      <section className="panel filter-panel">
-        <div className="filter-grid">
-          <label>
+    <div className="grid gap-4">
+      <section className="border border-gray-200 rounded-lg bg-white p-4">
+        <div className="grid grid-cols-6 gap-3 max-lg:grid-cols-2 max-md:grid-cols-1">
+          <label className="grid gap-1.5 text-xs font-medium text-gray-400">
             <span>开始日期</span>
-            <input type="date" value={filters.from} onChange={(event) => updateFilter('from', event.target.value)} />
+            <input type="date" className="w-full h-9 border border-gray-200 rounded-md px-2.5 bg-white text-gray-900 outline-0 focus:border-gray-900 focus:shadow-[0_0_0_3px_rgba(0,0,0,0.08)] transition-all" value={filters.from} onChange={(event) => updateFilter('from', event.target.value)} />
           </label>
-          <label>
+          <label className="grid gap-1.5 text-xs font-medium text-gray-400">
             <span>结束日期</span>
-            <input type="date" value={filters.to} onChange={(event) => updateFilter('to', event.target.value)} />
+            <input type="date" className="w-full h-9 border border-gray-200 rounded-md px-2.5 bg-white text-gray-900 outline-0 focus:border-gray-900 focus:shadow-[0_0_0_3px_rgba(0,0,0,0.08)] transition-all" value={filters.to} onChange={(event) => updateFilter('to', event.target.value)} />
           </label>
-          <label>
+          <label className="grid gap-1.5 text-xs font-medium text-gray-400">
             <span>实例组</span>
-            <input value={filters.group} onChange={(event) => updateFilter('group', event.target.value)} placeholder="group" />
+            <input className="w-full h-9 border border-gray-200 rounded-md px-2.5 bg-white text-gray-900 outline-0 focus:border-gray-900 focus:shadow-[0_0_0_3px_rgba(0,0,0,0.08)] transition-all" value={filters.group} onChange={(event) => updateFilter('group', event.target.value)} placeholder="group" />
           </label>
-          <label>
+          <label className="grid gap-1.5 text-xs font-medium text-gray-400">
             <span>实例</span>
-            <input value={filters.instance} onChange={(event) => updateFilter('instance', event.target.value)} placeholder="instance" />
+            <input className="w-full h-9 border border-gray-200 rounded-md px-2.5 bg-white text-gray-900 outline-0 focus:border-gray-900 focus:shadow-[0_0_0_3px_rgba(0,0,0,0.08)] transition-all" value={filters.instance} onChange={(event) => updateFilter('instance', event.target.value)} placeholder="instance" />
           </label>
-          <label>
+          <label className="grid gap-1.5 text-xs font-medium text-gray-400">
             <span>级别</span>
-            <select value={filters.level} onChange={(event) => updateFilter('level', event.target.value)}>
+            <select className="w-full h-9 border border-gray-200 rounded-md px-2.5 bg-white text-gray-900 outline-0 focus:border-gray-900 focus:shadow-[0_0_0_3px_rgba(0,0,0,0.08)] transition-all" value={filters.level} onChange={(event) => updateFilter('level', event.target.value)}>
               <option value="">全部</option>
               <option value="normal">常规</option>
               <option value="important">重要</option>
               <option value="critical">关键</option>
             </select>
           </label>
-          <label>
+          <label className="grid gap-1.5 text-xs font-medium text-gray-400">
             <span>动作</span>
-            <input value={filters.action} onChange={(event) => updateFilter('action', event.target.value)} placeholder="instance.start" />
+            <input className="w-full h-9 border border-gray-200 rounded-md px-2.5 bg-white text-gray-900 outline-0 focus:border-gray-900 focus:shadow-[0_0_0_3px_rgba(0,0,0,0.08)] transition-all" value={filters.action} onChange={(event) => updateFilter('action', event.target.value)} placeholder="instance.start" />
           </label>
         </div>
-        <div className="filter-actions">
-          <button className="ghost-button" onClick={() => {
-            resetFilters();
-            window.setTimeout(onApply, 0);
-          }}>重置</button>
-          <button className="primary-button" onClick={onApply}>
+        <div className="mt-3.5 flex justify-end gap-2 max-md:flex-col max-md:items-stretch">
+          <button className="h-[34px] rounded-md border border-gray-200 px-3 bg-white text-gray-900 font-medium text-[13px] inline-flex items-center gap-1.5 hover:bg-gray-50 hover:border-gray-300 transition-colors cursor-pointer" onClick={() => { resetFilters(); setTimeout(handleApply, 0); }}>重置</button>
+          <button className="h-[34px] rounded-md px-3 bg-gray-900 text-white font-medium text-[13px] inline-flex items-center gap-1.5 hover:bg-gray-700 transition-colors border-0 cursor-pointer" onClick={handleApply}>
             <SlidersHorizontal size={16} /> 应用筛选
           </button>
         </div>
       </section>
-      <section className="panel table-panel">
-        <div className="panel-header">
-          <h3>审计记录</h3>
-          <span className="muted">当前展示 {records.length} 条</span>
+      <section className="border border-gray-200 rounded-lg bg-white overflow-hidden">
+        <div className="min-h-[54px] px-4 py-3 border-b border-gray-200 flex items-center justify-between gap-3">
+          <h3 className="m-0 text-[15px] font-semibold">审计记录</h3>
+          <span className="text-xs text-gray-400">共 {total} 条</span>
         </div>
-        <div className="table-scroll">
-          <table>
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-[920px] border-collapse">
             <thead>
               <tr>
-                <th>时间</th>
-                <th>操作者</th>
-                <th>动作</th>
-                <th>目标</th>
-                <th>级别</th>
-                <th>结果</th>
+                <th className="px-4 py-3 border-b border-gray-200 text-left text-xs font-medium text-gray-400 bg-gray-50">时间</th>
+                <th className="px-4 py-3 border-b border-gray-200 text-left text-xs font-medium text-gray-400 bg-gray-50">操作者</th>
+                <th className="px-4 py-3 border-b border-gray-200 text-left text-xs font-medium text-gray-400 bg-gray-50">动作</th>
+                <th className="px-4 py-3 border-b border-gray-200 text-left text-xs font-medium text-gray-400 bg-gray-50">目标</th>
+                <th className="px-4 py-3 border-b border-gray-200 text-left text-xs font-medium text-gray-400 bg-gray-50">级别</th>
+                <th className="px-4 py-3 border-b border-gray-200 text-left text-xs font-medium text-gray-400 bg-gray-50">结果</th>
+                <th className="px-4 py-3 border-b border-gray-200 text-left text-xs font-medium text-gray-400 bg-gray-50">详情</th>
               </tr>
             </thead>
             <tbody>
-              {records.length === 0 ? (
-                <tr><td colSpan="6"><EmptyState icon={List} title="暂无审计记录" /></td></tr>
-              ) : records.slice(0, 50).map((log, index) => (
-                <tr key={log.id || log.ID || index}>
-                  <td className="mono">{formatDateTime(log.time || log.Time || log.timestamp || log.Timestamp)}</td>
-                  <td>{auditOperator(log)}</td>
-                  <td>{auditActionLabel(log.action || log.Action)}</td>
-                  <td><span className="mono">{auditTargetDisplay(log.target || log.Target || log.instance || log.Instance)}</span></td>
-                  <td>{auditLevelLabel(log.level || log.Level)}</td>
-                  <td><StatusBadge status={log.result || log.Result || 'success'} metaFn={auditResultMeta} /></td>
-                </tr>
-              ))}
+              {loading ? (
+                <tr><td colSpan="7" className="px-4 py-8 text-center text-gray-400 text-[13px]">加载中...</td></tr>
+              ) : records.length === 0 ? (
+                <tr><td colSpan="7"><EmptyState icon={List} title="暂无审计记录" /></td></tr>
+              ) : records.map((log, index) => {
+                const id = log.id || log.ID || index;
+                const params = log.params || log.Params;
+                const target = log.target || log.Target;
+                const detail = log.detail || log.Detail;
+                const paramsText = params && Object.keys(params).length > 0
+                  ? Object.entries(params).map(([k, v]) => `${k}=${v}`).join(', ')
+                  : detail || '-';
+                return (
+                  <tr key={id} className="border-b border-gray-200 last:border-b-0">
+                    <td className="px-4 py-3 text-[13px] font-mono tabular-nums">{formatDateTime(log.time || log.Time || log.timestamp || log.Timestamp)}</td>
+                    <td className="px-4 py-3 text-[13px]">{auditOperator(log)}</td>
+                    <td className="px-4 py-3 text-[13px]">{auditActionLabel(log.action || log.Action)}</td>
+                    <td className="px-4 py-3 text-[13px] font-mono">{auditTargetDisplay(target || log.instance || log.Instance)}</td>
+                    <td className="px-4 py-3 text-[13px]">{auditLevelLabel(log.level || log.Level)}</td>
+                    <td className="px-4 py-3 text-[13px]"><StatusBadge status={log.result || log.Result || 'success'} metaFn={auditResultMeta} /></td>
+                    <td className="px-4 py-3 text-[13px] text-gray-500 font-mono max-w-[280px] truncate" title={paramsText}>{paramsText}</td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>
+        {/* Pagination */}
+        {totalPages > 1 && (
+          <div className="px-4 py-3 border-t border-gray-200 flex items-center justify-between">
+            <span className="text-xs text-gray-400">第 {page}/{totalPages} 页</span>
+            <div className="flex items-center gap-1">
+              <button
+                className="h-7 px-2.5 rounded-md border border-gray-200 bg-white text-gray-700 text-xs font-medium hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer transition-colors"
+                disabled={page <= 1}
+                onClick={() => goPage(page - 1)}
+              >上一页</button>
+              <button
+                className="h-7 px-2.5 rounded-md border border-gray-200 bg-white text-gray-700 text-xs font-medium hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer transition-colors"
+                disabled={page >= totalPages}
+                onClick={() => goPage(page + 1)}
+              >下一页</button>
+            </div>
+          </div>
+        )}
       </section>
     </div>
   );
@@ -1512,13 +1643,13 @@ function AuditCard({ log }) {
   const isBad = auditResultMeta(result).tone === 'bad';
   const Icon = isBad ? AlertCircle : CheckCircle2;
   return (
-    <div className={isBad ? 'audit-card is-bad' : 'audit-card'}>
-      <Icon size={18} />
-      <div>
-        <strong>{auditActionLabel(log.action || log.Action)}</strong>
-        <span>{auditTargetDisplay(log.target || log.Target)} · {auditOperator(log)}</span>
+    <div className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-start gap-3 px-4 py-3 border-b border-gray-200 last:border-b-0 hover:bg-gray-50 transition-colors">
+      <Icon size={18} className={isBad ? 'text-red-600 mt-px' : 'text-emerald-600 mt-px'} />
+      <div className="min-w-0">
+        <strong className="block text-[13px] font-medium truncate">{auditActionLabel(log.action || log.Action)}</strong>
+        <span className="block mt-0.5 text-xs text-gray-400">{auditTargetDisplay(log.target || log.Target)} · {auditOperator(log)}</span>
       </div>
-      <time>{formatDateTime(log.time || log.Time || log.timestamp || log.Timestamp)}</time>
+      <time className="text-xs text-gray-400 font-mono whitespace-nowrap">{formatDateTime(log.time || log.Time || log.timestamp || log.Timestamp)}</time>
     </div>
   );
 }
@@ -1545,66 +1676,19 @@ function MetricsTrendView({ instanceName, requestFn }) {
   useEffect(() => {
     if (!points || points.length === 0) return;
     import('echarts').then((echarts) => {
-      // 清理旧实例
       chartInstances.current.forEach((c) => c.dispose());
       chartInstances.current = [];
 
       const ts = points.map((p) => new Date(p.ts * 1000));
       const charts = [
-        {
-          id: 'mem',
-          title: '内存使用率 (%)',
-          data: points.map((p) => p.mem_max > 0 ? +(p.mem_used / p.mem_max * 100).toFixed(1) : 0),
-          color: '#3b82f6',
-          max: 100
-        },
-        {
-          id: 'qps',
-          title: 'QPS (ops/s)',
-          data: points.map((p) => p.ops_sec),
-          color: '#3b82f6'
-        },
-        {
-          id: 'hit',
-          title: '命中率 (%)',
-          data: points.map((p) => {
-            const total = p.hits + p.misses;
-            return total > 0 ? +((p.hits / total) * 100).toFixed(1) : 100;
-          }),
-          color: '#3b82f6',
-          max: 100
-        },
-        {
-          id: 'conns',
-          title: '连接数',
-          data: points.map((p) => p.conns),
-          color: '#3b82f6'
-        },
-        {
-          id: 'frag',
-          title: '内存碎片率',
-          data: points.map((p) => p.frag_ratio ? +p.frag_ratio.toFixed(2) : 0),
-          color: '#3b82f6'
-        },
-        {
-          id: 'repl',
-          title: '主从同步状态',
-          data: points.map((p) => p.repl_link !== undefined ? p.repl_link : 1),
-          color: '#3b82f6',
-          max: 1
-        },
-        {
-          id: 'offset',
-          title: '复制偏移量',
-          data: points.map((p) => p.repl_offset || 0),
-          color: '#3b82f6'
-        },
-        {
-          id: 'keys',
-          title: 'Key 数量',
-          data: points.map((p) => p.total_keys || 0),
-          color: '#3b82f6'
-        }
+        { id: 'mem', title: '内存使用率 (%)', data: points.map((p) => p.mem_max > 0 ? +(p.mem_used / p.mem_max * 100).toFixed(1) : 0), color: '#3b82f6', max: 100 },
+        { id: 'qps', title: 'QPS (ops/s)', data: points.map((p) => p.ops_sec), color: '#3b82f6' },
+        { id: 'hit', title: '命中率 (%)', data: points.map((p) => { const total = p.hits + p.misses; return total > 0 ? +((p.hits / total) * 100).toFixed(1) : 100; }), color: '#3b82f6', max: 100 },
+        { id: 'conns', title: '连接数', data: points.map((p) => p.conns), color: '#3b82f6' },
+        { id: 'frag', title: '内存碎片率', data: points.map((p) => p.frag_ratio ? +p.frag_ratio.toFixed(2) : 0), color: '#3b82f6' },
+        { id: 'repl', title: '主从同步状态', data: points.map((p) => p.repl_link !== undefined ? p.repl_link : 1), color: '#3b82f6', max: 1 },
+        { id: 'offset', title: '复制偏移量', data: points.map((p) => p.repl_offset || 0), color: '#3b82f6' },
+        { id: 'keys', title: 'Key 数量', data: points.map((p) => p.total_keys || 0), color: '#3b82f6' }
       ];
 
       charts.forEach(({ id, title, data, color, max }) => {
@@ -1613,10 +1697,7 @@ function MetricsTrendView({ instanceName, requestFn }) {
         const chart = echarts.init(el);
         chart.setOption({
           title: { text: title, textStyle: { fontSize: 13, fontWeight: 500 }, left: 'center' },
-          tooltip: { trigger: 'axis', formatter: (params) => {
-            const p = params[0];
-            return `${p.axisValueLabel}<br/>${p.marker} ${p.value}`;
-          }},
+          tooltip: { trigger: 'axis', formatter: (params) => { const p = params[0]; return `${p.axisValueLabel}<br/>${p.marker} ${p.value}`; } },
           grid: { left: 45, right: 12, top: 35, bottom: 28 },
           xAxis: { type: 'category', data: ts.map((d) => d.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })), boundaryGap: false, axisLine: { lineStyle: { color: '#ddd' } }, axisLabel: { fontSize: 10, color: '#999' } },
           yAxis: { type: 'value', min: 0, max: max || undefined, splitLine: { lineStyle: { color: '#f0f0f0' } }, axisLabel: { fontSize: 10, color: '#999' } },
@@ -1625,7 +1706,6 @@ function MetricsTrendView({ instanceName, requestFn }) {
         chartInstances.current.push(chart);
       });
 
-      // resize 响应
       const handleResize = () => chartInstances.current.forEach((c) => c.resize());
       window.addEventListener('resize', handleResize);
       return () => window.removeEventListener('resize', handleResize);
@@ -1647,25 +1727,25 @@ function MetricsTrendView({ instanceName, requestFn }) {
 
   return (
     <section>
-      <div className="tab-toolbar" style={{ justifyContent: 'flex-start', gap: 6 }}>
+      <div className="flex items-center gap-1.5 mb-3">
         {rangeOptions.map((opt) => (
-          <button key={opt.value} className={`ghost-button small ${range_ === opt.value ? 'active' : ''}`} onClick={() => setRange(opt.value)}>
+          <button key={opt.value} className={`h-7 px-2.5 rounded-md border text-xs font-medium cursor-pointer transition-colors ${range_ === opt.value ? 'bg-gray-900 text-white border-gray-900' : 'bg-white text-gray-700 border-gray-200 hover:bg-gray-50'}`} onClick={() => setRange(opt.value)}>
             {opt.label}
           </button>
         ))}
       </div>
-      {loading ? <div className="inline-loading">正在加载趋势数据...</div> :
-       error ? <div className="notice compact"><AlertCircle size={16} /> {error}</div> :
-       (!points || points.length === 0) ? <div className="empty-state">暂无历史数据，Agent 启动后每分钟采集一次</div> : (
-        <div className="metrics-charts">
-          <div className="chart-cell" ref={(el) => { chartRefs.current.mem = el; }}></div>
-          <div className="chart-cell" ref={(el) => { chartRefs.current.qps = el; }}></div>
-          <div className="chart-cell" ref={(el) => { chartRefs.current.hit = el; }}></div>
-          <div className="chart-cell" ref={(el) => { chartRefs.current.conns = el; }}></div>
-          <div className="chart-cell" ref={(el) => { chartRefs.current.frag = el; }}></div>
-          <div className="chart-cell" ref={(el) => { chartRefs.current.repl = el; }}></div>
-          <div className="chart-cell" ref={(el) => { chartRefs.current.offset = el; }}></div>
-          <div className="chart-cell" ref={(el) => { chartRefs.current.keys = el; }}></div>
+      {loading ? <div className="min-h-[110px] border border-dashed border-gray-200 rounded-md grid place-items-center text-gray-400">正在加载趋势数据...</div> :
+       error ? <div className="border border-red-200 rounded-md px-3 py-2.5 flex items-center gap-2 bg-red-50 text-red-700 text-[13px]"><AlertCircle size={16} /> {error}</div> :
+       (!points || points.length === 0) ? <div className="text-center p-8 text-gray-400 text-sm">暂无历史数据，Agent 启动后每分钟采集一次</div> : (
+        <div className="grid grid-cols-2 gap-4 mt-3">
+          <div className="h-[200px] overflow-hidden" ref={(el) => { chartRefs.current.mem = el; }}></div>
+          <div className="h-[200px] overflow-hidden" ref={(el) => { chartRefs.current.qps = el; }}></div>
+          <div className="h-[200px] overflow-hidden" ref={(el) => { chartRefs.current.hit = el; }}></div>
+          <div className="h-[200px] overflow-hidden" ref={(el) => { chartRefs.current.conns = el; }}></div>
+          <div className="h-[200px] overflow-hidden" ref={(el) => { chartRefs.current.frag = el; }}></div>
+          <div className="h-[200px] overflow-hidden" ref={(el) => { chartRefs.current.repl = el; }}></div>
+          <div className="h-[200px] overflow-hidden" ref={(el) => { chartRefs.current.offset = el; }}></div>
+          <div className="h-[200px] overflow-hidden" ref={(el) => { chartRefs.current.keys = el; }}></div>
         </div>
       )}
     </section>
@@ -1701,52 +1781,52 @@ function InstanceDetailModal({ detail, requestFn, onClose }) {
   ];
 
   return (
-    <div className="modal-backdrop" role="presentation" onMouseDown={onClose}>
-      <section className="modal modal-wide" role="dialog" aria-modal="true" onMouseDown={(event) => event.stopPropagation()}>
-        <div className="modal-header">
+    <div className="fixed inset-0 z-40 p-7 grid place-items-center bg-black/40 animate-[fadeIn_0.15s_ease-out]" role="presentation" onMouseDown={onClose}>
+      <section className="w-[min(980px,100%)] max-h-[min(860px,calc(100vh-56px))] rounded-xl border border-gray-200 overflow-hidden grid grid-rows-[auto_minmax(0,1fr)] bg-white shadow-lg animate-[slideUp_0.18s_cubic-bezier(0.16,1,0.3,1)]" role="dialog" aria-modal="true" onMouseDown={(event) => event.stopPropagation()}>
+        <div className="min-h-[62px] px-4 py-4 border-b border-gray-200 flex items-center justify-between gap-3">
           <div>
-            <h3>{item.name}</h3>
-            <span>{group.groupName} · {engineLabel(group)}</span>
+            <h3 className="m-0 text-base font-semibold">{item.name}</h3>
+            <span className="block mt-0.5 text-xs text-gray-400">{group.groupName} · {engineLabel(group)}</span>
           </div>
-          <button className="icon-button" onClick={onClose} aria-label="关闭" type="button"><X size={18} /></button>
+          <button className="w-8 h-8 rounded-md border border-gray-200 bg-white text-gray-500 inline-flex items-center justify-center hover:bg-gray-50 transition-colors" onClick={onClose} aria-label="关闭" type="button"><X size={18} /></button>
         </div>
-        <div className="modal-body">
-          <div className="tab-bar">
-            <button className={`tab-btn ${activeTab === 'trend' ? 'active' : ''}`} onClick={() => setActiveTab('trend')}>趋势</button>
-            <button className={`tab-btn ${activeTab === 'detail' ? 'active' : ''}`} onClick={() => setActiveTab('detail')}>详情</button>
+        <div className="min-h-0 overflow-auto p-4 grid gap-4">
+          <div className="flex gap-0 border-b border-gray-200 -mx-4 px-4 -mt-4">
+            <button className={`px-4 py-2.5 text-[13px] border-0 bg-transparent cursor-pointer border-b-2 mb-[-1px] ${activeTab === 'trend' ? 'text-gray-900 border-gray-900 font-medium' : 'text-gray-400 border-transparent hover:text-gray-700'}`} onClick={() => setActiveTab('trend')}>趋势</button>
+            <button className={`px-4 py-2.5 text-[13px] border-0 bg-transparent cursor-pointer border-b-2 mb-[-1px] ${activeTab === 'detail' ? 'text-gray-900 border-gray-900 font-medium' : 'text-gray-400 border-transparent hover:text-gray-700'}`} onClick={() => setActiveTab('detail')}>详情</button>
           </div>
           {activeTab === 'detail' && (
             <>
               <section>
-                <h4><Info size={16} /> 实例详情</h4>
-                <div className="detail-grid">
+                <h4 className="m-0 mb-3 inline-flex items-center gap-1.5 text-[13px] font-semibold text-gray-500"><Info size={16} className="text-gray-400" /> 实例详情</h4>
+                <div className="grid grid-cols-3 gap-2.5 max-lg:grid-cols-2 max-md:grid-cols-1">
                   {fields.map(([label, value]) => (
-                    <div key={label}>
-                      <span>{label}</span>
-                      <strong>{displayValue(value)}</strong>
+                    <div key={label} className="min-w-0 border border-gray-200 rounded-md p-3 bg-gray-50">
+                      <span className="block text-xs font-medium text-gray-400">{label}</span>
+                      <strong className="block mt-1 text-[13px] font-medium break-all">{displayValue(value)}</strong>
                     </div>
                   ))}
                 </div>
               </section>
               <section>
-                <h4><BarChart3 size={16} /> 运行指标</h4>
+                <h4 className="m-0 mb-3 inline-flex items-center gap-1.5 text-[13px] font-semibold text-gray-500"><BarChart3 size={16} className="text-gray-400" /> 运行指标</h4>
                 {loading ? (
-                  <div className="inline-loading">正在读取 metrics...</div>
+                  <div className="min-h-[110px] border border-dashed border-gray-200 rounded-md grid place-items-center text-gray-400">正在读取 metrics...</div>
                 ) : error ? (
-                  <div className="notice compact"><AlertCircle size={16} /> {error}</div>
+                  <div className="border border-red-200 rounded-md px-3 py-2.5 flex items-center gap-2 bg-red-50 text-red-700 text-[13px]"><AlertCircle size={16} /> {error}</div>
                 ) : (
                   <>
-                    <div className="detail-grid metrics-grid">
+                    <div className="grid grid-cols-3 gap-2.5 max-lg:grid-cols-2 max-md:grid-cols-1">
                       {metricsSummary.map(([label, value]) => (
-                        <div key={label}>
-                          <span>{label}</span>
-                          <strong>{displayValue(value)}</strong>
+                        <div key={label} className="min-w-0 border border-gray-200 rounded-md p-3 bg-gray-50">
+                          <span className="block text-xs font-medium text-gray-400">{label}</span>
+                          <strong className="block mt-1 text-[13px] font-mono font-normal break-all">{displayValue(value)}</strong>
                         </div>
                       ))}
                     </div>
-                    <details className="raw-metrics">
-                      <summary>查看 INFO 原文</summary>
-                      <pre>{info || '无 metrics 数据'}</pre>
+                    <details className="mt-3 border border-gray-200 rounded-md bg-gray-50 overflow-hidden">
+                      <summary className="px-3 py-2.5 cursor-pointer text-[13px] font-medium text-gray-500 hover:text-gray-900">查看 INFO 原文</summary>
+                      <pre className="max-h-[320px] m-0 px-3 pb-3 overflow-auto font-mono text-xs leading-relaxed text-gray-500 whitespace-pre-wrap">{info || '无 metrics 数据'}</pre>
                     </details>
                   </>
                 )}
@@ -1788,32 +1868,37 @@ function SlowlogModal({ instanceName, requestFn, onClose }) {
   }
 
   return (
-    <div className="modal-backdrop" role="presentation" onMouseDown={onClose}>
-      <section className="modal" role="dialog" aria-modal="true" onMouseDown={(e) => e.stopPropagation()}>
-        <div className="modal-header">
-          <div><h3>慢查询</h3><span>{instanceName}</span></div>
-          <button className="icon-button" onClick={onClose} aria-label="关闭" type="button"><X size={18} /></button>
+    <div className="fixed inset-0 z-40 p-7 grid place-items-center bg-black/40 animate-[fadeIn_0.15s_ease-out]" role="presentation" onMouseDown={onClose}>
+      <section className="w-[min(980px,100%)] max-h-[min(860px,calc(100vh-56px))] rounded-xl border border-gray-200 overflow-hidden grid grid-rows-[auto_minmax(0,1fr)] bg-white shadow-lg animate-[slideUp_0.18s_cubic-bezier(0.16,1,0.3,1)]" role="dialog" aria-modal="true" onMouseDown={(e) => e.stopPropagation()}>
+        <div className="min-h-[62px] px-4 py-4 border-b border-gray-200 flex items-center justify-between gap-3">
+          <div><h3 className="m-0 text-base font-semibold">慢查询</h3><span className="block mt-0.5 text-xs text-gray-400">{instanceName}</span></div>
+          <button className="w-8 h-8 rounded-md border border-gray-200 bg-white text-gray-500 inline-flex items-center justify-center hover:bg-gray-50 transition-colors" onClick={onClose} aria-label="关闭" type="button"><X size={18} /></button>
         </div>
-        <div className="modal-body">
-          {loading ? <div className="inline-loading">正在加载慢查询...</div> :
-           error ? <div className="notice compact"><AlertCircle size={16} /> {error}</div> :
-           (!entries || entries.length === 0) ? <div className="empty-state">无慢查询记录</div> : (
+        <div className="min-h-0 overflow-auto p-4 grid gap-4">
+          {loading ? <div className="min-h-[110px] border border-dashed border-gray-200 rounded-md grid place-items-center text-gray-400">正在加载慢查询...</div> :
+           error ? <div className="border border-red-200 rounded-md px-3 py-2.5 flex items-center gap-2 bg-red-50 text-red-700 text-[13px]"><AlertCircle size={16} /> {error}</div> :
+           (!entries || entries.length === 0) ? <div className="text-center p-8 text-gray-400 text-sm">无慢查询记录</div> : (
             <section>
-              <div className="tab-toolbar">
-                <span className="muted">{entries.length} 条记录</span>
-                <button className="ghost-button small" onClick={reload}><RefreshCw size={14} /> 刷新</button>
+              <div className="flex items-center justify-between mb-3">
+                <span className="text-xs text-gray-400">{entries.length} 条记录</span>
+                <button className="h-7 px-2.5 rounded-md border border-gray-200 bg-white text-gray-700 text-xs font-medium inline-flex items-center gap-1 hover:bg-gray-50 cursor-pointer transition-colors" onClick={reload}><RefreshCw size={14} /> 刷新</button>
               </div>
-              <table className="detail-table">
+              <table className="w-full border-collapse text-[13px]">
                 <thead>
-                  <tr><th>时间</th><th>耗时</th><th>命令</th><th>客户端</th></tr>
+                  <tr>
+                    <th className="text-left px-2.5 py-1.5 font-medium text-gray-400 border-b border-gray-200 text-xs">时间</th>
+                    <th className="text-left px-2.5 py-1.5 font-medium text-gray-400 border-b border-gray-200 text-xs">耗时</th>
+                    <th className="text-left px-2.5 py-1.5 font-medium text-gray-400 border-b border-gray-200 text-xs">命令</th>
+                    <th className="text-left px-2.5 py-1.5 font-medium text-gray-400 border-b border-gray-200 text-xs">客户端</th>
+                  </tr>
                 </thead>
                 <tbody>
                   {entries.map((e, i) => (
-                    <tr key={i}>
-                      <td className="mono">{e.timestamp ? new Date(e.timestamp * 1000).toLocaleString() : '-'}</td>
-                      <td className="mono">{e.duration_us >= 1000 ? `${(e.duration_us / 1000).toFixed(1)}ms` : `${e.duration_us}µs`}</td>
-                      <td className="mono cmd-cell">{e.command || '-'}</td>
-                      <td className="mono">{e.client || '-'}</td>
+                    <tr key={i} className="hover:bg-gray-50">
+                      <td className="px-2.5 py-1.5 font-mono border-b border-gray-100 align-top">{e.timestamp ? new Date(e.timestamp * 1000).toLocaleString() : '-'}</td>
+                      <td className="px-2.5 py-1.5 font-mono border-b border-gray-100 align-top">{e.duration_us >= 1000 ? `${(e.duration_us / 1000).toFixed(1)}ms` : `${e.duration_us}µs`}</td>
+                      <td className="px-2.5 py-1.5 font-mono border-b border-gray-100 align-top max-w-[320px] overflow-hidden text-ellipsis whitespace-nowrap">{e.command || '-'}</td>
+                      <td className="px-2.5 py-1.5 font-mono border-b border-gray-100 align-top">{e.client || '-'}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -1842,43 +1927,47 @@ function BigkeysModal({ instanceName, requestFn, onClose }) {
   }
 
   return (
-    <div className="modal-backdrop" role="presentation" onMouseDown={onClose}>
-      <section className="modal" role="dialog" aria-modal="true" onMouseDown={(e) => e.stopPropagation()}>
-        <div className="modal-header">
-          <div><h3>大 Key 分析</h3><span>{instanceName}</span></div>
-          <button className="icon-button" onClick={onClose} aria-label="关闭" type="button"><X size={18} /></button>
+    <div className="fixed inset-0 z-40 p-7 grid place-items-center bg-black/40 animate-[fadeIn_0.15s_ease-out]" role="presentation" onMouseDown={onClose}>
+      <section className="w-[min(980px,100%)] max-h-[min(860px,calc(100vh-56px))] rounded-xl border border-gray-200 overflow-hidden grid grid-rows-[auto_minmax(0,1fr)] bg-white shadow-lg animate-[slideUp_0.18s_cubic-bezier(0.16,1,0.3,1)]" role="dialog" aria-modal="true" onMouseDown={(e) => e.stopPropagation()}>
+        <div className="min-h-[62px] px-4 py-4 border-b border-gray-200 flex items-center justify-between gap-3">
+          <div><h3 className="m-0 text-base font-semibold">大 Key 分析</h3><span className="block mt-0.5 text-xs text-gray-400">{instanceName}</span></div>
+          <button className="w-8 h-8 rounded-md border border-gray-200 bg-white text-gray-500 inline-flex items-center justify-center hover:bg-gray-50 transition-colors" onClick={onClose} aria-label="关闭" type="button"><X size={18} /></button>
         </div>
-        <div className="modal-body">
-          <div className="tab-toolbar">
-            <span className="muted">阈值: string &gt; 100KB，集合类 &gt; 10000 元素</span>
-            <button className="ghost-button small" onClick={run} disabled={loading}>
-              {loading ? <><RefreshCw size={14} className="spin" /> 扫描中...</> : <><Play size={14} /> 开始扫描</>}
+        <div className="min-h-0 overflow-auto p-4 grid gap-4">
+          <div className="flex items-center justify-between">
+            <span className="text-xs text-gray-400">阈值: string &gt; 100KB，集合类 &gt; 10000 元素</span>
+            <button className="h-7 px-2.5 rounded-md border border-gray-200 bg-white text-gray-700 text-xs font-medium inline-flex items-center gap-1 hover:bg-gray-50 cursor-pointer transition-colors disabled:opacity-50" onClick={run} disabled={loading}>
+              {loading ? <><RefreshCw size={14} className="animate-spin" /> 扫描中...</> : <><Play size={14} /> 开始扫描</>}
             </button>
           </div>
-          {error && <div className="notice compact"><AlertCircle size={16} /> {error}</div>}
+          {error && <div className="border border-red-200 rounded-md px-3 py-2.5 flex items-center gap-2 bg-red-50 text-red-700 text-[13px]"><AlertCircle size={16} /> {error}</div>}
           {meta && (
-            <div className="muted" style={{ fontSize: 12, marginBottom: 8 }}>
+            <div className="text-xs text-gray-400">
               已扫描 {meta.scanned} 个 key，耗时 {meta.elapsed_ms}ms
-              {meta.timeout && <span style={{ color: '#f59e0b' }}> （达到 60s 上限，结果可能不完整）</span>}
+              {meta.timeout && <span className="text-amber-500"> （达到 60s 上限，结果可能不完整）</span>}
             </div>
           )}
           {keys && keys.length > 0 && (
-            <table className="detail-table">
+            <table className="w-full border-collapse text-[13px]">
               <thead>
-                <tr><th>Key</th><th>类型</th><th>大小</th></tr>
+                <tr>
+                  <th className="text-left px-2.5 py-1.5 font-medium text-gray-400 border-b border-gray-200 text-xs">Key</th>
+                  <th className="text-left px-2.5 py-1.5 font-medium text-gray-400 border-b border-gray-200 text-xs">类型</th>
+                  <th className="text-left px-2.5 py-1.5 font-medium text-gray-400 border-b border-gray-200 text-xs">大小</th>
+                </tr>
               </thead>
               <tbody>
                 {keys.map((k, i) => (
-                  <tr key={i}>
-                    <td className="mono cmd-cell">{k.key}</td>
-                    <td>{k.type}</td>
-                    <td className="mono">{k.size_desc}</td>
+                  <tr key={i} className="hover:bg-gray-50">
+                    <td className="px-2.5 py-1.5 font-mono border-b border-gray-100 max-w-[320px] overflow-hidden text-ellipsis whitespace-nowrap">{k.key}</td>
+                    <td className="px-2.5 py-1.5 border-b border-gray-100">{k.type}</td>
+                    <td className="px-2.5 py-1.5 font-mono border-b border-gray-100">{k.size_desc}</td>
                   </tr>
                 ))}
               </tbody>
             </table>
           )}
-          {keys && keys.length === 0 && !loading && <div className="empty-state">未发现大 Key</div>}
+          {keys && keys.length === 0 && !loading && <div className="text-center p-8 text-gray-400 text-sm">未发现大 Key</div>}
         </div>
       </section>
     </div>
@@ -1889,25 +1978,25 @@ function AccessModeModal({ group, onConfirm, onClose }) {
   const [mode, setMode] = useState(group.access_mode || 'standard');
 
   return (
-    <div className="modal-backdrop" role="presentation" onMouseDown={onClose}>
-      <section className="confirm-modal" role="dialog" aria-modal="true" onMouseDown={(e) => e.stopPropagation()}>
-        <div className="modal-header">
-          <div><h3>修改接入方式</h3><span>{group.groupName}</span></div>
-          <button className="icon-button" onClick={onClose} aria-label="关闭" type="button"><X size={18} /></button>
+    <div className="fixed inset-0 z-40 p-7 grid place-items-center bg-black/40 animate-[fadeIn_0.15s_ease-out]" role="presentation" onMouseDown={onClose}>
+      <section className="w-[min(460px,100%)] border border-gray-200 rounded-xl bg-white shadow-lg overflow-hidden animate-[slideUp_0.18s_cubic-bezier(0.16,1,0.3,1)]" role="dialog" aria-modal="true" onMouseDown={(e) => e.stopPropagation()}>
+        <div className="min-h-[62px] px-4 py-4 border-b border-gray-200 flex items-center justify-between gap-3">
+          <div><h3 className="m-0 text-base font-semibold">修改接入方式</h3><span className="block mt-0.5 text-xs text-gray-400">{group.groupName}</span></div>
+          <button className="w-8 h-8 rounded-md border border-gray-200 bg-white text-gray-500 inline-flex items-center justify-center hover:bg-gray-50 transition-colors" onClick={onClose} aria-label="关闭" type="button"><X size={18} /></button>
         </div>
-        <div className="modal-body" style={{ padding: 18 }}>
-          <p style={{ fontSize: 13, color: 'var(--ink-secondary)', margin: '0 0 12px' }}>当前：{group.access_mode === 'rw-split' ? '读写分离' : '标准'}</p>
-          <label style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8, cursor: 'pointer' }}>
+        <div className="p-4">
+          <p className="text-[13px] text-gray-500 m-0 mb-3">当前：{group.access_mode === 'rw-split' ? '读写分离' : '标准'}</p>
+          <label className="flex items-center gap-2 mb-2 cursor-pointer">
             <input type="radio" name="access_mode" value="standard" checked={mode === 'standard'} onChange={() => setMode('standard')} />
-            <span><strong>标准</strong> — 所有流量走主库</span>
+            <span className="text-[13px]"><strong className="font-medium">标准</strong> — 所有流量走主库</span>
           </label>
-          <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
+          <label className="flex items-center gap-2 cursor-pointer">
             <input type="radio" name="access_mode" value="rw-split" checked={mode === 'rw-split'} onChange={() => setMode('rw-split')} />
-            <span><strong>读写分离</strong> — 读请求分发到从库</span>
+            <span className="text-[13px]"><strong className="font-medium">读写分离</strong> — 读请求分发到从库</span>
           </label>
-          <div style={{ marginTop: 16, display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
-            <button className="ghost-button small" onClick={onClose}>取消</button>
-            <button className="ghost-button small active" disabled={mode === (group.access_mode || 'standard')} onClick={() => onConfirm(mode)}>确认修改</button>
+          <div className="mt-4 flex justify-end gap-2">
+            <button className="h-[34px] rounded-md border border-gray-200 px-3 bg-white text-gray-900 font-medium text-[13px] hover:bg-gray-50 cursor-pointer transition-colors" onClick={onClose}>取消</button>
+            <button className="h-[34px] rounded-md px-3 bg-gray-900 text-white font-medium text-[13px] hover:bg-gray-700 border-0 cursor-pointer transition-colors disabled:opacity-50" disabled={mode === (group.access_mode || 'standard')} onClick={() => onConfirm(mode)}>确认修改</button>
           </div>
         </div>
       </section>
@@ -1932,7 +2021,6 @@ function ConfigModal({ instanceName, requestFn, onClose }) {
     'notify-keyspace-events', 'client-output-buffer-limit',
     'proto-max-bulk-len', 'lua-time-limit', 'min-replicas-to-write', 'min-replicas-max-lag',
     'io-threads', 'io-threads-do-reads',
-    // kvrocks
     'rocksdb.compression', 'rocksdb.write_buffer_size', 'rocksdb.max_write_buffer_number',
     'rocksdb.target_file_size_base', 'rocksdb.max_background_compactions', 'rocksdb.max_background_flushes',
     'rocksdb.block_size', 'rocksdb.metadata_block_size', 'rocksdb.enable_blob_files',
@@ -1980,7 +2068,6 @@ function ConfigModal({ instanceName, requestFn, onClose }) {
         body: JSON.stringify({ name: instanceName, config_overrides: edits })
       });
       setSaveResult(`已保存 ${Object.keys(edits).length} 项配置`);
-      // 更新本地 config 状态
       setConfig((prev) => ({ ...prev, ...edits }));
       setEdits({});
     } catch (err) {
@@ -1991,41 +2078,44 @@ function ConfigModal({ instanceName, requestFn, onClose }) {
   }
 
   return (
-    <div className="modal-backdrop" role="presentation" onMouseDown={onClose}>
-      <section className="modal modal-wide" role="dialog" aria-modal="true" onMouseDown={(e) => e.stopPropagation()}>
-        <div className="modal-header">
-          <div><h3>修改配置</h3><span>{instanceName}</span></div>
-          <button className="icon-button" onClick={onClose} aria-label="关闭" type="button"><X size={18} /></button>
+    <div className="fixed inset-0 z-40 p-7 grid place-items-center bg-black/40 animate-[fadeIn_0.15s_ease-out]" role="presentation" onMouseDown={onClose}>
+      <section className="w-[min(720px,100%)] max-h-[min(860px,calc(100vh-56px))] rounded-xl border border-gray-200 overflow-hidden grid grid-rows-[auto_minmax(0,1fr)] bg-white shadow-lg animate-[slideUp_0.18s_cubic-bezier(0.16,1,0.3,1)]" role="dialog" aria-modal="true" onMouseDown={(e) => e.stopPropagation()}>
+        <div className="min-h-[62px] px-4 py-4 border-b border-gray-200 flex items-center justify-between gap-3">
+          <div><h3 className="m-0 text-base font-semibold">修改配置</h3><span className="block mt-0.5 text-xs text-gray-400">{instanceName}</span></div>
+          <button className="w-8 h-8 rounded-md border border-gray-200 bg-white text-gray-500 inline-flex items-center justify-center hover:bg-gray-50 transition-colors" onClick={onClose} aria-label="关闭" type="button"><X size={18} /></button>
         </div>
-        <div className="modal-body">
-          {loading ? <div className="inline-loading">正在加载配置...</div> :
-           error ? <div className="notice compact"><AlertCircle size={16} /> {error}</div> : (
+        <div className="min-h-0 overflow-auto p-4 grid gap-4">
+          {loading ? <div className="min-h-[110px] border border-dashed border-gray-200 rounded-md grid place-items-center text-gray-400">正在加载配置...</div> :
+           error ? <div className="border border-red-200 rounded-md px-3 py-2.5 flex items-center gap-2 bg-red-50 text-red-700 text-[13px]"><AlertCircle size={16} /> {error}</div> : (
             <>
-              <div className="tab-toolbar">
-                <input value={filter} onChange={(e) => setFilter(e.target.value)} placeholder="搜索配置项..." style={{ flex: 1, maxWidth: 300 }} />
-                <span className="muted">{filteredKeys.length} 项</span>
+              <div className="flex items-center justify-between gap-3">
+                <input className="flex-1 max-w-[300px] h-9 border border-gray-200 rounded-md px-2.5 bg-white text-gray-900 outline-0 focus:border-gray-900 text-[13px]" value={filter} onChange={(e) => setFilter(e.target.value)} placeholder="搜索配置项..." />
+                <span className="text-xs text-gray-400">{filteredKeys.length} 项</span>
                 {hasEdits && (
-                  <button className="ghost-button small" onClick={handleSave} disabled={saving}>
+                  <button className="h-7 px-2.5 rounded-md border border-gray-200 bg-white text-gray-700 text-xs font-medium inline-flex items-center gap-1 hover:bg-gray-50 cursor-pointer transition-colors" onClick={handleSave} disabled={saving}>
                     {saving ? '保存中...' : `保存 ${Object.keys(edits).length} 项修改`}
                   </button>
                 )}
               </div>
-              {saveResult && <div className="notice compact" style={{ marginBottom: 8 }}>{saveResult}</div>}
-              <div className="table-scroll" style={{ maxHeight: 480 }}>
-                <table className="detail-table">
+              {saveResult && <div className="border border-gray-200 rounded-md px-3 py-2 text-[13px] text-gray-600">{saveResult}</div>}
+              <div className="overflow-auto max-h-[480px]">
+                <table className="w-full border-collapse text-[13px]">
                   <thead>
-                    <tr><th style={{ width: '40%' }}>配置项</th><th>值</th></tr>
+                    <tr>
+                      <th className="text-left px-2.5 py-1.5 font-medium text-gray-400 border-b border-gray-200 text-xs w-[40%]">配置项</th>
+                      <th className="text-left px-2.5 py-1.5 font-medium text-gray-400 border-b border-gray-200 text-xs">值</th>
+                    </tr>
                   </thead>
                   <tbody>
                     {filteredKeys.map((key) => {
                       const current = edits[key] !== undefined ? edits[key] : config[key];
                       const modified = edits[key] !== undefined;
                       return (
-                        <tr key={key} className={modified ? 'row-modified' : ''}>
-                          <td className="mono">{key}</td>
-                          <td>
+                        <tr key={key} className={modified ? 'bg-gray-900/5' : ''}>
+                          <td className="px-2.5 py-1.5 font-mono border-b border-gray-100">{key}</td>
+                          <td className="px-2.5 py-1.5 border-b border-gray-100">
                             <input
-                              className="config-value-input"
+                              className={`w-full border bg-transparent px-1 py-0.5 font-mono text-xs rounded transition-colors focus:outline-none focus:border-gray-900 ${modified ? 'border-gray-900' : 'border-transparent'}`}
                               value={current}
                               onChange={(e) => handleEdit(key, e.target.value)}
                             />
@@ -2092,7 +2182,6 @@ function BackupListModal({ detail, requestFn, onRefresh, onClose }) {
         return;
       }
       setExecMsg('备份执行中...');
-      // Poll for status
       const poll = setInterval(async () => {
         try {
           const statusRes = await requestFn(`/backup/status?name=${encodeURIComponent(item.name)}&task_id=${encodeURIComponent(taskId)}`);
@@ -2106,7 +2195,6 @@ function BackupListModal({ detail, requestFn, onRefresh, onClose }) {
             setExecMsg('备份失败: ' + (statusRes?.error || '未知错误'));
             setExecLoading(false);
           }
-          // else still running, keep polling
         } catch {
           clearInterval(poll);
           setExecMsg('查询状态失败');
@@ -2137,43 +2225,43 @@ function BackupListModal({ detail, requestFn, onRefresh, onClose }) {
   }
 
   return (
-    <div className="modal-backdrop" role="presentation" onMouseDown={onClose}>
-      <section className="modal" role="dialog" aria-modal="true" onMouseDown={(event) => event.stopPropagation()}>
-        <div className="modal-header">
+    <div className="fixed inset-0 z-40 p-7 grid place-items-center bg-black/40 animate-[fadeIn_0.15s_ease-out]" role="presentation" onMouseDown={onClose}>
+      <section className="w-[min(980px,100%)] max-h-[min(860px,calc(100vh-56px))] rounded-xl border border-gray-200 overflow-hidden grid grid-rows-[auto_minmax(0,1fr)] bg-white shadow-lg animate-[slideUp_0.18s_cubic-bezier(0.16,1,0.3,1)]" role="dialog" aria-modal="true" onMouseDown={(event) => event.stopPropagation()}>
+        <div className="min-h-[62px] px-4 py-4 border-b border-gray-200 flex items-center justify-between gap-3">
           <div>
-            <h3>{item.name} 备份管理</h3>
-            <span>{group.groupName}</span>
+            <h3 className="m-0 text-base font-semibold">{item.name} 备份管理</h3>
+            <span className="block mt-0.5 text-xs text-gray-400">{group.groupName}</span>
           </div>
-          <button className="icon-button" onClick={onClose} aria-label="关闭" type="button"><X size={18} /></button>
+          <button className="w-8 h-8 rounded-md border border-gray-200 bg-white text-gray-500 inline-flex items-center justify-center hover:bg-gray-50 transition-colors" onClick={onClose} aria-label="关闭" type="button"><X size={18} /></button>
         </div>
-        <div className="modal-body">
+        <div className="min-h-0 overflow-auto p-4 grid gap-4">
           <section>
-            <div className="section-header-row">
-              <h4><HardDrive size={16} /> 可用备份</h4>
+            <div className="flex items-center justify-between gap-3 mb-3">
+              <h4 className="m-0 inline-flex items-center gap-1.5 text-[13px] font-semibold text-gray-500"><HardDrive size={16} className="text-gray-400" /> 可用备份</h4>
               <button
-                className="primary-button compact"
+                className="h-7 px-2.5 rounded-md bg-gray-900 text-white text-xs font-medium inline-flex items-center gap-1 hover:bg-gray-700 border-0 cursor-pointer transition-colors disabled:opacity-50"
                 onClick={handleExecBackup}
                 disabled={execLoading}
               >
-                {execLoading ? <><RefreshCw size={14} className="spin" /> 备份中...</> : <><Play size={14} /> 立即备份</>}
+                {execLoading ? <><RefreshCw size={14} className="animate-spin" /> 备份中...</> : <><Play size={14} /> 立即备份</>}
               </button>
             </div>
-            {execMsg && <div className={`notice compact ${execMsg.includes('失败') ? '' : 'notice-ok'}`}><AlertCircle size={16} /> {execMsg}</div>}
-            {isMaster && hasReplicas && <div className="form-hint">⚠️ 当前为主库，建议在从库上执行备份以避免影响主库性能。</div>}
+            {execMsg && <div className={`border rounded-md px-3 py-2 flex items-center gap-2 text-[13px] mb-2 ${execMsg.includes('失败') ? 'border-red-200 bg-red-50 text-red-700' : 'border-emerald-200 bg-emerald-50 text-emerald-700'}`}><AlertCircle size={16} /> {execMsg}</div>}
+            {isMaster && hasReplicas && <div className="text-xs text-gray-500 bg-gray-100 rounded-md px-2.5 py-2 mb-2">⚠️ 当前为主库，建议在从库上执行备份以避免影响主库性能。</div>}
             {loading ? (
-              <div className="inline-loading">正在读取备份列表...</div>
+              <div className="min-h-[110px] border border-dashed border-gray-200 rounded-md grid place-items-center text-gray-400">正在读取备份列表...</div>
             ) : error ? (
-              <div className="notice compact"><AlertCircle size={16} /> {error}</div>
+              <div className="border border-red-200 rounded-md px-3 py-2.5 flex items-center gap-2 bg-red-50 text-red-700 text-[13px]"><AlertCircle size={16} /> {error}</div>
             ) : backups.length === 0 ? (
               <EmptyState icon={HardDrive} title="暂无备份" detail="该实例当前没有可用备份文件。" />
             ) : (
-              <div className="backup-list">
+              <div className="grid gap-2">
                 {backups.map((backup) => (
-                  <div className="backup-item" key={backup.name}>
-                    <HardDrive size={18} />
+                  <div className="border border-gray-200 rounded-md p-3 grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-3 bg-gray-50" key={backup.name}>
+                    <HardDrive size={18} className="text-gray-400" />
                     <div>
-                      <strong>{backup.time}</strong>
-                      <span>{backup.type} · {backup.size}</span>
+                      <strong className="block font-mono text-[13px] font-medium">{backup.time}</strong>
+                      <span className="block mt-0.5 text-xs text-gray-400 font-mono">{backup.type} · {backup.size}</span>
                     </div>
                     <StatusBadge status={backup.status === '成功' ? 'running' : 'failed'}>
                       {backup.status}
@@ -2184,23 +2272,25 @@ function BackupListModal({ detail, requestFn, onRefresh, onClose }) {
             )}
           </section>
           <section>
-            <h4><Calendar size={16} /> 定时备份策略</h4>
+            <h4 className="m-0 mb-3 inline-flex items-center gap-1.5 text-[13px] font-semibold text-gray-500"><Calendar size={16} className="text-gray-400" /> 定时备份策略</h4>
             {scheduleLoading ? (
-              <div className="inline-loading">正在读取策略...</div>
+              <div className="min-h-[110px] border border-dashed border-gray-200 rounded-md grid place-items-center text-gray-400">正在读取策略...</div>
             ) : (
-              <div className="schedule-form">
-                {scheduleError && <div className="notice compact"><AlertCircle size={16} /> {scheduleError}</div>}
-                {scheduleSaved && <div className="notice compact notice-ok"><CheckCircle2 size={16} /> 策略已保存</div>}
-                <div className="form-grid form-grid-2col">
-                  <label>Cron 表达式
+              <div className="grid gap-3">
+                {scheduleError && <div className="border border-red-200 rounded-md px-3 py-2.5 flex items-center gap-2 bg-red-50 text-red-700 text-[13px]"><AlertCircle size={16} /> {scheduleError}</div>}
+                {scheduleSaved && <div className="border border-emerald-200 rounded-md px-3 py-2 flex items-center gap-2 bg-emerald-50 text-emerald-700 text-[13px]"><CheckCircle2 size={16} /> 策略已保存</div>}
+                <div className="grid grid-cols-2 gap-3">
+                  <label className="block text-xs font-medium text-gray-400">Cron 表达式
                     <input
+                      className="mt-1.5 w-full h-9 border border-gray-200 rounded-md px-2.5 bg-white text-gray-900 outline-0 focus:border-gray-900 text-[13px]"
                       value={schedule}
                       onChange={(e) => { setSchedule(e.target.value); setScheduleSaved(false); }}
                       placeholder="0 2 * * *（每天凌晨2点）"
                     />
                   </label>
-                  <label>保留天数
+                  <label className="block text-xs font-medium text-gray-400">保留天数
                     <input
+                      className="mt-1.5 w-full h-9 border border-gray-200 rounded-md px-2.5 bg-white text-gray-900 outline-0 focus:border-gray-900 text-[13px]"
                       type="number"
                       min={1}
                       value={retention}
@@ -2208,16 +2298,16 @@ function BackupListModal({ detail, requestFn, onRefresh, onClose }) {
                     />
                   </label>
                 </div>
-                <div className="schedule-hint">
-                  <span className="muted">留空 Cron 表达式则关闭定时备份。常用: <code>0 2 * * *</code>(每天2:00)、<code>0 */6 * * *</code>(每6小时)</span>
+                <div className="text-xs text-gray-400">
+                  留空 Cron 表达式则关闭定时备份。常用: <code className="bg-gray-100 px-1 py-0.5 rounded text-[11px] font-mono">0 2 * * *</code>(每天2:00)、<code className="bg-gray-100 px-1 py-0.5 rounded text-[11px] font-mono">0 */6 * * *</code>(每6小时)
                 </div>
-                <div className="schedule-actions">
+                <div className="flex justify-end">
                   <button
-                    className="primary-button compact"
+                    className="h-7 px-2.5 rounded-md bg-gray-900 text-white text-xs font-medium inline-flex items-center gap-1 hover:bg-gray-700 border-0 cursor-pointer transition-colors disabled:opacity-50"
                     onClick={handleSaveSchedule}
                     disabled={scheduleSaving}
                   >
-                    {scheduleSaving ? <><RefreshCw size={14} className="spin" /> 保存中...</> : <><Save size={14} /> 保存策略</>}
+                    {scheduleSaving ? <><RefreshCw size={14} className="animate-spin" /> 保存中...</> : <><Save size={14} /> 保存策略</>}
                   </button>
                 </div>
               </div>
@@ -2235,34 +2325,34 @@ function DeleteConfirmModal({ detail, loading, onCancel, onConfirm, onToggleClea
   const status = getField(item, 'status', 'Status', '-');
 
   return (
-    <div className="modal-backdrop" role="presentation" onMouseDown={onCancel}>
-      <section className="confirm-modal" role="dialog" aria-modal="true" onMouseDown={(event) => event.stopPropagation()}>
-        <div className="confirm-head">
-          <div className="confirm-icon warn">
+    <div className="fixed inset-0 z-40 p-7 grid place-items-center bg-black/40 animate-[fadeIn_0.15s_ease-out]" role="presentation" onMouseDown={onCancel}>
+      <section className="w-[min(460px,100%)] border border-gray-200 rounded-xl bg-white shadow-lg overflow-hidden animate-[slideUp_0.18s_cubic-bezier(0.16,1,0.3,1)]" role="dialog" aria-modal="true" onMouseDown={(event) => event.stopPropagation()}>
+        <div className="px-4 py-4 border-b border-gray-200 flex items-center gap-3">
+          <div className="w-10 h-10 rounded-md grid place-items-center bg-red-50 text-red-600 shrink-0">
             <Trash2 size={20} />
           </div>
           <div>
-            <h3>确认删除实例</h3>
-            <span>{item.name} · {group.groupName}</span>
+            <h3 className="m-0 text-base font-semibold">确认删除实例</h3>
+            <span className="block mt-0.5 text-xs text-gray-400">{item.name} · {group.groupName}</span>
           </div>
         </div>
-        <div className="confirm-body">
-          <p>
-            将要删除实例 <strong>{item.name}</strong>。此操作不可恢复，实例容器将被停止并移除。
+        <div className="p-4">
+          <p className="m-0 text-[13px] text-gray-900 leading-relaxed">
+            将要删除实例 <strong className="font-semibold">{item.name}</strong>。此操作不可恢复，实例容器将被停止并移除。
           </p>
-          <div className="confirm-facts">
+          <div className="mt-3 grid gap-1.5 text-[13px] text-gray-500">
             <span>角色: {displayValue(role)}</span>
             <span>当前状态: {statusMeta(status).label}</span>
             <span>节点: {displayValue(getField(item, 'server', 'Server'))}</span>
           </div>
-          <label className="form-check delete-check">
+          <label className="flex items-center gap-2 mt-3.5 p-2.5 border border-gray-200 rounded-md bg-gray-50 text-[13px] text-gray-600 cursor-pointer">
             <input type="checkbox" checked={cleanData} onChange={(e) => onToggleClean(e.target.checked)} />
             同时删除数据文件（备份 + 数据目录）
           </label>
         </div>
-        <div className="confirm-actions">
-          <button className="ghost-button" onClick={onCancel} disabled={loading}>取消</button>
-          <button className="danger-button" onClick={onConfirm} disabled={loading}>
+        <div className="px-4 pb-4 pt-2 flex justify-end gap-2">
+          <button className="h-[34px] rounded-md border border-gray-200 px-3 bg-white text-gray-900 font-medium text-[13px] hover:bg-gray-50 cursor-pointer transition-colors" onClick={onCancel} disabled={loading}>取消</button>
+          <button className="h-[34px] rounded-md px-3 bg-red-600 text-white font-medium text-[13px] hover:bg-red-700 border-0 cursor-pointer transition-colors disabled:opacity-50" onClick={onConfirm} disabled={loading}>
             {loading ? '删除中...' : '确认删除'}
           </button>
         </div>
@@ -2280,31 +2370,31 @@ function ConfirmPowerModal({ detail, loading, onCancel, onConfirm }) {
   const status = getField(item, 'status', 'Status', '-');
 
   return (
-    <div className="modal-backdrop" role="presentation" onMouseDown={onCancel}>
-      <section className="confirm-modal" role="dialog" aria-modal="true" onMouseDown={(event) => event.stopPropagation()}>
-        <div className="confirm-head">
-          <div className={isStop ? 'confirm-icon warn' : 'confirm-icon'}>
+    <div className="fixed inset-0 z-40 p-7 grid place-items-center bg-black/40 animate-[fadeIn_0.15s_ease-out]" role="presentation" onMouseDown={onCancel}>
+      <section className="w-[min(460px,100%)] border border-gray-200 rounded-xl bg-white shadow-lg overflow-hidden animate-[slideUp_0.18s_cubic-bezier(0.16,1,0.3,1)]" role="dialog" aria-modal="true" onMouseDown={(event) => event.stopPropagation()}>
+        <div className="px-4 py-4 border-b border-gray-200 flex items-center gap-3">
+          <div className={`w-10 h-10 rounded-md grid place-items-center shrink-0 ${isStop ? 'bg-red-50 text-red-600' : 'bg-gray-100 text-gray-600'}`}>
             {isStop ? <Power size={20} /> : <Play size={20} />}
           </div>
           <div>
-            <h3>{title}</h3>
-            <span>{item.name} · {group.groupName}</span>
+            <h3 className="m-0 text-base font-semibold">{title}</h3>
+            <span className="block mt-0.5 text-xs text-gray-400">{item.name} · {group.groupName}</span>
           </div>
         </div>
-        <div className="confirm-body">
-          <p>
-            将要{actionText}实例 <strong>{item.name}</strong>。
+        <div className="p-4">
+          <p className="m-0 text-[13px] text-gray-900 leading-relaxed">
+            将要{actionText}实例 <strong className="font-semibold">{item.name}</strong>。
             {isStop ? '停止后该实例上的 Redis 服务会不可用，副本冗余或读流量可能受影响。' : '启动会尝试恢复该实例容器。'}
           </p>
-          <div className="confirm-facts">
+          <div className="mt-3 grid gap-1.5 text-[13px] text-gray-500">
             <span>角色: {displayValue(role)}</span>
             <span>当前状态: {statusMeta(status).label}</span>
             <span>节点: {displayValue(getField(item, 'server', 'Server'))}</span>
           </div>
         </div>
-        <div className="confirm-actions">
-          <button className="ghost-button" onClick={onCancel} disabled={loading}>取消</button>
-          <button className={isStop ? 'danger-button' : 'primary-button'} onClick={onConfirm} disabled={loading}>
+        <div className="px-4 pb-4 pt-2 flex justify-end gap-2">
+          <button className="h-[34px] rounded-md border border-gray-200 px-3 bg-white text-gray-900 font-medium text-[13px] hover:bg-gray-50 cursor-pointer transition-colors" onClick={onCancel} disabled={loading}>取消</button>
+          <button className={`h-[34px] rounded-md px-3 font-medium text-[13px] border-0 cursor-pointer transition-colors disabled:opacity-50 ${isStop ? 'bg-red-600 text-white hover:bg-red-700' : 'bg-gray-900 text-white hover:bg-gray-700'}`} onClick={onConfirm} disabled={loading}>
             {loading ? '处理中...' : `确认${actionText}`}
           </button>
         </div>
@@ -2458,87 +2548,90 @@ function CreateInstanceModal({ servers, groups, requestFn, onRefresh, onClose })
     onClose();
   }
 
+  const inputCls = "mt-1.5 w-full h-9 border border-gray-200 rounded-md px-2.5 bg-white text-gray-900 outline-0 focus:border-gray-900 focus:shadow-[0_0_0_3px_rgba(0,0,0,0.08)] text-[13px] transition-all disabled:opacity-50 disabled:cursor-not-allowed";
+  const selectCls = inputCls;
+
   return (
-    <div className="modal-backdrop" role="presentation" onMouseDown={submitting ? undefined : onClose}>
-      <section className="modal create-modal" role="dialog" aria-modal="true" onMouseDown={(e) => e.stopPropagation()}>
-        <div className="modal-header">
+    <div className="fixed inset-0 z-40 p-7 grid place-items-center bg-black/40 animate-[fadeIn_0.15s_ease-out]" role="presentation" onMouseDown={submitting ? undefined : onClose}>
+      <section className="w-[min(980px,100%)] max-h-[min(860px,calc(100vh-56px))] rounded-xl border border-gray-200 overflow-hidden grid grid-rows-[auto_minmax(0,1fr)_auto] bg-white shadow-lg animate-[slideUp_0.18s_cubic-bezier(0.16,1,0.3,1)]" role="dialog" aria-modal="true" onMouseDown={(e) => e.stopPropagation()}>
+        <div className="min-h-[62px] px-4 py-4 border-b border-gray-200 flex items-center justify-between gap-3">
           <div>
-            <h3>创建实例</h3>
-            <span>新建 Redis / Kvrocks 实例</span>
+            <h3 className="m-0 text-base font-semibold">创建实例</h3>
+            <span className="block mt-0.5 text-xs text-gray-400">新建 Redis / Kvrocks 实例</span>
           </div>
-          <button className="icon-button" onClick={onClose} aria-label="关闭" type="button"><X size={18} /></button>
+          <button className="w-8 h-8 rounded-md border border-gray-200 bg-white text-gray-500 inline-flex items-center justify-center hover:bg-gray-50 transition-colors" onClick={onClose} aria-label="关闭" type="button"><X size={18} /></button>
         </div>
-        <div className="modal-body">
-          {error && <div className="notice compact"><AlertCircle size={16} /> {error}</div>}
+        <div className="min-h-0 overflow-auto p-4 grid gap-4">
+          {error && <div className="border border-red-200 rounded-md px-3 py-2.5 flex items-center gap-2 bg-red-50 text-red-700 text-[13px]"><AlertCircle size={16} /> {error}</div>}
           <section>
-            <h4><Info size={16} /> 基本信息</h4>
-            <div className="form-grid">
-              <label>{isReplica ? '实例组' : '名称'} <span className="req">*</span>
+            <h4 className="m-0 mb-3 inline-flex items-center gap-1.5 text-[13px] font-semibold text-gray-500"><Info size={16} className="text-gray-400" /> 基本信息</h4>
+            <div className="grid grid-cols-3 gap-3 max-md:grid-cols-1">
+              <label className="block text-xs font-medium text-gray-400">{isReplica ? '实例组' : '名称'} <span className="text-red-500">*</span>
                 {isReplica ? (
-                  <select value={form.group} onChange={(e) => update('group', e.target.value)}>
+                  <select className={selectCls} value={form.group} onChange={(e) => update('group', e.target.value)}>
                     <option value="">选择组</option>
                     {replicaGroups.map((g) => <option key={g.groupName} value={g.groupName}>{g.groupName}</option>)}
                   </select>
                 ) : (
-                  <input value={form.group} onChange={(e) => update('group', e.target.value)} placeholder="如 order" />
+                  <input className={inputCls} value={form.group} onChange={(e) => update('group', e.target.value)} placeholder="如 order" />
                 )}
               </label>
-              <label>类别 <span className="req">*</span>
-                <select value={form.category} onChange={(e) => update('category', e.target.value)} disabled={isReplica}>
+              <label className="block text-xs font-medium text-gray-400">类别 <span className="text-red-500">*</span>
+                <select className={selectCls} value={form.category} onChange={(e) => update('category', e.target.value)} disabled={isReplica}>
                   <option value="cache">缓存</option>
                   <option value="persistent">持久化</option>
                 </select>
               </label>
-              <label>引擎 <span className="req">*</span>
-                <select value={form.engine} onChange={(e) => update('engine', e.target.value)} disabled={isReplica}>
+              <label className="block text-xs font-medium text-gray-400">引擎 <span className="text-red-500">*</span>
+                <select className={selectCls} value={form.engine} onChange={(e) => update('engine', e.target.value)} disabled={isReplica}>
                   <option value="redis">Redis</option>
                   <option value="kvrocks">Kvrocks</option>
                 </select>
               </label>
-              <label>引擎版本
-                <select value={form.engine_version} onChange={(e) => update('engine_version', e.target.value)} disabled={isReplica}>
+              <label className="block text-xs font-medium text-gray-400">引擎版本
+                <select className={selectCls} value={form.engine_version} onChange={(e) => update('engine_version', e.target.value)} disabled={isReplica}>
                   <option value="">默认{defaultVersion ? ` (${defaultVersion})` : ''}</option>
                   {currentVersions.map((v) => <option key={v} value={v}>{v}</option>)}
                 </select>
               </label>
-              <label>副本数量 <span className="req">*</span>
-                <input type="number" min={0} value={form.replicaCount} onChange={(e) => update('replicaCount', Math.max(0, Number(e.target.value) || 0))} />
+              <label className="block text-xs font-medium text-gray-400">副本数量 <span className="text-red-500">*</span>
+                <input className={inputCls} type="number" min={0} value={form.replicaCount} onChange={(e) => update('replicaCount', Math.max(0, Number(e.target.value) || 0))} />
               </label>
-              <label>接入方式
-                <select value={form.access_mode} onChange={(e) => update('access_mode', e.target.value)} disabled={isReplica || form.replicaCount === 0}>
+              <label className="block text-xs font-medium text-gray-400">接入方式
+                <select className={selectCls} value={form.access_mode} onChange={(e) => update('access_mode', e.target.value)} disabled={isReplica || form.replicaCount === 0}>
                   <option value="standard">标准（全部走主库）</option>
                   <option value="rw-split">读写分离</option>
                 </select>
               </label>
             </div>
             {replicaGroups.length > 0 && (
-              <label className="form-check">
+              <label className="flex items-center gap-2 mt-2.5 text-[13px] text-gray-500 cursor-pointer">
                 <input type="checkbox" checked={form.joinExisting} onChange={(e) => update('joinExisting', e.target.checked)} disabled={submitting} />
                 添加副本到已有组
               </label>
             )}
-            {isReplica && <p className="form-hint">引擎 / 版本 / 类别将从主库自动继承。副本数量为本次新增的副本数。</p>}
-            {!isReplica && <p className="form-hint">副本数量 0 = 单点，1+ = 主从。实例名自动生成为 {form.group || '组名'}-0、{form.group || '组名'}-1 …</p>}
+            {isReplica && <p className="mt-2 text-xs text-gray-500 bg-gray-100 rounded-md px-2.5 py-2">引擎 / 版本 / 类别将从主库自动继承。副本数量为本次新增的副本数。</p>}
+            {!isReplica && <p className="mt-2 text-xs text-gray-500 bg-gray-100 rounded-md px-2.5 py-2">副本数量 0 = 单点，1+ = 主从。实例名自动生成为 {form.group || '组名'}-0、{form.group || '组名'}-1 …</p>}
           </section>
           <section>
-            <h4><Database size={16} /> 资源配置</h4>
-            <div className="form-grid">
-              <label>内存 <span className="req">*</span>
-                <div className="input-unit">
-                  <input type="number" value={form.memory} onChange={(e) => update('memory', e.target.value)} placeholder="如 2" />
-                  <select value={form.memory_unit} onChange={(e) => update('memory_unit', e.target.value)}>
+            <h4 className="m-0 mb-3 inline-flex items-center gap-1.5 text-[13px] font-semibold text-gray-500"><Database size={16} className="text-gray-400" /> 资源配置</h4>
+            <div className="grid grid-cols-3 gap-3 max-md:grid-cols-1">
+              <label className="block text-xs font-medium text-gray-400">内存 <span className="text-red-500">*</span>
+                <div className="flex gap-1.5 mt-1.5">
+                  <input className="flex-1 min-w-0 h-9 border border-gray-200 rounded-md px-2.5 bg-white text-gray-900 outline-0 focus:border-gray-900 text-[13px]" type="number" value={form.memory} onChange={(e) => update('memory', e.target.value)} placeholder="如 2" />
+                  <select className="shrink-0 w-16 h-9 border border-gray-200 rounded-md px-2 bg-white text-gray-900 outline-0 text-[13px]" value={form.memory_unit} onChange={(e) => update('memory_unit', e.target.value)}>
                     <option value="Gi">Gi</option>
                     <option value="Mi">Mi</option>
                   </select>
                 </div>
               </label>
-              <label>CPU 核数
-                <input type="number" step="0.5" value={form.cpus} onChange={(e) => update('cpus', e.target.value)} placeholder="如 1" />
+              <label className="block text-xs font-medium text-gray-400">CPU 核数
+                <input className={inputCls} type="number" step="0.5" value={form.cpus} onChange={(e) => update('cpus', e.target.value)} placeholder="如 1" />
               </label>
-              <label>磁盘
-                <div className="input-unit">
-                  <input type="number" value={form.disk} onChange={(e) => update('disk', e.target.value)} placeholder="如 10" />
-                  <select value={form.disk_unit} onChange={(e) => update('disk_unit', e.target.value)}>
+              <label className="block text-xs font-medium text-gray-400">磁盘
+                <div className="flex gap-1.5 mt-1.5">
+                  <input className="flex-1 min-w-0 h-9 border border-gray-200 rounded-md px-2.5 bg-white text-gray-900 outline-0 focus:border-gray-900 text-[13px]" type="number" value={form.disk} onChange={(e) => update('disk', e.target.value)} placeholder="如 10" />
+                  <select className="shrink-0 w-16 h-9 border border-gray-200 rounded-md px-2 bg-white text-gray-900 outline-0 text-[13px]" value={form.disk_unit} onChange={(e) => update('disk_unit', e.target.value)}>
                     <option value="Gi">Gi</option>
                   </select>
                 </div>
@@ -2546,47 +2639,47 @@ function CreateInstanceModal({ servers, groups, requestFn, onRefresh, onClose })
             </div>
           </section>
           <section>
-            <h4><Server size={16} /> 部署选项</h4>
-            <div className="form-grid">
-              <label>目标节点
-                <select value={form.server} onChange={(e) => update('server', e.target.value)}>
+            <h4 className="m-0 mb-3 inline-flex items-center gap-1.5 text-[13px] font-semibold text-gray-500"><Server size={16} className="text-gray-400" /> 部署选项</h4>
+            <div className="grid grid-cols-3 gap-3 max-md:grid-cols-1">
+              <label className="block text-xs font-medium text-gray-400">目标节点
+                <select className={selectCls} value={form.server} onChange={(e) => update('server', e.target.value)}>
                   <option value="">自动调度</option>
                   {servers.map((s) => <option key={s.name} value={s.name}>{s.name}</option>)}
                 </select>
               </label>
-              <label>密码
-                <input type="password" value={form.password} onChange={(e) => update('password', e.target.value)} placeholder="留空则无密码" />
+              <label className="block text-xs font-medium text-gray-400">密码
+                <input className={inputCls} type="password" value={form.password} onChange={(e) => update('password', e.target.value)} placeholder="留空则无密码" />
               </label>
             </div>
           </section>
           <section>
-            <h4><SlidersHorizontal size={16} /> 高级</h4>
-            <div className="form-grid form-grid-full">
-              <label>配置覆盖
-                <textarea rows="4" value={form.config_overrides} onChange={(e) => update('config_overrides', e.target.value)} placeholder={'每行一个，格式 key=value\n如 maxmemory-policy=allkeys-lru'} />
+            <h4 className="m-0 mb-3 inline-flex items-center gap-1.5 text-[13px] font-semibold text-gray-500"><SlidersHorizontal size={16} className="text-gray-400" /> 高级</h4>
+            <div className="grid grid-cols-1 gap-3 mt-3">
+              <label className="block text-xs font-medium text-gray-400">配置覆盖
+                <textarea className="mt-1.5 w-full border border-gray-200 rounded-md px-2.5 py-2 bg-white text-gray-900 outline-0 focus:border-gray-900 text-[13px] font-inherit resize-y min-h-[80px]" rows="4" value={form.config_overrides} onChange={(e) => update('config_overrides', e.target.value)} placeholder={'每行一个，格式 key=value\n如 maxmemory-policy=allkeys-lru'} />
               </label>
             </div>
           </section>
           {instances.length > 0 && !submitting && (
             <section>
-              <h4><CheckCircle2 size={16} /> 将创建以下实例</h4>
-              <div className="instance-preview">
+              <h4 className="m-0 mb-3 inline-flex items-center gap-1.5 text-[13px] font-semibold text-gray-500"><CheckCircle2 size={16} className="text-gray-400" /> 将创建以下实例</h4>
+              <div className="grid gap-1.5">
                 {instances.map((inst) => (
-                  <div key={inst.name} className="preview-item">
-                    <code>{inst.name}</code>
-                    <span className="preview-role">{inst.role}</span>
+                  <div key={inst.name} className="flex items-center gap-2.5 px-3 py-2 border border-gray-200 rounded-md bg-gray-50">
+                    <code className="font-mono text-[13px] text-gray-900">{inst.name}</code>
+                    <span className="ml-auto text-xs text-gray-400">{inst.role}</span>
                   </div>
                 ))}
               </div>
             </section>
           )}
           {progress && (
-            <div className="notice compact"><RefreshCw size={16} className="spin" /> 正在创建 {progress.name}（{progress.current}/{progress.total}）…</div>
+            <div className="border border-gray-200 rounded-md px-3 py-2.5 flex items-center gap-2 text-[13px] text-gray-600"><RefreshCw size={16} className="animate-spin" /> 正在创建 {progress.name}（{progress.current}/{progress.total}）…</div>
           )}
         </div>
-        <div className="confirm-actions">
-          <button className="ghost-button" onClick={onClose} disabled={submitting}>取消</button>
-          <button className="primary-button" onClick={handleSubmit} disabled={submitting || instances.length === 0}>
+        <div className="px-4 pb-4 pt-3 border-t border-gray-200 flex justify-end gap-2">
+          <button className="h-[34px] rounded-md border border-gray-200 px-3 bg-white text-gray-900 font-medium text-[13px] hover:bg-gray-50 cursor-pointer transition-colors" onClick={onClose} disabled={submitting}>取消</button>
+          <button className="h-[34px] rounded-md px-3 bg-gray-900 text-white font-medium text-[13px] hover:bg-gray-700 border-0 cursor-pointer transition-colors disabled:opacity-50" onClick={handleSubmit} disabled={submitting || instances.length === 0}>
             {submitting ? '创建中…' : `创建 ${instances.length} 个实例`}
           </button>
         </div>

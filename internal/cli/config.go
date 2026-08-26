@@ -8,9 +8,8 @@ import (
 )
 
 type Config struct {
-	Server   string `yaml:"server"`
-	Token    string `yaml:"token"`
-	Operator string `yaml:"operator"`
+	Server string `yaml:"server"`
+	Token  string `yaml:"token"`
 }
 
 func LoadConfig() *Config {
@@ -22,12 +21,6 @@ func LoadConfig() *Config {
 	}
 	if v := os.Getenv("REDIS_SERVER_TOKEN"); v != "" {
 		cfg.Token = v
-	}
-	if v := os.Getenv("REDIS_PILOT_OPERATOR"); v != "" {
-		cfg.Operator = v
-	}
-	if cfg.Operator == "" {
-		cfg.Operator = "cli"
 	}
 	return cfg
 }

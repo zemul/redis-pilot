@@ -38,6 +38,6 @@ func (l *Logger) Log(r store.AuditRecord) error {
 }
 
 // Query 按条件查询审计日志，结果按时间倒序。
-func (l *Logger) Query(f store.AuditFilter) ([]store.AuditRecord, error) {
+func (l *Logger) Query(f store.AuditFilter) ([]store.AuditRecord, int, error) {
 	return l.db.QueryAudit(f)
 }

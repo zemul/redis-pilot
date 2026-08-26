@@ -1,5 +1,16 @@
 import { useState } from 'react';
 import { Database, LogIn, UserPlus, Trash2, Key, Users, X, Copy } from 'lucide-react';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import {
+  Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription,
+} from '@/components/ui/dialog';
+import {
+  Table, TableHeader, TableBody, TableRow, TableHead, TableCell,
+} from '@/components/ui/table';
+import {
+  Select, SelectTrigger, SelectContent, SelectItem, SelectValue,
+} from '@/components/ui/select';
 
 // ─── Auth Context ─────────────────────────────────────────────────────────────
 
@@ -60,17 +71,21 @@ export function LoginPage({ onLogin }) {
   }
 
   return (
-    <div className="login-page">
-      <form className="login-form" onSubmit={handleSubmit}>
-        <div className="login-brand">
+    <div className="min-h-screen flex items-center justify-center bg-background p-4">
+      <form className="w-full max-w-sm border rounded-lg p-8 space-y-5" onSubmit={handleSubmit}>
+        <div className="flex flex-col items-center gap-1 text-primary">
           <Database size={36} />
-          <h1>Redis Pilot</h1>
-          <p>多实例管理平台</p>
+          <h1 className="text-xl font-semibold mt-2">Redis Pilot</h1>
+          <p className="text-sm text-muted-foreground">多实例管理平台</p>
         </div>
-        {error && <div className="login-error">{error}</div>}
-        <label>
-          用户名
-          <input
+        {error && (
+          <div className="text-sm text-destructive bg-destructive/10 border border-destructive/20 rounded-md px-3 py-2">
+            {error}
+          </div>
+        )}
+        <div className="space-y-1.5">
+          <label className="text-sm text-muted-foreground">用户名</label>
+          <Input
             type="text"
             value={username}
             onChange={(e) => setUsername(e.target.value)}
@@ -78,38 +93,21 @@ export function LoginPage({ onLogin }) {
             autoFocus
             required
           />
-        </label>
-        <label>
-          密码
-          <input
+        </div>
+        <div className="space-y-1.5">
+          <label className="text-sm text-muted-foreground">密码</label>
+          <Input
             type="password"
             value={password}
             onChange={(e) => setPassword(e.target.value)}
             placeholder="请输入密码"
             required
           />
-        </label>
-        <button type="submit" className="primary-button login-button" disabled={loading}>
-          <LogIn size={16} /> {loading ? '登录中...' : '登录'}
-        </button>
-      </form>
-    </div>
-  );
-}
-
-// ─── Modal (reusable) ────────────────────────────────────────────────────────
-
-function Modal({ open, onClose, title, children }) {
-  if (!open) return null;
-  return (
-    <div className="modal-backdrop" onClick={onClose}>
-      <div className="modal" onClick={(e) => e.stopPropagation()}>
-        <div className="modal-header">
-          <h3>{title}</h3>
-          <button className="icon-button" onClick={onClose}><X size={16} /></button>
         </div>
-        <div className="modal-body">{children}</div>
-      </div>
+        <Button type="submit" className="w-full" disabled={loading}>
+          <LogIn size={16} /> {loading ? '登录中...' : '登录'}
+        </Button>
+      </form>
     </div>
   );
 }
@@ -195,106 +193,121 @@ export function UserManagement({ request }) {
   }
 
   return (
-    <div className="user-management">
-      <div className="panel-header">
-        <h3><Users size={18} /> 用户管理</h3>
-        <div className="header-actions">
-          <button className="ghost-button" onClick={() => setShowChangePw(true)}>
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <h3 className="flex items-center gap-2 text-base font-semibold">
+          <Users size={18} /> 用户管理
+        </h3>
+        <div className="flex gap-2">
+          <Button variant="ghost" size="sm" onClick={() => setShowChangePw(true)}>
             <Key size={14} /> 修改密码
-          </button>
-          <button className="primary-button" onClick={() => setShowCreate(true)}>
+          </Button>
+          <Button size="sm" onClick={() => setShowCreate(true)}>
             <UserPlus size={14} /> 新建用户
-          </button>
+          </Button>
         </div>
       </div>
 
-      {error && <div className="notice">{error}</div>}
-
-      {loading ? (
-        <div className="panel loading">加载中...</div>
-      ) : (
-        <table className="data-table">
-          <thead>
-            <tr>
-              <th>用户名</th>
-              <th>创建时间</th>
-              <th>创建者</th>
-              <th>操作</th>
-            </tr>
-          </thead>
-          <tbody>
-            {users.map((u) => (
-              <tr key={u.id}>
-                <td><code>{u.username}</code></td>
-                <td>{u.created_at ? new Date(u.created_at).toLocaleString() : '-'}</td>
-                <td>{u.created_by}</td>
-                <td>
-                  <button className="icon-button danger" onClick={() => setDeleteTarget(u.username)} title="删除用户">
-                    <Trash2 size={14} />
-                  </button>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+      {error && (
+        <div className="text-sm text-destructive bg-destructive/10 border border-destructive/20 rounded-md px-3 py-2">
+          {error}
+        </div>
       )}
 
-      {/* ── 新建用户弹窗 ── */}
-      <Modal open={showCreate} onClose={() => setShowCreate(false)} title="新建用户">
-        <form className="modal-form" onSubmit={handleCreate}>
-          <label>
-            用户名
-            <input type="text" placeholder="输入用户名" value={newUser.username}
-              onChange={(e) => setNewUser({ ...newUser, username: e.target.value })} autoFocus required />
-          </label>
-          <label>
-            密码
-            <input type="password" placeholder="至少 4 位" value={newUser.password}
-              onChange={(e) => setNewUser({ ...newUser, password: e.target.value })} required />
-          </label>
-          <div className="modal-actions">
-            <button type="button" className="ghost-button" onClick={() => setShowCreate(false)}>取消</button>
-            <button type="submit" className="primary-button" disabled={creating}>
-              {creating ? '创建中...' : '创建'}
-            </button>
-          </div>
-        </form>
-      </Modal>
+      {loading ? (
+        <div className="text-center text-muted-foreground py-8">加载中...</div>
+      ) : (
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>用户名</TableHead>
+              <TableHead>创建时间</TableHead>
+              <TableHead>创建者</TableHead>
+              <TableHead className="w-16">操作</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {users.map((u) => (
+              <TableRow key={u.id}>
+                <TableCell><code className="text-sm">{u.username}</code></TableCell>
+                <TableCell className="text-muted-foreground">{u.created_at ? new Date(u.created_at).toLocaleString() : '-'}</TableCell>
+                <TableCell className="text-muted-foreground">{u.created_by}</TableCell>
+                <TableCell>
+                  <Button variant="ghost" size="icon" className="h-7 w-7 text-destructive hover:text-destructive" onClick={() => setDeleteTarget(u.username)}>
+                    <Trash2 size={14} />
+                  </Button>
+                </TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      )}
 
-      {/* ── 修改密码弹窗 ── */}
-      <Modal open={showChangePw} onClose={() => setShowChangePw(false)} title="修改密码">
-        <form className="modal-form" onSubmit={handleChangePassword}>
-          <label>
-            当前密码
-            <input type="password" placeholder="输入当前密码" value={pwForm.old_password}
-              onChange={(e) => setPwForm({ ...pwForm, old_password: e.target.value })} autoFocus required />
-          </label>
-          <label>
-            新密码
-            <input type="password" placeholder="至少 4 位" value={pwForm.new_password}
-              onChange={(e) => setPwForm({ ...pwForm, new_password: e.target.value })} required />
-          </label>
-          <div className="modal-actions">
-            <button type="button" className="ghost-button" onClick={() => setShowChangePw(false)}>取消</button>
-            <button type="submit" className="primary-button" disabled={changingPw}>
-              {changingPw ? '修改中...' : '确认修改'}
-            </button>
-          </div>
-        </form>
-      </Modal>
+      {/* 新建用户 */}
+      <Dialog open={showCreate} onOpenChange={setShowCreate}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>新建用户</DialogTitle>
+          </DialogHeader>
+          <form className="space-y-4" onSubmit={handleCreate}>
+            <div className="space-y-1.5">
+              <label className="text-sm text-muted-foreground">用户名</label>
+              <Input placeholder="输入用户名" value={newUser.username}
+                onChange={(e) => setNewUser({ ...newUser, username: e.target.value })} autoFocus required />
+            </div>
+            <div className="space-y-1.5">
+              <label className="text-sm text-muted-foreground">密码</label>
+              <Input type="password" placeholder="至少 4 位" value={newUser.password}
+                onChange={(e) => setNewUser({ ...newUser, password: e.target.value })} required />
+            </div>
+            <DialogFooter>
+              <Button variant="ghost" type="button" onClick={() => setShowCreate(false)}>取消</Button>
+              <Button type="submit" disabled={creating}>{creating ? '创建中...' : '创建'}</Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
 
-      {/* ── 删除用户确认弹窗 ── */}
-      <Modal open={!!deleteTarget} onClose={() => setDeleteTarget(null)} title="删除用户">
-        <div className="modal-form">
-          <p style={{margin: 0, fontSize: '0.9rem'}}>
-            确认删除用户 <strong>{deleteTarget}</strong>？该用户的所有 API Token 也会被删除。
-          </p>
-          <div className="modal-actions">
-            <button className="ghost-button" onClick={() => setDeleteTarget(null)}>取消</button>
-            <button className="primary-button danger-button" onClick={() => handleDelete(deleteTarget)}>删除</button>
-          </div>
-        </div>
-      </Modal>
+      {/* 修改密码 */}
+      <Dialog open={showChangePw} onOpenChange={setShowChangePw}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>修改密码</DialogTitle>
+          </DialogHeader>
+          <form className="space-y-4" onSubmit={handleChangePassword}>
+            <div className="space-y-1.5">
+              <label className="text-sm text-muted-foreground">当前密码</label>
+              <Input type="password" placeholder="输入当前密码" value={pwForm.old_password}
+                onChange={(e) => setPwForm({ ...pwForm, old_password: e.target.value })} autoFocus required />
+            </div>
+            <div className="space-y-1.5">
+              <label className="text-sm text-muted-foreground">新密码</label>
+              <Input type="password" placeholder="至少 4 位" value={pwForm.new_password}
+                onChange={(e) => setPwForm({ ...pwForm, new_password: e.target.value })} required />
+            </div>
+            <DialogFooter>
+              <Button variant="ghost" type="button" onClick={() => setShowChangePw(false)}>取消</Button>
+              <Button type="submit" disabled={changingPw}>{changingPw ? '修改中...' : '确认修改'}</Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      {/* 删除确认 */}
+      <Dialog open={!!deleteTarget} onOpenChange={() => setDeleteTarget(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>删除用户</DialogTitle>
+            <DialogDescription>
+              确认删除用户 <strong>{deleteTarget}</strong>？该用户的所有 API Token 也会被删除。
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setDeleteTarget(null)}>取消</Button>
+            <Button variant="destructive" onClick={() => handleDelete(deleteTarget)}>删除</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
@@ -351,117 +364,145 @@ export function TokenManagement({ request }) {
   }
 
   return (
-    <div className="user-management">
-      <div className="panel-header">
-        <h3><Key size={18} /> API Token</h3>
-        <div className="header-actions">
-          <button className="primary-button" onClick={() => setShowCreateToken(true)}>
-            <Key size={14} /> 生成 Token
-          </button>
-        </div>
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <h3 className="flex items-center gap-2 text-base font-semibold">
+          <Key size={18} /> API Token
+        </h3>
+        <Button size="sm" onClick={() => setShowCreateToken(true)}>
+          <Key size={14} /> 生成 Token
+        </Button>
       </div>
 
-      {error && <div className="notice">{error}</div>}
-
-      {loading ? (
-        <div className="panel loading">加载中...</div>
-      ) : (
-        <table className="data-table">
-          <thead>
-            <tr>
-              <th>名称</th>
-              <th>Token</th>
-              <th>备注</th>
-              <th>创建时间</th>
-              <th>过期时间</th>
-              <th>操作</th>
-            </tr>
-          </thead>
-          <tbody>
-            {tokens.map((t) => (
-              <tr key={t.id}>
-                <td>{t.name}</td>
-                <td className="token-cell"><code>{t.token}</code><button className="icon-button" onClick={() => navigator.clipboard.writeText(t.token)} title="复制"><Copy size={13} /></button></td>
-                <td>{t.description || '-'}</td>
-                <td>{t.created_at ? new Date(t.created_at).toLocaleString() : '-'}</td>
-                <td>{t.expires_at ? new Date(t.expires_at).toLocaleString() : '永不过期'}</td>
-                <td>
-                  <button className="icon-button danger" onClick={() => setDeleteTarget(t)} title="删除 Token">
-                    <Trash2 size={14} />
-                  </button>
-                </td>
-              </tr>
-            ))}
-            {tokens.length === 0 && <tr><td colSpan="6" style={{textAlign:'center',color:'var(--text-2)'}}>暂无 Token</td></tr>}
-          </tbody>
-        </table>
+      {error && (
+        <div className="text-sm text-destructive bg-destructive/10 border border-destructive/20 rounded-md px-3 py-2">
+          {error}
+        </div>
       )}
 
-      {/* ── 生成 Token 弹窗 ── */}
-      <Modal open={showCreateToken} onClose={() => setShowCreateToken(false)} title="生成 API Token">
-        <form className="modal-form" onSubmit={handleCreateToken}>
-          <label>
-            名称
-            <input type="text" placeholder="如：CI 部署、监控脚本" value={tokenName}
-              onChange={(e) => setTokenName(e.target.value)} autoFocus required />
-          </label>
-          <label>
-            备注
-            <input type="text" placeholder="补充说明（可选）" value={tokenDesc}
-              onChange={(e) => setTokenDesc(e.target.value)} />
-          </label>
-          <label>
-            有效期
-            <select value={tokenExpiry} onChange={(e) => setTokenExpiry(e.target.value)}
-              style={{padding: '0.6rem 0.75rem', border: '1px solid var(--border)', borderRadius: 6, fontSize: '0.9rem', background: 'var(--bg)', color: 'var(--text)'}}>
-              <option value="never">永不过期</option>
-              <option value="7d">7 天</option>
-              <option value="30d">30 天</option>
-              <option value="90d">90 天</option>
-              <option value="365d">1 年</option>
-            </select>
-          </label>
-          <div className="modal-actions">
-            <button type="button" className="ghost-button" onClick={() => setShowCreateToken(false)}>取消</button>
-            <button type="submit" className="primary-button" disabled={creatingToken}>
-              {creatingToken ? '生成中...' : '生成'}
-            </button>
-          </div>
-        </form>
-      </Modal>
+      {loading ? (
+        <div className="text-center text-muted-foreground py-8">加载中...</div>
+      ) : (
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>名称</TableHead>
+              <TableHead>Token</TableHead>
+              <TableHead>备注</TableHead>
+              <TableHead>创建时间</TableHead>
+              <TableHead>过期时间</TableHead>
+              <TableHead className="w-16">操作</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {tokens.map((t) => (
+              <TableRow key={t.id}>
+                <TableCell className="font-medium">{t.name}</TableCell>
+                <TableCell>
+                  <div className="flex items-center gap-1.5">
+                    <code className="text-xs bg-muted px-1.5 py-0.5 rounded break-all">{t.token}</code>
+                    <Button variant="ghost" size="icon" className="h-6 w-6 opacity-50 hover:opacity-100"
+                      onClick={() => navigator.clipboard.writeText(t.token)}>
+                      <Copy size={12} />
+                    </Button>
+                  </div>
+                </TableCell>
+                <TableCell className="text-muted-foreground">{t.description || '-'}</TableCell>
+                <TableCell className="text-muted-foreground">{t.created_at ? new Date(t.created_at).toLocaleString() : '-'}</TableCell>
+                <TableCell className="text-muted-foreground">{t.expires_at ? new Date(t.expires_at).toLocaleString() : '永不过期'}</TableCell>
+                <TableCell>
+                  <Button variant="ghost" size="icon" className="h-7 w-7 text-destructive hover:text-destructive"
+                    onClick={() => setDeleteTarget(t)}>
+                    <Trash2 size={14} />
+                  </Button>
+                </TableCell>
+              </TableRow>
+            ))}
+            {tokens.length === 0 && (
+              <TableRow>
+                <TableCell colSpan={6} className="text-center text-muted-foreground py-8">暂无 Token</TableCell>
+              </TableRow>
+            )}
+          </TableBody>
+        </Table>
+      )}
 
-      {/* ── Token 展示弹窗 ── */}
-      <Modal open={!!newToken} onClose={() => setNewToken('')} title="Token 已生成">
-        <div className="token-reveal">
-          <p>⚠️ Token 只显示一次，请立即复制保存：</p>
-          <code className="token-value">{newToken}</code>
-          <div className="modal-actions">
-            <button className="primary-button" onClick={() => { navigator.clipboard.writeText(newToken); }}>
-              复制
-            </button>
-            <button className="ghost-button" onClick={() => setNewToken('')}>关闭</button>
-          </div>
-        </div>
-      </Modal>
+      {/* 生成 Token */}
+      <Dialog open={showCreateToken} onOpenChange={setShowCreateToken}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>生成 API Token</DialogTitle>
+          </DialogHeader>
+          <form className="space-y-4" onSubmit={handleCreateToken}>
+            <div className="space-y-1.5">
+              <label className="text-sm text-muted-foreground">名称</label>
+              <Input placeholder="如：CI 部署、监控脚本" value={tokenName}
+                onChange={(e) => setTokenName(e.target.value)} autoFocus required />
+            </div>
+            <div className="space-y-1.5">
+              <label className="text-sm text-muted-foreground">备注</label>
+              <Input placeholder="补充说明（可选）" value={tokenDesc}
+                onChange={(e) => setTokenDesc(e.target.value)} />
+            </div>
+            <div className="space-y-1.5">
+              <label className="text-sm text-muted-foreground">有效期</label>
+              <Select value={tokenExpiry} onValueChange={setTokenExpiry}>
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="never">永不过期</SelectItem>
+                  <SelectItem value="7d">7 天</SelectItem>
+                  <SelectItem value="30d">30 天</SelectItem>
+                  <SelectItem value="90d">90 天</SelectItem>
+                  <SelectItem value="365d">1 年</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <DialogFooter>
+              <Button variant="ghost" type="button" onClick={() => setShowCreateToken(false)}>取消</Button>
+              <Button type="submit" disabled={creatingToken}>{creatingToken ? '生成中...' : '生成'}</Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
 
-      {/* ── 删除确认弹窗 ── */}
-      <Modal open={!!deleteTarget} onClose={() => setDeleteTarget(null)} title="删除 Token">
-        <div className="modal-form">
-          <p style={{margin: 0, fontSize: '0.9rem'}}>
-            确认删除 Token <strong>{deleteTarget?.name}</strong>？使用此 Token 的 CLI/脚本将无法访问。
-          </p>
-          <div className="modal-actions">
-            <button className="ghost-button" onClick={() => setDeleteTarget(null)}>取消</button>
-            <button className="primary-button danger-button" onClick={async () => {
+      {/* Token 展示 */}
+      <Dialog open={!!newToken} onOpenChange={() => setNewToken('')}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Token 已生成</DialogTitle>
+            <DialogDescription>⚠️ Token 只显示一次，请立即复制保存</DialogDescription>
+          </DialogHeader>
+          <code className="block text-sm bg-muted px-3 py-2 rounded-md break-all select-all">{newToken}</code>
+          <DialogFooter>
+            <Button onClick={() => { navigator.clipboard.writeText(newToken); }}>复制</Button>
+            <Button variant="ghost" onClick={() => setNewToken('')}>关闭</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* 删除确认 */}
+      <Dialog open={!!deleteTarget} onOpenChange={() => setDeleteTarget(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>删除 Token</DialogTitle>
+            <DialogDescription>
+              确认删除 Token <strong>{deleteTarget?.name}</strong>？使用此 Token 的 CLI/脚本将无法访问。
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setDeleteTarget(null)}>取消</Button>
+            <Button variant="destructive" onClick={async () => {
               try {
                 await request('/auth/token/delete', { method: 'POST', body: JSON.stringify({ id: deleteTarget.id }) });
                 setDeleteTarget(null);
                 loadTokens();
               } catch (err) { setError(err.message); setDeleteTarget(null); }
-            }}>删除</button>
-          </div>
-        </div>
-      </Modal>
+            }}>删除</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
