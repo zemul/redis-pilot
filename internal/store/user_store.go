@@ -11,24 +11,28 @@ type User struct {
 	ID        int64  `json:"id"`
 	Username  string `json:"username"`
 	Password  string `json:"-"` // bcrypt hash, never serialize
+	Role      string `json:"role"` // admin | viewer
 	CreatedAt string `json:"created_at"`
 	CreatedBy string `json:"created_by"`
 }
 
 // UserCreate 创建用户，password 应已经是 bcrypt hash。
-func (d *DB) UserCreate(username, passwordHash, createdBy string) error {
+func (d *DB) UserCreate(username, passwordHash, role, createdBy string) error {
+	if role == "" {
+		role = "admin"
+	}
 	now := time.Now().Format(time.RFC3339)
 	return d.execWrite(
-		`INSERT INTO users (username, password, created_at, created_by) VALUES (?, ?, ?, ?)`,
-		username, passwordHash, now, createdBy,
+		`INSERT INTO users (username, password, role, created_at, created_by) VALUES (?, ?, ?, ?, ?)`,
+		username, passwordHash, role, now, createdBy,
 	)
 }
 
 // UserGet 按用户名查询。
 func (d *DB) UserGet(username string) (*User, error) {
-	row := d.sql.QueryRow(`SELECT id, username, password, created_at, created_by FROM users WHERE username = ?`, username)
+	row := d.sql.QueryRow(`SELECT id, username, password, role, created_at, created_by FROM users WHERE username = ?`, username)
 	u := &User{}
-	if err := row.Scan(&u.ID, &u.Username, &u.Password, &u.CreatedAt, &u.CreatedBy); err != nil {
+	if err := row.Scan(&u.ID, &u.Username, &u.Password, &u.Role, &u.CreatedAt, &u.CreatedBy); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, nil
 		}
@@ -39,7 +43,7 @@ func (d *DB) UserGet(username string) (*User, error) {
 
 // UserList 返回所有用户（不含密码 hash）。
 func (d *DB) UserList() ([]User, error) {
-	rows, err := d.sql.Query(`SELECT id, username, created_at, created_by FROM users ORDER BY id`)
+	rows, err := d.sql.Query(`SELECT id, username, role, created_at, created_by FROM users ORDER BY id`)
 	if err != nil {
 		return nil, fmt.Errorf("store: user list: %w", err)
 	}
@@ -47,7 +51,7 @@ func (d *DB) UserList() ([]User, error) {
 	var users []User
 	for rows.Next() {
 		var u User
-		if err := rows.Scan(&u.ID, &u.Username, &u.CreatedAt, &u.CreatedBy); err != nil {
+		if err := rows.Scan(&u.ID, &u.Username, &u.Role, &u.CreatedAt, &u.CreatedBy); err != nil {
 			return nil, fmt.Errorf("store: user list scan: %w", err)
 		}
 		users = append(users, u)

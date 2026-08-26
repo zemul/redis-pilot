@@ -144,18 +144,23 @@ func (s *Server) Router() *gin.Engine {
 	authed := r.Group("")
 	authed.Use(s.unifiedAuthMiddleware())
 
-	// 用户与 Token 管理
+	// 用户与 Token 管理（自己的密码/token 任何角色都能操作，用户增删仅 admin）
 	authed.GET("/auth/me", s.authMe)
-	authed.POST("/auth/user/create", s.authUserCreate)
-	authed.GET("/auth/user/list", s.authUserList)
-	authed.POST("/auth/user/delete", s.authUserDelete)
 	authed.POST("/auth/change-password", s.authChangePassword)
 	authed.POST("/auth/token/create", s.authTokenCreate)
 	authed.GET("/auth/token/list", s.authTokenList)
 	authed.POST("/auth/token/delete", s.authTokenDelete)
 
-	// 节点管理
+	// 用户管理（仅 admin）
+	adminAuthed := authed.Group("")
+	adminAuthed.Use(s.adminOnly())
+	adminAuthed.POST("/auth/user/create", s.authUserCreate)
+	adminAuthed.GET("/auth/user/list", s.authUserList)
+	adminAuthed.POST("/auth/user/delete", s.authUserDelete)
+
+	// 节点管理（需要 admin 才能写）
 	node := authed.Group("/node")
+	node.Use(s.adminOnly())
 	{
 		node.GET("/list", s.nodeQuery)
 		node.POST("/add", s.nodeAdd)
@@ -163,8 +168,9 @@ func (s *Server) Router() *gin.Engine {
 		node.POST("/update", s.nodeUpdate)
 	}
 
-	// 实例管理
+	// 实例管理（需要 admin 才能写）
 	instance := authed.Group("/instance")
+	instance.Use(s.adminOnly())
 	{
 		instance.GET("/list", s.instanceList)
 		instance.GET("/status", s.instanceStatus)
@@ -184,8 +190,9 @@ func (s *Server) Router() *gin.Engine {
 		instance.POST("/replicate", s.instanceReplicate)
 	}
 
-	// 备份
+	// 备份（需要 admin 才能写）
 	backup := authed.Group("/backup")
+	backup.Use(s.adminOnly())
 	{
 		backup.POST("/exec", s.backupExec)
 		backup.GET("/status", s.backupStatus)
@@ -197,11 +204,14 @@ func (s *Server) Router() *gin.Engine {
 
 	authed.GET("/audit/query", s.auditQuery)
 	authed.GET("/server/info", s.serverInfo)
-	authed.POST("/reconcile", s.reconcile)
 	authed.GET("/metrics", s.metricsCollect)
 
-	// Sentinel 管理
+	// 以下写操作仅 admin
+	adminAuthed.POST("/reconcile", s.reconcile)
+
+	// Sentinel 管理（需要 admin 才能写）
 	sentinel := authed.Group("/sentinel")
+	sentinel.Use(s.adminOnly())
 	{
 		sentinel.POST("/event", s.sentinelEvent)
 		sentinel.GET("/status", s.sentinelStatus)

@@ -119,7 +119,7 @@ export function UserManagement({ request }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [showCreate, setShowCreate] = useState(false);
-  const [newUser, setNewUser] = useState({ username: '', password: '' });
+  const [newUser, setNewUser] = useState({ username: '', password: '', role: 'admin' });
   const [creating, setCreating] = useState(false);
   const [showChangePw, setShowChangePw] = useState(false);
   const [pwForm, setPwForm] = useState({ old_password: '', new_password: '' });
@@ -150,7 +150,7 @@ export function UserManagement({ request }) {
         method: 'POST',
         body: JSON.stringify(newUser)
       });
-      setNewUser({ username: '', password: '' });
+      setNewUser({ username: '', password: '', role: 'admin' });
       setShowCreate(false);
       loadUsers();
     } catch (err) {
@@ -221,6 +221,7 @@ export function UserManagement({ request }) {
           <TableHeader>
             <TableRow>
               <TableHead>用户名</TableHead>
+              <TableHead>角色</TableHead>
               <TableHead>创建时间</TableHead>
               <TableHead>创建者</TableHead>
               <TableHead className="w-16">操作</TableHead>
@@ -230,6 +231,7 @@ export function UserManagement({ request }) {
             {users.map((u) => (
               <TableRow key={u.id}>
                 <TableCell><code className="text-sm">{u.username}</code></TableCell>
+                <TableCell><span className={`text-xs font-medium px-1.5 py-0.5 rounded ${u.role === 'admin' ? 'bg-gray-900 text-white' : 'bg-gray-100 text-gray-600'}`}>{u.role || 'admin'}</span></TableCell>
                 <TableCell className="text-muted-foreground">{u.created_at ? new Date(u.created_at).toLocaleString() : '-'}</TableCell>
                 <TableCell className="text-muted-foreground">{u.created_by}</TableCell>
                 <TableCell>
@@ -259,6 +261,14 @@ export function UserManagement({ request }) {
               <label className="text-sm text-muted-foreground">密码</label>
               <Input type="password" placeholder="至少 4 位" value={newUser.password}
                 onChange={(e) => setNewUser({ ...newUser, password: e.target.value })} required />
+            </div>
+            <div className="space-y-1.5">
+              <label className="text-sm text-muted-foreground">角色</label>
+              <select className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                value={newUser.role} onChange={(e) => setNewUser({ ...newUser, role: e.target.value })}>
+                <option value="admin">管理员 (admin)</option>
+                <option value="viewer">只读 (viewer)</option>
+              </select>
             </div>
             <DialogFooter>
               <Button variant="ghost" type="button" onClick={() => setShowCreate(false)}>取消</Button>

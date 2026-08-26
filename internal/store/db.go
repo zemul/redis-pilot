@@ -299,6 +299,10 @@ func (d *DB) migrate() error {
 			sql: `ALTER TABLE instance_groups ADD COLUMN access_mode TEXT NOT NULL DEFAULT ''`,
 		},
 		{
+			sql:     `ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'admin'`,
+			postSQL: `UPDATE users SET role = 'admin' WHERE role = ''`,
+		},
+		{
 			sql: `ALTER TABLE user_tokens ADD COLUMN expires_at TEXT NOT NULL DEFAULT ''`,
 		},
 		{

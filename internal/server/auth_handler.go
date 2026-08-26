@@ -24,6 +24,7 @@ import (
 
 type jwtClaims struct {
 	Username string `json:"sub"`
+	Role     string `json:"role"`
 	Exp      int64  `json:"exp"`
 	Iat      int64  `json:"iat"`
 }
@@ -35,10 +36,11 @@ func (s *Server) jwtSecret() []byte {
 	return []byte("redis-pilot-default-jwt-secret")
 }
 
-func (s *Server) jwtSign(username string) (string, error) {
+func (s *Server) jwtSign(username, role string) (string, error) {
 	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"HS256","typ":"JWT"}`))
 	claims := jwtClaims{
 		Username: username,
+		Role:     role,
 		Exp:      time.Now().Add(30 * 24 * time.Hour).Unix(),
 		Iat:      time.Now().Unix(),
 	}
@@ -98,6 +100,7 @@ func (s *Server) unifiedAuthMiddleware() gin.HandlerFunc {
 		// 尝试 JWT
 		if claims, err := s.jwtVerify(token); err == nil {
 			c.Set("auth_user", claims.Username)
+			c.Set("auth_role", claims.Role)
 			c.Next()
 			return
 		}
@@ -110,12 +113,39 @@ func (s *Server) unifiedAuthMiddleware() gin.HandlerFunc {
 			return
 		}
 		if username != "" {
+			// 查询用户角色
+			user, err := s.db.UserGet(username)
+			if err != nil || user == nil {
+				c.AbortWithStatusJSON(http.StatusUnauthorized, apitypes.APIResponse{Error: "user not found"})
+				return
+			}
 			c.Set("auth_user", username)
+			c.Set("auth_role", user.Role)
 			c.Next()
 			return
 		}
 
 		c.AbortWithStatusJSON(http.StatusUnauthorized, apitypes.APIResponse{Error: "invalid or expired token"})
+	}
+}
+
+// ─── RBAC Middleware ─────────────────────────────────────────────────────────
+// adminOnly 拒绝非 admin 用户对写操作的访问。
+// viewer 角色仅允许 GET 请求（只读），其他方法返回 403。
+
+func (s *Server) adminOnly() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		role := c.GetString("auth_role")
+		if role == "admin" {
+			c.Next()
+			return
+		}
+		// viewer: 只允许 GET
+		if c.Request.Method == http.MethodGet {
+			c.Next()
+			return
+		}
+		c.AbortWithStatusJSON(http.StatusForbidden, apitypes.APIResponse{Error: "admin role required"})
 	}
 }
 
@@ -146,17 +176,18 @@ func (s *Server) authLogin(c *gin.Context) {
 		fail(c, http.StatusUnauthorized, "invalid username or password")
 		return
 	}
-	token, err := s.jwtSign(user.Username)
+	token, err := s.jwtSign(user.Username, user.Role)
 	if err != nil {
 		fail(c, http.StatusInternalServerError, "failed to generate token")
 		return
 	}
-	ok(c, gin.H{"token": token, "username": user.Username})
+	ok(c, gin.H{"token": token, "username": user.Username, "role": user.Role})
 }
 
 func (s *Server) authMe(c *gin.Context) {
 	username := c.GetString("auth_user")
-	ok(c, gin.H{"username": username})
+	role := c.GetString("auth_role")
+	ok(c, gin.H{"username": username, "role": role})
 }
 
 // ─── User Management ────────────────────────────────────────────────────────
@@ -164,6 +195,7 @@ func (s *Server) authMe(c *gin.Context) {
 type createUserRequest struct {
 	Username string `json:"username" binding:"required"`
 	Password string `json:"password" binding:"required"`
+	Role     string `json:"role"` // admin | viewer，默认 admin
 }
 
 func (s *Server) authUserCreate(c *gin.Context) {
@@ -180,13 +212,21 @@ func (s *Server) authUserCreate(c *gin.Context) {
 		fail(c, http.StatusBadRequest, "password must be at least 4 characters")
 		return
 	}
+	// 校验角色值
+	if req.Role == "" {
+		req.Role = "admin"
+	}
+	if req.Role != "admin" && req.Role != "viewer" {
+		fail(c, http.StatusBadRequest, "role must be admin or viewer")
+		return
+	}
 	hash, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
 	if err != nil {
 		fail(c, http.StatusInternalServerError, "failed to hash password")
 		return
 	}
 	createdBy := c.GetString("auth_user")
-	if err := s.db.UserCreate(req.Username, string(hash), createdBy); err != nil {
+	if err := s.db.UserCreate(req.Username, string(hash), req.Role, createdBy); err != nil {
 		if strings.Contains(err.Error(), "UNIQUE constraint") {
 			fail(c, http.StatusConflict, "username already exists")
 			return
@@ -195,8 +235,8 @@ func (s *Server) authUserCreate(c *gin.Context) {
 		fail(c, http.StatusInternalServerError, "failed to create user")
 		return
 	}
-	s.audit.Log(store.AuditRecord{Operator: createdBy, Action: "user.create", Target: map[string]interface{}{"username": req.Username}})
-	ok(c, gin.H{"username": req.Username})
+	s.audit.Log(store.AuditRecord{Operator: createdBy, Action: "user.create", Target: map[string]interface{}{"username": req.Username, "role": req.Role}})
+	ok(c, gin.H{"username": req.Username, "role": req.Role})
 }
 
 func (s *Server) authUserList(c *gin.Context) {
@@ -372,7 +412,7 @@ func (s *Server) InitAdmin() error {
 	if err != nil {
 		return fmt.Errorf("init admin: hash password: %w", err)
 	}
-	if err := s.db.UserCreate(s.cfg.Admin.Username, string(hash), "system"); err != nil {
+	if err := s.db.UserCreate(s.cfg.Admin.Username, string(hash), "admin", "system"); err != nil {
 		return fmt.Errorf("init admin: create user: %w", err)
 	}
 	s.log.Infof("created initial admin user: %s", s.cfg.Admin.Username)

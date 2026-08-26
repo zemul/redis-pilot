@@ -65,7 +65,7 @@ func doAuthRequest(router http.Handler, method, path string, body interface{}) *
 
 func makeTestJWT(username string, secret []byte) string {
 	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"HS256","typ":"JWT"}`))
-	claims := fmt.Sprintf(`{"sub":"%s","exp":%d,"iat":%d}`, username, time.Now().Add(72*time.Hour).Unix(), time.Now().Unix())
+	claims := fmt.Sprintf(`{"sub":"%s","role":"admin","exp":%d,"iat":%d}`, username, time.Now().Add(72*time.Hour).Unix(), time.Now().Unix())
 	payload := base64.RawURLEncoding.EncodeToString([]byte(claims))
 	msg := header + "." + payload
 	mac := hmac.New(sha256.New, secret)
@@ -103,7 +103,7 @@ func parseResponse(t *testing.T, w *httptest.ResponseRecorder) apitypes.APIRespo
 // testJWT 为测试生成一个有效的 JWT
 func testJWT(t *testing.T, s *Server) string {
 	t.Helper()
-	token, err := s.jwtSign("admin")
+	token, err := s.jwtSign("admin", "admin")
 	if err != nil {
 		t.Fatalf("jwtSign: %v", err)
 	}
