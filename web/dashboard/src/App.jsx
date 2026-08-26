@@ -1241,8 +1241,8 @@ function InstanceGroupRows({ group, expanded, onToggle, publicHost, sentinelPort
               <IconButton icon={Info} label="详情与指标" onClick={() => onOpenDetail(master, group)} />
               <IconButton icon={HardDrive} label="备份列表" onClick={() => onOpenBackups(master, group)} />
               <MoreMenu items={[
-                { label: '修改配置', onClick: () => onConfig(master) },
                 { label: '接入信息', onClick: () => onToggleAccessMode(group, null) },
+                { label: '修改配置', onClick: () => onConfig(master) },
                 { label: '慢查询', onClick: () => onSlowlog(master) },
                 { label: '大 Key 分析', onClick: () => onBigkeys(master) },
                 powerAction && {
@@ -1361,25 +1361,9 @@ function ProxyPorts({ group, publicHost }) {
   const autoPort = proxy.auto_port || proxy.AutoPort;
   const isRwSplit = group.access_mode === 'rw-split';
   if (!masterPort && !autoPort) return <span className="text-gray-400">-</span>;
-  // standard 模式下客户端统一走主库端口，auto_port 仅为兜底，不展示避免误导
-  if (!isRwSplit) {
-    const port = masterPort || autoPort;
-    return <CopyableEndpoint host={publicHost} port={port} className="text-gray-700 text-[13px]" />;
-  }
-  return (
-    <div className="flex flex-col gap-0.5">
-      {autoPort && (
-        <span className="text-gray-700 text-[13px]">
-          读写 <CopyableEndpoint host={publicHost} port={autoPort} />
-        </span>
-      )}
-      {masterPort && (
-        <span className="text-gray-400 text-xs">
-          主库 <CopyableEndpoint host={publicHost} port={masterPort} />
-        </span>
-      )}
-    </div>
-  );
+  // 只展示当前接入方式对应的端口
+  const port = isRwSplit ? (autoPort || masterPort) : (masterPort || autoPort);
+  return <CopyableEndpoint host={publicHost} port={port} className="text-gray-700 text-[13px]" />;
 }
 
 function ResourceValue({ memory, memoryUsed }) {
@@ -1431,8 +1415,8 @@ function InstanceRow({ item, group, role, onOpenDetail, onOpenBackups, onPowerAc
           <IconButton icon={Info} label="详情与指标" onClick={() => onOpenDetail(item, group)} />
           <IconButton icon={HardDrive} label="备份列表" onClick={() => onOpenBackups(item, group)} />
           <MoreMenu items={[
-            { label: '修改配置', onClick: () => onConfig(item) },
             !isReplica && { label: '接入信息', onClick: () => onToggleAccessMode(group, null) },
+            { label: '修改配置', onClick: () => onConfig(item) },
             { label: '慢查询', onClick: () => onSlowlog(item) },
             { label: '大 Key 分析', onClick: () => onBigkeys(item) },
             powerAction && {
@@ -2142,13 +2126,13 @@ function AccessModeModal({ group, publicHost, sentinelPort, onConfirm, onClose }
           {sentinelEndpoint && (
             <div className="space-y-2.5">
               <h4 className="m-0 text-[13px] font-medium text-gray-700">Sentinel 模式</h4>
-              <div className="bg-gray-50 rounded-md px-3 py-2 space-y-1.5">
-                <div className="flex items-center justify-between">
-                  <span className="text-[12px] text-gray-500">Sentinel 地址</span>
+              <div className="bg-gray-50 rounded-md px-3 py-2 space-y-2">
+                <div>
+                  <span className="text-[11px] text-gray-400 block mb-0.5">Sentinel 地址</span>
                   <CopyableText text={sentinelEndpoint} className="text-[13px] font-mono text-gray-900" />
                 </div>
-                <div className="flex items-center justify-between">
-                  <span className="text-[12px] text-gray-500">Master Name</span>
+                <div>
+                  <span className="text-[11px] text-gray-400 block mb-0.5">Master Name</span>
                   <CopyableText text={group.groupName} className="text-[13px] font-mono text-gray-900" />
                 </div>
               </div>
@@ -2166,6 +2150,15 @@ function AccessModeModal({ group, publicHost, sentinelPort, onConfirm, onClose }
               <input type="radio" name="access_mode" value="rw-split" checked={mode === 'rw-split'} onChange={() => setMode('rw-split')} />
               <span className="text-[13px]"><strong className="font-medium">读写分离</strong> — 读请求分发到从库</span>
             </label>
+            {mode !== (group.access_mode || 'standard') && (() => {
+              const newPort = mode === 'rw-split' ? (autoPort || masterPort) : (masterPort || autoPort);
+              const newEndpoint = publicHost ? `${publicHost}:${newPort}` : newPort;
+              return newPort ? (
+                <p className="text-[12px] text-amber-600 bg-amber-50 border border-amber-200 rounded px-2.5 py-1.5 mt-2 mb-0">
+                  切换后接入端口将变更为 <span className="font-mono font-medium">{newEndpoint}</span>
+                </p>
+              ) : null;
+            })()}
             <div className="mt-3 flex justify-end gap-2">
               <button className="h-[34px] rounded-md border border-gray-200 px-3 bg-white text-gray-900 font-medium text-[13px] hover:bg-gray-50 cursor-pointer transition-colors" onClick={onClose}>关闭</button>
               <button className="h-[34px] rounded-md px-3 bg-gray-900 text-white font-medium text-[13px] hover:bg-gray-700 border-0 cursor-pointer transition-colors disabled:opacity-50" disabled={mode === (group.access_mode || 'standard')} onClick={() => onConfirm(mode)}>切换模式</button>
