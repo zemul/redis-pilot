@@ -770,20 +770,24 @@ func (s *Server) instanceAccessMode(c *gin.Context) {
 		fail(c, http.StatusInternalServerError, err.Error())
 		return
 	}
-	inst := instances.Instances[req.Name]
-	if inst == nil {
-		fail(c, http.StatusNotFound, "instance not found: "+req.Name)
-		return
-	}
-	group := instances.Groups[inst.Group]
+	// 兼容传组名或实例名
+	groupName := req.Name
+	group := instances.Groups[groupName]
 	if group == nil {
-		fail(c, http.StatusNotFound, "group not found: "+inst.Group)
+		// 尝试按实例名查找对应的组
+		if inst := instances.Instances[req.Name]; inst != nil {
+			groupName = inst.Group
+			group = instances.Groups[groupName]
+		}
+	}
+	if group == nil {
+		fail(c, http.StatusNotFound, "group or instance not found: "+req.Name)
 		return
 	}
 
 	group.AccessMode = req.AccessMode
 	group.UpdatedAt = time.Now().Format(time.RFC3339)
-	if err := s.db.UpsertGroup(inst.Group, group); err != nil {
+	if err := s.db.UpsertGroup(groupName, group); err != nil {
 		fail(c, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -791,12 +795,12 @@ func (s *Server) instanceAccessMode(c *gin.Context) {
 	s.audit.Log(store.AuditRecord{
 		Operator: operatorFrom(c),
 		Action:   "instance.access_mode", Level: audit.LevelImportant, Result: "success",
-		Target: map[string]interface{}{"instance": req.Name, "group": inst.Group},
+		Target: map[string]interface{}{"group": groupName},
 		Params: map[string]interface{}{"access_mode": req.AccessMode},
 	})
 
 	ok(c, map[string]string{
-		"group":       inst.Group,
+		"group":       groupName,
 		"access_mode": req.AccessMode,
 	})
 }

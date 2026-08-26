@@ -606,10 +606,10 @@ function AppShell() {
       setAuth(null);
       throw new Error('登录已过期，请重新登录');
     }
-    if (!response.ok) throw new Error(`请求失败：${response.status} ${path}`);
-    const body = await response.json();
-    if (body.error) throw new Error(body.error);
-    return body.data;
+    const body = await response.json().catch(() => null);
+    if (!response.ok) throw new Error(body?.error || `请求失败：${response.status} ${path}`);
+    if (body?.error) throw new Error(body.error);
+    return body?.data;
   }
 
   async function refresh() {
