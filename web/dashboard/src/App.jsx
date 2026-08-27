@@ -17,6 +17,7 @@ import {
   HardDrive,
   Info,
   Key,
+  Layers,
   LayoutDashboard,
   List,
   LogOut,
@@ -1183,6 +1184,69 @@ function SummaryCell({ label, value, icon: Icon, tone = 'neutral' }) {
   );
 }
 
+// 实例列表统一的网格列模板：实例组/节点 | 类型 | 部署/规格 | 架构/版本 | 节点/接入点 | 内存使用 | 状态 | 操作
+const INST_GRID = 'grid items-center gap-4 grid-cols-[minmax(220px,2.4fr)_84px_120px_150px_180px_150px_92px_112px] px-4';
+
+// 引擎品牌图标：Redis 红色方块 / Kvrocks 蓝色方块，其它引擎回退到通用数据库图标
+function EngineIcon({ engine, size = 20 }) {
+  const key = String(engine || '').toLowerCase();
+  if (key === 'redis') {
+    return (
+      <span className="inline-flex items-center justify-center rounded-md shrink-0" style={{ width: size, height: size, background: '#DC382D' }} title="Redis">
+        <svg viewBox="0 0 24 24" width={size * 0.62} height={size * 0.62} fill="none" stroke="#fff" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <ellipse cx="12" cy="5.5" rx="8" ry="3" />
+          <path d="M4 5.5v6c0 1.66 3.58 3 8 3s8-1.34 8-3v-6" />
+          <path d="M4 11.5v6c0 1.66 3.58 3 8 3s8-1.34 8-3v-6" />
+        </svg>
+      </span>
+    );
+  }
+  if (key === 'kvrocks') {
+    return (
+      <span className="inline-flex items-center justify-center rounded-md shrink-0 text-white font-bold" style={{ width: size, height: size, background: '#3B7EF0', fontSize: size * 0.56, lineHeight: 1 }} title="Kvrocks">K</span>
+    );
+  }
+  return (
+    <span className="inline-flex items-center justify-center rounded-md shrink-0 bg-gray-100 text-gray-500" style={{ width: size, height: size }}>
+      <Database size={size * 0.6} />
+    </span>
+  );
+}
+
+// 类型标签：缓存（绿）/ 持久化（蓝）
+function CategoryBadge({ category }) {
+  if (!category) return <span className="text-gray-300 text-[13px]">-</span>;
+  const tone = category === 'persistent'
+    ? 'bg-blue-50 text-blue-600 border-blue-100'
+    : 'bg-emerald-50 text-emerald-600 border-emerald-100';
+  return (
+    <span className={`inline-flex items-center rounded-md border px-2 py-0.5 text-[12px] font-medium ${tone}`}>
+      {categoryLabel(category)}
+    </span>
+  );
+}
+
+// 内存使用：以百分比为主，下方附带 已用/总量 细节
+function MemoryUsage({ memory, memoryUsed }) {
+  const totalBytes = memory * 1024 * 1024 * 1024;
+  const pct = totalBytes > 0 && memoryUsed > 0 ? (memoryUsed / totalBytes) * 100 : 0;
+  const pctLabel = pct >= 10 ? pct.toFixed(0) : pct > 0 ? pct.toFixed(2) : '0';
+  const usedLabel = memoryUsed > 0 ? formatBytes(memoryUsed) : '0 MB';
+  const totalLabel = formatBytes(totalBytes);
+  const tone = pct > 80 ? 'bg-red-500' : pct > 60 ? 'bg-amber-500' : 'bg-emerald-500';
+  return (
+    <div className="flex flex-col gap-1 min-w-[120px]">
+      <div className="flex items-center gap-2">
+        <span className="font-semibold tabular-nums text-[13px] text-gray-900 shrink-0">{pctLabel}%</span>
+        <div className="flex-1 h-1 rounded-full bg-gray-100 overflow-hidden">
+          <div className={`h-full rounded-full transition-all duration-300 ${tone}`} style={{ width: `${pct > 0 ? Math.max(Math.min(pct, 100), 4) : 0}%` }} />
+        </div>
+      </div>
+      <span className="tabular-nums text-[11px] text-gray-400">{usedLabel} / {totalLabel}</span>
+    </div>
+  );
+}
+
 function InstancesView({ groups, publicHost, sentinelPort, query, setQuery, expandedGroups, setExpandedGroups, onOpenDetail, onOpenBackups, onPowerAction, onDelete, onSlowlog, onBigkeys, onConfig, onToggleAccessMode, onCreate, pendingAction }) {
   const filtered = groups.filter((group) => {
     const text = [
@@ -1216,153 +1280,153 @@ function InstancesView({ groups, publicHost, sentinelPort, query, setQuery, expa
           <Plus size={14} /> 创建实例
         </button>
       </div>
-      <section className="border border-gray-200 rounded-lg bg-white overflow-hidden">
-        <div className="overflow-x-auto">
-          <table className="w-full min-w-[920px] border-collapse">
-            <thead>
-              <tr>
-                <th className="px-4 py-2.5 border-b border-gray-200 text-left text-xs font-medium text-gray-400 bg-gray-50">实例名称 / 组</th>
-                <th className="px-4 py-2.5 border-b border-gray-200 text-left text-xs font-medium text-gray-400 bg-gray-50">类别</th>
-                <th className="px-4 py-2.5 border-b border-gray-200 text-left text-xs font-medium text-gray-400 bg-gray-50">接入方式</th>
-                <th className="px-4 py-2.5 border-b border-gray-200 text-left text-xs font-medium text-gray-400 bg-gray-50">引擎 / 拓扑</th>
-                <th className="px-4 py-2.5 border-b border-gray-200 text-left text-xs font-medium text-gray-400 bg-gray-50">节点</th>
-                <th className="px-4 py-2.5 border-b border-gray-200 text-left text-xs font-medium text-gray-400 bg-gray-50">接入点</th>
-                <th className="px-4 py-2.5 border-b border-gray-200 text-left text-xs font-medium text-gray-400 bg-gray-50">内存</th>
-                <th className="px-4 py-2.5 border-b border-gray-200 text-left text-xs font-medium text-gray-400 bg-gray-50">状态</th>
-                <th className="px-4 py-2.5 border-b border-gray-200 text-right text-xs font-medium text-gray-400 bg-gray-50">操作</th>
-              </tr>
-            </thead>
-            <tbody>
-              {filtered.length === 0 ? (
-                <tr><td colSpan="9"><EmptyState title="暂无实例" /></td></tr>
-              ) : filtered.map((group) => (
-                <InstanceGroupRows
-                  key={group.groupName}
-                  group={group}
-                  expanded={expandedGroups[group.groupName] === true}
-                  onToggle={() => toggleGroup(group.groupName)}
-                  publicHost={publicHost}
-                  sentinelPort={sentinelPort}
-                  onOpenDetail={onOpenDetail}
-                  onOpenBackups={onOpenBackups}
-                  onPowerAction={onPowerAction}
-                  onDelete={onDelete}
-                  onSlowlog={onSlowlog}
-                  onBigkeys={onBigkeys}
-                  onConfig={onConfig}
-                  onToggleAccessMode={onToggleAccessMode}
-                  pendingAction={pendingAction}
-                />
-              ))}
-            </tbody>
-          </table>
+
+      <div className="overflow-x-auto">
+        <div className="min-w-[1060px] grid gap-2.5">
+          <div className={`${INST_GRID} py-1 text-xs font-medium text-gray-400`}>
+            <div>实例组 / 节点</div>
+            <div>类型</div>
+            <div>部署 / 规格</div>
+            <div>架构 / 版本</div>
+            <div>节点 / 接入点</div>
+            <div>内存使用</div>
+            <div>状态</div>
+            <div className="text-right">操作</div>
+          </div>
+
+          {filtered.length === 0 ? (
+            <div className="border border-gray-200 rounded-xl bg-white"><EmptyState title="暂无实例" /></div>
+          ) : filtered.map((group) => (
+            <InstanceGroupCard
+              key={group.groupName}
+              group={group}
+              expanded={expandedGroups[group.groupName] === true}
+              onToggle={() => toggleGroup(group.groupName)}
+              publicHost={publicHost}
+              sentinelPort={sentinelPort}
+              onOpenDetail={onOpenDetail}
+              onOpenBackups={onOpenBackups}
+              onPowerAction={onPowerAction}
+              onDelete={onDelete}
+              onSlowlog={onSlowlog}
+              onBigkeys={onBigkeys}
+              onConfig={onConfig}
+              onToggleAccessMode={onToggleAccessMode}
+              pendingAction={pendingAction}
+            />
+          ))}
         </div>
-      </section>
+      </div>
     </div>
   );
 }
 
-function InstanceGroupRows({ group, expanded, onToggle, publicHost, sentinelPort, onOpenDetail, onOpenBackups, onPowerAction, onDelete, onSlowlog, onBigkeys, onConfig, onToggleAccessMode, pendingAction }) {
+function InstanceGroupCard({ group, expanded, onToggle, publicHost, sentinelPort, onOpenDetail, onOpenBackups, onPowerAction, onDelete, onSlowlog, onBigkeys, onConfig, onToggleAccessMode, pendingAction }) {
   const master = group.master;
   const hasReplicas = group.replicas.length > 0;
   const topology = topologyLabel(group, master);
-  const isStandalone = !hasReplicas;
-  const category = group.category ? categoryLabel(group.category) : '';
-
+  const accessLabel = group.access_mode === 'rw-split' ? '读写分离' : '标准';
   const powerAction = master ? powerActionFor(master, group) : null;
 
+  const menuItems = master ? [
+    { label: '备份列表', onClick: () => onOpenBackups(master, group) },
+    { label: '接入信息', onClick: () => onToggleAccessMode(group, null) },
+    { label: '修改配置', onClick: () => onConfig(master) },
+    { label: '慢查询', onClick: () => onSlowlog(master) },
+    { label: '大 Key 分析', onClick: () => onBigkeys(master) },
+    powerAction && {
+      label: powerAction.label,
+      disabled: powerAction.disabledReason || pendingAction === `${powerAction.action}:${master.name}`,
+      onClick: () => { if (!powerAction.disabledReason) onPowerAction(master, group, powerAction.action); }
+    },
+    {
+      label: '删除',
+      danger: true,
+      disabled: hasReplicas ? '主库存在从库时不可删除，请先删除从库' : pendingAction === `delete:${master.name}`,
+      onClick: () => { if (!hasReplicas) onDelete(master, group); }
+    }
+  ] : [];
+
   return (
-    <>
-      <tr className={`border-b border-gray-200 last:border-b-0 ${hasReplicas ? 'cursor-pointer hover:bg-gray-50' : 'hover:bg-gray-50'}`} onClick={hasReplicas ? onToggle : undefined}>
-        <td className="px-4 py-2.5 text-[13px]">
-          <div className="flex items-center gap-2.5">
-            {hasReplicas ? (
-              <button className="w-5 h-5 rounded inline-flex items-center justify-center bg-transparent text-gray-400 border-0 cursor-pointer hover:text-gray-900 transition-colors" type="button">
-                {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-              </button>
-            ) : (
-              <span className="w-5" />
-            )}
-            <div>
-              <CopyableText text={group.groupName} className="font-semibold text-gray-900" />
-              {(hasReplicas || !master || master.name !== group.groupName) && (
-                <span className="text-[11px] text-gray-400 block mt-0.5">
-                  {master ? `主库: ${master.name}` : '主库状态异常'}
-                </span>
-              )}
-            </div>
-          </div>
-        </td>
-        <td className="px-4 py-2.5 text-[13px] text-gray-500">{category}</td>
-        <td className="px-4 py-2.5 text-[13px] text-gray-500">{group.access_mode === 'rw-split' ? '读写分离' : '标准'}</td>
-        <td className="px-4 py-2.5 text-[13px] text-gray-700">
-          {engineLabel(group)}
-          <span className="text-[11px] text-gray-400 block mt-0.5">{topology}</span>
-        </td>
-        <td className="px-4 py-2.5 text-[13px] text-gray-500 font-mono">{master ? getField(master, 'server', 'Server', '-') : '-'}</td>
-        <td className="px-4 py-2.5 text-[13px]"><ProxyPorts group={group} publicHost={publicHost} /></td>
-        <td className="px-4 py-2.5 text-[13px]">{master ? <ResourceValue memory={group.resource.memory} memoryUsed={group.resource.memoryUsed} /> : '-'}</td>
-        <td className="px-4 py-2.5 text-[13px]"><StatusBadge status={group.status} /></td>
-        <td className="px-4 py-2.5 text-[13px]">
-          {isStandalone && master && (
-            <div className="flex justify-end gap-1">
-              <IconButton icon={Info} label="详情与指标" onClick={() => onOpenDetail(master, group)} />
-              <IconButton icon={HardDrive} label="备份列表" onClick={() => onOpenBackups(master, group)} />
-              <MoreMenu items={[
-                { label: '接入信息', onClick: () => onToggleAccessMode(group, null) },
-                { label: '修改配置', onClick: () => onConfig(master) },
-                { label: '慢查询', onClick: () => onSlowlog(master) },
-                { label: '大 Key 分析', onClick: () => onBigkeys(master) },
-                powerAction && {
-                  label: powerAction.label,
-                  disabled: powerAction.disabledReason || pendingAction === `${powerAction.action}:${master.name}`,
-                  onClick: () => { if (!powerAction.disabledReason) onPowerAction(master, group, powerAction.action); }
-                },
-                {
-                  label: '删除',
-                  danger: true,
-                  disabled: pendingAction === `delete:${master.name}`,
-                  onClick: () => onDelete(master, group)
-                }
-              ]} />
-            </div>
+    <div className={`border rounded-xl bg-white transition-all ${expanded ? 'border-gray-300 shadow-sm' : 'border-gray-200 hover:border-gray-300 hover:shadow-sm'}`}>
+      <div className={`${INST_GRID} py-3.5 ${hasReplicas ? 'cursor-pointer' : ''}`} onClick={hasReplicas ? onToggle : undefined}>
+        <div className="flex items-center gap-2.5 min-w-0">
+          {hasReplicas ? (
+            <span className="w-5 h-5 rounded inline-flex items-center justify-center text-gray-400 shrink-0">
+              {expanded ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
+            </span>
+          ) : (
+            <span className="w-5 shrink-0" />
           )}
-        </td>
-      </tr>
-      {expanded && master && (
-        <InstanceRow
-          item={master}
-          group={group}
-          role="主库"
-          onOpenDetail={onOpenDetail}
-          onOpenBackups={onOpenBackups}
-          onPowerAction={onPowerAction}
-          onDelete={onDelete}
-          onSlowlog={onSlowlog}
-          onBigkeys={onBigkeys}
-          onConfig={onConfig}
-          onToggleAccessMode={onToggleAccessMode}
-          pendingAction={pendingAction}
-        />
+          <span className="w-8 h-8 rounded-lg bg-blue-50 text-blue-500 inline-flex items-center justify-center shrink-0"><Layers size={17} /></span>
+          <div className="min-w-0">
+            <CopyableText text={group.groupName} className="font-semibold text-gray-900 text-[14px]" />
+            {master ? (
+              <span className="text-[11px] text-gray-400 block mt-0.5 truncate">主库: {master.name}</span>
+            ) : (
+              <span className="text-[11px] text-red-500 block mt-0.5">主库状态异常</span>
+            )}
+          </div>
+        </div>
+        <div><CategoryBadge category={group.category} /></div>
+        <div className="text-[13px]">
+          <div className="text-gray-700">{accessLabel}</div>
+          <div className="text-[11px] text-gray-400 mt-0.5">{topology}</div>
+        </div>
+        <div className="flex items-center gap-2 text-[13px] text-gray-700 min-w-0">
+          <EngineIcon engine={group.engine} />
+          <span className="truncate">{engineLabel(group)}</span>
+        </div>
+        <div className="text-[13px]"><ProxyPorts group={group} publicHost={publicHost} /></div>
+        <div>{master ? <MemoryUsage memory={group.resource.memory} memoryUsed={group.resource.memoryUsed} /> : <span className="text-gray-300">-</span>}</div>
+        <div><StatusBadge status={group.status} /></div>
+        <div className="flex justify-end items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
+          {master && (
+            <button type="button" className="h-7 px-3 rounded-md border border-gray-200 bg-white text-[12px] text-gray-700 hover:bg-gray-50 hover:border-gray-300 transition-colors cursor-pointer" onClick={() => onOpenDetail(master, group)}>查看</button>
+          )}
+          <MoreMenu items={menuItems} />
+        </div>
+      </div>
+
+      {expanded && (
+        <div className="border-t border-gray-100 rounded-b-xl overflow-hidden">
+          {master && (
+            <InstanceNodeRow
+              item={master}
+              group={group}
+              role="主库"
+              first
+              onOpenDetail={onOpenDetail}
+              onOpenBackups={onOpenBackups}
+              onPowerAction={onPowerAction}
+              onDelete={onDelete}
+              onSlowlog={onSlowlog}
+              onBigkeys={onBigkeys}
+              onConfig={onConfig}
+              onToggleAccessMode={onToggleAccessMode}
+              pendingAction={pendingAction}
+            />
+          )}
+          {group.replicas.map((replica) => (
+            <InstanceNodeRow
+              key={replica.name}
+              item={replica}
+              group={group}
+              role="从库"
+              onOpenDetail={onOpenDetail}
+              onOpenBackups={onOpenBackups}
+              onPowerAction={onPowerAction}
+              onDelete={onDelete}
+              onSlowlog={onSlowlog}
+              onBigkeys={onBigkeys}
+              onConfig={onConfig}
+              onToggleAccessMode={onToggleAccessMode}
+              pendingAction={pendingAction}
+            />
+          ))}
+        </div>
       )}
-      {expanded && group.replicas.map((replica) => (
-        <InstanceRow
-          key={replica.name}
-          item={replica}
-          group={group}
-          role="从库"
-          onOpenDetail={onOpenDetail}
-          onOpenBackups={onOpenBackups}
-          onPowerAction={onPowerAction}
-          onDelete={onDelete}
-          onSlowlog={onSlowlog}
-          onBigkeys={onBigkeys}
-          onConfig={onConfig}
-          onToggleAccessMode={onToggleAccessMode}
-          pendingAction={pendingAction}
-        />
-      ))}
-    </>
+    </div>
   );
 }
 
@@ -1450,58 +1514,53 @@ function ResourceValue({ memory, memoryUsed }) {
   );
 }
 
-function InstanceRow({ item, group, role, onOpenDetail, onOpenBackups, onPowerAction, onDelete, onSlowlog, onBigkeys, onConfig, onToggleAccessMode, pendingAction }) {
+function InstanceNodeRow({ item, group, role, first, onOpenDetail, onOpenBackups, onPowerAction, onDelete, onSlowlog, onBigkeys, onConfig, onToggleAccessMode, pendingAction }) {
   const powerAction = powerActionFor(item, group);
   const isReplica = role === '从库';
   const isMasterWithReplicas = role === '主库' && group.replicas.length > 0;
+  const server = getField(item, 'server', 'Server', '');
+  const port = getField(item, 'port', 'Port', '');
+  const used = Number(getField(item, 'memory_used', 'MemoryUsed', 0) || 0);
+  const totalGi = parseGi(getField(item, 'memory', 'Memory'));
+
+  const menuItems = [
+    { label: '备份列表', onClick: () => onOpenBackups(item, group) },
+    !isReplica && { label: '接入信息', onClick: () => onToggleAccessMode(group, null) },
+    { label: '修改配置', onClick: () => onConfig(item) },
+    { label: '慢查询', onClick: () => onSlowlog(item) },
+    { label: '大 Key 分析', onClick: () => onBigkeys(item) },
+    powerAction && {
+      label: powerAction.label,
+      disabled: powerAction.disabledReason || pendingAction === `${powerAction.action}:${item.name}`,
+      onClick: () => { if (!powerAction.disabledReason) onPowerAction(item, group, powerAction.action); }
+    },
+    {
+      label: '删除',
+      danger: true,
+      disabled: isMasterWithReplicas ? '主库存在从库时不可删除，请先删除从库' : pendingAction === `delete:${item.name}`,
+      onClick: () => { if (!isMasterWithReplicas) onDelete(item, group); }
+    }
+  ];
 
   return (
-    <tr className="border-b border-gray-200 last:border-b-0 hover:bg-gray-50 bg-gray-50/50">
-      <td className="px-4 py-2.5 text-[13px]">
-        <div className="flex items-center gap-2.5 pl-8">
-          {isReplica && <span className="w-3.5 h-3.5 border-l border-b border-gray-300 rounded-bl shrink-0 -translate-y-0.5" />}
-          <CopyableText text={item.name} className="font-medium" />
-        </div>
-      </td>
-      <td className="px-4 py-2.5 text-[13px]" />
-      <td className="px-4 py-2.5 text-[13px]" />
-      <td className="px-4 py-2.5 text-[13px]">
-        <span className={`text-[11px] font-medium px-1.5 py-0.5 rounded ${isReplica ? 'bg-gray-100 text-gray-500' : 'bg-gray-900 text-white'}`}>{role}</span>
-      </td>
-      <td className="px-4 py-2.5 text-[13px] text-gray-500 font-mono">{getField(item, 'server', 'Server', '-')}</td>
-      <td className="px-4 py-2.5 text-[13px]" />
-      <td className="px-4 py-2.5 text-[13px]">        {(() => {
-          const used = Number(getField(item, 'memory_used', 'MemoryUsed', 0) || 0);
-          const totalGi = parseGi(getField(item, 'memory', 'Memory'));
-          const totalBytes = totalGi * 1024 * 1024 * 1024;
-          return <ResourceValue memory={totalGi} memoryUsed={used} />;
-        })()}
-      </td>
-      <td className="px-4 py-2.5 text-[13px]"><StatusBadge status={getField(item, 'status', 'Status')} /></td>
-      <td className="px-4 py-2.5 text-[13px]">
-        <div className="flex justify-end gap-1">
-          <IconButton icon={Info} label="详情与指标" onClick={() => onOpenDetail(item, group)} />
-          <IconButton icon={HardDrive} label="备份列表" onClick={() => onOpenBackups(item, group)} />
-          <MoreMenu items={[
-            !isReplica && { label: '接入信息', onClick: () => onToggleAccessMode(group, null) },
-            { label: '修改配置', onClick: () => onConfig(item) },
-            { label: '慢查询', onClick: () => onSlowlog(item) },
-            { label: '大 Key 分析', onClick: () => onBigkeys(item) },
-            powerAction && {
-              label: powerAction.label,
-              disabled: powerAction.disabledReason || pendingAction === `${powerAction.action}:${item.name}`,
-              onClick: () => { if (!powerAction.disabledReason) onPowerAction(item, group, powerAction.action); }
-            },
-            {
-              label: '删除',
-              danger: true,
-              disabled: isMasterWithReplicas ? '主库存在从库时不可删除，请先删除从库' : pendingAction === `delete:${item.name}`,
-              onClick: () => { if (!isMasterWithReplicas) onDelete(item, group); }
-            }
-          ]} />
-        </div>
-      </td>
-    </tr>
+    <div className={`${INST_GRID} py-3 bg-gray-50/70 ${first ? '' : 'border-t border-gray-100'}`}>
+      <div className="flex items-center gap-2.5 min-w-0 pl-[30px]">
+        <span className={`text-[11px] font-medium px-1.5 py-0.5 rounded shrink-0 ${isReplica ? 'bg-gray-200 text-gray-600' : 'bg-gray-900 text-white'}`}>{role}</span>
+        <CopyableText text={item.name} className="font-medium text-gray-800 text-[13px]" />
+      </div>
+      <div />
+      <div />
+      <div />
+      <div className="text-[13px]">
+        {server ? <CopyableEndpoint host={server} port={port} className="text-gray-600" /> : <span className="text-gray-300">-</span>}
+      </div>
+      <div><MemoryUsage memory={totalGi} memoryUsed={used} /></div>
+      <div><StatusBadge status={getField(item, 'status', 'Status')} /></div>
+      <div className="flex justify-end items-center gap-1.5">
+        <button type="button" className="h-7 px-3 rounded-md border border-gray-200 bg-white text-[12px] text-gray-700 hover:bg-gray-50 hover:border-gray-300 transition-colors cursor-pointer" onClick={() => onOpenDetail(item, group)}>查看</button>
+        <MoreMenu items={menuItems} />
+      </div>
+    </div>
   );
 }
 
