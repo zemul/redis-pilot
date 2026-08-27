@@ -1,0 +1,101 @@
+// 实例指标趋势视图：按时间范围拉取历史采样，用 echarts 渲染多张折线图（懒加载 echarts）。
+import { useState, useEffect, useRef } from 'react';
+import { AlertCircle } from 'lucide-react';
+
+export function MetricsTrendView({ instanceName, requestFn }) {
+  const [range_, setRange] = useState('1h');
+  const [points, setPoints] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const chartRefs = useRef({});
+  const chartInstances = useRef([]);
+
+  useEffect(() => {
+    let ignore = false;
+    setLoading(true);
+    setError('');
+    requestFn(`/instance/metrics/history?name=${encodeURIComponent(instanceName)}&range=${range_}`)
+      .then((data) => { if (!ignore) setPoints(data?.points || []); })
+      .catch((err) => { if (!ignore) setError(err.message || String(err)); })
+      .finally(() => { if (!ignore) setLoading(false); });
+    return () => { ignore = true; };
+  }, [instanceName, range_]);
+
+  useEffect(() => {
+    if (!points || points.length === 0) return;
+    import('echarts').then((echarts) => {
+      chartInstances.current.forEach((c) => c.dispose());
+      chartInstances.current = [];
+
+      const ts = points.map((p) => new Date(p.ts * 1000));
+      const charts = [
+        { id: 'mem', title: '内存使用率 (%)', data: points.map((p) => p.mem_max > 0 ? +(p.mem_used / p.mem_max * 100).toFixed(1) : 0), color: '#3b82f6', max: 100 },
+        { id: 'qps', title: 'QPS (ops/s)', data: points.map((p) => p.ops_sec), color: '#3b82f6' },
+        { id: 'hit', title: '命中率 (%)', data: points.map((p) => { const total = p.hits + p.misses; return total > 0 ? +((p.hits / total) * 100).toFixed(1) : 100; }), color: '#3b82f6', max: 100 },
+        { id: 'conns', title: '连接数', data: points.map((p) => p.conns), color: '#3b82f6' },
+        { id: 'frag', title: '内存碎片率', data: points.map((p) => p.frag_ratio ? +p.frag_ratio.toFixed(2) : 0), color: '#3b82f6' },
+        { id: 'repl', title: '主从同步状态', data: points.map((p) => p.repl_link !== undefined ? p.repl_link : 1), color: '#3b82f6', max: 1 },
+        { id: 'offset', title: '复制偏移量', data: points.map((p) => p.repl_offset || 0), color: '#3b82f6' },
+        { id: 'keys', title: 'Key 数量', data: points.map((p) => p.total_keys || 0), color: '#3b82f6' }
+      ];
+
+      charts.forEach(({ id, title, data, color, max }) => {
+        const el = chartRefs.current[id];
+        if (!el) return;
+        const chart = echarts.init(el);
+        chart.setOption({
+          title: { text: title, textStyle: { fontSize: 13, fontWeight: 500 }, left: 'center' },
+          tooltip: { trigger: 'axis', formatter: (params) => { const p = params[0]; return `${p.axisValueLabel}<br/>${p.marker} ${p.value}`; } },
+          grid: { left: 45, right: 12, top: 35, bottom: 28 },
+          xAxis: { type: 'category', data: ts.map((d) => d.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })), boundaryGap: false, axisLine: { lineStyle: { color: '#ddd' } }, axisLabel: { fontSize: 10, color: '#999' } },
+          yAxis: { type: 'value', min: 0, max: max || undefined, splitLine: { lineStyle: { color: '#f0f0f0' } }, axisLabel: { fontSize: 10, color: '#999' } },
+          series: [{ type: 'line', data, smooth: true, symbol: 'none', lineStyle: { width: 2, color }, areaStyle: { color: { type: 'linear', x: 0, y: 0, x2: 0, y2: 1, colorStops: [{ offset: 0, color: color + '30' }, { offset: 1, color: color + '05' }] } } }]
+        });
+        chartInstances.current.push(chart);
+      });
+
+      const handleResize = () => chartInstances.current.forEach((c) => c.resize());
+      window.addEventListener('resize', handleResize);
+      return () => window.removeEventListener('resize', handleResize);
+    });
+
+    return () => {
+      chartInstances.current.forEach((c) => c.dispose());
+      chartInstances.current = [];
+    };
+  }, [points]);
+
+  const rangeOptions = [
+    { value: '1h', label: '1小时' },
+    { value: '6h', label: '6小时' },
+    { value: '24h', label: '24小时' },
+    { value: '7d', label: '7天' },
+    { value: '30d', label: '30天' }
+  ];
+
+  return (
+    <section>
+      <div className="flex items-center gap-1.5 mb-3">
+        {rangeOptions.map((opt) => (
+          <button key={opt.value} className={`h-7 px-2.5 rounded-md border text-xs font-medium cursor-pointer transition-colors ${range_ === opt.value ? 'bg-gray-900 text-white border-gray-900' : 'bg-white text-gray-700 border-gray-200 hover:bg-gray-50'}`} onClick={() => setRange(opt.value)}>
+            {opt.label}
+          </button>
+        ))}
+      </div>
+      {loading ? <div className="min-h-[110px] border border-dashed border-gray-200 rounded-md grid place-items-center text-gray-400">正在加载趋势数据...</div> :
+       error ? <div className="border border-red-200 rounded-md px-3 py-2.5 flex items-center gap-2 bg-red-50 text-red-700 text-[13px]"><AlertCircle size={16} /> {error}</div> :
+       (!points || points.length === 0) ? <div className="text-center p-8 text-gray-400 text-sm">暂无历史数据，Agent 启动后每分钟采集一次</div> : (
+        <div className="grid grid-cols-2 gap-4 mt-3">
+          <div className="h-[200px] overflow-hidden" ref={(el) => { chartRefs.current.mem = el; }}></div>
+          <div className="h-[200px] overflow-hidden" ref={(el) => { chartRefs.current.qps = el; }}></div>
+          <div className="h-[200px] overflow-hidden" ref={(el) => { chartRefs.current.hit = el; }}></div>
+          <div className="h-[200px] overflow-hidden" ref={(el) => { chartRefs.current.conns = el; }}></div>
+          <div className="h-[200px] overflow-hidden" ref={(el) => { chartRefs.current.frag = el; }}></div>
+          <div className="h-[200px] overflow-hidden" ref={(el) => { chartRefs.current.repl = el; }}></div>
+          <div className="h-[200px] overflow-hidden" ref={(el) => { chartRefs.current.offset = el; }}></div>
+          <div className="h-[200px] overflow-hidden" ref={(el) => { chartRefs.current.keys = el; }}></div>
+        </div>
+      )}
+    </section>
+  );
+}
