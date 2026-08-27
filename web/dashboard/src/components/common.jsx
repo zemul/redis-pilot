@@ -157,7 +157,7 @@ export function EmptyState({ icon: Icon = Database, title, detail }) {
   );
 }
 
-export function SummaryCell({ label, value, icon: Icon, tone = 'neutral' }) {
+export function SummaryCell({ label, value, icon: Icon, tone = 'neutral', detail = '' }) {
   const toneStyles = {
     neutral: '',
     warn: '',
@@ -178,6 +178,7 @@ export function SummaryCell({ label, value, icon: Icon, tone = 'neutral' }) {
       {tone === 'alert' && <span className="absolute inset-x-0 top-0 h-0.5 bg-red-500" />}
       <span className={`inline-flex items-center gap-1.5 text-[13px] font-medium ${labelTone[tone] || 'text-gray-400'}`}><Icon size={15} /> {label}</span>
       <span className={`font-mono text-[34px] font-semibold leading-none tracking-tight tabular-nums ${valueTone[tone] || 'text-gray-900'}`}>{value}</span>
+      {detail && <span className="text-[12px] text-gray-400 leading-none">{detail}</span>}
     </div>
   );
 }
@@ -221,23 +222,19 @@ export function CategoryBadge({ category }) {
   );
 }
 
-// 内存使用：以百分比为主，下方附带 已用/总量 细节
+// 内存使用：保留百分比和快速扫读用的进度线，详细容量留给实例详情页
 export function MemoryUsage({ memory, memoryUsed }) {
   const totalBytes = memory * 1024 * 1024 * 1024;
   const pct = totalBytes > 0 && memoryUsed > 0 ? (memoryUsed / totalBytes) * 100 : 0;
   const pctLabel = pct >= 10 ? pct.toFixed(0) : pct > 0 ? pct.toFixed(2) : '0';
-  const usedLabel = memoryUsed > 0 ? formatBytes(memoryUsed) : '0 MB';
-  const totalLabel = formatBytes(totalBytes);
-  const tone = pct > 80 ? 'bg-red-500' : pct > 60 ? 'bg-amber-500' : 'bg-emerald-500';
+  const textTone = pct > 80 ? 'text-red-600' : pct > 60 ? 'text-amber-600' : 'text-gray-900';
+  const barTone = pct > 80 ? 'bg-red-500' : pct > 60 ? 'bg-amber-500' : 'bg-emerald-500';
   return (
-    <div className="flex flex-col gap-1 min-w-[120px]">
-      <div className="flex items-center gap-2">
-        <span className="font-semibold tabular-nums text-[13px] text-gray-900 shrink-0">{pctLabel}%</span>
-        <div className="flex-1 h-1 rounded-full bg-gray-100 overflow-hidden">
-          <div className={`h-full rounded-full transition-all duration-300 ${tone}`} style={{ width: `${pct > 0 ? Math.max(Math.min(pct, 100), 4) : 0}%` }} />
-        </div>
+    <div className="flex flex-col items-start gap-1 min-w-[72px]">
+      <span className={`font-semibold tabular-nums text-[13px] shrink-0 ${textTone}`}>{pctLabel}%</span>
+      <div className="w-[72px] h-1 rounded-full bg-slate-100 overflow-hidden">
+        <div className={`h-full rounded-full transition-all duration-300 ${barTone}`} style={{ width: `${pct > 0 ? Math.max(Math.min(pct, 100), 4) : 0}%` }} />
       </div>
-      <span className="tabular-nums text-[11px] text-gray-400">{usedLabel} / {totalLabel}</span>
     </div>
   );
 }

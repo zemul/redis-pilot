@@ -1,5 +1,5 @@
 // 实例管理视图：搜索栏 + 实例组卡片列表；组卡片可展开显示主/从节点行。
-import { Search, Plus, ChevronDown, ChevronRight, Layers } from 'lucide-react';
+import { Search, Plus, ChevronDown, ChevronRight } from 'lucide-react';
 import {
   EmptyState,
   CategoryBadge,
@@ -13,8 +13,8 @@ import {
 import { getField, parseGi } from '../lib/format.js';
 import { topologyLabel, engineLabel, powerActionFor } from '../lib/instance.js';
 
-// 实例列表统一的网格列模板：实例组/节点 | 类型 | 部署/规格 | 架构/版本 | 节点/接入点 | 内存使用 | 状态 | 操作
-const INST_GRID = 'grid items-center gap-4 grid-cols-[minmax(220px,2.4fr)_84px_120px_150px_180px_150px_92px_112px] px-4';
+// 实例列表统一的网格列模板：实例组/节点 | 类型 | 接入/拓扑 | 架构/版本 | 节点/接入点 | 内存使用 | 状态 | 操作
+const INST_GRID = 'grid items-center gap-4 grid-cols-[280px_84px_120px_130px_minmax(220px,1fr)_90px_92px_112px] px-4';
 
 export function InstancesView({ groups, publicHost, sentinelPort, query, setQuery, expandedGroups, setExpandedGroups, onOpenDetail, onOpenBackups, onPowerAction, onDelete, onSlowlog, onBigkeys, onConfig, onToggleAccessMode, onCreate, pendingAction }) {
   const filtered = groups.filter((group) => {
@@ -51,11 +51,11 @@ export function InstancesView({ groups, publicHost, sentinelPort, query, setQuer
       </div>
 
       <div className="overflow-x-auto">
-        <div className="min-w-[1060px] grid gap-2.5">
+        <div className="min-w-[1220px] grid gap-2.5">
           <div className={`${INST_GRID} py-1 text-xs font-medium text-gray-400`}>
             <div>实例组 / 节点</div>
             <div>类型</div>
-            <div>部署 / 规格</div>
+            <div>接入 / 拓扑</div>
             <div>架构 / 版本</div>
             <div>节点 / 接入点</div>
             <div>内存使用</div>
@@ -95,6 +95,7 @@ function InstanceGroupCard({ group, expanded, onToggle, publicHost, sentinelPort
   const hasReplicas = group.replicas.length > 0;
   const topology = topologyLabel(group, master);
   const accessLabel = group.access_mode === 'rw-split' ? '读写分离' : '标准';
+  const isRwSplit = group.access_mode === 'rw-split';
   const powerAction = master ? powerActionFor(master, group) : null;
 
   const menuItems = master ? [
@@ -117,17 +118,17 @@ function InstanceGroupCard({ group, expanded, onToggle, publicHost, sentinelPort
   ] : [];
 
   return (
-    <div className={`border rounded-xl bg-white transition-all ${expanded ? 'border-gray-300 shadow-sm' : 'border-gray-200 hover:border-gray-300 hover:shadow-sm'}`}>
+    <div className={`border rounded-xl bg-white transition-all ${expanded ? 'border-blue-200 shadow-sm' : 'border-gray-200 hover:border-gray-300 hover:shadow-sm'}`}>
       <div className={`${INST_GRID} py-3.5 ${hasReplicas ? 'cursor-pointer' : ''}`} onClick={hasReplicas ? onToggle : undefined}>
         <div className="flex items-center gap-2.5 min-w-0">
           {hasReplicas ? (
-            <span className="w-5 h-5 rounded inline-flex items-center justify-center text-gray-400 shrink-0">
+            <span className={`w-5 h-5 rounded inline-flex items-center justify-center shrink-0 transition-colors ${expanded ? 'text-blue-500 bg-blue-50' : 'text-gray-400'}`}>
               {expanded ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
             </span>
           ) : (
             <span className="w-5 shrink-0" />
           )}
-          <span className="w-8 h-8 rounded-lg bg-blue-50 text-blue-500 inline-flex items-center justify-center shrink-0"><Layers size={17} /></span>
+          <EngineIcon engine={group.engine} size={32} />
           <div className="min-w-0">
             <CopyableText text={group.groupName} className="font-semibold text-gray-900 text-[14px]" />
             {master ? (
@@ -139,12 +140,13 @@ function InstanceGroupCard({ group, expanded, onToggle, publicHost, sentinelPort
         </div>
         <div><CategoryBadge category={group.category} /></div>
         <div className="text-[13px]">
-          <div className="text-gray-700">{accessLabel}</div>
+          <span className={`inline-flex items-center rounded-md border px-2 py-0.5 text-[12px] font-medium ${isRwSplit ? 'border-blue-100 bg-blue-50 text-blue-700' : 'border-slate-200 bg-slate-50 text-slate-700'}`}>
+            {accessLabel}
+          </span>
           <div className="text-[11px] text-gray-400 mt-0.5">{topology}</div>
         </div>
-        <div className="flex items-center gap-2 text-[13px] text-gray-700 min-w-0">
-          <EngineIcon engine={group.engine} />
-          <span className="truncate">{engineLabel(group)}</span>
+        <div className="text-[13px] text-gray-700 min-w-0">
+          <span className="truncate block">{engineLabel(group)}</span>
         </div>
         <div className="text-[13px]"><ProxyPorts group={group} publicHost={publicHost} /></div>
         <div>{master ? <MemoryUsage memory={group.resource.memory} memoryUsed={group.resource.memoryUsed} /> : <span className="text-gray-300">-</span>}</div>
@@ -158,7 +160,8 @@ function InstanceGroupCard({ group, expanded, onToggle, publicHost, sentinelPort
       </div>
 
       {expanded && (
-        <div className="border-t border-gray-100 rounded-b-xl overflow-hidden">
+        <div className="relative border-t border-blue-100 rounded-b-xl overflow-hidden bg-slate-50/80">
+          <span className="absolute left-[26px] top-0 bottom-6 w-px bg-blue-200/80 pointer-events-none" aria-hidden="true" />
           {master && (
             <InstanceNodeRow
               item={master}
@@ -216,8 +219,13 @@ function InstanceNodeRow({ item, group, role, first, onOpenDetail, onOpenBackups
   const isMasterWithReplicas = role === '主库' && group.replicas.length > 0;
   const server = getField(item, 'server', 'Server', '');
   const port = getField(item, 'port', 'Port', '');
+  const cpus = Number(getField(item, 'cpus', 'CPUs', 0) || 0);
   const used = Number(getField(item, 'memory_used', 'MemoryUsed', 0) || 0);
   const totalGi = parseGi(getField(item, 'memory', 'Memory'));
+  const specs = [
+    cpus > 0 ? `${Number.isInteger(cpus) ? cpus : cpus.toFixed(1)}C` : '',
+    totalGi > 0 ? `${Number.isInteger(totalGi) ? totalGi : totalGi.toFixed(1)}G` : '',
+  ].filter(Boolean).join(' · ');
 
   const menuItems = [
     { label: '备份列表', onClick: () => onOpenBackups(item, group) },
@@ -239,10 +247,14 @@ function InstanceNodeRow({ item, group, role, first, onOpenDetail, onOpenBackups
   ];
 
   return (
-    <div className={`${INST_GRID} py-3 bg-gray-50/70 ${first ? '' : 'border-t border-gray-100'}`}>
-      <div className="flex items-center gap-2.5 min-w-0 pl-[30px]">
-        <span className={`text-[11px] font-medium px-1.5 py-0.5 rounded shrink-0 ${isReplica ? 'bg-gray-200 text-gray-600' : 'bg-gray-900 text-white'}`}>{role}</span>
-        <CopyableText text={item.name} className="font-medium text-gray-800 text-[13px]" />
+    <div className={`${INST_GRID} py-3 bg-transparent hover:bg-blue-50/60 transition-colors ${first ? '' : 'border-t border-slate-200/70'}`}>
+      <div className="relative flex items-center gap-2.5 min-w-0 pl-[30px]">
+        <span className="absolute left-[10px] top-1/2 w-4 h-px bg-blue-200/80 pointer-events-none" aria-hidden="true" />
+        <span className={`text-[11px] font-medium px-1.5 py-0.5 rounded border shrink-0 ${isReplica ? 'bg-slate-100 text-slate-600 border-slate-200' : 'bg-blue-50 text-blue-700 border-blue-100'}`}>{role}</span>
+        <div className="min-w-0">
+          <CopyableText text={item.name} className="font-medium text-gray-800 text-[13px]" />
+          {specs && <span className="block mt-0.5 text-[11px] text-slate-400 tabular-nums">{specs}</span>}
+        </div>
       </div>
       <div />
       <div />
