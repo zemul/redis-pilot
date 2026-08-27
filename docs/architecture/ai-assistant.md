@@ -239,7 +239,11 @@ ai:
 | `get_metrics_history` | `/instance/metrics/history`（range 参数） | 读 | ✅ M3 |
 | `list_nodes` | 节点清单（读 store，脱敏 agent_token） | 读 | ✅ M3 |
 | `query_audit` | 审计查询（`s.audit.Query`） | 读 | ✅ M3 |
-| `create_instance` 等写操作 | `/instance/create` 等 | 写 | ❌ 待 M5（受 `allow_write`+二次确认，见 §7.2） |
+| `start_instance` / `stop_instance` | `instanceStart` / `instanceStop`（re-dispatch） | 写 | ✅ M5 |
+| `failover` | `instanceFailover`（re-dispatch） | 写 | ✅ M5 |
+| `config_set` | `instanceConfig`（re-dispatch，单 key/value，保留字校验） | 写 | ✅ M5 |
+| `backup_exec` | `backupExec`（re-dispatch） | 写 | ✅ M5 |
+| `create_instance` / `delete_instance` / `backup restore` / `node remove` | — | 写 | ❌ 永久排除（破坏性/不可逆，只走人工 CLI） |
 
 每个工具 = 一个 JSON schema（name/description/parameters）+ 一个执行函数（调 `PlatformAPI`）。约 15–30 行/个。只读工具的 service 实现集中在 `internal/server/monitor_service.go`，工具 schema 与分发在 `internal/server/ai/tools.go`。
 
@@ -298,11 +302,11 @@ ai:
 - 写操作强制校验 admin + 落审计。
 
 **M5 落地（方案 A：无状态 confirm + 独立执行端点）——已实现：**
-- **写工具白名单**（代码级，`internal/server/ai/tools.go` 的 `writeTools`）：当前仅 `start_instance`、`stop_instance`。**破坏性操作（delete / restore / clean-data / node remove）刻意永不纳入**，只走人工 CLI。
+- **写工具白名单**（代码级，`internal/server/ai/tools.go` 的 `writeTools`）：当前为 `start_instance`、`stop_instance`、`failover`、`config_set`、`backup_exec`。**破坏性操作（delete / restore / clean-data / node remove）刻意永不纳入**，只走人工 CLI。
 - **两层闸门**：`allowWrite = cfg.AI.AllowWrite（配置总闸）&& 调用者 role==admin`。为 false 时写工具**根本不出现在给模型的工具集里**（非 admin 连"提议"都不会发生）。
 - **提议而非执行**：对话循环遇到写工具**不执行**，改为发 `confirm` 事件（`{tool, args, summary}`）并结束本轮。`summary` 由**后端**按 tool+args 用模板生成（`writeToolSummary`），**不信任 LLM 的文本描述**，防止谎报动作。一次只提议一个写操作。
-- **独立执行端点** `POST /api/v1/ai/execute`（不走 LLM）：用户点"确认执行"后由前端调用。硬校验 `cfg.AI.AllowWrite` + `role==admin` + 写工具白名单（`ai.ResolveWriteTool`），再调 `aiExecInstanceOp(name, op, "ai:"+user)`。
-- **执行复用人工路径**：`aiExecInstanceOp` 复用 `resolveAndLockInternal` + Agent 转发 + 状态回写，与人工 CLI 写操作同一套底层能力；差异仅审计 `operator=ai:<username>`。`stop` 保留 master 保护（AI 路径不提供 force 逃生阀，遇主从组 master 直接拒绝并提示先切主）。
+- **独立执行端点** `POST /api/v1/ai/execute`（不走 LLM）：用户点"确认执行"后由前端调用。硬校验 `cfg.AI.AllowWrite` + `role==admin` + 写工具白名单（`ai.IsWriteTool`）。
+- **执行复用已验证的人工 handler（re-dispatch）**：执行端点本身是 gin handler，按工具构造对应请求体后**直接转发给现有实例/备份 handler**（`instanceStart`/`instanceStop`/`instanceFailover`/`instanceConfig`/`backupExec`），并在转发前把 `auth_user` 覆写为 `ai:<username>`，使被复用 handler 内的 `operatorFrom(c)` 落审计为“AI 代某用户执行”。好处：master 保护、`config` 保留字校验（`redisconf.ValidateOverrides`）、`failover` 的 Sentinel/直连分支等逻辑全部复用，不重复实现、不改动关键路径。`config_set` 仅接受单个 `key/value` 且默认 `restart=false`；平台保留配置项会被现有校验拒绝。
 - **结果不回喂模型**：执行结果只回显给用户（前端一条 system 消息），不再作为上下文喂回 LLM，避免连环自动写；下一步由人重新发起。
 - **失败处理**：执行失败如实报错给用户，AI 不自动重试/补救。
 
@@ -377,7 +381,7 @@ AI 的执行轨迹刻意做成对用户与运维可见，不做黑盒：
 2. ✅ **M2 前端面板**：`AiChatPanel.jsx` 接 SSE（fetch+ReadableStream），打字机流式、工具调用状态条、独立「AI 助手」tab。已验证：vite build + 浏览器实测。
 3. ✅ **M3 工具补全**：补齐只读工具 `get_slowlog`/`get_bigkeys`/`get_instance_config`/`get_metrics_history`/`list_nodes`/`query_audit`；前端 `TOOL_LABELS` 同步。已验证：真实网关触发新工具端到端。
 4. ✅ **M4 安全与运维**：`enabled` 开关、`context` 超时护栏、`configs/server.yaml` 示例 ai 块、结构化日志（工具调用 + token 用量，`usage` SSE 事件）、文档同步。（限流/token 预算按 §7.3 决策不做；审计接入待写操作 M5。）
-5. ✅ **M5 写操作（方案 A）**：`allow_write` 配置总闸 + admin 双层闸门；写工具白名单（`start_instance`/`stop_instance`，破坏性操作永久排除）；对话循环遇写工具产出 `confirm`（后端可信摘要）不执行；独立执行端点 `POST /api/v1/ai/execute`（admin + 白名单校验）复用人工写路径，审计 `operator=ai:<user>`，stop 保留 master 保护；前端二次确认卡片，结果回显不回喂模型。已验证：go build/vet/test 无回归 + 前端 build + 端到端（confirm→execute→审计）。
+5. ✅ **M5 写操作（方案 A）**：`allow_write` 配置总闸 + admin 双层闸门；写工具白名单（`start_instance`/`stop_instance`/`failover`/`config_set`/`backup_exec`，破坏性操作永久排除）；对话循环遇写工具产出 `confirm`（后端可信摘要）不执行；独立执行端点 `POST /api/v1/ai/execute`（admin + 白名单校验）通过 re-dispatch 复用已验证的人工 handler（自带 master 保护、config 保留字校验、failover Sentinel 分支），审计 `operator=ai:<user>`；前端二次确认卡片，结果回显不回喂模型。已验证：go build/vet/test 无回归 + 端到端（confirm→execute，5 工具白名单/校验/re-dispatch 全通）。
 
 ---
 

@@ -21,40 +21,31 @@ type toolRegistry struct {
 // 写操作永不在对话循环内直接执行，只会产出 confirm 事件，经用户二次确认后
 // 由独立执行端点 /api/v1/ai/execute 执行（方案 A，见 §7.2）。
 // 破坏性操作（delete / restore / clean-data / node remove）刻意不在此列。
+//
+// 注意：这里是“暴露给模型 + 触发 confirm”的白名单权威；真正的执行分发在
+// server 包的 aiExecute（把工具映射到已验证的 gin handler）。两处工具名需保持一致。
 var writeTools = map[string]bool{
 	"start_instance": true,
 	"stop_instance":  true,
+	"failover":       true,
+	"config_set":     true,
+	"backup_exec":    true,
 }
 
 // isWriteTool 判断工具名是否为写操作。
 func isWriteTool(name string) bool { return writeTools[name] }
 
-// ResolveWriteTool 返回写工具对应的实例操作动词（start/stop）及是否为已知写工具。
-// 供执行端点 /api/v1/ai/execute 做白名单校验，确保 ai 包是写工具白名单的唯一来源。
-func ResolveWriteTool(name string) (op string, ok bool) {
-	if !isWriteTool(name) {
-		return "", false
-	}
-	return writeToolOp(name), true
-}
-
-// writeToolOp 把写工具名映射为 Agent 侧的操作动词（start/stop）。
-func writeToolOp(name string) string {
-	switch name {
-	case "start_instance":
-		return "start"
-	case "stop_instance":
-		return "stop"
-	default:
-		return ""
-	}
-}
+// IsWriteTool 是 isWriteTool 的导出版本，供执行端点做白名单校验，
+// 确保 ai 包是写工具白名单的唯一来源。
+func IsWriteTool(name string) bool { return isWriteTool(name) }
 
 // writeToolSummary 由后端根据 tool+args 生成**可信**的人类可读摘要，供前端确认弹窗展示。
 // 刻意不使用 LLM 生成的描述，防止模型谎报将要执行的动作。
 func writeToolSummary(name, argsJSON string) string {
 	var a struct {
-		Name string `json:"name"`
+		Name  string `json:"name"`
+		Key   string `json:"key"`
+		Value string `json:"value"`
 	}
 	if argsJSON != "" {
 		_ = json.Unmarshal([]byte(argsJSON), &a)
@@ -68,6 +59,12 @@ func writeToolSummary(name, argsJSON string) string {
 		return fmt.Sprintf("启动实例 %s", target)
 	case "stop_instance":
 		return fmt.Sprintf("停止实例 %s（若为主从组的 master 将被拒绝，需先切主）", target)
+	case "failover":
+		return fmt.Sprintf("对实例 %s 所在主从组发起故障转移（由 Sentinel 选举新主，不保证提升 %s 本身）", target, target)
+	case "config_set":
+		return fmt.Sprintf("修改实例 %s 配置：%s = %s（不重启；平台保留配置项会被拒绝）", target, a.Key, a.Value)
+	case "backup_exec":
+		return fmt.Sprintf("对实例 %s 立即执行一次备份", target)
 	default:
 		return fmt.Sprintf("%s(%s)", name, target)
 	}
@@ -120,9 +117,17 @@ func (r *toolRegistry) schemas() []openai.ChatCompletionToolParam {
 	// 写操作工具仅在 allowWrite（配置总闸开启 且 调用者为 admin）时才暴露给模型。
 	// 即便暴露，它们也只会走 confirm 二次确认，不会在对话循环内直接执行。
 	if r.allowWrite {
+		configSetArg := map[string]any{
+			"name":  map[string]string{"type": "string", "description": "实例名"},
+			"key":   map[string]string{"type": "string", "description": "配置项名，如 maxmemory-policy；平台保留项会被拒绝"},
+			"value": map[string]string{"type": "string", "description": "配置项的新值"},
+		}
 		tools = append(tools,
 			makeTool("start_instance", "启动指定实例（写操作，需用户二次确认后执行）", nameArg, []string{"name"}),
 			makeTool("stop_instance", "停止指定实例（写操作，需用户二次确认后执行；主从组 master 会被拒绝）", nameArg, []string{"name"}),
+			makeTool("failover", "对指定实例所在的主从组发起故障转移（写操作，需二次确认；由 Sentinel 选举新主）", nameArg, []string{"name"}),
+			makeTool("config_set", "修改指定实例的单个运行配置项（写操作，需二次确认；平台保留配置项会被拒绝）", configSetArg, []string{"name", "key", "value"}),
+			makeTool("backup_exec", "对指定实例立即执行一次备份（写操作，需二次确认）", nameArg, []string{"name"}),
 		)
 	}
 	return tools

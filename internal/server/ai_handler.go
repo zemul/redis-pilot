@@ -1,9 +1,11 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
@@ -132,7 +134,10 @@ type aiExecuteRequest struct {
 }
 
 // aiExecute 执行 AI 提议、用户二次确认后的写操作（POST /api/v1/ai/execute）。
-// 方案 A 的执行端点：不走 LLM，硬校验 admin + 写工具白名单，直接调用平台能力并落审计。
+// 方案 A 的执行端点：不走 LLM，硬校验 allow_write + admin + 写工具白名单，然后
+// **复用已验证的实例/备份 gin handler**执行——把审计 operator 覆写成 "ai:<user>" 后
+// 构造对应请求体转发给现有 handler。这样 master 保护、配置保留字校验、failover 的
+// Sentinel/直连分支等逻辑全部复用，不重复实现，也不改动关键路径。
 // 模型没有任何路径能绕过用户在前端的确认点击到达这里。
 func (s *Server) aiExecute(c *gin.Context) {
 	if s.aiAgent == nil {
@@ -153,28 +158,61 @@ func (s *Server) aiExecute(c *gin.Context) {
 		fail(c, http.StatusBadRequest, err.Error())
 		return
 	}
-	// 白名单校验：只接受 ai 包定义的已知写工具，并解析为实例操作动词。
-	op, okTool := ai.ResolveWriteTool(req.Tool)
-	if !okTool {
+	// 白名单校验：只接受 ai 包定义的已知写工具。
+	if !ai.IsWriteTool(req.Tool) {
 		fail(c, http.StatusBadRequest, "not an allowed write tool: "+req.Tool)
 		return
 	}
-	var args struct {
-		Name string `json:"name"`
+	var a struct {
+		Name  string `json:"name"`
+		Key   string `json:"key"`
+		Value string `json:"value"`
 	}
 	if len(req.Args) > 0 {
-		_ = json.Unmarshal(req.Args, &args)
+		_ = json.Unmarshal(req.Args, &a)
 	}
-	if args.Name == "" {
+	if a.Name == "" {
 		fail(c, http.StatusBadRequest, "missing arg: name")
 		return
 	}
 
-	operator := "ai:" + operatorFrom(c)
-	s.log.Infof("ai execute: operator=%s tool=%s instance=%s", operator, req.Tool, args.Name)
-	if err := s.aiExecInstanceOp(args.Name, op, operator); err != nil {
-		fail(c, http.StatusBadRequest, err.Error())
+	// 把工具映射到已验证的 gin handler，并构造其期望的请求体。
+	var (
+		handler gin.HandlerFunc
+		body    map[string]any
+	)
+	switch req.Tool {
+	case "start_instance":
+		handler, body = s.instanceStart, map[string]any{"name": a.Name}
+	case "stop_instance":
+		handler, body = s.instanceStop, map[string]any{"name": a.Name}
+	case "failover":
+		handler, body = s.instanceFailover, map[string]any{"name": a.Name}
+	case "backup_exec":
+		handler, body = s.backupExec, map[string]any{"name": a.Name}
+	case "config_set":
+		if a.Key == "" {
+			fail(c, http.StatusBadRequest, "missing arg: key")
+			return
+		}
+		handler = s.instanceConfig
+		body = map[string]any{"name": a.Name, "config_overrides": map[string]string{a.Key: a.Value}, "restart": false}
+	default:
+		// 在 ai.writeTools 白名单内但此处没有执行器：属于开发期未同步，拒绝而非静默。
+		fail(c, http.StatusInternalServerError, "no executor for write tool: "+req.Tool)
 		return
 	}
-	ok(c, map[string]any{"tool": req.Tool, "instance": args.Name, "op": op, "result": "success"})
+
+	// 审计归属：把 operator 覆写为 ai:<username>，复用的 handler 内部 operatorFrom(c)
+	// 会读到它，从而落审计为“AI 代某用户执行”。role 不变（仍是 admin）。
+	realUser := operatorFrom(c)
+	c.Set("auth_user", "ai:"+realUser)
+	s.log.Infof("ai execute: operator=ai:%s tool=%s instance=%s", realUser, req.Tool, a.Name)
+
+	// 用构造的请求体重放给被复用的 handler；由它写响应与审计。
+	raw, _ := json.Marshal(body)
+	c.Request.Body = io.NopCloser(bytes.NewReader(raw))
+	c.Request.ContentLength = int64(len(raw))
+	c.Request.Header.Set("Content-Type", "application/json")
+	handler(c)
 }
