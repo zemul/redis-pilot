@@ -28,6 +28,8 @@
 - 不做训练、微调。
 - 写操作（create/delete/start/stop/failover/config/backup）**默认不开放**给 AI 自动执行，仅在明确开启且带二次确认时提供（见 §7.2）。
 
+> 注：会话持久化原为非目标，现已作为 P1 能力落地（见 §13）。
+
 ---
 
 ## 2. 总体架构
@@ -394,7 +396,7 @@ AI 的执行轨迹刻意做成对用户与运维可见，不做黑盒：
 3. ⏳ **二次确认策略**：仅在 M5 引入写操作时才涉及；MVP 不涉及。默认方案：所有写操作都需前端二次确认弹窗。
 4. ✅ **成本/限流**：内部工具，**不做 token 预算与 QPM 限流**（过度设计）；仅保留失控护栏 `max_turns` + 单次超时 + `max_tokens`，并在日志里顺带记 token 消耗。详见 §7.3。
 5. ✅ **skill 注入方式**：采用方案 A（全 skill description 索引 + `load_skill` 工具自动匹配），对齐 Tair 的自动技能匹配；前端 `/` 显式选技能作为增强，可后续加。
-6. ⏳ **会话持久化**：MVP 仅前端内存/localStorage，不落库。将来有需要再在 `pilot.db` 加会话表。
+6. ✅ **会话持久化**：**已升级为落库**（P1，见 §13）。MVP 阶段仅前端内存（切 tab 即丢），现改为持久化到 `pilot.db` 的 `ai_conversations` / `ai_messages` 两张表，支撑会话列表、切换、故障倒查。会话**严格私有**（仅本人可见/可删，admin 无越权查看）。
 7. ✅ **权限**：**所有登录用户（含普通用户）均可使用 AI 只读诊断**，AI 端点挂 `authed` group 即可。写操作（M5）才额外校验 admin。
 8. ✅ **前端形态**：**独立 tab**（Dashboard 顶部/侧边新增「AI 助手」页签），不是悬浮抽屉。
 9. ✅ **skill 打包方式**：**`go:embed` 内嵌**（部署单文件方便），构建时经 Makefile 同步 `skills/`→包内目录再 embed；`ai.skills_dir` 配置后可从磁盘覆盖（开发热更）。
@@ -407,3 +409,284 @@ AI 的执行轨迹刻意做成对用户与运维可见，不做黑盒：
 - 大头代码（工具绑定、skill 加载、SSE、前端）与选哪个 SDK 无关，框架只能省掉 loop 那几十行，却引入额外依赖与学习成本。
 - `openai-go` 通过 `base_url` 天然兼容多家 OpenAI 兼容接口，模型可随时切换。
 - **升级路径**：若将来出现多 agent 协作 / 复杂 workflow / 需要现成 memory，再引入 **Eino**（Go 生态生产级 agent 框架）。届时工具层与 skill 层已就绪，只需替换 `agent.go` 的编排部分。
+
+---
+
+## 13. 会话与聊天记录持久化（P1）—— 实现规格
+
+> 定稿时间：2026-08-27。原 §11-6 待定项落地。此前 MVP 聊天记录仅存前端内存（`AiChatPanel` 的 `useState`），切 tab 即销毁、刷新即丢，后端完全无状态。本节是**可直接交接开发的实现规格**：给出精确的代码锚点、类型定义、接口契约、落库时机与验收标准，接手者无需额外上下文即可实现。
+
+### 13.0 交接说明（先读这段）
+
+- **代码位置**：所有后端改动集中在 `internal/store/`（新增一个文件）、`internal/store/db.go`（加建表）、`internal/server/ai_handler.go`（改造 handler）、`internal/server/server.go`（注册路由）。前端集中在 `web/dashboard/src/components/AiChatPanel.jsx`。
+- **不要改动**：`internal/server/ai/` 整个包（agent 循环、LLM、工具层、SSE 事件定义）保持原样；`aiExecute` 的写操作执行逻辑（re-dispatch 到现有 handler）保持原样，只在其成功后**追加**一次落库。这些是已在真实环境验证过的路径。
+- **前置知识**：
+  - `Server` 结构体持有 `db *store.DB`（`server.go:22`），store 方法通过 `s.db.Xx(...)` 调用。无需额外依赖注入。
+  - 当前登录用户名：handler 内用 `operatorFrom(c)` 获取（`server.go:290`，读 gin context 的 `auth_user`，由 `auth_handler.go` 的鉴权中间件写入）。
+  - 角色：`c.GetString("auth_role")`，值为 `"admin"` 等。
+  - ID 生成约定：项目**不用雪花/UUID**，用 `fmt.Sprintf("<prefix>-%d", time.Now().UnixNano())`（见 `internal/audit/audit.go:35` 的 `audit-%d`）。本表沿用：会话 `conv-%d`、消息 `msg-%d`。
+  - store 方法范式：都是 `func (d *DB) Xxx(...) (..., error)`，见 `internal/store/audit_store.go` 的 `InsertAudit` / `QueryAudit`。
+  - SSE 事件（`ai_handler.go` 的 `sseSink`）：`token`(增量文本) / `tool_call` / `tool_result` / `usage` / `confirm`(写操作待确认) / `error` / `done`。前端 `parseEvent`（`AiChatPanel.jsx:27`）解析这些。
+
+### 13.1 动机
+
+运维场景下，"AI 采集了哪些数据、给了什么建议、提议并执行了哪个写操作"本身就是审计闭环的一部分。出故障时需要能倒查当时的完整对话上下文，而不只是 `audit_log` 里一条孤立的写操作记录。因此聊天记录必须持久化到 `pilot.db`。
+
+### 13.2 数据模型
+
+沿用 `audit_log` 的建表范式。在 `internal/store/db.go` 的 `migrate()` 方法（`db.go:142`）里，往那个 `CREATE TABLE IF NOT EXISTS ...` 语句切片**追加**以下 DDL（幂等，不改旧表；注意 `migrate` 里语句是字符串数组，逐条 append）：
+
+```sql
+CREATE TABLE IF NOT EXISTS ai_conversations (
+    id          TEXT PRIMARY KEY,          -- conv-<UnixNano>
+    user        TEXT NOT NULL,             -- 归属用户名（严格私有的依据）
+    title       TEXT NOT NULL DEFAULT '',  -- 列表展示标题（取首条用户消息截断，见 §13.4-5）
+    created_at  TEXT NOT NULL,             -- RFC3339
+    updated_at  TEXT NOT NULL,             -- 最后活跃时间，列表按此倒序
+    deleted     INTEGER NOT NULL DEFAULT 0 -- 软删除（0/1），不物理删（倒查留痕）
+);
+
+CREATE TABLE IF NOT EXISTS ai_messages (
+    id          TEXT PRIMARY KEY,          -- msg-<UnixNano>
+    conv_id     TEXT NOT NULL,             -- 所属会话 id
+    seq         INTEGER NOT NULL,          -- 会话内顺序（从 1 递增，分配见 §13.6）
+    role        TEXT NOT NULL,             -- 'user' / 'assistant'
+    content     TEXT NOT NULL DEFAULT '',  -- 正文（用户问题 or AI 回复全文）
+    tool_calls  TEXT NOT NULL DEFAULT '[]',-- JSON 数组，工具调用/写操作留痕，见 §13.3
+    interrupted INTEGER NOT NULL DEFAULT 0, -- 该条 assistant 回复是否中途断开（0/1）
+    created_at  TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_ai_msg_conv  ON ai_messages(conv_id, seq);
+CREATE INDEX IF NOT EXISTS idx_ai_conv_user ON ai_conversations(user, updated_at);
+```
+
+### 13.3 `tool_calls` 字段——故障倒查核心
+
+assistant 消息可能伴随工具调用与写操作。将其结构化留痕到 `tool_calls`（JSON 数组），使会话能完整还原「读了哪些数据 → 提议什么写操作 → 用户是否确认 → 执行结果」整条链，并通过 `task_id` 与 `audit_log` 关联。三种元素类型：
+
+```json
+[
+  {"type": "tool_call",     "tool": "list_instances", "result_summary": "9 个实例"},
+  {"type": "write_confirm", "tool": "backup_exec", "args": {"name": "test-1"}, "summary": "对 test-1 立即备份"},
+  {"type": "write_execute", "tool": "backup_exec", "task_id": "test-1-178...", "result": "accepted"}
+]
+```
+
+- `tool_call`：一次只读工具调用（对应 SSE 的 `tool_call`+`tool_result`），`result_summary` 取工具结果的简短摘要。
+- `write_confirm`：AI 提议的写操作（对应 SSE 的 `confirm`），来自 `sseSink.OnConfirm(tool,args,summary)`。
+- `write_execute`：用户确认后 `/ai/execute` 的执行结果，由 §13.6 的执行落库写入。
+
+### 13.4 关键行为决策（已对齐）
+
+| # | 决策 | 结论 |
+|---|------|------|
+| 1 | 多轮上下文来源 | **前端仍发完整 history**，后端 DB 只做存档+回显，不参与推理（改动最小，不动已验证的 agent 循环） |
+| 2 | 可见性 | **严格私有**：每个用户只能列出/查看/删除自己的会话，**admin 也不例外**（无越权查看）。写操作仍在 `audit_log` 可查，但对话内容不跨用户可见 |
+| 3 | 写操作结果落库 | **落库**：`/ai/execute` 请求带 `conversation_id`，执行结果写回对应 assistant 消息的 `tool_calls`（`write_execute`），保证倒查链不断 |
+| 4 | 流式中断 | 用户点停止/断开时，**存已生成的部分 + `interrupted=1`**，倒查时可知"这条没说完" |
+| 5 | 标题生成 | **截取首条用户消息前 30 字**（不足则全取；去换行）。LLM 生成摘要标题留待 P2 |
+| 6 | 保留策略 | **永久保留 + 软删除**（`deleted=1`，运维审计不自动清）。DB 膨胀风险留待后续按需加归档/上限 |
+| 7 | P1 范围 | 仅"会话列表 + 历史持久化 + 切换 + 删除"。`@选实例`、`/选技能`、消息点赞点踩/复制/重新生成等留 P2/P3 |
+
+### 13.5 后端实现规格
+
+#### 13.5.1 store 层：新增 `internal/store/ai_store.go`
+
+Go 类型（放本文件或 `store` 包内合适处）：
+
+```go
+type AIConversation struct {
+    ID        string `json:"id"`
+    User      string `json:"user"`
+    Title     string `json:"title"`
+    CreatedAt string `json:"created_at"`
+    UpdatedAt string `json:"updated_at"`
+}
+
+type AIMessage struct {
+    ID          string `json:"id"`
+    ConvID      string `json:"conv_id"`
+    Seq         int    `json:"seq"`
+    Role        string `json:"role"`        // user / assistant
+    Content     string `json:"content"`
+    ToolCalls   string `json:"tool_calls"`  // 原样 JSON 字符串，前端自行解析
+    Interrupted bool   `json:"interrupted"`
+    CreatedAt   string `json:"created_at"`
+}
+```
+
+方法签名（均挂 `*DB`，参照 `audit_store.go`）：
+
+```go
+// 创建会话（deleted=0，created_at=updated_at=now）
+func (d *DB) CreateConversation(c AIConversation) error
+// 追加消息；seq 在同一事务内取 max(seq)+1，避免并发错乱；同时刷新会话 updated_at
+func (d *DB) AppendMessage(m AIMessage) (seq int, err error)
+// 列出某用户未删除会话，按 updated_at DESC
+func (d *DB) ListConversations(user string) ([]AIConversation, error)
+// 取某会话全部消息（seq ASC）；同时校验归属：conv.user != user 返回 (nil, ErrNotFound)
+func (d *DB) GetConversationMessages(id, user string) (AIConversation, []AIMessage, error)
+// 软删除；校验归属，非本人返回 ErrNotFound
+func (d *DB) SoftDeleteConversation(id, user string) error
+// 给会话最近一条 assistant 消息的 tool_calls 追加一个元素（execute 落库用）
+// 读出该行 tool_calls JSON → append element → 写回；找不到 assistant 消息则新建一条 role=assistant 空 content 承载
+func (d *DB) AppendToolCallToLatestAssistant(convID, user string, element any) error
+```
+
+> **并发/seq 分配**：`AppendMessage` 内用一个事务 `SELECT COALESCE(MAX(seq),0)+1 FROM ai_messages WHERE conv_id=?` 再 INSERT。SQLite 在 WAL 模式下写串行化，单 Server 进程足够安全。
+
+#### 13.5.2 handler 改造：`internal/server/ai_handler.go`
+
+**(a) 请求体**（`aiChatRequest`，当前 `ai_handler.go:92` 仅 `Messages`）新增字段：
+
+```go
+type aiChatRequest struct {
+    Messages       []ai.Message `json:"messages"`
+    ConversationID string       `json:"conversation_id"` // 空=新建会话
+}
+```
+
+**(b) `aiChat`（`ai_handler.go:98`）落库改造**（在现有流程上叠加，不改 agent.Run 调用）：
+1. 入口取 `user := operatorFrom(c)`、`convID := req.ConversationID`。
+2. 若 `convID == ""`：`CreateConversation`（id=`conv-<UnixNano>`，title=末条 user 消息截断 30 字），得到新 convID。
+3. `AppendMessage`(role=user, content=最后一条 user 消息)。
+4. **在流开始前**通过 SSE 先发一个 `conversation` 事件把 convID 告诉前端（见下方新增事件），使前端能绑定新会话。
+5. 包一层 sink 或在 `aiChat` 内累积：收集流式过程中的完整 assistant 文本 + tool_calls 元素（`tool_call`/`confirm` 事件）。`agent.Run` 结束（或 `c.Request.Context()` 被取消）后：
+   - 正常结束：`AppendMessage`(role=assistant, content=累积文本, tool_calls=累积JSON, interrupted=false)。
+   - context 取消（客户端断开/停止）：同上但 `interrupted=true`，content=已累积部分。用 `defer` + 判断 `ctx.Err()` 实现。
+
+> **累积实现建议**：给 `sseSink` 加两个字段 `sb strings.Builder`（累积 token）与 `calls []any`（累积 tool_call/confirm），在 `OnToken`/`OnToolCall`/`OnConfirm` 里顺带 append。`aiChat` 末尾从 sink 读取落库。这样不侵入 `ai/` 包。
+
+**(c) 新增 `conversation` SSE 事件**：在 `sseSink` 加 `func (k *sseSink) OnConversation(id string){ k.send("conversation", map[string]string{"id": id}) }`，`aiChat` 在步骤 4 调用。前端 `parseEvent` 增加对 `conversation` 的处理，拿到 id 存入 state。
+
+**(d) `aiExecute`（`ai_handler.go:142`）落库**：请求体 `aiExecuteRequest` 加 `ConversationID string`。在现有执行成功、拿到 `task_id` 之后（不改执行本身），调用 `AppendToolCallToLatestAssistant(convID, user, {type:"write_execute", tool, task_id, result:"accepted"})`。convID 为空则跳过（兼容无会话直调）。
+
+**(e) 三个新 REST handler**（同文件）：
+
+```go
+func (s *Server) aiListConversations(c *gin.Context) // GET  见 §13.6 契约
+func (s *Server) aiGetConversation(c *gin.Context)   // GET  :id
+func (s *Server) aiDeleteConversation(c *gin.Context)// DELETE :id
+```
+归属校验：一律 `user := operatorFrom(c)` 传给 store 方法，store 内比对 `conversations.user`，不匹配返回 `ErrNotFound` → handler 回 404（不回 403，避免探测他人会话是否存在）。
+
+#### 13.5.3 路由注册：`internal/server/server.go`
+
+在 `authed` group（现有 AI 路由附近，`server.go:240` 一带）追加：
+
+```go
+authed.GET("/api/v1/ai/conversations", s.aiListConversations)
+authed.GET("/api/v1/ai/conversations/:id", s.aiGetConversation)
+authed.DELETE("/api/v1/ai/conversations/:id", s.aiDeleteConversation)
+```
+`/api/v1/ai/chat`、`/api/v1/ai/execute` 路由不变（仅 handler 内部改）。
+
+### 13.6 接口契约（完整请求/响应）
+
+统一响应包装沿用项目现有 `ok(c, data)` / `fail(c, code, msg)`（`success`+`data`/`error` 形态）。
+
+**POST `/api/v1/ai/chat`**（SSE，不走 `ok()`）
+请求：`{ "messages": [{"role":"user","content":"..."}], "conversation_id": "" }`
+响应：`text/event-stream`，事件序列示例：
+```
+event: conversation
+data: {"id":"conv-1787811751496466733"}
+
+event: token
+data: {"text":"当前"}
+...
+event: tool_call
+data: {"name":"list_instances","args":"{}"}
+
+event: tool_result
+data: {"name":"list_instances","ok":true}
+
+event: done
+data: {"done":true}
+```
+（`conversation` 事件仅在**新建**会话时发；带 `conversation_id` 续聊时可不发。）
+
+**GET `/api/v1/ai/conversations`**
+响应：
+```json
+{"success":true,"data":[
+  {"id":"conv-178...","title":"这个实例的逐出策略是什么","updated_at":"2026-08-27T14:42:31+08:00","created_at":"..."}
+]}
+```
+
+**GET `/api/v1/ai/conversations/:id`**
+响应（含消息，非本人 → 404）：
+```json
+{"success":true,"data":{
+  "conversation":{"id":"conv-178...","title":"...","created_at":"...","updated_at":"..."},
+  "messages":[
+    {"id":"msg-1","seq":1,"role":"user","content":"...","tool_calls":"[]","interrupted":false,"created_at":"..."},
+    {"id":"msg-2","seq":2,"role":"assistant","content":"...","tool_calls":"[{\"type\":\"tool_call\",...}]","interrupted":false,"created_at":"..."}
+  ]
+}}
+```
+
+**DELETE `/api/v1/ai/conversations/:id`**
+响应：`{"success":true,"data":{"deleted":true}}`（非本人 → 404）
+
+**POST `/api/v1/ai/execute`**（现有，请求体加 `conversation_id`）
+请求：`{"tool":"backup_exec","args":{"name":"test-1"},"conversation_id":"conv-178..."}`
+响应不变：`{"success":true,"data":{"task_id":"test-1-178..."}}`
+
+### 13.7 落库时机（汇总）
+
+| 时机 | 动作 |
+|------|------|
+| `aiChat` 且 conv_id 空 | 建会话（标题=首条 user 截断）→ 发 `conversation` 事件 |
+| `aiChat` 入口 | 写 user 消息（seq 自增） |
+| `agent.Run` 正常结束 | 写 assistant 消息（完整文本+tool_calls，interrupted=0） |
+| `aiChat` 的 ctx 被取消 | 写 assistant 消息（半截文本，interrupted=1） |
+| `aiExecute` 成功拿到 task_id | 向最近 assistant 消息 tool_calls 追加 `write_execute` |
+| 任何 AppendMessage | 事务内刷新会话 `updated_at` |
+
+### 13.8 前端实现规格：`web/dashboard/src/components/AiChatPanel.jsx`
+
+**布局**：现有单栏改为「左侧会话列表侧栏 + 右侧对话区」两栏（参考阿里云 Tair AI 助手截图）。侧栏含「创建会话」按钮 + 会话列表（点击切换，悬停出删除按钮）。
+
+**新增 state**：
+```js
+const [conversations, setConversations] = useState([]); // 会话列表
+const [convId, setConvId] = useState('');               // 当前会话 id，''=新会话未落库
+```
+
+**新增行为**：
+- 挂载时 `GET /api/v1/ai/conversations` 填 `conversations`（用现有 `request()` helper 或 `fetch + authHeaders()`）。
+- 点会话项：`GET /api/v1/ai/conversations/:id` → 把 messages 映射进 `messages` state（`tool_calls` 字符串 `JSON.parse` 后渲染工具/写操作留痕），设 `convId`。
+- 点「创建会话」：清空 `messages`、`convId=''`、聚焦输入框。
+- `send()`（`AiChatPanel.jsx:59`）请求体带 `conversation_id: convId`；解析 SSE 时若收到 `conversation` 事件（`parseEvent` 加分支），`setConvId(id)` 并刷新会话列表（使新会话出现在侧栏）。
+- `confirmExecute()`（`AiChatPanel.jsx:132`）请求体带 `conversation_id: convId`。
+- 删除会话：`DELETE`，成功后从 `conversations` 移除；若删的是当前会话则清空对话区。
+
+**渲染留痕**：`MessageBubble`（`AiChatPanel.jsx:281`）对 assistant 消息，若 `tool_calls` 非空，在气泡内以小标签展示（如"🔧 list_instances"、"✅ 已执行 backup_exec"），复用现有工具状态条样式。
+
+### 13.9 验收标准（Definition of Done）
+
+> **实现状态（2026-08-27 已落地）**：本节 P1 已实现并验证。后端 `internal/store/ai_store.go`（含 `ErrNotFound` + 6 方法）、`db.go` 建表、`ai_handler.go`（sseSink 累积 + `conversation` 事件 + chat/execute 落库 + 3 个 REST handler）、`server.go` 路由；前端 `AiChatPanel.jsx` 双栏 + 会话列表/切换/新建/删除 + `tool_calls` 留痕渲染。验证：`go build ./...` / `go vet` / `go test ./internal/store/... ./internal/server/...` 全绿（新增 `ai_store_test.go` 覆盖 seq 递增/归属校验/软删除/write_execute 追加）；前端 `npm run build` 通过。
+
+后端：
+- [ ] `go build ./...`、`go vet ./...`、`go test ./internal/server/... ./internal/store/...` 全绿。
+- [ ] 新增 store 单测：建会话→追加消息（校验 seq 递增）→列出→取消息（校验归属：他人取返回 ErrNotFound）→软删除→列表不含已删。
+- [ ] 端到端（可脚本化，参考本文档历史验证方式）：新会话 chat 收到 `conversation` 事件；`GET /conversations` 含该会话；`GET /conversations/:id` 消息完整；换个用户 token 取该会话 → 404。
+- [ ] execute 后该会话最近 assistant 消息 tool_calls 含 `write_execute` 且 task_id 与响应一致。
+- [ ] 中断（客户端断开）后该 assistant 消息 `interrupted=1` 且 content 为已生成部分。
+
+前端：
+- [ ] `npm run build` 通过。
+- [ ] 侧栏列表/切换/新建/删除可用；切换会话正确回填历史（含工具留痕渲染）；刷新页面后历史仍在。
+
+文档：
+- [ ] 实现与本节有出入时，回来更新本节（遵循 `AGENTS.md` 的文档同步要求）。
+
+### 13.10 非目标（P1 不做，留后续）
+
+- `@选实例`、`/选技能` 的输入增强
+- 消息级操作：复制、点赞/点踩（效果评估）、重新生成、下载
+- LLM 生成会话标题、会话重命名
+- 会话共享 / 多端实时协同 / admin 跨用户审计视图（受 §13.4-2 私有约束，若将来要做需单独评审权限模型）
+- 会话数量上限 / 自动归档 / 定期清理
