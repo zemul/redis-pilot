@@ -91,11 +91,35 @@ func (ms *metricsStore) record(instance, info string) error {
 }
 
 // query 返回指定实例在时间范围内的指标。
-func (ms *metricsStore) query(instance string, start, end time.Time) ([]MetricPoint, error) {
-	rows, err := ms.db.Query(
-		`SELECT ts, mem_used, mem_max, ops_sec, hits, misses, conns, conns_max, frag_ratio, repl_link, repl_offset, total_keys FROM instance_metrics WHERE instance = ? AND ts >= ? AND ts <= ? ORDER BY ts`,
-		instance, start.Unix(), end.Unix(),
+//
+// stepSec 为降采样步长（秒）：<=30 时返回原始 30s 采样点，不聚合；>30 时按
+// ts/stepSec 分桶聚合，每桶输出一个点，控制长时间范围的数据量与图表可读性。
+//
+// 聚合函数按指标语义选择：内存/连接/碎片率用 MAX 保留尖峰；QPS 用 AVG 平滑常态；
+// hits/misses 是累计计数器，取桶内 MAX 近似桶末值；repl_link 用 MIN，桶内出现过
+// 一次 down(0) 即显示 down，暴露主从闪断。桶时间戳对齐到桶起点 (ts/step)*step。
+func (ms *metricsStore) query(instance string, start, end time.Time, stepSec int64) ([]MetricPoint, error) {
+	var (
+		rows *sql.Rows
+		err  error
 	)
+	if stepSec <= 30 {
+		rows, err = ms.db.Query(
+			`SELECT ts, mem_used, mem_max, ops_sec, hits, misses, conns, conns_max, frag_ratio, repl_link, repl_offset, total_keys
+			 FROM instance_metrics WHERE instance = ? AND ts >= ? AND ts <= ? ORDER BY ts`,
+			instance, start.Unix(), end.Unix(),
+		)
+	} else {
+		rows, err = ms.db.Query(
+			`SELECT (ts / ?) * ? AS bucket_ts,
+			        MAX(mem_used), MAX(mem_max), AVG(ops_sec), MAX(hits), MAX(misses),
+			        MAX(conns), MAX(conns_max), MAX(frag_ratio), MIN(repl_link),
+			        MAX(repl_offset), MAX(total_keys)
+			 FROM instance_metrics WHERE instance = ? AND ts >= ? AND ts <= ?
+			 GROUP BY ts / ? ORDER BY bucket_ts`,
+			stepSec, stepSec, instance, start.Unix(), end.Unix(), stepSec,
+		)
+	}
 	if err != nil {
 		return nil, err
 	}

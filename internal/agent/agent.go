@@ -1011,10 +1011,11 @@ func (a *Agent) instanceMetrics(c *gin.Context) {
 	// range 参数：1h, 6h, 24h, 7d, 30d，默认 1h
 	rangeStr := c.DefaultQuery("range", "1h")
 	duration := parseRange(rangeStr)
+	stepSec := rangeStep(rangeStr)
 	end := time.Now()
 	start := end.Add(-duration)
 
-	points, err := a.mstore.query(name, start, end)
+	points, err := a.mstore.query(name, start, end, stepSec)
 	if err != nil {
 		fail(c, http.StatusInternalServerError, err.Error())
 		return
@@ -1039,6 +1040,26 @@ func parseRange(s string) time.Duration {
 		return 30 * 24 * time.Hour
 	default:
 		return time.Hour
+	}
+}
+
+// rangeStep 返回各时间范围的降采样步长（秒）。原始采样为 30s，长范围按步长分桶
+// 聚合，使每张图的点数控制在数百量级：1h 不抽样，其余抽到 ~180-360 点。
+// 返回 <=30 表示不聚合、返回原始点。
+func rangeStep(s string) int64 {
+	switch s {
+	case "1h":
+		return 30 // 原始采样，不聚合（120 点）
+	case "6h":
+		return 120 // 2min → ~180 点
+	case "24h":
+		return 300 // 5min → ~288 点
+	case "7d":
+		return 1800 // 30min → ~336 点
+	case "30d":
+		return 7200 // 2h → ~360 点
+	default:
+		return 30
 	}
 }
 
