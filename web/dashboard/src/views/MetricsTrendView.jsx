@@ -1,11 +1,63 @@
 // 实例指标趋势视图：按时间范围拉取历史采样，用 echarts 渲染多张折线图（懒加载 echarts）。
 import { useState, useEffect, useRef } from 'react';
-import { AlertCircle } from 'lucide-react';
+import { AlertCircle, CalendarDays } from 'lucide-react';
+import { Popover, PopoverTrigger, PopoverContent } from '@/components/ui/popover';
+import { Calendar } from '@/components/ui/calendar';
+
+// 起止时间选择：Popover 内 Calendar 选日期 + time input 选时分，组合成一个 Date。
+function DateTimeField({ label, value, onChange, min, max }) {
+  const [open, setOpen] = useState(false);
+  const timeStr = value
+    ? `${String(value.getHours()).padStart(2, '0')}:${String(value.getMinutes()).padStart(2, '0')}`
+    : '00:00';
+
+  function pickDate(d) {
+    if (!d) return;
+    const next = new Date(d);
+    if (value) { next.setHours(value.getHours(), value.getMinutes(), 0, 0); }
+    else { next.setHours(0, 0, 0, 0); }
+    onChange(next);
+  }
+  function pickTime(e) {
+    const [h, m] = e.target.value.split(':').map(Number);
+    const next = value ? new Date(value) : new Date();
+    next.setHours(h || 0, m || 0, 0, 0);
+    onChange(next);
+  }
+  const display = value
+    ? value.toLocaleString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }).replace(/\//g, '-')
+    : label;
+
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <button className={`h-7 px-2.5 rounded-md border text-xs font-medium cursor-pointer inline-flex items-center gap-1.5 transition-colors ${value ? 'border-gray-300 text-gray-900 bg-white' : 'border-gray-200 text-gray-400 bg-white'} hover:bg-gray-50`}>
+          <CalendarDays size={14} className="text-gray-400" />
+          {display}
+        </button>
+      </PopoverTrigger>
+      <PopoverContent align="start" className="flex flex-col gap-2" onOpenAutoFocus={(e) => e.preventDefault()}>
+        <Calendar
+          mode="single"
+          selected={value || undefined}
+          onSelect={pickDate}
+          disabled={[min ? { before: min } : undefined, max ? { after: max } : undefined].filter(Boolean)}
+          defaultMonth={value || undefined}
+        />
+        <div className="flex items-center gap-2 border-t border-gray-100 pt-2">
+          <span className="text-xs text-gray-400">时间</span>
+          <input type="time" value={timeStr} onChange={pickTime} className="h-7 px-2 rounded-md border border-gray-200 text-xs text-gray-700 outline-0 focus:border-gray-900" />
+          <button type="button" onClick={() => setOpen(false)} className="ml-auto h-7 px-3 rounded-md bg-gray-900 text-white text-xs font-medium border-0 cursor-pointer hover:bg-gray-700 transition-colors">完成</button>
+        </div>
+      </PopoverContent>
+    </Popover>
+  );
+}
 
 export function MetricsTrendView({ instanceName, requestFn }) {
   const [range_, setRange] = useState('1h');
-  const [customStart, setCustomStart] = useState('');
-  const [customEnd, setCustomEnd] = useState('');
+  const [customStart, setCustomStart] = useState(null); // Date
+  const [customEnd, setCustomEnd] = useState(null);     // Date
   // applied 为点击“查询”后实际生效的自定义窗口，避免边输入边请求
   const [applied, setApplied] = useState(null); // { start, end } Unix 秒
   const [points, setPoints] = useState(null);
@@ -35,9 +87,9 @@ export function MetricsTrendView({ instanceName, requestFn }) {
 
   function applyCustom() {
     if (!customStart || !customEnd) { setError('请选择起止时间'); return; }
-    const s = Math.floor(new Date(customStart).getTime() / 1000);
-    const e = Math.floor(new Date(customEnd).getTime() / 1000);
-    if (!(s > 0) || !(e > s)) { setError('结束时间必须晚于开始时间'); return; }
+    const s = Math.floor(customStart.getTime() / 1000);
+    const e = Math.floor(customEnd.getTime() / 1000);
+    if (!(e > s)) { setError('结束时间必须晚于开始时间'); return; }
     setError('');
     setApplied({ start: s, end: e });
   }
@@ -113,9 +165,9 @@ export function MetricsTrendView({ instanceName, requestFn }) {
       </div>
       {isCustom && (
         <div className="flex items-center gap-2 mb-3 flex-wrap">
-          <input type="datetime-local" value={customStart} max={customEnd || undefined} onChange={(e) => setCustomStart(e.target.value)} className="h-7 px-2 rounded-md border border-gray-200 text-xs text-gray-700 outline-0 focus:border-gray-900" />
+          <DateTimeField label="开始时间" value={customStart} onChange={setCustomStart} max={customEnd} />
           <span className="text-xs text-gray-400">至</span>
-          <input type="datetime-local" value={customEnd} min={customStart || undefined} onChange={(e) => setCustomEnd(e.target.value)} className="h-7 px-2 rounded-md border border-gray-200 text-xs text-gray-700 outline-0 focus:border-gray-900" />
+          <DateTimeField label="结束时间" value={customEnd} onChange={setCustomEnd} min={customStart} />
           <button onClick={applyCustom} className="h-7 px-3 rounded-md bg-gray-900 text-white text-xs font-medium border-0 cursor-pointer hover:bg-gray-700 transition-colors">查询</button>
         </div>
       )}
