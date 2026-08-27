@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -1008,12 +1009,24 @@ func (a *Agent) instanceMetrics(c *gin.Context) {
 		return
 	}
 
-	// range 参数：1h, 6h, 24h, 7d, 30d，默认 1h
+	// 时间窗：优先使用显式 start/end（Unix 秒）自定义范围；否则用预设 range。
+	// 自定义范围时 step 按实际跨度自动选择，范围越窄粒度越细。
 	rangeStr := c.DefaultQuery("range", "1h")
-	duration := parseRange(rangeStr)
-	stepSec := rangeStep(rangeStr)
-	end := time.Now()
-	start := end.Add(-duration)
+	var start, end time.Time
+	var stepSec int64
+	startQ, _ := strconv.ParseInt(c.Query("start"), 10, 64)
+	endQ, _ := strconv.ParseInt(c.Query("end"), 10, 64)
+	if startQ > 0 && endQ > startQ {
+		start = time.Unix(startQ, 0)
+		end = time.Unix(endQ, 0)
+		stepSec = stepForSpan(endQ - startQ)
+		rangeStr = "custom"
+	} else {
+		duration := parseRange(rangeStr)
+		stepSec = rangeStep(rangeStr)
+		end = time.Now()
+		start = end.Add(-duration)
+	}
 
 	points, err := a.mstore.query(name, start, end, stepSec)
 	if err != nil {
@@ -1060,6 +1073,34 @@ func rangeStep(s string) int64 {
 		return 7200 // 2h → ~360 点
 	default:
 		return 30
+	}
+}
+
+// stepForSpan 按时间跨度（秒）自动选降采样步长（秒），目标每图落在 ~200-400 点，
+// 阈值与预设 range 档位对齐：<=1h 原始、<=6h 2min、<=24h 5min、<=7d 30min、
+// <=30d 2h、更长则按跨度动态取（跨度/400 向上取整到分钟）。用于自定义时间范围。
+func stepForSpan(spanSec int64) int64 {
+	switch {
+	case spanSec <= 3600: // <=1h
+		return 30
+	case spanSec <= 6*3600: // <=6h
+		return 120
+	case spanSec <= 24*3600: // <=24h
+		return 300
+	case spanSec <= 7*24*3600: // <=7d
+		return 1800
+	case spanSec <= 30*24*3600: // <=30d
+		return 7200
+	default:
+		// 更长跨度：控制在 ~400 点，步长向上取整到整分钟
+		step := spanSec / 400
+		if r := step % 60; r != 0 {
+			step += 60 - r
+		}
+		if step < 7200 {
+			step = 7200
+		}
+		return step
 	}
 }
 

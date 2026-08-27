@@ -128,7 +128,14 @@ func (s *Server) instanceMetrics(c *gin.Context) {
 	}
 	rangeStr := c.DefaultQuery("range", "1h")
 	agent := newAgentClient(srv)
-	out, err := agent.get("/instance/metrics?name=" + name + "&range=" + rangeStr)
+	q := "/instance/metrics?name=" + name + "&range=" + rangeStr
+	if s := c.Query("start"); s != "" {
+		q += "&start=" + s
+	}
+	if e := c.Query("end"); e != "" {
+		q += "&end=" + e
+	}
+	out, err := agent.get(q)
 	if err != nil {
 		fail(c, http.StatusBadGateway, err.Error())
 		return

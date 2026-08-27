@@ -4,22 +4,43 @@ import { AlertCircle } from 'lucide-react';
 
 export function MetricsTrendView({ instanceName, requestFn }) {
   const [range_, setRange] = useState('1h');
+  const [customStart, setCustomStart] = useState('');
+  const [customEnd, setCustomEnd] = useState('');
+  // applied 为点击“查询”后实际生效的自定义窗口，避免边输入边请求
+  const [applied, setApplied] = useState(null); // { start, end } Unix 秒
   const [points, setPoints] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const chartRefs = useRef({});
   const chartInstances = useRef([]);
 
+  const isCustom = range_ === 'custom';
+
   useEffect(() => {
+    // 自定义模式下，只有 applied 有效时才发请求；否则等用户点“查询”
+    if (isCustom && !applied) { setLoading(false); return; }
     let ignore = false;
     setLoading(true);
     setError('');
-    requestFn(`/instance/metrics/history?name=${encodeURIComponent(instanceName)}&range=${range_}`)
+    const base = `/instance/metrics/history?name=${encodeURIComponent(instanceName)}`;
+    const url = isCustom
+      ? `${base}&start=${applied.start}&end=${applied.end}`
+      : `${base}&range=${range_}`;
+    requestFn(url)
       .then((data) => { if (!ignore) setPoints(data?.points || []); })
       .catch((err) => { if (!ignore) setError(err.message || String(err)); })
       .finally(() => { if (!ignore) setLoading(false); });
     return () => { ignore = true; };
-  }, [instanceName, range_]);
+  }, [instanceName, range_, applied]);
+
+  function applyCustom() {
+    if (!customStart || !customEnd) { setError('请选择起止时间'); return; }
+    const s = Math.floor(new Date(customStart).getTime() / 1000);
+    const e = Math.floor(new Date(customEnd).getTime() / 1000);
+    if (!(s > 0) || !(e > s)) { setError('结束时间必须晚于开始时间'); return; }
+    setError('');
+    setApplied({ start: s, end: e });
+  }
 
   useEffect(() => {
     if (!points || points.length === 0) return;
@@ -28,8 +49,9 @@ export function MetricsTrendView({ instanceName, requestFn }) {
       chartInstances.current = [];
 
       const ts = points.map((p) => new Date(p.ts * 1000));
-      // 长范围(7天/30天)带上月-日,否则只看时分无法定位;短范围只显示时分。
-      const isLongRange = range_ === '7d' || range_ === '30d';
+      // 长范围(7天/30天)或自定义跨度>24h 带上月-日,否则只看时分无法定位;短范围只显示时分。
+      const spanSec = points.length > 1 ? points[points.length - 1].ts - points[0].ts : 0;
+      const isLongRange = range_ === '7d' || range_ === '30d' || (isCustom && spanSec > 24 * 3600);
       const fmtAxis = (d) => isLongRange
         ? d.toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }).replace(/\//g, '-')
         : d.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
@@ -76,7 +98,8 @@ export function MetricsTrendView({ instanceName, requestFn }) {
     { value: '6h', label: '6小时' },
     { value: '24h', label: '24小时' },
     { value: '7d', label: '7天' },
-    { value: '30d', label: '30天' }
+    { value: '30d', label: '30天' },
+    { value: 'custom', label: '自定义' }
   ];
 
   return (
@@ -88,9 +111,17 @@ export function MetricsTrendView({ instanceName, requestFn }) {
           </button>
         ))}
       </div>
+      {isCustom && (
+        <div className="flex items-center gap-2 mb-3 flex-wrap">
+          <input type="datetime-local" value={customStart} max={customEnd || undefined} onChange={(e) => setCustomStart(e.target.value)} className="h-7 px-2 rounded-md border border-gray-200 text-xs text-gray-700 outline-0 focus:border-gray-900" />
+          <span className="text-xs text-gray-400">至</span>
+          <input type="datetime-local" value={customEnd} min={customStart || undefined} onChange={(e) => setCustomEnd(e.target.value)} className="h-7 px-2 rounded-md border border-gray-200 text-xs text-gray-700 outline-0 focus:border-gray-900" />
+          <button onClick={applyCustom} className="h-7 px-3 rounded-md bg-gray-900 text-white text-xs font-medium border-0 cursor-pointer hover:bg-gray-700 transition-colors">查询</button>
+        </div>
+      )}
       {loading ? <div className="min-h-[110px] border border-dashed border-gray-200 rounded-md grid place-items-center text-gray-400">正在加载趋势数据...</div> :
        error ? <div className="border border-red-200 rounded-md px-3 py-2.5 flex items-center gap-2 bg-red-50 text-red-700 text-[13px]"><AlertCircle size={16} /> {error}</div> :
-       (!points || points.length === 0) ? <div className="text-center p-8 text-gray-400 text-sm">暂无历史数据，Agent 启动后每分钟采集一次</div> : (
+       (!points || points.length === 0) ? <div className="text-center p-8 text-gray-400 text-sm">{isCustom && !applied ? '请选择起止时间后点击「查询」' : '该时间范围暂无数据'}</div> : (
         <div className="grid grid-cols-2 gap-4 mt-3">
           <div className="h-[200px] overflow-hidden" ref={(el) => { chartRefs.current.mem = el; }}></div>
           <div className="h-[200px] overflow-hidden" ref={(el) => { chartRefs.current.qps = el; }}></div>
