@@ -79,6 +79,11 @@ func (k *sseSink) OnUsage(promptTokens, completionTokens, totalTokens int64) {
 		"prompt_tokens": promptTokens, "completion_tokens": completionTokens, "total_tokens": totalTokens,
 	})
 }
+func (k *sseSink) OnConfirm(tool, args, summary string) {
+	// 写操作提议：不执行，推给前端做二次确认（方案 A，见 §7.2）。summary 由后端可信生成。
+	k.log.Infof("ai confirm: user=%s tool=%s args=%s", k.user, tool, args)
+	k.send("confirm", map[string]string{"tool": tool, "args": args, "summary": summary})
+}
 func (k *sseSink) OnError(err error) { k.send("error", map[string]string{"message": err.Error()}) }
 func (k *sseSink) OnDone()           { k.send("done", map[string]bool{"done": true}) }
 
@@ -114,6 +119,62 @@ func (s *Server) aiChat(c *gin.Context) {
 
 	s.log.Infof("ai chat: user=%s messages=%d", operatorFrom(c), len(req.Messages))
 	sink := &sseSink{c: c, flusher: flusher, log: s.log, user: operatorFrom(c)}
+	// 写操作闸门 = 配置总闸 && 调用者为 admin。为 false 时模型看不到写工具。
+	allowWrite := s.cfg.AI.AllowWrite && c.GetString("auth_role") == "admin"
 	// c.Request.Context() 在客户端断开时取消，Agent 会随之中止。
-	s.aiAgent.Run(c.Request.Context(), req.Messages, sink)
+	s.aiAgent.Run(c.Request.Context(), req.Messages, sink, allowWrite)
+}
+
+// aiExecuteRequest 是二次确认后执行写操作的请求体，字段来自 confirm 事件。
+type aiExecuteRequest struct {
+	Tool string          `json:"tool"`
+	Args json.RawMessage `json:"args"`
+}
+
+// aiExecute 执行 AI 提议、用户二次确认后的写操作（POST /api/v1/ai/execute）。
+// 方案 A 的执行端点：不走 LLM，硬校验 admin + 写工具白名单，直接调用平台能力并落审计。
+// 模型没有任何路径能绕过用户在前端的确认点击到达这里。
+func (s *Server) aiExecute(c *gin.Context) {
+	if s.aiAgent == nil {
+		fail(c, http.StatusServiceUnavailable, "AI assistant is not enabled")
+		return
+	}
+	// 双保险：写操作需配置总闸开启 + 调用者为 admin。
+	if !s.cfg.AI.AllowWrite {
+		fail(c, http.StatusForbidden, "AI write operations are disabled")
+		return
+	}
+	if c.GetString("auth_role") != "admin" {
+		fail(c, http.StatusForbidden, "admin role required")
+		return
+	}
+	var req aiExecuteRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		fail(c, http.StatusBadRequest, err.Error())
+		return
+	}
+	// 白名单校验：只接受 ai 包定义的已知写工具，并解析为实例操作动词。
+	op, okTool := ai.ResolveWriteTool(req.Tool)
+	if !okTool {
+		fail(c, http.StatusBadRequest, "not an allowed write tool: "+req.Tool)
+		return
+	}
+	var args struct {
+		Name string `json:"name"`
+	}
+	if len(req.Args) > 0 {
+		_ = json.Unmarshal(req.Args, &args)
+	}
+	if args.Name == "" {
+		fail(c, http.StatusBadRequest, "missing arg: name")
+		return
+	}
+
+	operator := "ai:" + operatorFrom(c)
+	s.log.Infof("ai execute: operator=%s tool=%s instance=%s", operator, req.Tool, args.Name)
+	if err := s.aiExecInstanceOp(args.Name, op, operator); err != nil {
+		fail(c, http.StatusBadRequest, err.Error())
+		return
+	}
+	ok(c, map[string]any{"tool": req.Tool, "instance": args.Name, "op": op, "result": "success"})
 }

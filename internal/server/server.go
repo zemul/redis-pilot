@@ -235,8 +235,11 @@ func (s *Server) Router() *gin.Engine {
 	authed.GET("/metrics", s.metricsCollect)
 
 	// AI 运维助手（SSE 流式对话）。挂在 authed：所有登录用户可用只读诊断。
-	// 写操作能力默认关闭（cfg.AI.AllowWrite），未来开放时在工具层校验 admin。
+	// 写操作默认关闭（cfg.AI.AllowWrite）；开启后写工具也只产出 confirm，
+	// 真正执行经下方 /ai/execute 端点，且额外校验 admin（见 §7.2）。
 	authed.POST("/api/v1/ai/chat", s.aiChat)
+	// AI 写操作执行端点：仅在用户二次确认后由前端调用，handler 内硬校验 admin。
+	authed.POST("/api/v1/ai/execute", s.aiExecute)
 
 	// 以下写操作仅 admin
 	adminAuthed.POST("/reconcile", s.reconcile)

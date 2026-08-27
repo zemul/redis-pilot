@@ -17,6 +17,7 @@ type Sink interface {
 	OnToken(text string)                              // 助手回复的增量文本
 	OnToolCall(name, args string)                     // 模型请求调用某工具
 	OnToolResult(name string, ok bool, errMsg string) // 工具执行结果（不含原始数据，避免刷屏/泄敏）
+	OnConfirm(tool, args, summary string)             // 模型提议一个写操作，需用户二次确认后经 /ai/execute 执行（见 §7.2）
 	OnUsage(promptTokens, completionTokens, totalTokens int64) // 本次对话累计 token 消耗（结束前回调一次）
 	OnError(err error)                                // 出错
 	OnDone()                                          // 正常结束

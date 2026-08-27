@@ -52,6 +52,7 @@ func (m *mockPlatform) QueryAudit(_ context.Context, limit int) (json.RawMessage
 type captureSink struct {
 	tokens    strings.Builder
 	toolCalls []string
+	confirms  []string
 	done      bool
 	err       error
 }
@@ -59,6 +60,7 @@ type captureSink struct {
 func (s *captureSink) OnToken(t string)                    { s.tokens.WriteString(t) }
 func (s *captureSink) OnToolCall(name, _ string)           { s.toolCalls = append(s.toolCalls, name) }
 func (s *captureSink) OnToolResult(string, bool, string)   {}
+func (s *captureSink) OnConfirm(tool, _, _ string)         { s.confirms = append(s.confirms, tool) }
 func (s *captureSink) OnUsage(_, _, _ int64)               {}
 func (s *captureSink) OnError(err error)                   { s.err = err }
 func (s *captureSink) OnDone()                             { s.done = true }
@@ -86,7 +88,7 @@ func TestAgentEndToEnd(t *testing.T) {
 	sink := &captureSink{}
 	agent.Run(context.Background(), []Message{
 		{Role: "user", Content: "诊断实例 galaxy-1，看看内存碎片和慢查询有没有问题，给出结论和建议。"},
-	}, sink)
+	}, sink, false)
 
 	if sink.err != nil {
 		t.Fatalf("agent error: %v", sink.err)
