@@ -500,7 +500,7 @@ Skill: redis-backup
   │   })
   │   -> 立即返回 {task_id: "order-2-16989xxxxx"}
   │
-  ├─3. agent_exec(server-b, "instance/backup/status?task_id=order-2-16989xxxxx")
+  ├─3. Server 后台轮询 agent "instance/backup/status?task_id=order-2-16989xxxxx"
   │   -> Agent 后台: BGSAVE -> 等待完成（失败/超时即报错）-> 校验产物
   │                   -> 上传 S3（key: order-2/{ts}.rdb）-> 删本地临时文件
   │                   -> S3 轮转清理（保留最近 N 份）
@@ -508,6 +508,11 @@ Skill: redis-backup
   │
   └─4. 通知: "备份完成" / "备份失败: {error}"
 ```
+
+恢复使用同一模型：`POST /backup/restore` 立即返回 `task_id`，Agent 使用独立于 HTTP
+请求的后台 context 完成 S3 下载、校验、停机、原子替换和启动。Server 后台轮询
+`/instance/restore/status`，把终态写入 `pilot.db.tasks`，写最终审计并释放实例组锁。
+CLI 可通过 `backup status` 查询，或使用 `backup restore --wait` 等待终态。
 
 ---
 

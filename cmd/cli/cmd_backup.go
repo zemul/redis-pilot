@@ -1,6 +1,12 @@
 package main
 
-import "github.com/spf13/cobra"
+import (
+	"fmt"
+	"net/url"
+	"time"
+
+	"github.com/spf13/cobra"
+)
 
 var backupCmd = &cobra.Command{
 	Use:   "backup",
@@ -14,7 +20,7 @@ var backupExecCmd = &cobra.Command{
 	Example: `  redis-pilot-cli backup exec order-master`,
 	Args:    cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return checkResp(client.Post("/backup/exec", map[string]string{"name": args[0]}))
+		return runBackupTask(cmd, "/backup/exec", args[0], map[string]string{"name": args[0]})
 	},
 }
 
@@ -31,11 +37,65 @@ Use "backup list" to find available backup timestamps.`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		backupTs, _ := cmd.Flags().GetString("backup-ts")
-		return checkResp(client.Post("/backup/restore", map[string]string{
+		return runBackupTask(cmd, "/backup/restore", args[0], map[string]string{
 			"name":      args[0],
 			"backup_ts": backupTs,
-		}))
+		})
 	},
+}
+
+var backupStatusCmd = &cobra.Command{
+	Use:   "status <name>",
+	Short: "Query a backup or restore task",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		taskID, _ := cmd.Flags().GetString("task-id")
+		return checkResp(client.Get(backupStatusPath(args[0], taskID)))
+	},
+}
+
+func runBackupTask(cmd *cobra.Command, endpoint, name string, body interface{}) error {
+	resp, err := client.Post(endpoint, body)
+	if err != nil {
+		return err
+	}
+	if !resp.Success {
+		return fmt.Errorf("%s", resp.Error)
+	}
+	data, _ := resp.Data.(map[string]interface{})
+	taskID, _ := data["task_id"].(string)
+	wait, _ := cmd.Flags().GetBool("wait")
+	if !wait || taskID == "" {
+		printJSON(resp.Data)
+		return nil
+	}
+	for {
+		select {
+		case <-cmd.Context().Done():
+			return cmd.Context().Err()
+		case <-time.After(2 * time.Second):
+		}
+		statusResp, err := client.Get(backupStatusPath(name, taskID))
+		if err != nil {
+			return err
+		}
+		if !statusResp.Success {
+			return fmt.Errorf("%s", statusResp.Error)
+		}
+		statusData, _ := statusResp.Data.(map[string]interface{})
+		status, _ := statusData["status"].(string)
+		switch status {
+		case "success":
+			printJSON(statusResp.Data)
+			return nil
+		case "failed", "interrupted":
+			return fmt.Errorf("task %s: %v", status, statusData["error"])
+		}
+	}
+}
+
+func backupStatusPath(name, taskID string) string {
+	return "/backup/status?name=" + url.QueryEscape(name) + "&task_id=" + url.QueryEscape(taskID)
 }
 
 var backupListCmd = &cobra.Command{
@@ -94,12 +154,17 @@ func init() {
 		backupListCmd,
 		backupExecCmd,
 		backupRestoreCmd,
+		backupStatusCmd,
 		backupGetScheduleCmd,
 		backupSetScheduleCmd,
 	)
 
 	backupRestoreCmd.Flags().String("backup-ts", "", "Backup timestamp")
 	backupRestoreCmd.MarkFlagRequired("backup-ts")
+	backupRestoreCmd.Flags().Bool("wait", false, "Wait and poll until the restore finishes")
+	backupExecCmd.Flags().Bool("wait", false, "Wait and poll until the backup finishes")
+	backupStatusCmd.Flags().String("task-id", "", "Task ID returned by exec or restore")
+	backupStatusCmd.MarkFlagRequired("task-id")
 
 	backupSetScheduleCmd.Flags().String("cron", "", "Cron expression (empty to disable)")
 	backupSetScheduleCmd.Flags().Int("retention", 0, "Number of backups to retain (0 = keep current)")

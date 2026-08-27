@@ -41,8 +41,8 @@
 
 备份管理（转发到目标服务器 Agent）
   POST /backup/exec             执行备份（异步，返回 task_id）
-  GET  /backup/status            查询备份任务状态
-  POST /backup/restore          从备份恢复
+  GET  /backup/status           查询备份或恢复任务的持久化状态
+  POST /backup/restore          从备份恢复（异步，返回 task_id）
   GET  /backup/list             列出可用备份
 
 代理管理
@@ -194,7 +194,8 @@ CLI Token 优先级（从高到低）：`--token` 参数 > `REDIS_SERVER_TOKEN` 
 备份管理
   POST /instance/backup        执行备份（异步，返回 task_id）
   GET  /instance/backup/status  查询备份任务状态
-  POST /instance/restore       从备份恢复
+  POST /instance/restore       从备份恢复（异步，返回 task_id）
+  GET  /instance/restore/status 查询恢复任务状态
   GET  /instance/backups       列出可用备份
 
 主机管理
@@ -673,6 +674,12 @@ Key 完全可预测，不需要索引。`backup list` 通过 `ListObjects(prefix
 - 需要额外从库资源，按需开启
 
 #### 3.5.3 备份恢复流程
+
+备份与恢复都采用异步任务模型。Server 生成统一 `task_id` 并写入 `pilot.db.tasks`，Agent
+立即接受任务并在后台执行；Server 自身每 2 秒轮询 Agent，不依赖浏览器或 CLI 保持连接。
+任务终态为 `success`、`failed` 或 `interrupted`，持久化后即使 Server 重启仍可查询。
+恢复任务执行期间 Server 持续续租整个实例组的操作锁，结束后释放，并写入最终审计。
+Agent 重启导致内存任务丢失时，Server 将任务标记为 `interrupted`，避免无限显示运行中。
 
 **Redis 实例恢复（优先 AOF → 回退 RDB）：**
 

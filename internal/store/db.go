@@ -218,11 +218,11 @@ func (d *DB) migrate() error {
 		`CREATE INDEX IF NOT EXISTS idx_audit_action   ON audit_log(action)`,
 		`CREATE INDEX IF NOT EXISTS idx_audit_level    ON audit_log(level)`,
 
-		// ── 任务队列（预留，后续扩展异步操作） ──────────────────────────────
+		// ── 长任务状态（备份/恢复由 Server 跟踪并持久化终态） ────────────────
 		`CREATE TABLE IF NOT EXISTS tasks (
 			id          TEXT PRIMARY KEY,
 			kind        TEXT NOT NULL DEFAULT '',
-			status      TEXT NOT NULL DEFAULT 'pending', -- pending|running|done|failed
+			status      TEXT NOT NULL DEFAULT 'pending', -- pending|accepted|running|success|failed|interrupted
 			payload     TEXT NOT NULL DEFAULT '{}',
 			result      TEXT NOT NULL DEFAULT '',
 			error       TEXT NOT NULL DEFAULT '',

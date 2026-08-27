@@ -490,9 +490,9 @@ export function BackupListModal({ detail, requestFn, onRefresh, onClose }) {
             clearInterval(poll);
             setExecMsg('备份完成');
             setExecLoading(false);
-          } else if (status === 'failed') {
+          } else if (status === 'failed' || status === 'interrupted') {
             clearInterval(poll);
-            setExecMsg('备份失败: ' + (statusRes?.error || '未知错误'));
+            setExecMsg((status === 'interrupted' ? '备份中断: ' : '备份失败: ') + (statusRes?.error || '未知错误'));
             setExecLoading(false);
           }
         } catch {

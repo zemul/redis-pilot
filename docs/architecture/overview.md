@@ -92,6 +92,7 @@
 │                                                              │
 │  持有 pilot.db（SQLite，servers/instance_groups/instances 等表）│
 │  所有状态读写串行化，实例级操作锁 + 内存读写锁                    │
+│  长任务管理器轮询 Agent，将备份/恢复终态、错误与最终审计持久化      │
 │  暴露与 CLI Tools 一一对应的 HTTP API                         │
 └──────────────────────────┬──────────────────────────────────┘
                            │ HTTP API (Token + HTTPS)

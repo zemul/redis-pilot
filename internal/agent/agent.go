@@ -55,11 +55,14 @@ type Agent struct {
 	s3            *s3client.Client // nil if S3 not configured
 	passwords     sync.Map         // instanceName -> password
 	instanceLocks sync.Map         // instanceName -> *sync.Mutex
-	backupTasks   sync.Map         // taskID -> *backupTask
+	backupTasks   sync.Map         // taskID -> *operationTask
+	restoreTasks  sync.Map         // taskID -> *operationTask
 }
 
-// backupTask tracks the state of an async backup operation.
-type backupTask struct {
+// operationTask tracks an async Agent operation. All reads and writes go through
+// snapshot/update so status polling is race-free.
+type operationTask struct {
+	mu        sync.RWMutex
 	ID        string `json:"id"`
 	Instance  string `json:"instance"`
 	Status    string `json:"status"` // "running", "success", "failed"
@@ -67,6 +70,32 @@ type backupTask struct {
 	DoneAt    string `json:"done_at,omitempty"`
 	Error     string `json:"error,omitempty"`
 	Backup    string `json:"backup,omitempty"` // timestamp of the backup on success
+}
+
+type operationTaskView struct {
+	ID        string `json:"id"`
+	Instance  string `json:"instance"`
+	Status    string `json:"status"`
+	StartedAt string `json:"started_at"`
+	DoneAt    string `json:"done_at,omitempty"`
+	Error     string `json:"error,omitempty"`
+	Backup    string `json:"backup,omitempty"`
+}
+
+func (t *operationTask) snapshot() operationTaskView {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	return operationTaskView{ID: t.ID, Instance: t.Instance, Status: t.Status, StartedAt: t.StartedAt,
+		DoneAt: t.DoneAt, Error: t.Error, Backup: t.Backup}
+}
+
+func (t *operationTask) finish(status, result, errMsg string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.Status = status
+	t.DoneAt = time.Now().Format(time.RFC3339)
+	t.Backup = result
+	t.Error = errMsg
 }
 
 func New(cfg *Config) *Agent {
@@ -176,6 +205,7 @@ func (a *Agent) Router() *gin.Engine {
 		inst.POST("/backup", a.instanceBackup)
 		inst.GET("/backup/status", a.instanceBackupStatus)
 		inst.POST("/restore", a.instanceRestore)
+		inst.GET("/restore/status", a.instanceRestoreStatus)
 		inst.GET("/backups", a.instanceBackups)
 		inst.GET("/diagnose", a.instanceDiagnose)
 		inst.GET("/slowlog", a.instanceSlowlog)
@@ -948,9 +978,9 @@ func (a *Agent) instanceBigkeys(c *gin.Context) {
 	}
 
 	ok(c, gin.H{
-		"keys":      bigKeys,
-		"scanned":   scanned,
-		"timeout":   time.Since(start) > maxDuration,
+		"keys":       bigKeys,
+		"scanned":    scanned,
+		"timeout":    time.Since(start) > maxDuration,
 		"elapsed_ms": time.Since(start).Milliseconds(),
 		"threshold": map[string]interface{}{
 			"string_bytes":        stringThreshold,
@@ -1109,6 +1139,7 @@ func (a *Agent) instanceBackup(c *gin.Context) {
 		Name      string `json:"name" binding:"required"`
 		Engine    string `json:"engine" binding:"required"`
 		Retention int    `json:"retention"` // 保留份数，0 表示不清理
+		TaskID    string `json:"task_id"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		fail(c, http.StatusBadRequest, err.Error())
@@ -1124,14 +1155,25 @@ func (a *Agent) instanceBackup(c *gin.Context) {
 	}
 
 	// Create async task and return immediately.
-	taskID := fmt.Sprintf("%s-%d", req.Name, time.Now().UnixNano())
-	task := &backupTask{
+	taskID := req.TaskID
+	if taskID == "" {
+		taskID = fmt.Sprintf("%s-%d", req.Name, time.Now().UnixNano())
+	}
+	task := &operationTask{
 		ID:        taskID,
 		Instance:  req.Name,
 		Status:    "running",
-		StartedAt: time.Now().Format("2006-01-02T15:04:05"),
+		StartedAt: time.Now().Format(time.RFC3339),
 	}
-	a.backupTasks.Store(taskID, task)
+	actual, loaded := a.backupTasks.LoadOrStore(taskID, task)
+	if loaded {
+		if actual.(*operationTask).Instance != req.Name {
+			fail(c, http.StatusConflict, "task_id already belongs to another instance")
+			return
+		}
+		ok(c, gin.H{"task_id": taskID})
+		return
+	}
 
 	go a.runBackup(task, req.Name, req.Engine, req.Retention)
 
@@ -1150,11 +1192,11 @@ func (a *Agent) instanceBackupStatus(c *gin.Context) {
 		fail(c, http.StatusNotFound, "task not found")
 		return
 	}
-	ok(c, v)
+	ok(c, v.(*operationTask).snapshot())
 }
 
 // runBackup executes the full backup pipeline in the background.
-func (a *Agent) runBackup(task *backupTask, name, engine string, retention int) {
+func (a *Agent) runBackup(task *operationTask, name, engine string, retention int) {
 	unlock := a.lockInstance(name)
 	defer unlock()
 
@@ -1282,16 +1324,12 @@ func (a *Agent) runBackup(task *backupTask, name, engine string, retention int) 
 		a.cleanupS3Backups(context.Background(), name, retention)
 	}
 
-	task.Status = "success"
-	task.DoneAt = time.Now().Format("2006-01-02T15:04:05")
-	task.Backup = ts
+	task.finish("success", ts, "")
 }
 
-func (a *Agent) failTask(task *backupTask, errMsg string) {
-	task.Status = "failed"
-	task.DoneAt = time.Now().Format("2006-01-02T15:04:05")
-	task.Error = errMsg
-	a.log.Errorf("backup task %s failed: %s", task.ID, errMsg)
+func (a *Agent) failTask(task *operationTask, errMsg string) {
+	task.finish("failed", "", errMsg)
+	a.log.Errorf("operation task %s failed: %s", task.ID, errMsg)
 }
 
 func (a *Agent) instanceRestore(c *gin.Context) {
@@ -1299,6 +1337,7 @@ func (a *Agent) instanceRestore(c *gin.Context) {
 		Name     string `json:"name" binding:"required"`
 		Engine   string `json:"engine" binding:"required"`
 		BackupTs string `json:"backup_ts" binding:"required"`
+		TaskID   string `json:"task_id"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		fail(c, http.StatusBadRequest, err.Error())
@@ -1316,124 +1355,146 @@ func (a *Agent) instanceRestore(c *gin.Context) {
 		fail(c, http.StatusServiceUnavailable, "s3 not configured")
 		return
 	}
+	taskID := req.TaskID
+	if taskID == "" {
+		taskID = fmt.Sprintf("restore-%s-%d", req.Name, time.Now().UnixNano())
+	}
+	task := &operationTask{ID: taskID, Instance: req.Name, Status: "running", StartedAt: time.Now().Format(time.RFC3339)}
+	actual, loaded := a.restoreTasks.LoadOrStore(taskID, task)
+	if loaded {
+		if actual.(*operationTask).Instance != req.Name {
+			fail(c, http.StatusConflict, "task_id already belongs to another instance")
+			return
+		}
+		ok(c, gin.H{"task_id": taskID})
+		return
+	}
+	go a.runRestore(task, req.Name, req.Engine, req.BackupTs)
+	ok(c, gin.H{"task_id": taskID})
+}
 
-	unlock := a.lockInstance(req.Name)
+func (a *Agent) instanceRestoreStatus(c *gin.Context) {
+	taskID := c.Query("task_id")
+	if taskID == "" {
+		fail(c, http.StatusBadRequest, "task_id required")
+		return
+	}
+	v, exists := a.restoreTasks.Load(taskID)
+	if !exists {
+		fail(c, http.StatusNotFound, "task not found")
+		return
+	}
+	ok(c, v.(*operationTask).snapshot())
+}
+
+func (a *Agent) runRestore(task *operationTask, name, engine, backupTs string) {
+	if err := a.restoreDataset(name, engine, backupTs); err != nil {
+		a.failTask(task, err.Error())
+		return
+	}
+	task.finish("success", backupTs, "")
+}
+
+func (a *Agent) restoreDataset(name, engine, backupTs string) error {
+
+	unlock := a.lockInstance(name)
 	defer unlock()
 
-	ctx := c.Request.Context()
-	dataDir := filepath.Join(a.cfg.DataDir, req.Name, "data")
-	containerName := req.Engine + "-" + req.Name
+	ctx := context.Background()
+	dataDir := filepath.Join(a.cfg.DataDir, name, "data")
+	containerName := engine + "-" + name
 
 	// 下载、解压和校验都在实例仍运行时完成，只有确认恢复数据完整可用后才进入停机窗口。
 	// 暂存目录必须是 dataDir 的同级目录：最后整体 rename dataDir 才能把 RDB+AOF 作为
 	// 一个数据集原子替换，避免两次独立 swap 产生“新 RDB + 旧 AOF”的混合状态。
-	stageRoot := filepath.Join(a.cfg.DataDir, req.Name, ".restore-staging")
+	stageRoot := filepath.Join(a.cfg.DataDir, name, ".restore-staging")
 	os.RemoveAll(stageRoot)
 	stagedData := filepath.Join(stageRoot, "data")
 	if err := os.MkdirAll(stagedData, 0o755); err != nil {
-		fail(c, http.StatusInternalServerError, "create restore staging dir failed: "+err.Error())
-		return
+		return fmt.Errorf("create restore staging dir failed: %w", err)
 	}
 	// 失败时清掉暂存目录；成功路径下 data 已经被 rename 移走，这里只清理下载包。
 	defer os.RemoveAll(stageRoot)
 
-	if req.Engine == "kvrocks" {
+	if engine == "kvrocks" {
 		// Download checkpoint archive from S3 and stage it as a complete data/db tree.
-		s3Key := req.Name + "/" + req.BackupTs + ".checkpoint.tar.gz"
+		s3Key := name + "/" + backupTs + ".checkpoint.tar.gz"
 		archivePath := filepath.Join(stageRoot, "backup.tar.gz")
 		if err := a.s3.Download(ctx, s3Key, archivePath); err != nil {
-			fail(c, http.StatusBadRequest, "download backup from s3 failed (original data untouched): "+err.Error())
-			return
+			return fmt.Errorf("download backup from s3 failed (original data untouched): %w", err)
 		}
 		if err := verifyBackupArchiveExists(archivePath); err != nil {
-			fail(c, http.StatusInternalServerError, err.Error())
-			return
+			return err
 		}
 		stagedDB := filepath.Join(stagedData, "db")
 		if err := os.MkdirAll(stagedDB, 0o755); err != nil {
-			fail(c, http.StatusInternalServerError, err.Error())
-			return
+			return err
 		}
 		if _, err := runShell("tar", "-xzf", archivePath, "-C", stagedDB); err != nil {
-			fail(c, http.StatusInternalServerError, "extract backup failed (original data untouched): "+err.Error())
-			return
+			return fmt.Errorf("extract backup failed (original data untouched): %w", err)
 		}
 		if nonEmpty, err := dirHasEntries(stagedDB); err != nil || !nonEmpty {
-			fail(c, http.StatusInternalServerError,
-				"backup archive extracted to an empty dataset, refusing to replace existing data")
-			return
+			return fmt.Errorf("backup archive extracted to an empty dataset, refusing to replace existing data")
 		}
 	} else {
 		// Redis: determine backup format by checking S3 for rdbaof vs rdb.
-		rdbaofKey := req.Name + "/" + req.BackupTs + ".rdbaof.tar.gz"
-		rdbKey := req.Name + "/" + req.BackupTs + ".rdb"
+		rdbaofKey := name + "/" + backupTs + ".rdbaof.tar.gz"
+		rdbKey := name + "/" + backupTs + ".rdb"
 
 		if a.s3.Exists(ctx, rdbaofKey) {
 			// RDB + AOF joint backup: extract both into one staged data directory.
 			archivePath := filepath.Join(stageRoot, "backup.tar.gz")
 			if err := a.s3.Download(ctx, rdbaofKey, archivePath); err != nil {
-				fail(c, http.StatusInternalServerError, "download rdbaof backup failed (original data untouched): "+err.Error())
-				return
+				return fmt.Errorf("download rdbaof backup failed (original data untouched): %w", err)
 			}
 			if _, err := runShell("tar", "-xzf", archivePath, "-C", stagedData); err != nil {
-				fail(c, http.StatusInternalServerError, "extract rdbaof backup failed (original data untouched): "+err.Error())
-				return
+				return fmt.Errorf("extract rdbaof backup failed (original data untouched): %w", err)
 			}
 			if err := verifyBackupArchiveExists(filepath.Join(stagedData, "dump.rdb")); err != nil {
-				fail(c, http.StatusInternalServerError, "invalid dump.rdb in backup (original data untouched): "+err.Error())
-				return
+				return fmt.Errorf("invalid dump.rdb in backup (original data untouched): %w", err)
 			}
 			aofDir := filepath.Join(stagedData, "appendonlydir")
 			if _, err := os.Stat(aofDir); err == nil {
 				if nonEmpty, err := dirHasEntries(aofDir); err != nil || !nonEmpty {
-					fail(c, http.StatusInternalServerError, "AOF directory in backup is empty or unreadable (original data untouched)")
-					return
+					return fmt.Errorf("AOF directory in backup is empty or unreadable (original data untouched)")
 				}
 			} else {
 				if err := verifyBackupArchiveExists(filepath.Join(stagedData, "appendonly.aof")); err != nil {
-					fail(c, http.StatusInternalServerError, "invalid AOF in backup (original data untouched): "+err.Error())
-					return
+					return fmt.Errorf("invalid AOF in backup (original data untouched): %w", err)
 				}
 			}
 		} else {
 			// RDB-only backup: download single file, stage, swap.
 			archivePath := filepath.Join(stagedData, "dump.rdb")
 			if err := a.s3.Download(ctx, rdbKey, archivePath); err != nil {
-				fail(c, http.StatusBadRequest, "backup not found in s3 (original data untouched): "+err.Error())
-				return
+				return fmt.Errorf("backup not found in s3 (original data untouched): %w", err)
 			}
 			if err := verifyBackupArchiveExists(archivePath); err != nil {
-				fail(c, http.StatusInternalServerError, err.Error())
-				return
+				return err
 			}
 			// stagedData 中没有 AOF；整体替换 dataDir 后不会残留旧 AOF。
 		}
 	}
 
 	if err := a.runtime.Stop(containerName); err != nil {
-		fail(c, http.StatusInternalServerError, "stop container failed: "+err.Error())
-		return
+		return fmt.Errorf("stop container failed: %w", err)
 	}
 	preserve := restorePreservePath(dataDir)
 	if err := swapInPath(stagedData, dataDir, preserve); err != nil {
 		// swap 自身会回滚；仍要把刚停止的原实例重新拉起。
 		startErr := a.runtime.Start(containerName)
 		if startErr != nil {
-			fail(c, http.StatusInternalServerError, err.Error()+"; restart original container also failed: "+startErr.Error())
-			return
+			return fmt.Errorf("%v; restart original container also failed: %v", err, startErr)
 		}
-		fail(c, http.StatusInternalServerError, err.Error())
-		return
+		return err
 	}
 	if err := a.runtime.Start(containerName); err != nil {
 		// 新数据无法启动时恢复整个旧数据集，再尽力恢复服务。
 		rollbackErr := rollbackSwappedPath(dataDir, preserve)
 		restartErr := a.runtime.Start(containerName)
-		fail(c, http.StatusInternalServerError, fmt.Sprintf(
-			"start restored container failed: %v; rollback=%v; restart_original=%v", err, rollbackErr, restartErr))
-		return
+		return fmt.Errorf("start restored container failed: %v; rollback=%v; restart_original=%v", err, rollbackErr, restartErr)
 	}
-	ok(c, nil)
+	return nil
 }
 
 func (a *Agent) instanceBackups(c *gin.Context) {

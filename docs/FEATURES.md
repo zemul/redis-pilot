@@ -106,11 +106,11 @@
 |---------|------|------|---------|
 | `/backup/exec` | POST | 触发一次备份（异步，返回 `task_id`） | `backupExec()` |
 | `/backup/status` | GET | 查询备份任务状态（需 `name` 和 `task_id` 参数） | `backupStatus()` |
-| `/backup/restore` | POST | 从备份恢复数据 | `backupRestore()` |
+| `/backup/restore` | POST | 异步恢复数据，返回 `task_id` | `backupRestore()` |
 | `/backup/list` | GET | 列出可用备份（需 `name` 参数） | `backupList()` |
 
 **备份特性**:
-- **异步模型**: `POST /backup/exec` 立即返回 `task_id`，后台 goroutine 执行备份。通过 `GET /backup/status?name=xxx&task_id=xxx` 轮询任务状态（`running` / `success` / `failed`）
+- **异步模型**: 备份和恢复均立即返回 `task_id`；Agent 后台执行，Server 后台轮询并把终态持久化到 `pilot.db`。通过 `GET /backup/status?name=xxx&task_id=xxx` 查询（`running` / `success` / `failed` / `interrupted`）
 
 - **S3 存储**: 备份产物上传至 S3 兼容对象存储，本地磁盘仅作暂存。上传成功后立即删除本地文件。`backup list` 通过 `ListObjects` 查询；恢复时从 S3 下载
 

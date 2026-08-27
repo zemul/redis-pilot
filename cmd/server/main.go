@@ -37,6 +37,7 @@ func main() {
 	s.StartSentinelReconcileLoop()
 	s.StartSentinelWatchLoop()
 	s.StartBackupScheduler()
+	s.StartOperationTaskTracker()
 	addr := fmt.Sprintf(":%d", cfg.Port)
 	log.Printf("redis-pilot server listening on %s", addr)
 	if err := s.Router().Run(addr); err != nil {

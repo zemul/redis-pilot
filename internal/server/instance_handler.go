@@ -1,6 +1,7 @@
 package server
 
 import (
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -146,7 +147,6 @@ func (s *Server) instanceList(c *gin.Context) {
 	s.injectMemoryUsed(view)
 	ok(c, view)
 }
-
 
 // injectMemoryUsed 将内存缓存中的 used_memory 注入到列表视图中。
 func (s *Server) injectMemoryUsed(view *apitypes.InstancesStateView) {
@@ -714,12 +714,12 @@ func (s *Server) instanceConfig(c *gin.Context) {
 		"config_overrides": req.ConfigOverrides,
 		"restart":          req.Restart,
 		// 实例无密码：不下发给 Agent（详见 instanceCreate）
-		"password":         "",
-		"memory":           inst.Memory,
-		"engine_version":   groupState.EngineVersion,
-		"category":         groupState.Category,
-		"replica_of":       replicaOfAddr,
-		"port":             inst.Port,
+		"password":       "",
+		"memory":         inst.Memory,
+		"engine_version": groupState.EngineVersion,
+		"category":       groupState.Category,
+		"replica_of":     replicaOfAddr,
+		"port":           inst.Port,
 	}); err != nil {
 		fail(c, http.StatusInternalServerError, "agent config failed: "+err.Error())
 		return
@@ -1269,30 +1269,25 @@ func (s *Server) backupStatus(c *gin.Context) {
 		return
 	}
 
-	_, srv, err := s.resolveInstance(c, name)
+	task, err := s.db.GetTask(taskID)
+	if errors.Is(err, sql.ErrNoRows) {
+		fail(c, http.StatusNotFound, "task not found")
+		return
+	}
 	if err != nil {
+		fail(c, http.StatusInternalServerError, err.Error())
 		return
 	}
-
-	client := newAgentClient(srv)
-	resp, err := client.get("/instance/backup/status?task_id=" + taskID)
-	if err != nil {
-		fail(c, http.StatusInternalServerError, "agent query failed: "+err.Error())
+	var payload operationTaskPayload
+	if json.Unmarshal([]byte(task.Payload), &payload) != nil || payload.Instance != name {
+		fail(c, http.StatusNotFound, "task not found for instance")
 		return
 	}
-
-	// Agent returns: {"success":true,"data":{"id":"...","status":"running|success|failed",...}}
-	var envelope struct {
-		Success bool            `json:"success"`
-		Data    json.RawMessage `json:"data"`
-		Error   string          `json:"error"`
-	}
-	json.Unmarshal(resp, &envelope)
-	if !envelope.Success {
-		fail(c, http.StatusInternalServerError, envelope.Error)
-		return
-	}
-	ok(c, envelope.Data)
+	ok(c, gin.H{
+		"id": task.ID, "kind": task.Kind, "status": task.Status,
+		"result": task.Result, "backup": task.Result, "error": task.Error,
+		"created_at": task.CreatedAt, "updated_at": task.UpdatedAt,
+	})
 }
 
 // execBackup 触发一次异步备份，立即返回 task_id。
@@ -1314,24 +1309,25 @@ func (s *Server) execBackup(name, operator string) (string, error) {
 		"name":   name,
 		"engine": groupState.Engine,
 	}
+	taskID := newOperationTaskID("backup.create", name)
+	body["task_id"] = taskID
 	if inst.Backup != nil && inst.Backup.Retention > 0 {
 		body["retention"] = inst.Backup.Retention
 	}
 
+	payload := operationTaskPayload{Instance: name, Server: inst.Server, Operator: operator}
+	if err := s.db.CreateTask(store.Task{ID: taskID, Kind: "backup.create", Status: "pending", Payload: marshalTaskPayload(payload)}); err != nil {
+		return "", err
+	}
 	client := newAgentClient(srv)
-	resp, err := client.post("/instance/backup", body)
+	_, err = client.post("/instance/backup", body)
 	if err != nil {
+		_ = s.db.UpdateTaskStatus(taskID, "failed", "", err.Error())
 		return "", fmt.Errorf("agent backup failed: %w", err)
 	}
-
-	// Agent 现在立即返回 {task_id: "xxx"}
-	var result struct {
-		Data struct {
-			TaskID string `json:"task_id"`
-		} `json:"data"`
+	if err := s.db.UpdateTaskStatus(taskID, "running", "", ""); err != nil {
+		return "", err
 	}
-	json.Unmarshal(resp, &result)
-	taskID := result.Data.TaskID
 
 	s.audit.Log(store.AuditRecord{
 		Operator: operator,
@@ -1353,14 +1349,35 @@ func (s *Server) backupRestore(c *gin.Context) {
 		return
 	}
 
+	taskID := newOperationTaskID("backup.restore", req.Name)
+	c.Request.Header.Set("X-Session-ID", taskID)
 	inst, srv, unlock, err := s.resolveAndLock(c, req.Name, "restore")
 	if err != nil {
 		return
 	}
-	defer unlock()
+	keepLock := false
+	defer func() {
+		if !keepLock {
+			unlock()
+		}
+	}()
 
 	groupState, err := s.groupForInstance(req.Name)
 	if err != nil {
+		fail(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+	instances, err := s.db.ReadInstances()
+	if err != nil {
+		fail(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+	operator := operatorFrom(c)
+	payload := operationTaskPayload{
+		Instance: req.Name, Server: inst.Server, Operator: operator, BackupTs: req.BackupTs,
+		LockSessionID: taskID, LockInstances: state.InstanceGroup(instances, req.Name),
+	}
+	if err := s.db.CreateTask(store.Task{ID: taskID, Kind: "backup.restore", Status: "pending", Payload: marshalTaskPayload(payload)}); err != nil {
 		fail(c, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -1369,20 +1386,27 @@ func (s *Server) backupRestore(c *gin.Context) {
 		"name":      req.Name,
 		"engine":    groupState.Engine,
 		"backup_ts": req.BackupTs,
+		"task_id":   taskID,
 	}); err != nil {
+		_ = s.db.UpdateTaskStatus(taskID, "failed", "", err.Error())
 		fail(c, http.StatusInternalServerError, "agent restore failed: "+err.Error())
+		return
+	}
+	keepLock = true
+	if err := s.db.UpdateTaskStatus(taskID, "running", "", ""); err != nil {
+		fail(c, http.StatusInternalServerError, err.Error())
 		return
 	}
 
 	s.audit.Log(store.AuditRecord{
-		Operator: operatorFrom(c),
-		Action:   "backup.restore", Level: audit.LevelCritical, Result: "success",
+		Operator: operator,
+		Action:   "backup.restore", Level: audit.LevelCritical, Result: "accepted",
 		DurationMs: time.Since(start).Milliseconds(),
-		Target:     map[string]interface{}{"instance": req.Name, "server": inst.Server},
+		Target:     map[string]interface{}{"instance": req.Name, "server": inst.Server, "task_id": taskID},
 		Params:     map[string]interface{}{"backup_ts": req.BackupTs},
 	})
 
-	ok(c, nil)
+	ok(c, gin.H{"task_id": taskID})
 }
 
 func (s *Server) backupList(c *gin.Context) {

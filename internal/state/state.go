@@ -46,6 +46,15 @@ func ReleaseLock(inst *apitypes.Instance, heldBy string) {
 	}
 }
 
+// RenewLock refreshes a lock lease owned by heldBy without changing its operation.
+func RenewLock(inst *apitypes.Instance, heldBy string) bool {
+	if inst.Lock == nil || inst.Lock.HeldBy != heldBy {
+		return false
+	}
+	inst.Lock.AcquiredAt = time.Now().Format(time.RFC3339)
+	return true
+}
+
 // ── 拓扑辅助 ──────────────────────────────────────────────────────────────────
 
 // InstanceGroup 返回实例所属组的所有实例名（主库+所有从库）。
