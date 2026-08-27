@@ -38,7 +38,26 @@ redis-pilot/
   └── pkg/
       ├── apitypes/ # Server ↔ Agent 共享请求/响应结构体
       └── redisconf/ # 配置覆盖项校验规则（Server 与 Agent 共用同一份保留字清单）
+  web/dashboard/src/  # 前端 SPA（React + Vite + Tailwind）
+    ├── App.jsx        # 应用骨架：路由、全局数据编排（拉取/刷新）、弹窗挂载；只保留 App/AppShell
+    ├── Auth.jsx       # 登录页、用户管理、密钥（Token）管理
+    ├── lib/           # 无 React 依赖的纯逻辑
+    │   ├── format.js    # 格式化与文案映射（getField/formatBytes/statusMeta/auditQuery…）
+    │   ├── instance.js  # 实例组拓扑派生（buildInstanceGroups/topologyStatus/powerActionFor…）
+    │   └── request.js   # createRequest 工厂，统一 fetch（注入 operator 与 401 登出回调）
+    ├── components/    # 跨页面复用的 UI 组件
+    │   ├── common.jsx   # 共享原子组件（StatusBadge/UserMenu/MoreMenu/CopyableText…）
+    │   ├── AiChatPanel.jsx # AI 助手对话面板
+    │   └── ui/          # shadcn 风格基础组件（button/select/table/badge/input/dialog）
+    ├── views/         # 页面级组件，一个导航 tab 一个文件
+    │   └── (Dashboard/Instances/Alerts/Servers/Audit/MetricsTrend)View.jsx
+    └── modals/        # 弹窗组件
+        └── index.jsx   # 实例详情/慢查询/大Key/接入信息/配置/备份/删除/电源/创建
 ```
+
+> 前端分层约定（新增功能请遵循，避免 App.jsx 重新膨胀）：纯逻辑放 `lib/`，
+> 跨页面复用组件放 `components/`，页面放 `views/`（一个 tab 一个文件），弹窗放 `modals/`。
+> `App.jsx` 只做路由、数据编排和弹窗挂载，不承载具体页面/弹窗实现。
 
 ## 配置文件
 - `server.yaml`：Server 监听端口、`jwt_secret`（JWT 签名）、`internal_token`（内部组件通信）、初始管理员账号、Redis/Kvrocks 版本白名单、`data_dir`（`pilot.db` 存放目录）
