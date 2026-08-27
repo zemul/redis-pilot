@@ -28,6 +28,12 @@ export function MetricsTrendView({ instanceName, requestFn }) {
       chartInstances.current = [];
 
       const ts = points.map((p) => new Date(p.ts * 1000));
+      // 长范围(7天/30天)带上月-日,否则只看时分无法定位;短范围只显示时分。
+      const isLongRange = range_ === '7d' || range_ === '30d';
+      const fmtAxis = (d) => isLongRange
+        ? d.toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }).replace(/\//g, '-')
+        : d.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
+      const axisLabels = ts.map(fmtAxis);
       const charts = [
         { id: 'mem', title: '内存使用率 (%)', data: points.map((p) => p.mem_max > 0 ? +(p.mem_used / p.mem_max * 100).toFixed(1) : 0), color: '#3b82f6', max: 100 },
         { id: 'qps', title: 'QPS (ops/s)', data: points.map((p) => p.ops_sec), color: '#3b82f6' },
@@ -47,7 +53,7 @@ export function MetricsTrendView({ instanceName, requestFn }) {
           title: { text: title, textStyle: { fontSize: 13, fontWeight: 500 }, left: 'center' },
           tooltip: { trigger: 'axis', formatter: (params) => { const p = params[0]; return `${p.axisValueLabel}<br/>${p.marker} ${p.value}`; } },
           grid: { left: 45, right: 12, top: 35, bottom: 28 },
-          xAxis: { type: 'category', data: ts.map((d) => d.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })), boundaryGap: false, axisLine: { lineStyle: { color: '#ddd' } }, axisLabel: { fontSize: 10, color: '#999' } },
+          xAxis: { type: 'category', data: axisLabels, boundaryGap: false, axisLine: { lineStyle: { color: '#ddd' } }, axisLabel: { fontSize: 10, color: '#999' } },
           yAxis: { type: 'value', min: 0, max: max || undefined, splitLine: { lineStyle: { color: '#f0f0f0' } }, axisLabel: { fontSize: 10, color: '#999' } },
           series: [{ type: 'line', data, smooth: true, symbol: 'none', lineStyle: { width: 2, color }, areaStyle: { color: { type: 'linear', x: 0, y: 0, x2: 0, y2: 1, colorStops: [{ offset: 0, color: color + '30' }, { offset: 1, color: color + '05' }] } } }]
         });
