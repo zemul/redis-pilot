@@ -31,15 +31,18 @@ import {
   Server,
   SlidersHorizontal,
   ShieldCheck,
+  Sparkles,
   Trash2,
   Users,
   X
 } from 'lucide-react';
 import { LoginPage, UserManagement, TokenManagement, getStoredAuth, clearStoredAuth, authHeaders } from './Auth.jsx';
+import AiChatPanel from './components/AiChatPanel.jsx';
 
 const TABS = [
   { id: 'dashboard', label: '大盘看板', icon: LayoutDashboard },
   { id: 'instances', label: '实例管理', icon: Database },
+  { id: 'ai', label: 'AI 助手', icon: Sparkles },
   { id: 'alerts', label: '异常总览', icon: AlertTriangle },
   { id: 'servers', label: '服务器节点', icon: Server },
   { id: 'audit', label: '操作审计', icon: List },
@@ -866,6 +869,7 @@ function AppShell() {
                   pendingAction={pendingAction}
                 />
               )}
+              {activeTab === 'ai' && <AiChatPanel />}
               {activeTab === 'alerts' && <AlertsView groups={instanceGroups} servers={servers} publicHost={serverInfo?.proxy_public_endpoint} />}
               {activeTab === 'servers' && <ServersView servers={servers} />}
               {activeTab === 'audit' && (
