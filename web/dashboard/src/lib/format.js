@@ -1,0 +1,190 @@
+// 纯工具/格式化函数：无 React 依赖，负责数据规整、字段读取、格式化与文案映射。
+
+export function normalizeMap(value, upperKey, lowerKey) {
+  const data = value?.[upperKey] || value?.[lowerKey] || {};
+  return Object.entries(data).map(([name, item]) => ({ ...item, name }));
+}
+
+export function normalizeNamedMap(value, upperKey, lowerKey) {
+  const data = value?.[upperKey] || value?.[lowerKey] || {};
+  return new Map(Object.entries(data).map(([name, item]) => [name, { ...item, name }]));
+}
+
+export function getField(item, lower, upper, fallback = '') {
+  return item?.[lower] ?? item?.[upper] ?? fallback;
+}
+
+export function displayValue(value, fallback = '-') {
+  if (value === null || value === undefined || value === '') return fallback;
+  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+    return String(value);
+  }
+  if (Array.isArray(value)) {
+    return value.map((item) => displayValue(item, '')).filter(Boolean).join(', ') || fallback;
+  }
+  if (typeof value === 'object') {
+    const pairs = Object.entries(value)
+      .filter(([, item]) => item !== null && item !== undefined && item !== '')
+      .map(([key, item]) => `${key}: ${displayValue(item, '')}`);
+    return pairs.join(', ') || fallback;
+  }
+  return String(value);
+}
+
+export function formatDateTime(value, fallback = '-') {
+  if (!value) return fallback;
+  const text = String(value);
+  const match = text.match(/^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2}:\d{2})(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})?$/);
+  return match ? `${match[1]} ${match[2]}` : displayValue(value, fallback);
+}
+
+export function backupRows(payload) {
+  const backups = payload?.data?.backups || payload?.data?.Backups || payload?.backups || payload?.Backups || [];
+  const list = Array.isArray(backups) ? backups : [];
+  return list
+    .map((item) => ({
+      name: item.name || '',
+      time: formatDateTime(item.timestamp, item.timestamp || '-'),
+      type: item.type === 'auto' ? '自动' : '手动',
+      status: item.status === 'success' ? '成功' : (item.status || '成功'),
+      size: item.size ? formatBytes(item.size) : '-'
+    }))
+    .sort((a, b) => (b.time || '').localeCompare(a.time || ''));
+}
+
+export function formatBytes(bytes) {
+  if (!bytes || bytes <= 0) return '-';
+  if (bytes < 1024) return bytes + ' B';
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+  if (bytes < 1024 * 1024 * 1024) return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+  return (bytes / (1024 * 1024 * 1024)).toFixed(2) + ' GB';
+}
+
+export function auditOperator(log) {
+  return displayValue(log?.operator || log?.Operator, '系统');
+}
+
+export function auditActionLabel(action) {
+  const labels = {
+    'instance.create': '创建实例',
+    'instance.delete': '删除实例',
+    'instance.start': '启动实例',
+    'instance.stop': '停止实例',
+    'config.update': '更新配置',
+    'topology.failover': '故障转移',
+    'topology.replicate': '建立复制',
+    'backup.create': '创建备份',
+    'backup.restore': '恢复备份',
+    'node.add': '注册节点',
+    'node.remove': '移除节点',
+    'node.update': '更新节点',
+    'reconcile': '状态协调',
+    'reconcile.replica_drift': '副本漂移修复',
+    'reconcile.role_drift': '角色漂移修复',
+  };
+  return labels[action] || action || '-';
+}
+
+export function auditLevelLabel(level) {
+  const labels = { normal: '常规', important: '重要', critical: '关键' };
+  return labels[level] || level || '-';
+}
+
+export function auditTargetDisplay(target) {
+  if (!target) return '-';
+  if (typeof target === 'string') return target;
+  const group = target.group || target.Group || target.instance_group;
+  const instance = target.instance || target.Instance || target.name || target.Name || target.new_master;
+  if (group && instance) return `${group} / ${instance}`;
+  if (instance) return instance;
+  if (group) return group;
+  return '-';
+}
+
+export function formatAuditDate(value) {
+  if (!value) return '';
+  return String(value).replaceAll('-', '');
+}
+
+export function auditQuery(filters, page = 1, pageSize = 30) {
+  const params = new URLSearchParams();
+  if (filters.from) params.set('from', formatAuditDate(filters.from));
+  if (filters.to) params.set('to', formatAuditDate(filters.to));
+  if (filters.group) params.set('group', filters.group.trim());
+  if (filters.instance) params.set('instance', filters.instance.trim());
+  if (filters.level) params.set('level', filters.level);
+  if (filters.action) params.set('action', filters.action.trim());
+  params.set('page', String(page));
+  params.set('page_size', String(pageSize));
+  return `/audit/query?${params.toString()}`;
+}
+
+export function parseGi(value) {
+  if (!value) return 0;
+  const match = String(value).trim().match(/^([0-9.]+)\s*(Gi|G|Mi|M|Ti|T)?/i);
+  if (!match) return 0;
+  const amount = Number(match[1]);
+  const unit = (match[2] || 'Gi').toLowerCase();
+  if (unit === 'mi' || unit === 'm') return amount / 1024;
+  if (unit === 'ti' || unit === 't') return amount * 1024;
+  return amount;
+}
+
+export function formatGi(value) {
+  const amount = Number(value || 0);
+  return `${amount.toFixed(amount >= 10 || amount === 0 ? 0 : 1)}Gi`;
+}
+
+export function statusMeta(status) {
+  status = displayValue(status, '');
+  const labels = {
+    running: '运行中',
+    creating: '创建中',
+    stopped: '已停止',
+    stopping: '停止中',
+    failed: '异常',
+    unexpected_stopped: '异常停止',
+    unreachable: '不可达',
+    healthy: '健康',
+    unhealthy: '异常',
+    degraded: '拓扑降级',
+    failover_conflict: '故障转移冲突',
+    drain: '下线中',
+  };
+  const tone = {
+    running: 'ok',
+    healthy: 'ok',
+    creating: 'warn',
+    stopping: 'warn',
+    drain: 'warn',
+    stopped: 'warn',
+    unreachable: 'bad',
+    failed: 'bad',
+    unexpected_stopped: 'bad',
+    unhealthy: 'bad',
+    degraded: 'warn',
+    failover_conflict: 'bad',
+  };
+  return { label: labels[status] || status || '未知', tone: tone[status] || 'neutral' };
+}
+
+export function auditResultMeta(result) {
+  result = displayValue(result, 'success');
+  const labels = {
+    success: '成功',
+    failed: '失败',
+    corrected: '已修正',
+    alert: '告警',
+    updated: '已更新',
+    skipped: '已跳过',
+  };
+  const tone = {
+    success: 'ok',
+    corrected: 'ok',
+    updated: 'ok',
+    alert: 'warn',
+    skipped: 'warn',
+    failed: 'bad',
+  };
+  return { label: labels[result] || result, tone: tone[result] || 'neutral' };
+}

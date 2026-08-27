@@ -37,8 +37,41 @@ import {
   Users,
   X
 } from 'lucide-react';
-import { LoginPage, UserManagement, TokenManagement, getStoredAuth, clearStoredAuth, authHeaders } from './Auth.jsx';
+import { LoginPage, UserManagement, TokenManagement, getStoredAuth, clearStoredAuth } from './Auth.jsx';
+import { createRequest } from './lib/request.js';
 import AiChatPanel from './components/AiChatPanel.jsx';
+import {
+  normalizeMap,
+  normalizeNamedMap,
+  getField,
+  displayValue,
+  formatDateTime,
+  backupRows,
+  formatBytes,
+  auditOperator,
+  auditActionLabel,
+  auditLevelLabel,
+  auditTargetDisplay,
+  formatAuditDate,
+  auditQuery,
+  parseGi,
+  formatGi,
+  statusMeta,
+  auditResultMeta,
+} from './lib/format.js';
+import {
+  instanceStatusTone,
+  groupStatus,
+  topologyStatus,
+  buildInstanceGroups,
+  engineLabel,
+  categoryLabel,
+  extractMetricsPayload,
+  parseRedisInfo,
+  metricValue,
+  topologyLabel,
+  powerActionFor,
+} from './lib/instance.js';
 
 const TABS = [
   { id: 'dashboard', label: '大盘看板', icon: LayoutDashboard },
@@ -50,337 +83,6 @@ const TABS = [
   { id: 'users', label: '用户管理', icon: Users },
   { id: 'tokens', label: '密钥管理', icon: Key }
 ];
-
-function normalizeMap(value, upperKey, lowerKey) {
-  const data = value?.[upperKey] || value?.[lowerKey] || {};
-  return Object.entries(data).map(([name, item]) => ({ ...item, name }));
-}
-
-function normalizeNamedMap(value, upperKey, lowerKey) {
-	const data = value?.[upperKey] || value?.[lowerKey] || {};
-	return new Map(Object.entries(data).map(([name, item]) => [name, { ...item, name }]));
-}
-
-function getField(item, lower, upper, fallback = '') {
-	return item?.[lower] ?? item?.[upper] ?? fallback;
-}
-
-function displayValue(value, fallback = '-') {
-	if (value === null || value === undefined || value === '') return fallback;
-	if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
-		return String(value);
-	}
-	if (Array.isArray(value)) {
-		return value.map((item) => displayValue(item, '')).filter(Boolean).join(', ') || fallback;
-	}
-	if (typeof value === 'object') {
-		const pairs = Object.entries(value)
-			.filter(([, item]) => item !== null && item !== undefined && item !== '')
-			.map(([key, item]) => `${key}: ${displayValue(item, '')}`);
-		return pairs.join(', ') || fallback;
-	}
-	return String(value);
-}
-
-function formatDateTime(value, fallback = '-') {
-	if (!value) return fallback;
-	const text = String(value);
-	const match = text.match(/^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2}:\d{2})(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})?$/);
-	return match ? `${match[1]} ${match[2]}` : displayValue(value, fallback);
-}
-
-function backupRows(payload) {
-	const backups = payload?.data?.backups || payload?.data?.Backups || payload?.backups || payload?.Backups || [];
-	const list = Array.isArray(backups) ? backups : [];
-	return list
-		.map((item) => ({
-			name: item.name || '',
-			time: formatDateTime(item.timestamp, item.timestamp || '-'),
-			type: item.type === 'auto' ? '自动' : '手动',
-			status: item.status === 'success' ? '成功' : (item.status || '成功'),
-			size: item.size ? formatBytes(item.size) : '-'
-		}))
-		.sort((a, b) => (b.time || '').localeCompare(a.time || ''));
-}
-
-function formatBytes(bytes) {
-	if (!bytes || bytes <= 0) return '-';
-	if (bytes < 1024) return bytes + ' B';
-	if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
-	if (bytes < 1024 * 1024 * 1024) return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
-	return (bytes / (1024 * 1024 * 1024)).toFixed(2) + ' GB';
-}
-
-function auditOperator(log) {
-	return displayValue(log?.operator || log?.Operator, '系统');
-}
-
-function auditActionLabel(action) {
-	const labels = {
-		'instance.create': '创建实例',
-		'instance.delete': '删除实例',
-		'instance.start': '启动实例',
-		'instance.stop': '停止实例',
-		'config.update': '更新配置',
-		'topology.failover': '故障转移',
-		'topology.replicate': '建立复制',
-		'backup.create': '创建备份',
-		'backup.restore': '恢复备份',
-		'node.add': '注册节点',
-		'node.remove': '移除节点',
-		'node.update': '更新节点',
-		'reconcile': '状态协调',
-		'reconcile.replica_drift': '副本漂移修复',
-		'reconcile.role_drift': '角色漂移修复',
-	};
-	return labels[action] || action || '-';
-}
-
-function auditLevelLabel(level) {
-	const labels = { normal: '常规', important: '重要', critical: '关键' };
-	return labels[level] || level || '-';
-}
-
-function auditTargetDisplay(target) {
-	if (!target) return '-';
-	if (typeof target === 'string') return target;
-	const group = target.group || target.Group || target.instance_group;
-	const instance = target.instance || target.Instance || target.name || target.Name || target.new_master;
-	if (group && instance) return `${group} / ${instance}`;
-	if (instance) return instance;
-	if (group) return group;
-	return '-';
-}
-
-function formatAuditDate(value) {
-	if (!value) return '';
-	return String(value).replaceAll('-', '');
-}
-
-function auditQuery(filters, page = 1, pageSize = 30) {
-	const params = new URLSearchParams();
-	if (filters.from) params.set('from', formatAuditDate(filters.from));
-	if (filters.to) params.set('to', formatAuditDate(filters.to));
-	if (filters.group) params.set('group', filters.group.trim());
-	if (filters.instance) params.set('instance', filters.instance.trim());
-	if (filters.level) params.set('level', filters.level);
-	if (filters.action) params.set('action', filters.action.trim());
-	params.set('page', String(page));
-	params.set('page_size', String(pageSize));
-	return `/audit/query?${params.toString()}`;
-}
-
-function parseGi(value) {
-	if (!value) return 0;
-	const match = String(value).trim().match(/^([0-9.]+)\s*(Gi|G|Mi|M|Ti|T)?/i);
-  if (!match) return 0;
-  const amount = Number(match[1]);
-  const unit = (match[2] || 'Gi').toLowerCase();
-  if (unit === 'mi' || unit === 'm') return amount / 1024;
-  if (unit === 'ti' || unit === 't') return amount * 1024;
-  return amount;
-}
-
-function formatGi(value) {
-	const amount = Number(value || 0);
-	return `${amount.toFixed(amount >= 10 || amount === 0 ? 0 : 1)}Gi`;
-}
-
-function statusMeta(status) {
-	status = displayValue(status, '');
-	const labels = {
-    running: '运行中',
-    creating: '创建中',
-    stopped: '已停止',
-    stopping: '停止中',
-    failed: '异常',
-    unexpected_stopped: '异常停止',
-    unreachable: '不可达',
-    healthy: '健康',
-    unhealthy: '异常',
-    degraded: '拓扑降级',
-    failover_conflict: '故障转移冲突',
-    drain: '下线中',
-  };
-  const tone = {
-    running: 'ok',
-    healthy: 'ok',
-    creating: 'warn',
-    stopping: 'warn',
-    drain: 'warn',
-    stopped: 'warn',
-    unreachable: 'bad',
-    failed: 'bad',
-    unexpected_stopped: 'bad',
-    unhealthy: 'bad',
-    degraded: 'warn',
-    failover_conflict: 'bad',
-  };
-  return { label: labels[status] || status || '未知', tone: tone[status] || 'neutral' };
-}
-
-function auditResultMeta(result) {
-	result = displayValue(result, 'success');
-	const labels = {
-    success: '成功',
-    failed: '失败',
-    corrected: '已修正',
-    alert: '告警',
-    updated: '已更新',
-    skipped: '已跳过',
-  };
-  const tone = {
-    success: 'ok',
-    corrected: 'ok',
-    updated: 'ok',
-    alert: 'warn',
-    skipped: 'warn',
-    failed: 'bad',
-  };
-  return { label: labels[result] || result, tone: tone[result] || 'neutral' };
-}
-
-function instanceStatusTone(status) {
-	return statusMeta(status).tone;
-}
-
-function groupStatus(instances) {
-	if (instances.length === 1) return getField(instances[0], 'status', 'Status', 'unknown');
-	if (instances.some((item) => instanceStatusTone(getField(item, 'status', 'Status')) === 'bad')) return 'failed';
-	if (instances.some((item) => instanceStatusTone(getField(item, 'status', 'Status')) === 'warn')) return 'creating';
-	if (instances.length > 0 && instances.every((item) => getField(item, 'status', 'Status') === 'running')) return 'running';
-	return instances[0] ? getField(instances[0], 'status', 'Status') : 'unknown';
-}
-
-function topologyStatus(groupState, instances) {
-	if (getField(groupState, 'failover_conflict', 'FailoverConflict', false)) return 'failover_conflict';
-	const topology = getField(groupState, 'topology_status', 'TopologyStatus', '');
-	const instanceStatus = groupStatus(instances);
-	if (instanceStatusTone(instanceStatus) === 'bad') return instanceStatus;
-	if (instanceStatus && instanceStatus !== 'running') return instanceStatus;
-	if (topology) return topology;
-	return instanceStatus;
-}
-
-function buildInstanceGroups(instanceState) {
-	const instances = normalizeMap(instanceState, 'Instances', 'instances');
-	const groupStates = normalizeNamedMap(instanceState, 'Groups', 'groups');
-	const groups = new Map();
-	for (const item of instances) {
-		const groupName = getField(item, 'group', 'Group', item.name) || item.name;
-		const groupState = groupStates.get(groupName);
-		if (!groups.has(groupName)) {
-			groups.set(groupName, {
-				groupName,
-				groupState,
-				engine: getField(groupState, 'engine', 'Engine', getField(item, 'engine', 'Engine', '-')),
-				engineVersion: getField(groupState, 'engine_version', 'EngineVersion', ''),
-				category: getField(groupState, 'category', 'Category', ''),
-				access_mode: getField(groupState, 'access_mode', 'AccessMode', 'standard'),
-				type: getField(groupState, 'type', 'Type', ''),
-				currentMaster: getField(groupState, 'current_master', 'CurrentMaster', ''),
-				proxy: getField(groupState, 'proxy', 'Proxy', null),
-				master: null,
-				replicas: [],
-				instances: []
-			});
-		}
-		const group = groups.get(groupName);
-		group.instances.push(item);
-		const role = getField(item, 'role', 'Role');
-		if (role === 'master' || role === 'standalone') {
-			group.master = item;
-			group.engine = getField(item, 'engine', 'Engine', group.engine);
-		} else {
-			group.replicas.push(item);
-		}
-	}
-	for (const [groupName, groupState] of groupStates.entries()) {
-		if (!groups.has(groupName)) {
-			groups.set(groupName, {
-				groupName,
-				groupState,
-				engine: getField(groupState, 'engine', 'Engine', '-'),
-				engineVersion: getField(groupState, 'engine_version', 'EngineVersion', ''),
-				category: getField(groupState, 'category', 'Category', ''),
-				access_mode: getField(groupState, 'access_mode', 'AccessMode', 'standard'),
-				type: getField(groupState, 'type', 'Type', ''),
-				currentMaster: getField(groupState, 'current_master', 'CurrentMaster', ''),
-				proxy: getField(groupState, 'proxy', 'Proxy', null),
-				master: null,
-				replicas: [],
-				instances: []
-			});
-		}
-	}
-	return Array.from(groups.values()).map((group) => {
-		const primary = group.currentMaster
-			? group.instances.find((item) => item.name === group.currentMaster) || group.master || group.instances[0] || null
-			: group.master || group.instances[0] || null;
-		const memory = group.instances.reduce((sum, item) => sum + parseGi(getField(item, 'memory', 'Memory')), 0);
-		const memoryUsed = group.instances.reduce((sum, item) => sum + Number(getField(item, 'memory_used', 'MemoryUsed', 0) || 0), 0);
-		const disk = group.instances.reduce((sum, item) => sum + parseGi(getField(item, 'disk', 'Disk')), 0);
-		const cpus = group.instances.reduce((sum, item) => sum + Number(getField(item, 'cpus', 'CPUs', 0) || 0), 0);
-		return {
-			...group,
-			master: primary,
-			replicas: group.instances.filter((item) => item.name !== primary?.name && getField(item, 'role', 'Role') !== 'master' && getField(item, 'role', 'Role') !== 'standalone'),
-			status: topologyStatus(group.groupState, group.instances),
-			engine: getField(group.groupState, 'engine', 'Engine', primary ? getField(primary, 'engine', 'Engine', group.engine) : group.engine),
-			engineVersion: getField(group.groupState, 'engine_version', 'EngineVersion', group.engineVersion),
-			category: getField(group.groupState, 'category', 'Category', group.category),
-			type: getField(group.groupState, 'type', 'Type', group.type),
-			resource: { memory, memoryUsed, disk, cpus }
-		};
-	});
-}
-
-function engineLabel(group) {
-	const engine = displayValue(group.engine, '-');
-	const version = displayValue(group.engineVersion, '');
-	const label = engine.charAt(0).toUpperCase() + engine.slice(1).toLowerCase();
-	return version ? `${label} ${version}` : label;
-}
-
-function categoryLabel(category) {
-	const labels = { cache: '缓存', persistent: '持久化' };
-	return labels[category] || category || '-';
-}
-
-function extractMetricsPayload(metrics) {
-	return metrics?.data || metrics?.Data || metrics || {};
-}
-
-function parseRedisInfo(info) {
-	const sections = {};
-	let current = 'default';
-	for (const rawLine of String(info || '').split('\n')) {
-		const line = rawLine.trim();
-		if (!line) continue;
-		if (line.startsWith('#')) {
-			current = line.slice(1).trim().toLowerCase() || 'default';
-			if (!sections[current]) sections[current] = {};
-			continue;
-		}
-		const index = line.indexOf(':');
-		if (index < 0) continue;
-		if (!sections[current]) sections[current] = {};
-		sections[current][line.slice(0, index)] = line.slice(index + 1);
-	}
-	return sections;
-}
-
-function metricValue(sections, key, fallback = '-') {
-	for (const section of Object.values(sections)) {
-		if (section && section[key] !== undefined) return section[key];
-	}
-	return fallback;
-}
-
-function topologyLabel(group, master) {
-	const type = group.type || (getField(master, 'role', 'Role') === 'standalone' ? 'standalone' : '');
-	return type === 'standalone' ? '单点' : `1主 ${group.replicas.length}从`;
-}
 
 const dotColor = { ok: 'bg-emerald-400', warn: 'bg-amber-500', bad: 'bg-red-500', neutral: 'bg-gray-300' };
 
@@ -507,27 +209,6 @@ function MoreMenu({ items }) {
   );
 }
 
-function powerActionFor(item, group) {
-	const status = getField(item, 'status', 'Status', '');
-	const role = getField(item, 'role', 'Role', '');
-	const groupType = getField(group, 'type', 'Type', '');
-	if (status === 'running' || status === 'healthy') {
-		if (role === 'master' && groupType !== 'standalone') {
-			return {
-				action: 'stop',
-				label: '停止实例',
-				icon: Power,
-				disabledReason: '当前主库不可直接停止，请先完成故障转移。'
-			};
-		}
-		return { action: 'stop', label: '停止实例', icon: Power };
-	}
-	if (status === 'stopped' || status === 'unexpected_stopped' || status === 'failed') {
-		return { action: 'start', label: '启动实例', icon: Play };
-	}
-	return null;
-}
-
 function ProgressBar({ label, current, max, unit = '' }) {
   const percent = max > 0 ? Math.min(100, Math.round((current / max) * 100)) : 0;
   const barColor = percent >= 90 ? 'bg-red-500' : percent >= 80 ? 'bg-amber-500' : 'bg-gray-900';
@@ -594,27 +275,13 @@ function AppShell() {
   const servers = useMemo(() => normalizeMap(data.servers, 'Servers', 'servers'), [data.servers]);
   const activeTitle = TABS.find((tab) => tab.id === activeTab)?.label || '大盘看板';
 
-  async function request(path, options = {}) {
-    const headers = authHeaders();
-    const response = await fetch(path, {
-      ...options,
-      headers: {
-        ...headers,
-        'X-Operator': auth?.username || 'dashboard',
-        ...(options.body ? { 'Content-Type': 'application/json' } : {}),
-        ...(options.headers || {})
-      }
-    });
-    if (response.status === 401) {
-      clearStoredAuth();
-      setAuth(null);
-      throw new Error('登录已过期，请重新登录');
-    }
-    const body = await response.json().catch(() => null);
-    if (!response.ok) throw new Error(body?.error || `请求失败：${response.status} ${path}`);
-    if (body?.error) throw new Error(body.error);
-    return body?.data;
-  }
+  const request = useMemo(
+    () => createRequest({
+      operator: auth?.username,
+      onUnauthorized: () => setAuth(null),
+    }),
+    [auth]
+  );
 
   async function refresh() {
     setLoading(true);
