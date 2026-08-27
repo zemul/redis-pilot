@@ -227,21 +227,21 @@ ai:
 
 已核实 Server 现有端点（`internal/server/server.go` 路由 + `monitor_handler.go`/`instance_handler.go`），MVP 直接映射为工具：
 
-| 工具名（给 LLM） | 复用的现有能力 | 读/写 | MVP |
+| 工具名（给 LLM） | 复用的现有能力 | 读/写 | 状态 |
 |---|---|---|---|
-| `list_instances` | `/instance/list` | 读 | ✅ |
-| `get_instance_status` | `/instance/status` | 读 | ✅ |
-| `diagnose_instance` | `/instance/diagnose`（INFO+SLOWLOG+MEMORY DOCTOR） | 读 | ✅ |
-| `get_slowlog` | `/instance/slowlog` | 读 | ✅ |
-| `get_bigkeys` | `/instance/bigkeys` | 读 | ✅ |
-| `get_instance_config` | `/instance/config` (GET) | 读 | ✅ |
-| `get_metrics` | `/instance/metrics` | 读 | ✅ |
-| `list_nodes` | `/node/list` | 读 | ✅ |
-| `query_audit` | `/audit` | 读 | ✅ |
-| `load_skill` | 内置（注入 SKILL.md 正文） | — | ✅ |
-| `create_instance` 等写操作 | `/instance/create` 等 | 写 | ❌（受 `allow_write`+二次确认，见 §7.2） |
+| `list_instances` | 实例清单（读 store） | 读 | ✅ M1 |
+| `get_instance_status` | `/instance/status` | 读 | ✅ M1 |
+| `diagnose_instance` | `/instance/diagnose`（INFO+SLOWLOG+MEMORY DOCTOR） | 读 | ✅ M1 |
+| `load_skill` | 内置（注入 SKILL.md 正文） | — | ✅ M1 |
+| `get_slowlog` | `/instance/slowlog` | 读 | ✅ M3 |
+| `get_bigkeys` | `/instance/bigkeys` | 读 | ✅ M3 |
+| `get_instance_config` | `/instance/config` (GET) | 读 | ✅ M3 |
+| `get_metrics_history` | `/instance/metrics/history`（range 参数） | 读 | ✅ M3 |
+| `list_nodes` | 节点清单（读 store，脱敏 agent_token） | 读 | ✅ M3 |
+| `query_audit` | 审计查询（`s.audit.Query`） | 读 | ✅ M3 |
+| `create_instance` 等写操作 | `/instance/create` 等 | 写 | ❌ 待 M5（受 `allow_write`+二次确认，见 §7.2） |
 
-每个工具 = 一个 JSON schema（name/description/parameters）+ 一个执行函数（调 `PlatformAPI`）。约 15–30 行/个。
+每个工具 = 一个 JSON schema（name/description/parameters）+ 一个执行函数（调 `PlatformAPI`）。约 15–30 行/个。只读工具的 service 实现集中在 `internal/server/monitor_service.go`，工具 schema 与分发在 `internal/server/ai/tools.go`。
 
 ### 4.1 工具调用方式的选择：进程内直调 vs CLI vs MCP
 
@@ -364,11 +364,11 @@ AI 的执行轨迹刻意做成对用户与运维可见，不做黑盒：
 
 ## 10. 开发里程碑
 
-1. **M1 后端只读 MVP**：`internal/server/ai/` 骨架 + LLM 客户端 + agent loop + 3 个只读工具（list/status/diagnose）+ SSE 端点 + skill 索引注入。`go build` 通过，用 curl 跑通 SSE。
-2. **M2 前端面板**：`AiChatPanel.jsx` 接 SSE，跑通"诊断 galaxy-1"端到端。
-3. **M3 工具补全 + skill**：补齐只读工具（slowlog/bigkeys/config/metrics/node/audit）+ `load_skill` progressive disclosure。
-4. **M4 安全与运维**：限流、超时、审计接入、`enabled` 开关、配置示例、文档更新。
-5. **M5（可选）写操作**：`allow_write` + 二次确认闭环 + admin 校验。
+1. ✅ **M1 后端只读 MVP**：`internal/server/ai/` 骨架 + LLM 客户端 + agent loop + 只读工具（list/status/diagnose）+ `load_skill` + SSE 端点 + skill 索引注入。已验证：go build/vet、单测、真实网关端到端。
+2. ✅ **M2 前端面板**：`AiChatPanel.jsx` 接 SSE（fetch+ReadableStream），打字机流式、工具调用状态条、独立「AI 助手」tab。已验证：vite build + 浏览器实测。
+3. ✅ **M3 工具补全**：补齐只读工具 `get_slowlog`/`get_bigkeys`/`get_instance_config`/`get_metrics_history`/`list_nodes`/`query_audit`；前端 `TOOL_LABELS` 同步。已验证：真实网关触发新工具端到端。
+4. ✅ **M4 安全与运维**：`enabled` 开关、`context` 超时护栏、`configs/server.yaml` 示例 ai 块、结构化日志（工具调用 + token 用量，`usage` SSE 事件）、文档同步。（限流/token 预算按 §7.3 决策不做；审计接入待写操作 M5。）
+5. ⬜ **M5（可选）写操作**：`allow_write` + 二次确认闭环 + admin 校验 + 写操作落审计（operator=ai:<user>）。待评估。
 
 ---
 

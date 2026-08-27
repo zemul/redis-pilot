@@ -11,6 +11,7 @@
 - 自动备份与恢复（S3 兼容对象存储 + 异步备份）
 - Sentinel 事件监听 + 定期 reconcile 的故障转移同步与状态自愈
 - 完整审计日志
+- 内嵌式 AI 运维助手（对话式诊断分析，Dashboard 独立面板，默认关闭，只读安全）
 - 支持 Redis 5 / 6.2 / 7 和 Apache Kvrocks 2.15.0（版本由 Server 白名单统一管理）
 
 ## 架构
@@ -280,6 +281,7 @@ redis-pilot-cli sentinel sync
 
 - [部署文档](docs/DEPLOYMENT.md) - 完整的生产部署指南
 - [架构设计](docs/architecture/overview.md) - 详细设计文档（拆分为 overview / components / flows / deployment-ops 四篇）
+- [AI 运维助手](docs/architecture/ai-assistant.md) - 内嵌式对话助手设计（架构、工具、SSE、安全与可观测）
 
 ## 技术栈
 

@@ -8,6 +8,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/internal/logger"
 	"gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/internal/server/ai"
 )
 
@@ -43,10 +44,13 @@ func (p aiPlatform) QueryAudit(_ context.Context, limit int) (json.RawMessage, e
 	return p.s.aiQueryAudit(limit)
 }
 
-// sseSink 把 Agent 的运行事件写成 SSE 帧推给前端。
+// sseSink 把 Agent 的运行事件写成 SSE 帧推给前端，同时把工具调用与 token 用量
+// 写入结构化日志（可观测性，见 §7.5；token 记录见 §7.3）。
 type sseSink struct {
 	c       *gin.Context
 	flusher http.Flusher
+	log     *logger.Logger
+	user    string
 }
 
 func (k *sseSink) send(event string, payload any) {
@@ -55,10 +59,25 @@ func (k *sseSink) send(event string, payload any) {
 	k.flusher.Flush()
 }
 
-func (k *sseSink) OnToken(text string)          { k.send("token", map[string]string{"text": text}) }
-func (k *sseSink) OnToolCall(name, args string) { k.send("tool_call", map[string]string{"name": name, "args": args}) }
+func (k *sseSink) OnToken(text string) { k.send("token", map[string]string{"text": text}) }
+func (k *sseSink) OnToolCall(name, args string) {
+	k.log.Infof("ai tool_call: user=%s tool=%s args=%s", k.user, name, args)
+	k.send("tool_call", map[string]string{"name": name, "args": args})
+}
 func (k *sseSink) OnToolResult(name string, ok bool, errMsg string) {
+	if ok {
+		k.log.Infof("ai tool_result: user=%s tool=%s ok", k.user, name)
+	} else {
+		k.log.Infof("ai tool_result: user=%s tool=%s error=%s", k.user, name, errMsg)
+	}
 	k.send("tool_result", map[string]any{"name": name, "ok": ok, "error": errMsg})
+}
+func (k *sseSink) OnUsage(promptTokens, completionTokens, totalTokens int64) {
+	k.log.Infof("ai usage: user=%s prompt=%d completion=%d total=%d",
+		k.user, promptTokens, completionTokens, totalTokens)
+	k.send("usage", map[string]int64{
+		"prompt_tokens": promptTokens, "completion_tokens": completionTokens, "total_tokens": totalTokens,
+	})
 }
 func (k *sseSink) OnError(err error) { k.send("error", map[string]string{"message": err.Error()}) }
 func (k *sseSink) OnDone()           { k.send("done", map[string]bool{"done": true}) }
@@ -94,7 +113,7 @@ func (s *Server) aiChat(c *gin.Context) {
 	c.Header("X-Accel-Buffering", "no") // 禁止 nginx 缓冲，保证流式
 
 	s.log.Infof("ai chat: user=%s messages=%d", operatorFrom(c), len(req.Messages))
-	sink := &sseSink{c: c, flusher: flusher}
+	sink := &sseSink{c: c, flusher: flusher, log: s.log, user: operatorFrom(c)}
 	// c.Request.Context() 在客户端断开时取消，Agent 会随之中止。
 	s.aiAgent.Run(c.Request.Context(), req.Messages, sink)
 }

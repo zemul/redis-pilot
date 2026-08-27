@@ -88,13 +88,18 @@ func (a *Agent) Run(ctx context.Context, history []Message, sink Sink) {
 	if maxTurns <= 0 {
 		maxTurns = 8
 	}
+	var promptTok, completionTok, totalTok int64
 	for turn := 0; turn < maxTurns; turn++ {
-		msg, err := a.llm.stream(ctx, msgs, tools, sink.OnToken)
+		msg, usage, err := a.llm.stream(ctx, msgs, tools, sink.OnToken)
 		if err != nil {
 			sink.OnError(err)
 			return
 		}
+		promptTok += usage.PromptTokens
+		completionTok += usage.CompletionTokens
+		totalTok += usage.TotalTokens
 		if len(msg.ToolCalls) == 0 {
+			sink.OnUsage(promptTok, completionTok, totalTok)
 			sink.OnDone()
 			return
 		}
@@ -113,5 +118,6 @@ func (a *Agent) Run(ctx context.Context, history []Message, sink Sink) {
 		}
 	}
 	// 轮数用尽仍未收敛：结束，避免失控循环。
+	sink.OnUsage(promptTok, completionTok, totalTok)
 	sink.OnDone()
 }

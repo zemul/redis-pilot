@@ -59,6 +59,7 @@ type captureSink struct {
 func (s *captureSink) OnToken(t string)                    { s.tokens.WriteString(t) }
 func (s *captureSink) OnToolCall(name, _ string)           { s.toolCalls = append(s.toolCalls, name) }
 func (s *captureSink) OnToolResult(string, bool, string)   {}
+func (s *captureSink) OnUsage(_, _, _ int64)               {}
 func (s *captureSink) OnError(err error)                   { s.err = err }
 func (s *captureSink) OnDone()                             { s.done = true }
 

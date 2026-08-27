@@ -28,16 +28,20 @@ func newLLM(baseURL, apiKey, model string, maxTokens int) *llmClient {
 }
 
 // stream 发起一次流式 chat completion：逐个把文本增量交给 onToken，结束后返回
-// 累积的完整消息（含 tool_calls），供 Agent 决定是否继续工具循环。
+// 累积的完整消息（含 tool_calls）与 token 用量，供 Agent 决定是否继续工具循环。
 func (l *llmClient) stream(
 	ctx context.Context,
 	msgs []openai.ChatCompletionMessageParamUnion,
 	tools []openai.ChatCompletionToolParam,
 	onToken func(string),
-) (openai.ChatCompletionMessage, error) {
+) (openai.ChatCompletionMessage, openai.CompletionUsage, error) {
 	params := openai.ChatCompletionNewParams{
 		Messages: msgs,
 		Model:    openai.ChatModel(l.model),
+		// 请求在流式响应尾部带上 usage，用于 token 消耗记录（见 §7.3）。
+		StreamOptions: openai.ChatCompletionStreamOptionsParam{
+			IncludeUsage: openai.Bool(true),
+		},
 	}
 	if l.maxTokens > 0 {
 		params.MaxTokens = openai.Int(l.maxTokens)
@@ -58,10 +62,10 @@ func (l *llmClient) stream(
 		}
 	}
 	if err := stream.Err(); err != nil {
-		return openai.ChatCompletionMessage{}, err
+		return openai.ChatCompletionMessage{}, openai.CompletionUsage{}, err
 	}
 	if len(acc.Choices) == 0 {
-		return openai.ChatCompletionMessage{}, fmt.Errorf("llm returned no choices")
+		return openai.ChatCompletionMessage{}, acc.Usage, fmt.Errorf("llm returned no choices")
 	}
-	return acc.Choices[0].Message, nil
+	return acc.Choices[0].Message, acc.Usage, nil
 }
