@@ -1,6 +1,45 @@
 import { useState, useRef, useEffect } from 'react';
 import { Sparkles, Send, Loader2, Wrench, CheckCircle2, AlertCircle, Square, ShieldAlert, Plus, Trash2, MessageSquare } from 'lucide-react';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import { authHeaders } from '../Auth.jsx';
+
+// Markdown 渲染（assistant 回复）。remark-gfm 支持表格/删除线/任务列表；
+// 各元素用 tailwind 定制样式，避免依赖 @tailwindcss/typography。
+const MD_COMPONENTS = {
+  h1: (p) => <h1 className="text-[15px] font-semibold mt-3 mb-1.5" {...p} />,
+  h2: (p) => <h2 className="text-[14px] font-semibold mt-3 mb-1.5" {...p} />,
+  h3: (p) => <h3 className="text-[13px] font-semibold mt-2.5 mb-1" {...p} />,
+  p: (p) => <p className="my-1.5" {...p} />,
+  ul: (p) => <ul className="list-disc pl-5 my-1.5 space-y-0.5" {...p} />,
+  ol: (p) => <ol className="list-decimal pl-5 my-1.5 space-y-0.5" {...p} />,
+  li: (p) => <li className="leading-relaxed" {...p} />,
+  a: (p) => <a className="text-blue-600 underline" target="_blank" rel="noreferrer" {...p} />,
+  strong: (p) => <strong className="font-semibold" {...p} />,
+  blockquote: (p) => <blockquote className="border-l-2 border-gray-300 pl-3 my-1.5 text-gray-500" {...p} />,
+  code: ({ inline, ...p }) =>
+    inline ? (
+      <code className="px-1 py-0.5 rounded bg-gray-200 text-[12px] font-mono" {...p} />
+    ) : (
+      <code className="block p-2.5 my-1.5 rounded bg-gray-800 text-gray-100 text-[12px] font-mono overflow-x-auto" {...p} />
+    ),
+  table: (p) => (
+    <div className="my-2 overflow-x-auto">
+      <table className="border-collapse text-[12px] w-full" {...p} />
+    </div>
+  ),
+  thead: (p) => <thead className="bg-gray-100" {...p} />,
+  th: (p) => <th className="border border-gray-300 px-2 py-1 text-left font-semibold" {...p} />,
+  td: (p) => <td className="border border-gray-300 px-2 py-1" {...p} />,
+};
+
+function Markdown({ children }) {
+  return (
+    <ReactMarkdown remarkPlugins={[remarkGfm]} components={MD_COMPONENTS}>
+      {children}
+    </ReactMarkdown>
+  );
+}
 
 // 工具名 → 中文展示（执行状态条用）
 const TOOL_LABELS = {
@@ -481,11 +520,13 @@ function MessageBubble({ role, content, toolCalls, interrupted }) {
       <div className={`max-w-[85%] ${isUser ? '' : 'w-full'}`}>
         {content && (
           <div
-            className={`rounded-lg px-3.5 py-2.5 text-[13px] leading-relaxed whitespace-pre-wrap break-words ${
-              isUser ? 'bg-gray-900 text-white' : 'bg-gray-50 border border-gray-200 text-gray-800'
+            className={`rounded-lg px-3.5 py-2.5 text-[13px] leading-relaxed break-words ${
+              isUser
+                ? 'bg-gray-900 text-white whitespace-pre-wrap'
+                : 'bg-gray-50 border border-gray-200 text-gray-800'
             }`}
           >
-            {content}
+            {isUser ? content : <Markdown>{content}</Markdown>}
           </div>
         )}
         {!isUser && <ToolCallTrace calls={toolCalls} />}
