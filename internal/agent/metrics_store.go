@@ -112,7 +112,7 @@ func (ms *metricsStore) query(instance string, start, end time.Time, stepSec int
 	} else {
 		rows, err = ms.db.Query(
 			`SELECT (ts / ?) * ? AS bucket_ts,
-			        MAX(mem_used), MAX(mem_max), AVG(ops_sec), MAX(hits), MAX(misses),
+			        MAX(mem_used), MAX(mem_max), CAST(AVG(ops_sec) AS INTEGER), MAX(hits), MAX(misses),
 			        MAX(conns), MAX(conns_max), MAX(frag_ratio), MIN(repl_link),
 			        MAX(repl_offset), MAX(total_keys)
 			 FROM instance_metrics WHERE instance = ? AND ts >= ? AND ts <= ?
