@@ -12,6 +12,7 @@ import (
 
 	"gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/internal/audit"
 	"gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/internal/logger"
+	"gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/internal/server/ai"
 	"gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/internal/store"
 	"gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/pkg/apitypes"
 )
@@ -50,6 +51,9 @@ type Server struct {
 	// 由 reconcile 写入，列表接口读取。重启后为空，下一轮 reconcile 自动填充。
 	memoryUsedMu sync.RWMutex
 	memoryUsed   map[string]int64
+
+	// aiAgent 内嵌式 AI 运维助手；仅在 cfg.AI.Enabled 时构造，否则为 nil。
+	aiAgent *ai.Agent
 }
 
 func New(cfg *Config) (*Server, error) {
@@ -78,7 +82,31 @@ func New(cfg *Config) (*Server, error) {
 		memoryUsed:     make(map[string]int64),
 	}
 	s.scheduler = newBackupScheduler(s)
+	s.initAIAgent()
 	return s, nil
+}
+
+// initAIAgent 在 AI 助手启用时构造 Agent；失败只记日志、不阻断 Server 启动。
+func (s *Server) initAIAgent() {
+	if !s.cfg.AI.Enabled {
+		return
+	}
+	timeout, _ := time.ParseDuration(s.cfg.AI.Timeout)
+	agent, err := ai.NewAgent(aiPlatform{s}, ai.Options{
+		BaseURL:   s.cfg.AI.BaseURL,
+		APIKey:    s.cfg.AI.APIKey,
+		Model:     s.cfg.AI.Model,
+		MaxTurns:  s.cfg.AI.MaxTurns,
+		MaxTokens: s.cfg.AI.MaxTokens,
+		Timeout:   timeout,
+		SkillsDir: s.cfg.AI.SkillsDir,
+	})
+	if err != nil {
+		s.log.Errorf("ai assistant init failed: %v", err)
+		return
+	}
+	s.aiAgent = agent
+	s.log.Infof("ai assistant enabled: model=%s", s.cfg.AI.Model)
 }
 
 // StartWALCheckpointLoop 每 5 分钟执行一次 WAL checkpoint（TRUNCATE），
@@ -205,6 +233,19 @@ func (s *Server) Router() *gin.Engine {
 	authed.GET("/audit/query", s.auditQuery)
 	authed.GET("/server/info", s.serverInfo)
 	authed.GET("/metrics", s.metricsCollect)
+
+	// AI 运维助手（SSE 流式对话）。挂在 authed：所有登录用户可用只读诊断。
+	// 写操作默认关闭（cfg.AI.AllowWrite）；开启后写工具也只产出 confirm，
+	// 真正执行经下方 /ai/execute 端点，且额外校验 admin（见 §7.2）。
+	authed.POST("/api/v1/ai/chat", s.aiChat)
+	// AI 写操作执行端点：仅在用户二次确认后由前端调用，handler 内硬校验 admin。
+	authed.POST("/api/v1/ai/execute", s.aiExecute)
+	// AI 能力探测：前端据此决定是否展示写操作预置引导（allow_write = 总闸 && admin）。
+	authed.GET("/api/v1/ai/capabilities", s.aiCapabilities)
+	// AI 会话历史（§13）：严格私有，handler 内按 operatorFrom(c) 归属校验，非本人 → 404。
+	authed.GET("/api/v1/ai/conversations", s.aiListConversations)
+	authed.GET("/api/v1/ai/conversations/:id", s.aiGetConversation)
+	authed.DELETE("/api/v1/ai/conversations/:id", s.aiDeleteConversation)
 
 	// 以下写操作仅 admin
 	adminAuthed.POST("/reconcile", s.reconcile)

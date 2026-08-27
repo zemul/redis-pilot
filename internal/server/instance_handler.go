@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -1591,26 +1592,17 @@ func (s *Server) instanceSimpleOp(c *gin.Context, newStatus, agentPath, auditAct
 
 // resolveInstance 查找实例及其所在服务器（只读操作用）
 func (s *Server) resolveInstance(c *gin.Context, name string) (*apitypes.Instance, *apitypes.NodeServer, error) {
-	instances, err := s.db.ReadInstances()
+	inst, srv, err := s.lookupInstance(name)
 	if err != nil {
-		fail(c, http.StatusInternalServerError, err.Error())
+		switch {
+		case errors.Is(err, errInstanceNotFound):
+			fail(c, http.StatusNotFound, err.Error())
+		case errors.Is(err, errServerNotFound):
+			fail(c, http.StatusBadRequest, err.Error())
+		default:
+			fail(c, http.StatusInternalServerError, err.Error())
+		}
 		return nil, nil, err
-	}
-	inst, exists := instances.Instances[name]
-	if !exists {
-		fail(c, http.StatusNotFound, "instance not found: "+name)
-		return nil, nil, fmt.Errorf("instance not found: %s", name)
-	}
-
-	node, err := s.db.ReadNode()
-	if err != nil {
-		fail(c, http.StatusInternalServerError, err.Error())
-		return nil, nil, err
-	}
-	srv := node.Servers[inst.Server]
-	if srv == nil {
-		fail(c, http.StatusBadRequest, "server not found: "+inst.Server)
-		return nil, nil, fmt.Errorf("server not found: %s", inst.Server)
 	}
 	return inst, srv, nil
 }

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import { Routes, Route, Navigate, useNavigate, useParams } from 'react-router-dom';
 import {
   AlertCircle,
@@ -31,15 +31,18 @@ import {
   Server,
   SlidersHorizontal,
   ShieldCheck,
+  Sparkles,
   Trash2,
   Users,
   X
 } from 'lucide-react';
 import { LoginPage, UserManagement, TokenManagement, getStoredAuth, clearStoredAuth, authHeaders } from './Auth.jsx';
+import AiChatPanel from './components/AiChatPanel.jsx';
 
 const TABS = [
   { id: 'dashboard', label: '大盘看板', icon: LayoutDashboard },
   { id: 'instances', label: '实例管理', icon: Database },
+  { id: 'ai', label: 'AI 助手', icon: Sparkles },
   { id: 'alerts', label: '异常总览', icon: AlertTriangle },
   { id: 'servers', label: '服务器节点', icon: Server },
   { id: 'audit', label: '操作审计', icon: List },
@@ -843,7 +846,7 @@ function AppShell() {
             <div className="border border-gray-200 rounded-lg bg-white min-h-[260px] grid place-items-center text-gray-400">正在读取服务状态...</div>
           ) : (
             <>
-              {activeTab === 'dashboard' && <DashboardView groups={instanceGroups} servers={servers} audits={data.audits} sentinel={data.sentinel} publicHost={serverInfo?.proxy_public_endpoint} />}
+              {activeTab === 'dashboard' && <DashboardView groups={instanceGroups} servers={servers} audits={data.audits} sentinel={data.sentinel} publicHost={serverInfo?.proxy_public_endpoint} onOpenDetail={openInstanceDetail} />}
               {activeTab === 'instances' && (
                 <InstancesView
                   groups={instanceGroups}
@@ -866,6 +869,7 @@ function AppShell() {
                   pendingAction={pendingAction}
                 />
               )}
+              {activeTab === 'ai' && <AiChatPanel />}
               {activeTab === 'alerts' && <AlertsView groups={instanceGroups} servers={servers} publicHost={serverInfo?.proxy_public_endpoint} />}
               {activeTab === 'servers' && <ServersView servers={servers} />}
               {activeTab === 'audit' && (
@@ -921,7 +925,111 @@ function AppShell() {
   );
 }
 
-function DashboardView({ groups, servers, audits, sentinel, publicHost }) {
+// 大盘看板的实例运行状态表：按组分层，组头行汇总组信息，实例行展示每个实例的
+// 运行状态/角色/所在服务器/内存水位，异常实例整行着色便于一眼定位。
+function DashboardInstanceTable({ groups, onOpenDetail }) {
+  const [collapsed, setCollapsed] = useState(() => new Set());
+  const toggleGroup = (name) => setCollapsed((prev) => {
+    const next = new Set(prev);
+    if (next.has(name)) next.delete(name); else next.add(name);
+    return next;
+  });
+
+  if (groups.length === 0) {
+    return <div className="p-4"><EmptyState title="暂无实例组" detail="创建实例后会在这里展示运行状态。" /></div>;
+  }
+
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full min-w-[760px] border-collapse">
+        <thead>
+          <tr>
+            <th className="px-4 py-2.5 border-b border-gray-200 text-left text-xs font-medium text-gray-400 bg-gray-50">实例</th>
+            <th className="px-4 py-2.5 border-b border-gray-200 text-left text-xs font-medium text-gray-400 bg-gray-50">角色</th>
+            <th className="px-4 py-2.5 border-b border-gray-200 text-left text-xs font-medium text-gray-400 bg-gray-50">服务器</th>
+            <th className="px-4 py-2.5 border-b border-gray-200 text-left text-xs font-medium text-gray-400 bg-gray-50">内存</th>
+            <th className="px-4 py-2.5 border-b border-gray-200 text-left text-xs font-medium text-gray-400 bg-gray-50">状态</th>
+          </tr>
+        </thead>
+        <tbody>
+          {groups.map((group) => {
+            const running = group.instances.filter((inst) => getField(inst, 'status', 'Status') === 'running').length;
+            const total = group.instances.length;
+            const isCollapsed = collapsed.has(group.groupName);
+            const master = group.master;
+            const ordered = [...group.instances].sort((a, b) => {
+              const wa = ['master', 'standalone'].includes(getField(a, 'role', 'Role')) ? 0 : 1;
+              const wb = ['master', 'standalone'].includes(getField(b, 'role', 'Role')) ? 0 : 1;
+              return wa - wb;
+            });
+            return (
+              <Fragment key={group.groupName}>
+                <tr className="bg-gray-50/80 border-y border-gray-200">
+                  <td colSpan={5} className="px-4 py-2.5">
+                    <div className="flex items-center gap-3 flex-wrap">
+                      <button
+                        type="button"
+                        className="inline-flex items-center gap-1.5 m-0 p-0 bg-transparent border-none text-[13px] font-semibold text-gray-900 cursor-pointer hover:opacity-80"
+                        onClick={() => toggleGroup(group.groupName)}
+                      >
+                        {isCollapsed ? <ChevronRight size={14} className="text-gray-400" /> : <ChevronDown size={14} className="text-gray-400" />}
+                        {group.groupName}
+                      </button>
+                      <span className="text-xs text-gray-400">{engineLabel(group)} · {topologyLabel(group, master)}</span>
+                      <span className="flex-1" />
+                      <span className={`font-mono tabular-nums text-xs ${running === total ? 'text-gray-500' : 'text-amber-600'}`}>{running}/{total}</span>
+                      <StatusBadge status={group.status} />
+                    </div>
+                  </td>
+                </tr>
+                {!isCollapsed && ordered.map((inst) => {
+                  const status = getField(inst, 'status', 'Status');
+                  const tone = instanceStatusTone(status);
+                  const role = getField(inst, 'role', 'Role');
+                  const isMaster = role === 'master' || role === 'standalone';
+                  const used = Number(getField(inst, 'memory_used', 'MemoryUsed', 0) || 0);
+                  const totalGi = parseGi(getField(inst, 'memory', 'Memory'));
+                  const rowTint = tone === 'bad' ? 'bg-red-50/40' : tone === 'warn' ? 'bg-amber-50/30' : '';
+                  return (
+                    <tr
+                      key={inst.name}
+                      className={`border-b border-gray-100 last:border-b-0 cursor-pointer hover:bg-gray-50 ${rowTint}`}
+                      onClick={() => onOpenDetail(inst, group)}
+                    >
+                      <td className="px-4 py-2 text-[13px]">
+                        <div className="flex items-center gap-2.5">
+                          <StatusDot status={status} />
+                          {!isMaster && <span className="w-3.5 h-3.5 border-l border-b border-gray-300 rounded-bl shrink-0 -translate-y-0.5 ml-1" />}
+                          <span className="font-medium">{inst.name}</span>
+                        </div>
+                      </td>
+                      <td className="px-4 py-2 text-[13px]">
+                        <span className={`inline-flex items-center rounded px-1.5 py-0.5 text-xs font-medium ${isMaster ? 'bg-blue-50 text-blue-600' : 'bg-gray-100 text-gray-500'}`}>
+                          {role === 'standalone' ? '单点' : isMaster ? '主库' : '从库'}
+                        </span>
+                      </td>
+                      <td className="px-4 py-2 text-[13px] font-mono text-xs text-gray-500 whitespace-nowrap">
+                        {getField(inst, 'server', 'Server', '-')}:{getField(inst, 'port', 'Port', '-')}
+                      </td>
+                      <td className="px-4 py-2 text-[13px]">
+                        <ResourceValue memory={totalGi} memoryUsed={used} />
+                      </td>
+                      <td className="px-4 py-2 text-[13px]">
+                        <StatusBadge status={status} />
+                      </td>
+                    </tr>
+                  );
+                })}
+              </Fragment>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function DashboardView({ groups, servers, audits, sentinel, publicHost, onOpenDetail }) {
   const allInstances = groups.flatMap((g) => g.instances);
   const totalInstances = allInstances.length;
   const runningInstances = allInstances.filter((inst) => getField(inst, 'status', 'Status') === 'running').length;
@@ -961,54 +1069,14 @@ function DashboardView({ groups, servers, audits, sentinel, publicHost }) {
         })()}
       </section>
 
-      <div className="grid grid-cols-[minmax(0,1.15fr)_minmax(360px,0.85fr)] gap-4 max-lg:grid-cols-1">
+      <div className="grid grid-cols-[minmax(0,1.8fr)_minmax(300px,0.8fr)] gap-4 max-lg:grid-cols-1">
         {/* Instance groups table */}
         <section className="border border-gray-200 rounded-lg bg-white overflow-hidden">
           <div className="min-h-[54px] px-4 py-3 border-b border-gray-200 flex items-center justify-between gap-3">
-            <h3 className="m-0 text-[15px] font-semibold">实例组概览</h3>
+            <h3 className="m-0 text-[15px] font-semibold">实例运行状态</h3>
             <Database size={18} className="text-gray-400" />
           </div>
-          {groups.length === 0 ? (
-            <div className="p-4"><EmptyState title="暂无实例组" detail="创建实例后会在这里展示运行状态。" /></div>
-          ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full min-w-[920px] border-collapse">
-                <thead>
-                  <tr>
-                    <th className="px-4 py-3 border-b border-gray-200 text-left text-xs font-medium text-gray-400 bg-gray-50">实例组</th>
-                    <th className="px-4 py-3 border-b border-gray-200 text-left text-xs font-medium text-gray-400 bg-gray-50">引擎</th>
-                    <th className="px-4 py-3 border-b border-gray-200 text-left text-xs font-medium text-gray-400 bg-gray-50">拓扑</th>
-                    <th className="px-4 py-3 border-b border-gray-200 text-left text-xs font-medium text-gray-400 bg-gray-50">主库</th>
-                    <th className="px-4 py-3 border-b border-gray-200 text-left text-xs font-medium text-gray-400 bg-gray-50">代理端口</th>
-                    <th className="px-4 py-3 border-b border-gray-200 text-left text-xs font-medium text-gray-400 bg-gray-50">实例</th>
-                    <th className="px-4 py-3 border-b border-gray-200 text-left text-xs font-medium text-gray-400 bg-gray-50">状态</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {groups.map((group) => {
-                    const master = group.master;
-                    const running = group.instances.filter((inst) => getField(inst, 'status', 'Status') === 'running').length;
-                    const total = group.instances.length;
-                    return (
-                      <tr key={group.groupName} className="border-b border-gray-200 last:border-b-0">
-                        <td className="px-4 py-3 text-[13px]"><strong className="font-medium">{group.groupName}</strong></td>
-                        <td className="px-4 py-3 text-[13px] text-gray-400">{engineLabel(group)}</td>
-                        <td className="px-4 py-3 text-[13px]">{topologyLabel(group, master)}</td>
-                        <td className="px-4 py-3 text-[13px]">
-                          {master ? (
-                            <><strong className="font-medium">{master.name}</strong> <span className="text-gray-400">{getField(master, 'server', 'Server', '-')}</span></>
-                          ) : <span className="text-gray-400">-</span>}
-                        </td>
-                        <td className="px-4 py-3 text-[13px]"><ProxyPorts group={group} publicHost={publicHost} /></td>
-                        <td className="px-4 py-3 text-[13px]"><span className={`font-mono tabular-nums ${running === total ? '' : 'text-amber-600'}`}>{running}/{total}</span></td>
-                        <td className="px-4 py-3 text-[13px]"><StatusBadge status={group.status} /></td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          )}
+          <DashboardInstanceTable groups={groups} onOpenDetail={onOpenDetail} />
         </section>
 
         {/* Right column */}
@@ -1241,8 +1309,8 @@ function InstanceGroupRows({ group, expanded, onToggle, publicHost, sentinelPort
               <IconButton icon={Info} label="详情与指标" onClick={() => onOpenDetail(master, group)} />
               <IconButton icon={HardDrive} label="备份列表" onClick={() => onOpenBackups(master, group)} />
               <MoreMenu items={[
-                { label: '修改配置', onClick: () => onConfig(master) },
                 { label: '接入信息', onClick: () => onToggleAccessMode(group, null) },
+                { label: '修改配置', onClick: () => onConfig(master) },
                 { label: '慢查询', onClick: () => onSlowlog(master) },
                 { label: '大 Key 分析', onClick: () => onBigkeys(master) },
                 powerAction && {
@@ -1361,25 +1429,9 @@ function ProxyPorts({ group, publicHost }) {
   const autoPort = proxy.auto_port || proxy.AutoPort;
   const isRwSplit = group.access_mode === 'rw-split';
   if (!masterPort && !autoPort) return <span className="text-gray-400">-</span>;
-  // standard 模式下客户端统一走主库端口，auto_port 仅为兜底，不展示避免误导
-  if (!isRwSplit) {
-    const port = masterPort || autoPort;
-    return <CopyableEndpoint host={publicHost} port={port} className="text-gray-700 text-[13px]" />;
-  }
-  return (
-    <div className="flex flex-col gap-0.5">
-      {autoPort && (
-        <span className="text-gray-700 text-[13px]">
-          读写 <CopyableEndpoint host={publicHost} port={autoPort} />
-        </span>
-      )}
-      {masterPort && (
-        <span className="text-gray-400 text-xs">
-          主库 <CopyableEndpoint host={publicHost} port={masterPort} />
-        </span>
-      )}
-    </div>
-  );
+  // 只展示当前接入方式对应的端口
+  const port = isRwSplit ? (autoPort || masterPort) : (masterPort || autoPort);
+  return <CopyableEndpoint host={publicHost} port={port} className="text-gray-700 text-[13px]" />;
 }
 
 function ResourceValue({ memory, memoryUsed }) {
@@ -1431,8 +1483,8 @@ function InstanceRow({ item, group, role, onOpenDetail, onOpenBackups, onPowerAc
           <IconButton icon={Info} label="详情与指标" onClick={() => onOpenDetail(item, group)} />
           <IconButton icon={HardDrive} label="备份列表" onClick={() => onOpenBackups(item, group)} />
           <MoreMenu items={[
-            { label: '修改配置', onClick: () => onConfig(item) },
             !isReplica && { label: '接入信息', onClick: () => onToggleAccessMode(group, null) },
+            { label: '修改配置', onClick: () => onConfig(item) },
             { label: '慢查询', onClick: () => onSlowlog(item) },
             { label: '大 Key 分析', onClick: () => onBigkeys(item) },
             powerAction && {
@@ -2142,13 +2194,13 @@ function AccessModeModal({ group, publicHost, sentinelPort, onConfirm, onClose }
           {sentinelEndpoint && (
             <div className="space-y-2.5">
               <h4 className="m-0 text-[13px] font-medium text-gray-700">Sentinel 模式</h4>
-              <div className="bg-gray-50 rounded-md px-3 py-2 space-y-1.5">
-                <div className="flex items-center justify-between">
-                  <span className="text-[12px] text-gray-500">Sentinel 地址</span>
+              <div className="bg-gray-50 rounded-md px-3 py-2 space-y-2">
+                <div>
+                  <span className="text-[11px] text-gray-400 block mb-0.5">Sentinel 地址</span>
                   <CopyableText text={sentinelEndpoint} className="text-[13px] font-mono text-gray-900" />
                 </div>
-                <div className="flex items-center justify-between">
-                  <span className="text-[12px] text-gray-500">Master Name</span>
+                <div>
+                  <span className="text-[11px] text-gray-400 block mb-0.5">Master Name</span>
                   <CopyableText text={group.groupName} className="text-[13px] font-mono text-gray-900" />
                 </div>
               </div>
@@ -2166,6 +2218,15 @@ function AccessModeModal({ group, publicHost, sentinelPort, onConfirm, onClose }
               <input type="radio" name="access_mode" value="rw-split" checked={mode === 'rw-split'} onChange={() => setMode('rw-split')} />
               <span className="text-[13px]"><strong className="font-medium">读写分离</strong> — 读请求分发到从库</span>
             </label>
+            {mode !== (group.access_mode || 'standard') && (() => {
+              const newPort = mode === 'rw-split' ? (autoPort || masterPort) : (masterPort || autoPort);
+              const newEndpoint = publicHost ? `${publicHost}:${newPort}` : newPort;
+              return newPort ? (
+                <p className="text-[12px] text-amber-600 bg-amber-50 border border-amber-200 rounded px-2.5 py-1.5 mt-2 mb-0">
+                  切换后接入端口将变更为 <span className="font-mono font-medium">{newEndpoint}</span>
+                </p>
+              ) : null;
+            })()}
             <div className="mt-3 flex justify-end gap-2">
               <button className="h-[34px] rounded-md border border-gray-200 px-3 bg-white text-gray-900 font-medium text-[13px] hover:bg-gray-50 cursor-pointer transition-colors" onClick={onClose}>关闭</button>
               <button className="h-[34px] rounded-md px-3 bg-gray-900 text-white font-medium text-[13px] hover:bg-gray-700 border-0 cursor-pointer transition-colors disabled:opacity-50" disabled={mode === (group.access_mode || 'standard')} onClick={() => onConfirm(mode)}>切换模式</button>

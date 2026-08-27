@@ -266,6 +266,28 @@ func (d *DB) migrate() error {
 			finished_at  TEXT NOT NULL DEFAULT ''
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_backup_instance ON backup_records(instance)`,
+
+		// ── AI 助手会话与聊天记录（§13 持久化） ──────────────────────────────
+		`CREATE TABLE IF NOT EXISTS ai_conversations (
+			id          TEXT PRIMARY KEY,          -- conv-<UnixNano>
+			user        TEXT NOT NULL,             -- 归属用户名（严格私有的依据）
+			title       TEXT NOT NULL DEFAULT '',  -- 列表展示标题（取首条用户消息截断）
+			created_at  TEXT NOT NULL,             -- RFC3339
+			updated_at  TEXT NOT NULL,             -- 最后活跃时间，列表按此倒序
+			deleted     INTEGER NOT NULL DEFAULT 0 -- 软删除（0/1），不物理删（倒查留痕）
+		)`,
+		`CREATE TABLE IF NOT EXISTS ai_messages (
+			id          TEXT PRIMARY KEY,          -- msg-<UnixNano>
+			conv_id     TEXT NOT NULL,             -- 所属会话 id
+			seq         INTEGER NOT NULL,          -- 会话内顺序（从 1 递增）
+			role        TEXT NOT NULL,             -- 'user' / 'assistant'
+			content     TEXT NOT NULL DEFAULT '',  -- 正文（用户问题 or AI 回复全文）
+			tool_calls  TEXT NOT NULL DEFAULT '[]',-- JSON 数组，工具调用/写操作留痕
+			interrupted INTEGER NOT NULL DEFAULT 0, -- 该条 assistant 回复是否中途断开（0/1）
+			created_at  TEXT NOT NULL
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_ai_msg_conv  ON ai_messages(conv_id, seq)`,
+		`CREATE INDEX IF NOT EXISTS idx_ai_conv_user ON ai_conversations(user, updated_at)`,
 	}
 
 	tx, err := d.sql.Begin()
