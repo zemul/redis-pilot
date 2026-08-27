@@ -27,4 +27,10 @@ type PlatformAPI interface {
 	ListInstances(ctx context.Context) (json.RawMessage, error)
 	InstanceStatus(ctx context.Context, name string) (json.RawMessage, error)
 	DiagnoseInstance(ctx context.Context, name string) (json.RawMessage, error)
+	GetSlowlog(ctx context.Context, name string, count int) (json.RawMessage, error)
+	GetBigkeys(ctx context.Context, name string) (json.RawMessage, error)
+	GetInstanceConfig(ctx context.Context, name string) (json.RawMessage, error)
+	GetMetricsHistory(ctx context.Context, name, timeRange string) (json.RawMessage, error)
+	ListNodes(ctx context.Context) (json.RawMessage, error)
+	QueryAudit(ctx context.Context, limit int) (json.RawMessage, error)
 }

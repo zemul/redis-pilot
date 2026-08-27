@@ -24,6 +24,24 @@ func (p aiPlatform) InstanceStatus(_ context.Context, name string) (json.RawMess
 func (p aiPlatform) DiagnoseInstance(_ context.Context, name string) (json.RawMessage, error) {
 	return p.s.aiDiagnose(name)
 }
+func (p aiPlatform) GetSlowlog(_ context.Context, name string, count int) (json.RawMessage, error) {
+	return p.s.aiSlowlog(name, count)
+}
+func (p aiPlatform) GetBigkeys(_ context.Context, name string) (json.RawMessage, error) {
+	return p.s.aiBigkeys(name)
+}
+func (p aiPlatform) GetInstanceConfig(_ context.Context, name string) (json.RawMessage, error) {
+	return p.s.aiConfig(name)
+}
+func (p aiPlatform) GetMetricsHistory(_ context.Context, name, timeRange string) (json.RawMessage, error) {
+	return p.s.aiMetricsHistory(name, timeRange)
+}
+func (p aiPlatform) ListNodes(_ context.Context) (json.RawMessage, error) {
+	return p.s.aiListNodes()
+}
+func (p aiPlatform) QueryAudit(_ context.Context, limit int) (json.RawMessage, error) {
+	return p.s.aiQueryAudit(limit)
+}
 
 // sseSink 把 Agent 的运行事件写成 SSE 帧推给前端。
 type sseSink struct {

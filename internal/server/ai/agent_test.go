@@ -24,6 +24,30 @@ func (m *mockPlatform) DiagnoseInstance(_ context.Context, name string) (json.Ra
 	m.calls = append(m.calls, "diagnose:"+name)
 	return json.RawMessage(`{"info":{"mem_fragmentation_ratio":1.8,"used_memory_human":"1.2G","role":"master"},"slowlog":[{"command":"KEYS *","usec":120000}]}`), nil
 }
+func (m *mockPlatform) GetSlowlog(_ context.Context, name string, count int) (json.RawMessage, error) {
+	m.calls = append(m.calls, "slowlog:"+name)
+	return json.RawMessage(`[{"command":"KEYS *","usec":120000}]`), nil
+}
+func (m *mockPlatform) GetBigkeys(_ context.Context, name string) (json.RawMessage, error) {
+	m.calls = append(m.calls, "bigkeys:"+name)
+	return json.RawMessage(`{"biggest_string":{"key":"foo","bytes":1048576}}`), nil
+}
+func (m *mockPlatform) GetInstanceConfig(_ context.Context, name string) (json.RawMessage, error) {
+	m.calls = append(m.calls, "config:"+name)
+	return json.RawMessage(`{"maxmemory":"2gb","maxmemory-policy":"allkeys-lru"}`), nil
+}
+func (m *mockPlatform) GetMetricsHistory(_ context.Context, name, timeRange string) (json.RawMessage, error) {
+	m.calls = append(m.calls, "metrics:"+name)
+	return json.RawMessage(`{"points":[]}`), nil
+}
+func (m *mockPlatform) ListNodes(context.Context) (json.RawMessage, error) {
+	m.calls = append(m.calls, "nodes")
+	return json.RawMessage(`[{"name":"node-a","endpoint":"10.0.1.10","status":"healthy","instances":1}]`), nil
+}
+func (m *mockPlatform) QueryAudit(_ context.Context, limit int) (json.RawMessage, error) {
+	m.calls = append(m.calls, "audit")
+	return json.RawMessage(`{"records":[],"total":0}`), nil
+}
 
 type captureSink struct {
 	tokens    strings.Builder
