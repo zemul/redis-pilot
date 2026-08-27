@@ -274,9 +274,19 @@ func (s *Server) aiExecute(c *gin.Context) {
 		return
 	}
 	var a struct {
-		Name  string `json:"name"`
-		Key   string `json:"key"`
-		Value string `json:"value"`
+		Name          string `json:"name"`
+		Key           string `json:"key"`
+		Value         string `json:"value"`
+		Group         string `json:"group"`
+		Category      string `json:"category"`
+		Engine        string `json:"engine"`
+		EngineVersion string `json:"engine_version"`
+		Type          string `json:"type"`
+		Memory        string `json:"memory"`
+		AccessMode    string `json:"access_mode"`
+		ReplicaOf     string `json:"replica_of"`
+		Schedule      string `json:"schedule"`
+		Retention     int    `json:"retention"`
 	}
 	if len(req.Args) > 0 {
 		_ = json.Unmarshal(req.Args, &a)
@@ -292,6 +302,40 @@ func (s *Server) aiExecute(c *gin.Context) {
 		body    map[string]any
 	)
 	switch req.Tool {
+	case "create_instance":
+		// 创建参数比其它写操作复杂：补默认值 + 校验必填，再构造 CreateInstanceRequest。
+		engine := a.Engine
+		if engine == "" {
+			engine = "redis"
+		}
+		typ := a.Type
+		if typ == "" {
+			typ = "standalone"
+		}
+		if a.Category != "cache" && a.Category != "persistent" {
+			fail(c, http.StatusBadRequest, "category must be cache or persistent")
+			return
+		}
+		if a.Memory == "" {
+			fail(c, http.StatusBadRequest, "missing arg: memory")
+			return
+		}
+		if a.Group == "" {
+			fail(c, http.StatusBadRequest, "missing arg: group")
+			return
+		}
+		handler = s.instanceCreate
+		body = map[string]any{
+			"name":     a.Name,
+			"group":    a.Group,
+			"category": a.Category,
+			"engine":   engine,
+			"type":     typ,
+			"memory":   a.Memory,
+		}
+		if a.EngineVersion != "" {
+			body["engine_version"] = a.EngineVersion
+		}
 	case "start_instance":
 		handler, body = s.instanceStart, map[string]any{"name": a.Name}
 	case "stop_instance":
@@ -300,6 +344,21 @@ func (s *Server) aiExecute(c *gin.Context) {
 		handler, body = s.instanceFailover, map[string]any{"name": a.Name}
 	case "backup_exec":
 		handler, body = s.backupExec, map[string]any{"name": a.Name}
+	case "set_access_mode":
+		if a.AccessMode != "rw-split" && a.AccessMode != "standard" {
+			fail(c, http.StatusBadRequest, "access_mode must be rw-split or standard")
+			return
+		}
+		handler, body = s.instanceAccessMode, map[string]any{"name": a.Name, "access_mode": a.AccessMode}
+	case "replicate":
+		if a.ReplicaOf == "" {
+			fail(c, http.StatusBadRequest, "missing arg: replica_of")
+			return
+		}
+		handler, body = s.instanceReplicate, map[string]any{"name": a.Name, "replica_of": a.ReplicaOf}
+	case "backup_set_schedule":
+		// schedule 允许为空（表示关闭自动备份），故不强制校验；retention 可选。
+		handler, body = s.backupSetSchedule, map[string]any{"name": a.Name, "schedule": a.Schedule, "retention": a.Retention}
 	case "config_set":
 		if a.Key == "" {
 			fail(c, http.StatusBadRequest, "missing arg: key")
@@ -376,6 +435,15 @@ func (w *captureWriter) Write(b []byte) (int, error) {
 }
 
 // ── 会话历史 REST 端点（§13.5.2-e / §13.6） ──────────────────────────────
+
+// aiCapabilities 向前端暴露 AI 能力状态（GET /api/v1/ai/capabilities）。
+// 用于前端决定是否展示写操作相关的预置引导：allow_write = 配置总闸开启 且 调用者为 admin。
+// 与 aiChat/aiExecute 里的闸门计算保持一致（cfg.AI.AllowWrite && role==admin），
+// 使前端展示的能力与后端实际放行的能力不产生偏差（避免引导用户点了却被拒）。
+func (s *Server) aiCapabilities(c *gin.Context) {
+	allowWrite := s.cfg.AI.AllowWrite && c.GetString("auth_role") == "admin"
+	ok(c, map[string]bool{"allow_write": allowWrite})
+}
 
 // aiListConversations 列出当前用户未删除的会话（GET /api/v1/ai/conversations）。
 func (s *Server) aiListConversations(c *gin.Context) {

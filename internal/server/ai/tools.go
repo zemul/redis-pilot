@@ -25,11 +25,15 @@ type toolRegistry struct {
 // 注意：这里是“暴露给模型 + 触发 confirm”的白名单权威；真正的执行分发在
 // server 包的 aiExecute（把工具映射到已验证的 gin handler）。两处工具名需保持一致。
 var writeTools = map[string]bool{
-	"start_instance": true,
-	"stop_instance":  true,
-	"failover":       true,
-	"config_set":     true,
-	"backup_exec":    true,
+	"create_instance":     true,
+	"start_instance":      true,
+	"stop_instance":       true,
+	"failover":            true,
+	"config_set":          true,
+	"backup_exec":         true,
+	"set_access_mode":     true,
+	"replicate":           true,
+	"backup_set_schedule": true,
 }
 
 // isWriteTool 判断工具名是否为写操作。
@@ -43,9 +47,19 @@ func IsWriteTool(name string) bool { return isWriteTool(name) }
 // 刻意不使用 LLM 生成的描述，防止模型谎报将要执行的动作。
 func writeToolSummary(name, argsJSON string) string {
 	var a struct {
-		Name  string `json:"name"`
-		Key   string `json:"key"`
-		Value string `json:"value"`
+		Name          string `json:"name"`
+		Key           string `json:"key"`
+		Value         string `json:"value"`
+		Group         string `json:"group"`
+		Category      string `json:"category"`
+		Engine        string `json:"engine"`
+		EngineVersion string `json:"engine_version"`
+		Type          string `json:"type"`
+		Memory        string `json:"memory"`
+		AccessMode    string `json:"access_mode"`
+		ReplicaOf     string `json:"replica_of"`
+		Schedule      string `json:"schedule"`
+		Retention     int    `json:"retention"`
 	}
 	if argsJSON != "" {
 		_ = json.Unmarshal([]byte(argsJSON), &a)
@@ -55,6 +69,31 @@ func writeToolSummary(name, argsJSON string) string {
 		target = "(未指定实例)"
 	}
 	switch name {
+	case "create_instance":
+		engine := a.Engine
+		if engine == "" {
+			engine = "redis"
+		}
+		if a.EngineVersion != "" {
+			engine += " " + a.EngineVersion
+		}
+		typ := a.Type
+		if typ == "" {
+			typ = "standalone"
+		}
+		typeLabel := "单点"
+		if typ == "replication" {
+			typeLabel = "主从"
+		}
+		mem := a.Memory
+		if mem == "" {
+			mem = "(未指定内存)"
+		}
+		grp := a.Group
+		if grp == "" {
+			grp = "(未指定 group)"
+		}
+		return fmt.Sprintf("创建实例 %s：%s %s，内存 %s，group=%s，用途=%s", target, engine, typeLabel, mem, grp, a.Category)
 	case "start_instance":
 		return fmt.Sprintf("启动实例 %s", target)
 	case "stop_instance":
@@ -65,6 +104,30 @@ func writeToolSummary(name, argsJSON string) string {
 		return fmt.Sprintf("修改实例 %s 配置：%s = %s（不重启；平台保留配置项会被拒绝）", target, a.Key, a.Value)
 	case "backup_exec":
 		return fmt.Sprintf("对实例 %s 立即执行一次备份", target)
+	case "set_access_mode":
+		modeLabel := a.AccessMode
+		switch a.AccessMode {
+		case "rw-split":
+			modeLabel = "rw-split（读写分离，读流量走从库）"
+		case "standard":
+			modeLabel = "standard（所有流量走 master）"
+		}
+		return fmt.Sprintf("将 %s 所在组的访问模式设为 %s", target, modeLabel)
+	case "replicate":
+		src := a.ReplicaOf
+		if src == "" {
+			src = "(未指定主实例)"
+		}
+		return fmt.Sprintf("让实例 %s 作为 %s 的从库（加入其主从组并开始复制）", target, src)
+	case "backup_set_schedule":
+		if a.Schedule == "" {
+			return fmt.Sprintf("关闭实例 %s 的自动备份计划", target)
+		}
+		ret := ""
+		if a.Retention > 0 {
+			ret = fmt.Sprintf("，保留 %d 份", a.Retention)
+		}
+		return fmt.Sprintf("设置实例 %s 的自动备份计划：cron=%q%s", target, a.Schedule, ret)
 	default:
 		return fmt.Sprintf("%s(%s)", name, target)
 	}
@@ -122,12 +185,38 @@ func (r *toolRegistry) schemas() []openai.ChatCompletionToolParam {
 			"key":   map[string]string{"type": "string", "description": "配置项名，如 maxmemory-policy；平台保留项会被拒绝"},
 			"value": map[string]string{"type": "string", "description": "配置项的新值"},
 		}
+		createArg := map[string]any{
+			"name":           map[string]string{"type": "string", "description": "实例名（唯一）"},
+			"group":          map[string]string{"type": "string", "description": "逻辑组名，单点/主实例必填，如 cache、order"},
+			"category":       map[string]string{"type": "string", "description": "用途：cache（缓存，可丢）或 persistent（持久化，需备份）"},
+			"engine":         map[string]string{"type": "string", "description": "引擎：redis 或 kvrocks，默认 redis"},
+			"engine_version": map[string]string{"type": "string", "description": "引擎版本，可选，如 redis 的 5/6.2/7；留空用平台默认"},
+			"type":           map[string]string{"type": "string", "description": "拓扑：standalone（单点）或 replication（主从），默认 standalone"},
+			"memory":         map[string]string{"type": "string", "description": "内存规格，如 2Gi、4Gi；必填"},
+		}
 		tools = append(tools,
+			makeTool("create_instance", "创建一个新的 Redis/Kvrocks 实例（写操作，需用户二次确认后执行；节点由平台自动调度，无需指定）", createArg, []string{"name", "group", "category", "memory", "type"}),
 			makeTool("start_instance", "启动指定实例（写操作，需用户二次确认后执行）", nameArg, []string{"name"}),
 			makeTool("stop_instance", "停止指定实例（写操作，需用户二次确认后执行；主从组 master 会被拒绝）", nameArg, []string{"name"}),
 			makeTool("failover", "对指定实例所在的主从组发起故障转移（写操作，需二次确认；由 Sentinel 选举新主）", nameArg, []string{"name"}),
 			makeTool("config_set", "修改指定实例的单个运行配置项（写操作，需二次确认；平台保留配置项会被拒绝）", configSetArg, []string{"name", "key", "value"}),
 			makeTool("backup_exec", "对指定实例立即执行一次备份（写操作，需二次确认）", nameArg, []string{"name"}),
+			makeTool("set_access_mode", "设置实例所在组的访问模式：standard（全部走 master）或 rw-split（读写分离）。影响伪 Sentinel 返回给客户端的端口（写操作，需二次确认）",
+				map[string]any{
+					"name":        map[string]string{"type": "string", "description": "实例名或组名"},
+					"access_mode": map[string]string{"type": "string", "description": "standard 或 rw-split"},
+				}, []string{"name", "access_mode"}),
+			makeTool("replicate", "让一个已存在的实例作为另一个实例的从库，加入其主从组并开始复制（写操作，需二次确认；用于加副本/扩容）",
+				map[string]any{
+					"name":       map[string]string{"type": "string", "description": "要变为从库的实例名"},
+					"replica_of": map[string]string{"type": "string", "description": "作为复制源的主实例名"},
+				}, []string{"name", "replica_of"}),
+			makeTool("backup_set_schedule", "设置或关闭指定实例的自动备份计划（写操作，需二次确认；schedule 为 cron 表达式，留空表示关闭自动备份）",
+				map[string]any{
+					"name":      map[string]string{"type": "string", "description": "实例名"},
+					"schedule":  map[string]string{"type": "string", "description": "cron 表达式，如 '0 2 * * *'；留空关闭自动备份"},
+					"retention": map[string]string{"type": "integer", "description": "保留备份份数，可选；0 或省略表示不改动现值"},
+				}, []string{"name"}),
 		)
 	}
 	return tools

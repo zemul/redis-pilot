@@ -244,8 +244,12 @@ ai:
 | `start_instance` / `stop_instance` | `instanceStart` / `instanceStop`（re-dispatch） | 写 | ✅ M5 |
 | `failover` | `instanceFailover`（re-dispatch） | 写 | ✅ M5 |
 | `config_set` | `instanceConfig`（re-dispatch，单 key/value，保留字校验） | 写 | ✅ M5 |
+| `create_instance` | `instanceCreate`（re-dispatch，自动调度节点，含 category/engine/memory 校验、保留字校验） | 写 | ✅ M6 |
 | `backup_exec` | `backupExec`（re-dispatch） | 写 | ✅ M5 |
-| `create_instance` / `delete_instance` / `backup restore` / `node remove` | — | 写 | ❌ 永久排除（破坏性/不可逆，只走人工 CLI） |
+| `set_access_mode` | `instanceAccessMode`（re-dispatch，standard/rw-split） | 写 | ✅ M6 |
+| `replicate` | `instanceReplicate`（re-dispatch，加副本/扩容，name→replica_of） | 写 | ✅ M6 |
+| `backup_set_schedule` | `backupSetSchedule`（re-dispatch，cron+retention，空 cron=关闭） | 写 | ✅ M6 |
+| `delete_instance` / `backup restore` / `clean-data` / `node remove` | — | 写 | ❌ 永久排除（破坏性/不可逆，只走人工 CLI） |
 
 每个工具 = 一个 JSON schema（name/description/parameters）+ 一个执行函数（调 `PlatformAPI`）。约 15–30 行/个。只读工具的 service 实现集中在 `internal/server/monitor_service.go`，工具 schema 与分发在 `internal/server/ai/tools.go`。
 
@@ -304,7 +308,9 @@ ai:
 - 写操作强制校验 admin + 落审计。
 
 **M5 落地（方案 A：无状态 confirm + 独立执行端点）——已实现：**
-- **写工具白名单**（代码级，`internal/server/ai/tools.go` 的 `writeTools`）：当前为 `start_instance`、`stop_instance`、`failover`、`config_set`、`backup_exec`。**破坏性操作（delete / restore / clean-data / node remove）刻意永不纳入**，只走人工 CLI。
+- **写工具白名单**（代码级，`internal/server/ai/tools.go` 的 `writeTools`）：当前为 `create_instance`、`start_instance`、`stop_instance`、`failover`、`config_set`、`backup_exec`、`set_access_mode`、`replicate`、`backup_set_schedule`。**破坏性/不可逆操作（delete / restore / clean-data / node remove）刻意永不纳入**，只走人工 CLI。
+  - 纳入标准：**非破坏性、可回滚/可调整**。除 create 外新增的三项同理——`set_access_mode`（改回来即可）、`replicate`（多余副本可删）、`backup_set_schedule`（改计划或置空即可），均不造成不可逆的数据丢失。`replicate` 的 `replica_of` 指定复制源主实例；`backup_set_schedule` 的 cron 留空表示关闭自动备份。
+  - `create_instance` 纳入白名单的定性：创建虽会真起容器、占端口/内存，但属于**可回滚**操作（建错删掉即可），风险等级低于删除类的不可逆数据丢失，因此在同一套「双闸 + 二次确认 + 可信摘要 + 审计」约束下开放给 AI。节点由平台调度器自动选择，AI 无需也无法指定落点；`memory`/`group`/`category` 必填（缺省会被执行端点拒绝），`engine` 默认 redis、`type` 默认 standalone。
 - **两层闸门**：`allowWrite = cfg.AI.AllowWrite（配置总闸）&& 调用者 role==admin`。为 false 时写工具**根本不出现在给模型的工具集里**（非 admin 连"提议"都不会发生）。
 - **提议而非执行**：对话循环遇到写工具**不执行**，改为发 `confirm` 事件（`{tool, args, summary}`）并结束本轮。`summary` 由**后端**按 tool+args 用模板生成（`writeToolSummary`），**不信任 LLM 的文本描述**，防止谎报动作。一次只提议一个写操作。
 - **独立执行端点** `POST /api/v1/ai/execute`（不走 LLM）：用户点"确认执行"后由前端调用。硬校验 `cfg.AI.AllowWrite` + `role==admin` + 写工具白名单（`ai.IsWriteTool`）。
@@ -384,6 +390,7 @@ AI 的执行轨迹刻意做成对用户与运维可见，不做黑盒：
 3. ✅ **M3 工具补全**：补齐只读工具 `get_slowlog`/`get_bigkeys`/`get_instance_config`/`get_metrics_history`/`list_nodes`/`query_audit`；前端 `TOOL_LABELS` 同步。已验证：真实网关触发新工具端到端。
 4. ✅ **M4 安全与运维**：`enabled` 开关、`context` 超时护栏、`configs/server.yaml` 示例 ai 块、结构化日志（工具调用 + token 用量，`usage` SSE 事件）、文档同步。（限流/token 预算按 §7.3 决策不做；审计接入待写操作 M5。）
 5. ✅ **M5 写操作（方案 A）**：`allow_write` 配置总闸 + admin 双层闸门；写工具白名单（`start_instance`/`stop_instance`/`failover`/`config_set`/`backup_exec`，破坏性操作永久排除）；对话循环遇写工具产出 `confirm`（后端可信摘要）不执行；独立执行端点 `POST /api/v1/ai/execute`（admin + 白名单校验）通过 re-dispatch 复用已验证的人工 handler（自带 master 保护、config 保留字校验、failover Sentinel 分支），审计 `operator=ai:<user>`；前端二次确认卡片，结果回显不回喂模型。已验证：go build/vet/test 无回归 + 端到端（confirm→execute，5 工具白名单/校验/re-dispatch 全通）。
+6. ✅ **M6 非破坏性写扩充**：写白名单新增 `create_instance`、`set_access_mode`、`replicate`、`backup_set_schedule`（均复用 M5 全套闸门：双闸 + confirm 可信摘要 + re-dispatch 到对应人工 handler + 审计 `ai:<user>`）。`create_instance` 参数 `name`/`group`/`category`/`memory`/`type` 必填、`engine` 默认 redis、`type` 默认 standalone，节点自动调度；`set_access_mode` 映射 `instanceAccessMode`（standard/rw-split）；`replicate` 映射 `instanceReplicate`（name→replica_of，加副本）；`backup_set_schedule` 映射 `backupSetSchedule`（cron+retention，空 cron 关闭）。`writeToolSummary` 与执行端点 args struct 相应扩展多字段。**删除/恢复/清数据/移除节点仍永久排除**。已验证：go build/vet/test + 前端 npm run build。
 
 ---
 

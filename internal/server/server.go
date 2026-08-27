@@ -240,6 +240,8 @@ func (s *Server) Router() *gin.Engine {
 	authed.POST("/api/v1/ai/chat", s.aiChat)
 	// AI 写操作执行端点：仅在用户二次确认后由前端调用，handler 内硬校验 admin。
 	authed.POST("/api/v1/ai/execute", s.aiExecute)
+	// AI 能力探测：前端据此决定是否展示写操作预置引导（allow_write = 总闸 && admin）。
+	authed.GET("/api/v1/ai/capabilities", s.aiCapabilities)
 	// AI 会话历史（§13）：严格私有，handler 内按 operatorFrom(c) 归属校验，非本人 → 404。
 	authed.GET("/api/v1/ai/conversations", s.aiListConversations)
 	authed.GET("/api/v1/ai/conversations/:id", s.aiGetConversation)

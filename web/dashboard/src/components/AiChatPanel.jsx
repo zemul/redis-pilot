@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from 'react';
-import { Sparkles, Send, Loader2, Wrench, CheckCircle2, AlertCircle, Square, ShieldAlert, Plus, Trash2, MessageSquare } from 'lucide-react';
+import { Sparkles, Send, Loader2, Wrench, CheckCircle2, AlertCircle, Square, ShieldAlert, Plus, Trash2, MessageSquare, Gauge, Stethoscope, ScanSearch, Database, LineChart, ChevronDown } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { authHeaders } from '../Auth.jsx';
@@ -7,9 +7,9 @@ import { authHeaders } from '../Auth.jsx';
 // Markdown 渲染（assistant 回复）。remark-gfm 支持表格/删除线/任务列表；
 // 各元素用 tailwind 定制样式，避免依赖 @tailwindcss/typography。
 const MD_COMPONENTS = {
-  h1: (p) => <h1 className="text-[15px] font-semibold mt-3 mb-1.5" {...p} />,
-  h2: (p) => <h2 className="text-[14px] font-semibold mt-3 mb-1.5" {...p} />,
-  h3: (p) => <h3 className="text-[13px] font-semibold mt-2.5 mb-1" {...p} />,
+  h1: (p) => <h1 className="text-[16px] font-semibold mt-3 mb-1.5" {...p} />,
+  h2: (p) => <h2 className="text-[15px] font-semibold mt-3 mb-1.5" {...p} />,
+  h3: (p) => <h3 className="text-[14px] font-semibold mt-2.5 mb-1" {...p} />,
   p: (p) => <p className="my-1.5" {...p} />,
   ul: (p) => <ul className="list-disc pl-5 my-1.5 space-y-0.5" {...p} />,
   ol: (p) => <ol className="list-decimal pl-5 my-1.5 space-y-0.5" {...p} />,
@@ -17,12 +17,21 @@ const MD_COMPONENTS = {
   a: (p) => <a className="text-blue-600 underline" target="_blank" rel="noreferrer" {...p} />,
   strong: (p) => <strong className="font-semibold" {...p} />,
   blockquote: (p) => <blockquote className="border-l-2 border-gray-300 pl-3 my-1.5 text-gray-500" {...p} />,
-  code: ({ inline, ...p }) =>
-    inline ? (
-      <code className="px-1 py-0.5 rounded bg-gray-200 text-[12px] font-mono" {...p} />
+  // react-markdown v9 + remark-gfm 不再传 `inline` prop：改用「内容是否含换行/是否带 language- className」
+  // 判断行内 vs 块级。避免把行内代码（如 `master_link_status: up`）误渲染成整行大黑块。
+  code: ({ className, children, ...p }) => {
+    const text = String(children ?? '');
+    const isBlock = /\n/.test(text.trimEnd()) || /language-/.test(className || '');
+    return isBlock ? (
+      <code className={`block p-2.5 my-1.5 rounded bg-gray-800 text-gray-100 text-[12px] font-mono overflow-x-auto ${className || ''}`} {...p}>
+        {children}
+      </code>
     ) : (
-      <code className="block p-2.5 my-1.5 rounded bg-gray-800 text-gray-100 text-[12px] font-mono overflow-x-auto" {...p} />
-    ),
+      <code className="px-1 py-0.5 rounded bg-gray-200 text-[12px] font-mono" {...p}>
+        {children}
+      </code>
+    );
+  },
   table: (p) => (
     <div className="my-2 overflow-x-auto">
       <table className="border-collapse text-[12px] w-full" {...p} />
@@ -53,18 +62,87 @@ const TOOL_LABELS = {
   list_nodes: '列出服务器节点',
   query_audit: '查询操作审计',
   load_skill: '加载技能手册',
+  create_instance: '创建实例',
   start_instance: '启动实例',
   stop_instance: '停止实例',
   failover: '故障转移',
   backup_exec: '立即备份',
   config_set: '修改配置',
+  set_access_mode: '设置访问模式',
+  replicate: '添加副本',
+  backup_set_schedule: '设置备份计划',
 };
 
-// 空对话时的快捷入口，点击直接发送预置问题
-const QUICK_PROMPTS = [
-  '列出所有实例及其运行状态',
-  '有哪些实例内存水位偏高？',
-  '帮我巡检一下集群整体健康状况',
+// 空对话时的快捷入口：按能力大类分组，点分类切换下方预置问题，点问题直接发送。
+// 分类贴合后端只读工具集（diagnose/slowlog/bigkeys/list/status/metrics/config/audit）。
+// 预置问题刻意不写死具体实例名——面向全部实例或让 AI 先列出再定位，用户点了即可直接跑，
+// 无需先改名（避免引用用户环境里并不存在的实例）。
+const PROMPT_CATEGORIES = [
+  {
+    key: 'perf',
+    label: '性能排查',
+    icon: Gauge,
+    prompts: [
+      '哪些实例有慢查询？帮我看看有没有耗时的命令',
+      '扫描一下哪些实例存在大 key',
+      '有没有实例内存碎片率偏高、需要优化',
+    ],
+  },
+  {
+    key: 'diagnose',
+    label: '异常诊断',
+    icon: Stethoscope,
+    prompts: [
+      '帮我对有异常的实例做一次深度诊断',
+      '有没有实例主从复制断开或延迟异常',
+      '当前有没有运行状态不正常的实例',
+    ],
+  },
+  {
+    key: 'inspect',
+    label: '实例巡检',
+    icon: ScanSearch,
+    prompts: [
+      '帮我巡检一下集群整体健康状况',
+      '有哪些实例内存水位偏高',
+      '列出所有实例及其运行状态',
+    ],
+  },
+  {
+    key: 'resource',
+    label: '资源查询',
+    icon: Database,
+    prompts: [
+      '列出所有实例及其规格',
+      '有哪些实例的逐出策略不是默认值',
+      '当前有哪些服务器节点',
+    ],
+  },
+  {
+    key: 'event',
+    label: '事件分析',
+    icon: LineChart,
+    prompts: [
+      '查一下最近的操作审计记录',
+      '最近一段时间集群的内存和 QPS 走势如何',
+      '最近有没有故障转移或重启事件',
+    ],
+  },
+  // 运维操作类含写操作，仅在后端 allow_write 开启且当前用户为 admin 时展示（见 capabilities 探测）。
+  // 这些问题会让 AI「提议」写操作，仍需用户在确认卡片二次确认后才真正执行。
+  // 同样不写死实例名：创建类给规格描述让用户补名字，其余让用户点后自然补充目标实例。
+  {
+    key: 'ops',
+    label: '运维操作',
+    icon: Wrench,
+    write: true,
+    prompts: [
+      '帮我创建一个 2Gi 的缓存实例',
+      '帮我给某个主从实例加一个副本',
+      '把某个实例组切换成读写分离模式',
+      '给某个实例设置每天凌晨 2 点自动备份，保留 7 份',
+    ],
+  },
 ];
 
 // 解析一个 SSE 事件块（形如 "event: token\ndata: {...}"）
@@ -106,6 +184,8 @@ export default function AiChatPanel() {
   const [conversations, setConversations] = useState([]); // 会话列表
   const [convId, setConvId] = useState(''); // 当前会话 id，''=新会话未落库
   const [loadingConv, setLoadingConv] = useState(false);
+  const [promptCat, setPromptCat] = useState(PROMPT_CATEGORIES[0].key); // 空态选中的预置问题分类
+  const [allowWrite, setAllowWrite] = useState(false); // 后端是否允许写操作（总闸 && admin），决定是否展示「运维操作」类
   const scrollRef = useRef(null);
   const abortRef = useRef(null);
 
@@ -114,11 +194,22 @@ export default function AiChatPanel() {
     if (el) el.scrollTop = el.scrollHeight;
   }, [messages, current, toolStatus, error, pendingConfirm]);
 
-  // 挂载时拉取会话列表
+  // 挂载时拉取会话列表 + 探测写操作能力
   useEffect(() => {
     refreshConversations();
+    fetchCapabilities();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  async function fetchCapabilities() {
+    try {
+      const resp = await fetch('/api/v1/ai/capabilities', { headers: { ...authHeaders() } });
+      const body = await resp.json().catch(() => null);
+      if (resp.ok && body?.success) setAllowWrite(!!body.data?.allow_write);
+    } catch {
+      /* 探测失败按无写权限处理，只展示只读分类 */
+    }
+  }
 
   async function refreshConversations() {
     try {
@@ -238,7 +329,7 @@ export default function AiChatPanel() {
             setToolStatus(null);
           } else if (event === 'tool_call') {
             setToolStatus({ name: data.name, running: true });
-            toolCalls.push({ type: 'tool_call', tool: data.name });
+            toolCalls.push({ type: 'tool_call', tool: data.name, args: data.args });
           } else if (event === 'tool_result') {
             setToolStatus({ name: data.name, running: false, ok: data.ok });
           } else if (event === 'confirm') {
@@ -317,10 +408,10 @@ export default function AiChatPanel() {
   const empty = messages.length === 0 && !streaming;
 
   return (
-    <div className="border border-gray-200 rounded-lg bg-white flex h-[calc(100vh-180px)] min-h-[480px] overflow-hidden">
+    <div className="border border-gray-100 rounded-lg bg-white flex h-[calc(100vh-180px)] min-h-[480px] overflow-hidden">
       {/* 左侧会话列表侧栏 */}
-      <aside className="w-60 shrink-0 border-r border-gray-200 flex flex-col bg-gray-50/60">
-        <div className="p-3 border-b border-gray-200">
+      <aside className="w-60 shrink-0 border-r border-gray-100 flex flex-col bg-gray-50/60">
+        <div className="p-3 border-b border-gray-100">
           <button
             onClick={newConversation}
             disabled={streaming}
@@ -359,19 +450,9 @@ export default function AiChatPanel() {
 
       {/* 右侧对话区 */}
       <div className="flex-1 flex flex-col min-w-0">
-        {/* 头部：标题 + 只读声明 */}
-        <div className="px-5 py-3.5 border-b border-gray-200 flex items-center gap-2.5">
-          <div className="w-8 h-8 rounded-md grid place-items-center bg-gray-900 text-white shrink-0">
-            <Sparkles size={18} />
-          </div>
-          <div className="min-w-0">
-            <div className="text-[15px] font-semibold leading-tight text-gray-900">AI 运维助手</div>
-            <div className="text-xs text-gray-400 mt-0.5">基于实例诊断数据与运维技能手册的智能分析</div>
-          </div>
-        </div>
-
         {/* 消息区 */}
-        <div ref={scrollRef} className="flex-1 overflow-y-auto px-5 py-4 space-y-4">
+        <div ref={scrollRef} className="flex-1 overflow-y-auto px-5 py-4">
+          <div className="max-w-5xl mx-auto space-y-4">
           {loadingConv && (
             <div className="inline-flex items-center gap-2 text-gray-400 text-[13px]">
               <Loader2 size={15} className="animate-spin" /> 加载会话历史…
@@ -379,19 +460,41 @@ export default function AiChatPanel() {
           )}
 
           {empty && !loadingConv && (
-            <div className="h-full flex flex-col items-center justify-center text-center gap-4">
-              <div className="w-12 h-12 rounded-full grid place-items-center bg-gray-100 text-gray-400">
-                <Sparkles size={24} />
+            <div className="pt-2">
+              {/* 标题 */}
+              <h2 className="text-[22px] font-semibold text-gray-900 mb-5">
+                你好，我是 <span className="text-blue-600">AI 运维助手</span>
+              </h2>
+
+              {/* 分类：左对齐网格，选中项淡色底。写操作类仅在 allowWrite 时展示 */}
+              <div className="text-[13px] text-gray-400 mb-3">我可以帮您</div>
+              <div className="grid grid-cols-3 gap-y-3 gap-x-4 mb-5">
+                {PROMPT_CATEGORIES.filter((cat) => !cat.write || allowWrite).map((cat) => {
+                  const Icon = cat.icon;
+                  const active = cat.key === promptCat;
+                  return (
+                    <button
+                      key={cat.key}
+                      onClick={() => setPromptCat(cat.key)}
+                      className={`inline-flex items-center gap-2 px-3 py-2 rounded-lg text-[14px] cursor-pointer transition-colors justify-self-start ${
+                        active
+                          ? 'bg-blue-50 text-blue-600 font-medium'
+                          : 'text-gray-600 hover:bg-gray-50'
+                      }`}
+                    >
+                      <Icon size={16} className={active ? 'text-blue-500' : 'text-gray-400'} /> {cat.label}
+                    </button>
+                  );
+                })}
               </div>
-              <div className="text-gray-500 text-sm max-w-md">
-                用自然语言提问，我会调用平台的诊断能力采集数据并分析。例如：
-              </div>
-              <div className="flex flex-col gap-2 w-full max-w-md">
-                {QUICK_PROMPTS.map((p) => (
+
+              {/* 选中分类的预置问题：通栏宽卡片 */}
+              <div className="flex flex-col gap-2.5">
+                {(PROMPT_CATEGORIES.find((c) => c.key === promptCat)?.prompts || []).map((p) => (
                   <button
                     key={p}
                     onClick={() => send(p)}
-                    className="text-left text-[13px] text-gray-700 border border-gray-200 rounded-md px-3 py-2.5 bg-white hover:bg-gray-50 hover:border-gray-300 cursor-pointer transition-colors"
+                    className="w-full text-left text-[14px] text-gray-700 border border-gray-200 rounded-xl px-4 py-3.5 bg-white hover:bg-gray-50 hover:border-gray-300 cursor-pointer transition-colors"
                   >
                     {p}
                   </button>
@@ -435,11 +538,12 @@ export default function AiChatPanel() {
               <AlertCircle size={16} className="shrink-0" /> {error}
             </div>
           )}
+          </div>
         </div>
 
         {/* 输入区 */}
-        <div className="border-t border-gray-200 p-3.5">
-          <div className="flex items-end gap-2">
+        <div className="p-3.5">
+          <div className="max-w-3xl mx-auto flex items-end gap-2">
             <textarea
               value={input}
               onChange={(e) => setInput(e.target.value)}
@@ -472,31 +576,77 @@ export default function AiChatPanel() {
 }
 
 // ToolCallTrace 渲染 assistant 消息里持久化的工具调用/写操作留痕（§13.8）。
+// 竖排一行一个，点击可展开查看该次调用的参数（tool_call/write_confirm）。
 function ToolCallTrace({ calls }) {
+  const [open, setOpen] = useState({}); // 索引 → 是否展开
   if (!calls || calls.length === 0) return null;
+
+  // 把 args 规整为可读的 JSON 文本（后端 args 可能是 JSON 字符串或对象）
+  const prettyArgs = (args) => {
+    if (args == null || args === '') return '';
+    let obj = args;
+    if (typeof args === 'string') {
+      try {
+        obj = JSON.parse(args);
+      } catch {
+        return args; // 非 JSON 字符串，原样展示
+      }
+    }
+    try {
+      return JSON.stringify(obj, null, 2);
+    } catch {
+      return String(args);
+    }
+  };
+
   return (
-    <div className="flex flex-wrap gap-1.5 mt-2">
+    <div className="flex flex-col gap-0.5 mt-2">
       {calls.map((el, i) => {
         const label = TOOL_LABELS[el.tool] || el.tool;
-        if (el.type === 'write_execute') {
-          return (
-            <span key={i} className="inline-flex items-center gap-1 text-[11px] text-emerald-700 bg-emerald-50 border border-emerald-200 rounded px-1.5 py-0.5">
-              <CheckCircle2 size={11} /> 已执行 {label}
-            </span>
-          );
+        const isConfirm = el.type === 'write_confirm';
+        const isExecute = el.type === 'write_execute';
+        // 可展开内容：tool_call 看参数；write_confirm 看摘要；write_execute 无更多信息
+        const detail = isConfirm ? el.summary : prettyArgs(el.args);
+        const expandable = !!detail;
+        const isOpen = !!open[i];
+
+        let Icon = Wrench;
+        let iconCls = 'text-gray-400';
+        let head = `已使用工具: ${label}`;
+        if (isExecute) {
+          Icon = CheckCircle2;
+          iconCls = 'text-emerald-500';
+          head = `已执行 ${label}`;
+        } else if (isConfirm) {
+          Icon = ShieldAlert;
+          iconCls = 'text-amber-500';
+          head = `提议 ${label}`;
         }
-        if (el.type === 'write_confirm') {
-          return (
-            <span key={i} className="inline-flex items-center gap-1 text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded px-1.5 py-0.5">
-              <ShieldAlert size={11} /> 提议 {label}
-            </span>
-          );
-        }
-        // tool_call
+
         return (
-          <span key={i} className="inline-flex items-center gap-1 text-[11px] text-gray-600 bg-gray-100 border border-gray-200 rounded px-1.5 py-0.5">
-            <Wrench size={11} /> {label}
-          </span>
+          <div key={i} className="text-[12px]">
+            <button
+              type="button"
+              onClick={() => expandable && setOpen((o) => ({ ...o, [i]: !o[i] }))}
+              className={`inline-flex items-center gap-1.5 text-gray-600 ${expandable ? 'cursor-pointer hover:text-gray-900' : 'cursor-default'}`}
+            >
+              <Icon size={13} className={iconCls} />
+              <span>{head}</span>
+              {expandable && <ChevronDown size={13} className={`text-gray-400 transition-transform ${isOpen ? 'rotate-180' : ''}`} />}
+            </button>
+            {expandable && isOpen && (
+              <div className="mt-1 mb-1.5 ml-5">
+                <div className="text-[11px] text-gray-400 mb-1">{isConfirm ? '摘要' : '参数'}</div>
+                {isConfirm ? (
+                  <div className="px-2.5 py-2 rounded bg-gray-50 text-[12px] text-gray-700 leading-relaxed">
+                    {detail}
+                  </div>
+                ) : (
+                  <pre className="px-2.5 py-2 rounded bg-gray-50 text-[11px] font-mono text-gray-700 overflow-x-auto whitespace-pre-wrap break-words">{detail}</pre>
+                )}
+              </div>
+            )}
+          </div>
         );
       })}
     </div>
@@ -508,7 +658,7 @@ function MessageBubble({ role, content, toolCalls, interrupted }) {
     // 写操作执行/取消的结果回显（不参与后续对话）
     return (
       <div className="flex justify-center">
-        <div className="max-w-[90%] rounded-md px-3 py-1.5 text-xs text-gray-600 bg-gray-100 border border-gray-200">
+        <div className="max-w-[90%] rounded-md px-3 py-1.5 text-xs text-gray-500 bg-gray-100">
           {content}
         </div>
       </div>
@@ -517,18 +667,19 @@ function MessageBubble({ role, content, toolCalls, interrupted }) {
   const isUser = role === 'user';
   return (
     <div className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}>
-      <div className={`max-w-[85%] ${isUser ? '' : 'w-full'}`}>
-        {content && (
-          <div
-            className={`rounded-lg px-3.5 py-2.5 text-[13px] leading-relaxed break-words ${
-              isUser
-                ? 'bg-gray-900 text-white whitespace-pre-wrap'
-                : 'bg-gray-50 border border-gray-200 text-gray-800'
-            }`}
-          >
-            {isUser ? content : <Markdown>{content}</Markdown>}
-          </div>
-        )}
+      <div className={isUser ? 'max-w-[85%]' : 'w-full'}>
+        {content &&
+          (isUser ? (
+            // 用户消息：淡蓝气泡（对齐 Tair）
+            <div className="rounded-2xl px-3.5 py-2.5 text-[14px] leading-relaxed break-words whitespace-pre-wrap bg-blue-50 text-gray-800">
+              {content}
+            </div>
+          ) : (
+            // AI 回复：无气泡、无边框，纯文本铺开（对齐 Tair）
+            <div className="text-[14px] leading-relaxed break-words text-gray-800">
+              <Markdown>{content}</Markdown>
+            </div>
+          ))}
         {!isUser && <ToolCallTrace calls={toolCalls} />}
         {interrupted && (
           <div className="text-[11px] text-gray-400 mt-1 inline-flex items-center gap-1">
