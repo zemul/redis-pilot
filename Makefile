@@ -6,19 +6,27 @@ GOFLAGS := -trimpath
 BINS := server agent cli proxy
 OUT  := bin
 DASHBOARD_DIR := web/dashboard
+SKILLS_EMBED := internal/server/ai/skills_embed
 
 DEPLOY_SERVER := redis01
 DEPLOY_AGENTS := redis01 redis02 redis03
 
-.PHONY: all clean dashboard $(BINS) build-linux deploy deploy-server deploy-agent deploy-cli deploy-proxy setup
+.PHONY: all clean dashboard skills-embed $(BINS) build-linux deploy deploy-server deploy-agent deploy-cli deploy-proxy setup
 
 all: $(BINS)
 
-server: dashboard
+server: dashboard skills-embed
 
 dashboard:
 	cd $(DASHBOARD_DIR) && npm install
 	cd $(DASHBOARD_DIR) && npm run build
+
+# skills-embed 把仓库根 skills/ 同步到 ai 包内，供 go:embed 打进 server 二进制
+# （go:embed 不能跨目录引用 ../../../skills）。见 docs/architecture/ai-assistant.md §3.4。
+skills-embed:
+	rm -rf $(SKILLS_EMBED)
+	mkdir -p $(SKILLS_EMBED)
+	cp -R skills/. $(SKILLS_EMBED)/
 
 $(BINS):
 	go build $(GOFLAGS) -ldflags '$(LDFLAGS)' -o $(OUT)/redis-pilot-$@ ./cmd/$@

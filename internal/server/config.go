@@ -47,6 +47,19 @@ type AdminConfig struct {
 	Password string `yaml:"password"`
 }
 
+// AIConfig 内嵌式 AI 运维助手配置。详见 docs/architecture/ai-assistant.md。
+type AIConfig struct {
+	Enabled    bool   `yaml:"enabled"`     // 总开关，默认 false
+	BaseURL    string `yaml:"base_url"`    // OpenAI 兼容接口地址
+	APIKey     string `yaml:"api_key"`     // 密钥，支持 ${ENV} 形式从环境变量注入
+	Model      string `yaml:"model"`       // 模型名（可带 provider 前缀）
+	SkillsDir  string `yaml:"skills_dir"`  // 空=用内嵌 skill；非空=从磁盘读取（开发热更）
+	MaxTurns   int    `yaml:"max_turns"`   // 工具循环轮数上限（防失控），默认 8
+	MaxTokens  int    `yaml:"max_tokens"`  // 单次回复 token 上限，默认 2048
+	Timeout    string `yaml:"timeout"`     // 单次对话总超时，默认 120s
+	AllowWrite bool   `yaml:"allow_write"` // 是否允许写操作工具，默认 false（MVP 只读）
+}
+
 type Config struct {
 	Port                int                          `yaml:"port"`
 	DataDir             string                       `yaml:"data_dir"`
@@ -65,6 +78,8 @@ type Config struct {
 	// ProxySentinelPort 是伪 Sentinel 对外暴露的端口号（如 26379）。
 	// 仅用于 Dashboard 展示完整 Sentinel 接入地址，不影响 Proxy 的实际监听行为。
 	ProxySentinelPort int `yaml:"proxy_sentinel_port"`
+	// AI 内嵌式 AI 运维助手配置（可选，默认关闭）。
+	AI AIConfig `yaml:"ai"`
 }
 
 func LoadConfig(path string) (*Config, error) {
@@ -108,6 +123,18 @@ func LoadConfig(path string) (*Config, error) {
 	if cfg.Admin.Password == "" {
 		cfg.Admin.Password = "admin"
 	}
+	// AI 助手默认值
+	if cfg.AI.MaxTurns == 0 {
+		cfg.AI.MaxTurns = 8
+	}
+	if cfg.AI.MaxTokens == 0 {
+		cfg.AI.MaxTokens = 2048
+	}
+	if cfg.AI.Timeout == "" {
+		cfg.AI.Timeout = "120s"
+	}
+	// 支持 api_key: "${ENV_VAR}" 从环境变量注入，避免明文入库
+	cfg.AI.APIKey = os.ExpandEnv(cfg.AI.APIKey)
 	return cfg, nil
 }
 
