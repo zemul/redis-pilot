@@ -145,6 +145,10 @@ const PROMPT_CATEGORIES = [
   },
 ];
 
+// 多步写操作自动续接的安全上限：单条用户意图链最多自动发起多少轮后续对话。
+// 正常场景每步仍需用户点「确认执行」，此上限仅防御异常（如模型反复提议）。
+const MAX_AUTO_CONTINUE = 25;
+
 // 解析一个 SSE 事件块（形如 "event: token\ndata: {...}"）
 function parseEvent(raw) {
   let event = 'message';
@@ -188,6 +192,9 @@ export default function AiChatPanel() {
   const [allowWrite, setAllowWrite] = useState(false); // 后端是否允许写操作（总闸 && admin），决定是否展示「运维操作」类
   const scrollRef = useRef(null);
   const abortRef = useRef(null);
+  // 多步写操作自动续接的深度计数：每条用户意图链从 0 开始，每自动续接一轮 +1。
+  // 纯防御上限，正常每步仍需用户点「确认执行」，几乎不会触顶。
+  const continueDepthRef = useRef(0);
 
   useEffect(() => {
     const el = scrollRef.current;
@@ -278,15 +285,10 @@ export default function AiChatPanel() {
     }
   }
 
-  async function send(text) {
-    const q = (text ?? input).trim();
-    if (!q || streaming) return;
-    setError('');
-    setInput('');
-    setPendingConfirm(null); // 新一轮对话，清掉上一个未处理的确认
-    // system 消息（写操作执行/取消回显）不参与对话历史，避免污染上下文
-    const history = [...messages.filter((m) => m.role !== 'system').map((m) => ({ role: m.role, content: m.content })), { role: 'user', content: q }];
-    setMessages((m) => [...m, { role: 'user', content: q }]);
+  // streamChat 跑一轮完整对话：给定要发给后端的完整 history，处理 SSE 流。
+  // 不负责把 user 消息 push 进 messages（由调用方决定是否显示），只在本轮结束时
+  // 把 assistant 回复（含工具/写操作留痕）push 进 messages。
+  async function streamChat(history) {
     setStreaming(true);
     setCurrent('');
     setToolStatus(null);
@@ -360,15 +362,54 @@ export default function AiChatPanel() {
     }
   }
 
+  // 把已完成消息过滤成发给后端的 history（去掉本地 system 回显，避免污染上下文）。
+  function historyFromMessages() {
+    return messages.filter((m) => m.role !== 'system').map((m) => ({ role: m.role, content: m.content }));
+  }
+
+  async function send(text) {
+    const q = (text ?? input).trim();
+    if (!q || streaming) return;
+    setError('');
+    setInput('');
+    setPendingConfirm(null); // 新一轮对话，清掉上一个未处理的确认
+    continueDepthRef.current = 0; // 用户主动发问：重置自动续接链计数
+    const history = [...historyFromMessages(), { role: 'user', content: q }];
+    setMessages((m) => [...m, { role: 'user', content: q }]);
+    await streamChat(history);
+  }
+
+  // continueAfterExecute 在写操作执行成功后自动发起新一轮对话，让 AI 接续多步意图的
+  // 下一步（如主从创建：主库建好→自动续→AI 提议建从库）。续接的提示消息只作为本次
+  // 请求 history 的最后一条 user 消息发给后端，不 push 进 messages、界面不显示——
+  // 用户看到的是「✅ 已执行」灰条 + AI 自动接上的下一轮回复。
+  async function continueAfterExecute(summary) {
+    if (continueDepthRef.current >= MAX_AUTO_CONTINUE) {
+      // 防御：异常情况下链条过长则停止自动续接，避免失控。
+      setMessages((m) => [...m, { role: 'system', content: '已达到自动续接上限，如需继续请手动输入。' }]);
+      return;
+    }
+    continueDepthRef.current += 1;
+    const followup =
+      `[系统提示] 上一步写操作已成功执行：${summary}。` +
+      `如果用户最初的意图还需要后续写操作才能完成（例如“创建主从实例”在主库创建后还需创建从库并建立复制），` +
+      `请继续提议下一步并简要说明；如果整个意图已经完成，请简要总结，不要再提议任何写操作。`;
+    const history = [...historyFromMessages(), { role: 'user', content: followup }];
+    await streamChat(history);
+  }
+
   function stop() {
     abortRef.current?.abort();
   }
 
-  // 用户点「确认执行」：调独立执行端点（不走 LLM），结果只回显、不喂回 AI。
+  // 用户点「确认执行」：调独立执行端点（不走 LLM）执行写操作。
+  // 执行成功后自动发起新一轮对话（continueAfterExecute），让 AI 接续多步意图的下一步；
+  // 失败则就地报错、不续接。
   async function confirmExecute() {
     if (!pendingConfirm || executing) return;
     setExecuting(true);
     setError('');
+    const summary = pendingConfirm.summary;
     let argsObj = {};
     try {
       argsObj = pendingConfirm.args ? JSON.parse(pendingConfirm.args) : {};
@@ -383,8 +424,12 @@ export default function AiChatPanel() {
       });
       const body = await resp.json().catch(() => null);
       if (!resp.ok) throw new Error(body?.error || `执行失败：${resp.status}`);
-      setMessages((m) => [...m, { role: 'system', content: `✅ 已执行：${pendingConfirm.summary}` }]);
+      setMessages((m) => [...m, { role: 'system', content: `✅ 已执行：${summary}` }]);
       setPendingConfirm(null);
+      setExecuting(false);
+      // 执行成功：自动发起下一轮，让 AI 判断是否还有后续步骤（多步写自动续接）。
+      await continueAfterExecute(summary);
+      return;
     } catch (e) {
       setError(e.message || String(e));
     } finally {

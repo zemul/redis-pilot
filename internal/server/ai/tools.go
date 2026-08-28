@@ -80,6 +80,22 @@ func writeToolSummary(name, argsJSON string) string {
 		if a.EngineVersion != "" {
 			engine += " " + a.EngineVersion
 		}
+		// 创建从库：group/category/type 均继承主库，摘要聚焦"作为谁的从库"。
+		if a.ReplicaOf != "" {
+			mem := a.Memory
+			if mem == "" {
+				mem = "(未指定内存)"
+			}
+			cpuLabel := "默认 1"
+			if a.CPUs > 0 {
+				cpuLabel = fmt.Sprintf("%g", a.CPUs)
+			}
+			diskLabel := a.Disk
+			if diskLabel == "" {
+				diskLabel = "默认"
+			}
+			return fmt.Sprintf("创建从库 %s：作为 %s 的从库（%s，内存 %s，CPU %s，磁盘 %s，组/用途继承主库）", target, a.ReplicaOf, engine, mem, cpuLabel, diskLabel)
+		}
 		typ := a.Type
 		if typ == "" {
 			typ = "standalone"
@@ -214,18 +230,19 @@ func (r *toolRegistry) schemas() []openai.ChatCompletionToolParam {
 			"value": map[string]string{"type": "string", "description": "配置项的新值"},
 		}
 		createArg := map[string]any{
-			"name":           map[string]string{"type": "string", "description": "实例名（唯一）"},
-			"group":          map[string]string{"type": "string", "description": "逻辑组名，单点/主实例必填，如 cache、order"},
-			"category":       map[string]string{"type": "string", "description": "用途：cache（缓存，可丢）或 persistent（持久化，需备份）"},
-			"engine":         map[string]string{"type": "string", "description": "引擎：redis 或 kvrocks，默认 redis"},
+			"name":           map[string]string{"type": "string", "description": "实例名（唯一）。命名规范 <group>-<序号>，如 order-1、order-2"},
+			"group":          map[string]string{"type": "string", "description": "逻辑组名。创建单点/主库时必填，如 cache、order；创建从库时留空，会自动继承主库所在组"},
+			"category":       map[string]string{"type": "string", "description": "用途：cache（缓存，可丢）或 persistent（持久化，需备份）。创建单点/主库时必填；创建从库时留空，自动继承主库"},
+			"engine":         map[string]string{"type": "string", "description": "引擎：redis 或 kvrocks，默认 redis。创建从库时须与主库一致"},
 			"engine_version": map[string]string{"type": "string", "description": "引擎版本，可选，如 redis 的 5/6.2/7；留空用平台默认"},
-			"type":           map[string]string{"type": "string", "description": "拓扑：standalone（单点）或 replication（主从），默认 standalone"},
+			"type":           map[string]string{"type": "string", "description": "拓扑：standalone（单点）或 replication（主从）。创建从库时无需提供，会自动归为 replication"},
 			"memory":         map[string]string{"type": "string", "description": "内存规格，如 2Gi、4Gi；必填"},
 			"cpus":           map[string]string{"type": "number", "description": "CPU 核数，可选，默认 1。Redis 命令处理单线程，常规负载 1 核即可，除非用户明确要求否则不必调高；Kvrocks 是多线程存储引擎，写密集/大数据量场景可按需给 2-4 核。"},
 			"disk":           map[string]string{"type": "string", "description": "磁盘容量，可选，单位必须用 Gi（如 50Gi）。Redis 为纯内存，磁盘仅用于持久化和备份，留空用默认即可；Kvrocks 是磁盘型存储，数据落盘可远超内存，应根据用户描述的数据规模设置（如预计存 100G 数据则给 100Gi 以上）。"},
+			"replica_of":     map[string]string{"type": "string", "description": "创建从库时填主库实例名（如 order-1），表示把本实例作为该主库的从库加入其主从组并开始复制；group/category/type/engine_version 会自动继承主库，无需重复提供。创建单点或主库时留空。"},
 		}
 		tools = append(tools,
-			makeTool("create_instance", "创建一个新的 Redis/Kvrocks 实例（写操作，需用户二次确认后执行；节点由平台自动调度，无需指定）", createArg, []string{"name", "group", "category", "memory", "type"}),
+			makeTool("create_instance", "创建一个新的 Redis/Kvrocks 实例（写操作，需用户二次确认后执行；节点由平台自动调度，无需指定）。创建主从实例时分两步：先建主库（提供 group/category，type=replication），再建从库（提供 replica_of=主库名，其余自动继承）。", createArg, []string{"name", "memory"}),
 			makeTool("start_instance", "启动指定实例（写操作，需用户二次确认后执行）", nameArg, []string{"name"}),
 			makeTool("stop_instance", "停止指定实例（写操作，需用户二次确认后执行；主从组 master 会被拒绝）", nameArg, []string{"name"}),
 			makeTool("failover", "对指定实例所在的主从组发起故障转移（写操作，需二次确认；由 Sentinel 选举新主）", nameArg, []string{"name"}),

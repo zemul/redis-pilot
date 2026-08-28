@@ -310,20 +310,8 @@ func (s *Server) aiExecute(c *gin.Context) {
 		if engine == "" {
 			engine = "redis"
 		}
-		typ := a.Type
-		if typ == "" {
-			typ = "standalone"
-		}
-		if a.Category != "cache" && a.Category != "persistent" {
-			fail(c, http.StatusBadRequest, "category must be cache or persistent")
-			return
-		}
 		if a.Memory == "" {
 			fail(c, http.StatusBadRequest, "missing arg: memory")
-			return
-		}
-		if a.Group == "" {
-			fail(c, http.StatusBadRequest, "missing arg: group")
 			return
 		}
 		handler = s.instanceCreate
@@ -345,15 +333,48 @@ func (s *Server) aiExecute(c *gin.Context) {
 			fail(c, http.StatusBadRequest, "invalid disk (use Gi unit, e.g. 50Gi): "+disk)
 			return
 		}
-		body = map[string]any{
-			"name":     a.Name,
-			"group":    a.Group,
-			"category": a.Category,
-			"engine":   engine,
-			"type":     typ,
-			"memory":   a.Memory,
-			"cpus":     cpus,
-			"disk":     disk,
+		if a.ReplicaOf != "" {
+			// 创建从库：group/category/type/engine_version 由 handler 从主库继承。
+			// 但 CreateInstanceRequest 对 category/type 有 binding:"required"，故填占位值
+			// （cache/replication）以通过绑定校验——handler 会用主库组的真实值覆盖它们。
+			body = map[string]any{
+				"name":       a.Name,
+				"engine":     engine,
+				"memory":     a.Memory,
+				"cpus":       cpus,
+				"disk":       disk,
+				"replica_of": a.ReplicaOf,
+				"category":   "cache",       // 占位，handler 用主库组 category 覆盖
+				"type":       "replication", // 占位，handler 强制为 replication
+			}
+		} else {
+			// 创建单点/主库：group 必填；category 缺省与 CLI 一致默认 cache。
+			typ := a.Type
+			if typ == "" {
+				typ = "standalone"
+			}
+			category := a.Category
+			if category == "" {
+				category = "cache" // 对齐 CLI（--category 默认 cache）
+			}
+			if category != "cache" && category != "persistent" {
+				fail(c, http.StatusBadRequest, "category must be cache or persistent")
+				return
+			}
+			if a.Group == "" {
+				fail(c, http.StatusBadRequest, "missing arg: group")
+				return
+			}
+			body = map[string]any{
+				"name":     a.Name,
+				"group":    a.Group,
+				"category": category,
+				"engine":   engine,
+				"type":     typ,
+				"memory":   a.Memory,
+				"cpus":     cpus,
+				"disk":     disk,
+			}
 		}
 		if a.EngineVersion != "" {
 			body["engine_version"] = a.EngineVersion
