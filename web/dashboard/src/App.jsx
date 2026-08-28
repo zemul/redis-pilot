@@ -369,7 +369,7 @@ function AppShell() {
           )}
         </section>
       </main>
-      {detail && <InstanceDetailModal detail={detail} requestFn={request} onClose={() => setDetail(null)} />}
+      {detail && <InstanceDetailModal detail={detail} publicHost={serverInfo?.proxy_public_endpoint} sentinelPort={serverInfo?.proxy_sentinel_port} requestFn={request} onClose={() => setDetail(null)} />}
       {slowlogTarget && <SlowlogModal instanceName={slowlogTarget} requestFn={request} onClose={() => setSlowlogTarget(null)} />}
       {bigkeysTarget && <BigkeysModal instanceName={bigkeysTarget} requestFn={request} onClose={() => setBigkeysTarget(null)} />}
       {configTarget && <ConfigModal instanceName={configTarget} requestFn={request} onClose={() => setConfigTarget(null)} />}

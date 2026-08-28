@@ -11,7 +11,7 @@ import { getField, displayValue, formatDateTime, statusMeta, formatBytes, format
 import { extractMetricsPayload, parseRedisInfo, metricValue, engineLabel, topologyReason, parseReplicationLinks, topologyLabel } from '../lib/instance.js';
 import { MetricsTrendView } from '../views/MetricsTrendView.jsx';
 
-export function InstanceDetailModal({ detail, requestFn, onClose }) {
+export function InstanceDetailModal({ detail, publicHost, sentinelPort, requestFn, onClose }) {
   const { item, group, loading, error, metrics } = detail;
   const payload = extractMetricsPayload(metrics);
   const info = payload.info || payload.Info || '';
@@ -78,6 +78,7 @@ export function InstanceDetailModal({ detail, requestFn, onClose }) {
             {isReplication && (
               <button className={`px-4 py-2.5 text-[13px] border-0 bg-transparent cursor-pointer border-b-2 mb-[-1px] ${activeTab === 'group' ? 'text-gray-900 border-gray-900 font-medium' : 'text-gray-400 border-transparent hover:text-gray-700'}`} onClick={() => setActiveTab('group')}>实例组</button>
             )}
+            <button className={`px-4 py-2.5 text-[13px] border-0 bg-transparent cursor-pointer border-b-2 mb-[-1px] ${activeTab === 'access' ? 'text-gray-900 border-gray-900 font-medium' : 'text-gray-400 border-transparent hover:text-gray-700'}`} onClick={() => setActiveTab('access')}>接入</button>
           </div>
           {activeTab === 'detail' && (
             <>
@@ -122,6 +123,9 @@ export function InstanceDetailModal({ detail, requestFn, onClose }) {
           )}
           {activeTab === 'group' && (
             <GroupTopologyTab group={group} master={item} sections={sections} loading={loading} error={error} />
+          )}
+          {activeTab === 'access' && (
+            <AccessInfoTab group={group} publicHost={publicHost} sentinelPort={sentinelPort} />
           )}
         </div>
       </section>
@@ -223,6 +227,69 @@ function GroupTopologyTab({ group, master, sections, loading, error }) {
           </>
         )}
       </section>
+    </div>
+  );
+}
+
+// 接入信息 tab：展示 Proxy 连接地址和 Sentinel 模式接入方式（只读展示）。
+function AccessInfoTab({ group, publicHost, sentinelPort }) {
+  const proxy = getField(group, 'proxy', 'Proxy', {}) || {};
+  const masterPort = proxy.master_port || proxy.MasterPort;
+  const autoPort = proxy.auto_port || proxy.AutoPort;
+  const password = proxy.password || proxy.Password || '';
+  const isRwSplit = group.access_mode === 'rw-split';
+  const activePort = isRwSplit ? (autoPort || masterPort) : (masterPort || autoPort);
+  const directEndpoint = publicHost && activePort ? `${publicHost}:${activePort}` : (activePort || '-');
+  const sentinelEndpoint = publicHost && sentinelPort ? `${publicHost}:${sentinelPort}` : null;
+  const accessLabel = isRwSplit ? '读写分离' : '标准';
+
+  return (
+    <div className="grid gap-4">
+      <section className="space-y-2.5">
+        <h4 className="m-0 text-[13px] font-semibold text-gray-500">Redis 直连</h4>
+        <div className="bg-gray-50 rounded-md border border-gray-200 px-3 py-2.5 space-y-2">
+          <div>
+            <span className="text-[11px] text-gray-400 block mb-0.5">地址</span>
+            <CopyableText text={directEndpoint} className="text-[13px] font-mono text-gray-900" />
+          </div>
+          {password && (
+            <div>
+              <span className="text-[11px] text-gray-400 block mb-0.5">密码</span>
+              <CopyableText text={password} className="text-[13px] font-mono text-gray-900" />
+            </div>
+          )}
+          <div>
+            <span className="text-[11px] text-gray-400 block mb-0.5">接入方式</span>
+            <span className="text-[13px] text-gray-700">{accessLabel}</span>
+          </div>
+        </div>
+      </section>
+
+      {sentinelEndpoint && (
+        <section className="space-y-2.5">
+          <h4 className="m-0 text-[13px] font-semibold text-gray-500">Sentinel 模式</h4>
+          <div className="bg-gray-50 rounded-md border border-gray-200 px-3 py-2.5 space-y-2">
+            <div>
+              <span className="text-[11px] text-gray-400 block mb-0.5">Sentinel 地址</span>
+              <CopyableText text={sentinelEndpoint} className="text-[13px] font-mono text-gray-900" />
+            </div>
+            <div>
+              <span className="text-[11px] text-gray-400 block mb-0.5">Master Name</span>
+              <CopyableText text={group.groupName} className="text-[13px] font-mono text-gray-900" />
+            </div>
+          </div>
+        </section>
+      )}
+
+      {masterPort && autoPort && (
+        <section className="space-y-2.5">
+          <h4 className="m-0 text-[13px] font-semibold text-gray-500">全部端口</h4>
+          <div className="bg-gray-50 rounded-md border border-gray-200 px-3 py-2.5 space-y-1.5 text-[13px]">
+            <div className="flex justify-between"><span className="text-gray-500">Master 端口</span><span className="font-mono text-gray-900">{masterPort}</span></div>
+            <div className="flex justify-between"><span className="text-gray-500">Auto 端口（读写分离）</span><span className="font-mono text-gray-900">{autoPort}</span></div>
+          </div>
+        </section>
+      )}
     </div>
   );
 }
