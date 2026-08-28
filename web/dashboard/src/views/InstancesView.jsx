@@ -16,7 +16,7 @@ import { topologyLabel, engineLabel, powerActionFor } from '../lib/instance.js';
 // 实例列表统一的网格列模板：实例组/节点 | 类型 | 接入/拓扑 | 架构/版本 | 节点/接入点 | 内存使用 | 状态 | 操作
 const INST_GRID = 'grid items-center gap-4 grid-cols-[280px_84px_120px_130px_minmax(220px,1fr)_90px_92px_112px] px-4';
 
-export function InstancesView({ groups, publicHost, sentinelPort, query, setQuery, expandedGroups, setExpandedGroups, onOpenDetail, onOpenBackups, onPowerAction, onDelete, onSlowlog, onBigkeys, onConfig, onResize, onToggleAccessMode, onCreate, pendingAction }) {
+export function InstancesView({ groups, publicHost, sentinelPort, query, setQuery, expandedGroups, setExpandedGroups, onOpenDetail, onOpenBackups, onPowerAction, onDelete, onSlowlog, onBigkeys, onConfig, onResize, onDiagnose, onToggleAccessMode, onCreate, pendingAction }) {
   const filtered = groups.filter((group) => {
     const text = [
       group.groupName,
@@ -81,6 +81,7 @@ export function InstancesView({ groups, publicHost, sentinelPort, query, setQuer
               onBigkeys={onBigkeys}
               onConfig={onConfig}
               onResize={onResize}
+              onDiagnose={onDiagnose}
               onToggleAccessMode={onToggleAccessMode}
               pendingAction={pendingAction}
             />
@@ -91,7 +92,7 @@ export function InstancesView({ groups, publicHost, sentinelPort, query, setQuer
   );
 }
 
-function InstanceGroupCard({ group, expanded, onToggle, publicHost, sentinelPort, onOpenDetail, onOpenBackups, onPowerAction, onDelete, onSlowlog, onBigkeys, onConfig, onResize, onToggleAccessMode, pendingAction }) {
+function InstanceGroupCard({ group, expanded, onToggle, publicHost, sentinelPort, onOpenDetail, onOpenBackups, onPowerAction, onDelete, onSlowlog, onBigkeys, onConfig, onResize, onDiagnose, onToggleAccessMode, pendingAction }) {
   const master = group.master;
   const hasReplicas = group.replicas.length > 0;
   const topology = topologyLabel(group, master);
@@ -106,6 +107,7 @@ function InstanceGroupCard({ group, expanded, onToggle, publicHost, sentinelPort
     { label: '调整规格', onClick: () => onResize(master) },
     { label: '慢查询', onClick: () => onSlowlog(master) },
     { label: '大 Key 分析', onClick: () => onBigkeys(master) },
+    { label: '诊断', onClick: () => onDiagnose(master) },
     powerAction && {
       label: powerAction.label,
       disabled: powerAction.disabledReason || pendingAction === `${powerAction.action}:${master.name}`,
@@ -178,6 +180,7 @@ function InstanceGroupCard({ group, expanded, onToggle, publicHost, sentinelPort
               onBigkeys={onBigkeys}
               onConfig={onConfig}
               onResize={onResize}
+              onDiagnose={onDiagnose}
               onToggleAccessMode={onToggleAccessMode}
               pendingAction={pendingAction}
             />
@@ -196,6 +199,7 @@ function InstanceGroupCard({ group, expanded, onToggle, publicHost, sentinelPort
               onBigkeys={onBigkeys}
               onConfig={onConfig}
               onResize={onResize}
+              onDiagnose={onDiagnose}
               onToggleAccessMode={onToggleAccessMode}
               pendingAction={pendingAction}
             />
@@ -217,7 +221,7 @@ function ProxyPorts({ group, publicHost }) {
   return <CopyableEndpoint host={publicHost} port={port} className="text-gray-700 text-[13px]" />;
 }
 
-function InstanceNodeRow({ item, group, role, first, onOpenDetail, onOpenBackups, onPowerAction, onDelete, onSlowlog, onBigkeys, onConfig, onResize, onToggleAccessMode, pendingAction }) {
+function InstanceNodeRow({ item, group, role, first, onOpenDetail, onOpenBackups, onPowerAction, onDelete, onSlowlog, onBigkeys, onConfig, onResize, onDiagnose, onToggleAccessMode, pendingAction }) {
   const powerAction = powerActionFor(item, group);
   const isReplica = role === '从库';
   const isMasterWithReplicas = role === '主库' && group.replicas.length > 0;
@@ -238,6 +242,7 @@ function InstanceNodeRow({ item, group, role, first, onOpenDetail, onOpenBackups
     { label: '调整规格', onClick: () => onResize(item) },
     { label: '慢查询', onClick: () => onSlowlog(item) },
     { label: '大 Key 分析', onClick: () => onBigkeys(item) },
+    { label: '诊断', onClick: () => onDiagnose(item) },
     powerAction && {
       label: powerAction.label,
       disabled: powerAction.disabledReason || pendingAction === `${powerAction.action}:${item.name}`,

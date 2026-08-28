@@ -830,6 +830,64 @@ export function ConfirmPowerModal({ detail, loading, onCancel, onConfirm }) {
   );
 }
 
+export function DiagnoseModal({ instanceName, requestFn, onClose }) {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    let ignore = false;
+    setLoading(true);
+    setError('');
+    requestFn(`/instance/diagnose?name=${encodeURIComponent(instanceName)}`)
+      .then((res) => { if (!ignore) setData(res); })
+      .catch((err) => { if (!ignore) setError(err.message || String(err)); })
+      .finally(() => { if (!ignore) setLoading(false); });
+    return () => { ignore = true; };
+  }, [instanceName]);
+
+  const doctor = data?.memory_doctor || '';
+  const doctorOk = doctor.includes('no issues') || doctor.includes('Sam, I have no memory problems');
+
+  return (
+    <div className="fixed inset-0 z-40 p-7 grid place-items-center bg-black/40 animate-[fadeIn_0.15s_ease-out]" role="presentation" onMouseDown={onClose}>
+      <section className="w-[min(680px,100%)] max-h-[min(820px,calc(100vh-56px))] rounded-xl border border-gray-200 overflow-hidden grid grid-rows-[auto_minmax(0,1fr)] bg-white shadow-lg animate-[slideUp_0.18s_cubic-bezier(0.16,1,0.3,1)]" role="dialog" aria-modal="true" onMouseDown={(e) => e.stopPropagation()}>
+        <div className="min-h-[56px] px-4 py-3.5 border-b border-gray-200 flex items-center justify-between gap-3">
+          <div><h3 className="m-0 text-base font-semibold">实例诊断</h3><span className="block mt-0.5 text-xs text-gray-400">{instanceName}</span></div>
+          <button className="w-8 h-8 rounded-md border border-gray-200 bg-white text-gray-500 inline-flex items-center justify-center hover:bg-gray-50 transition-colors" onClick={onClose} aria-label="关闭" type="button"><X size={18} /></button>
+        </div>
+        <div className="min-h-0 overflow-auto p-4 grid gap-4">
+          {loading && <div className="text-center text-gray-400 py-8">正在采集诊断数据...</div>}
+          {error && <div className="border border-red-200 rounded-md px-3 py-2.5 bg-red-50 text-red-700 text-[13px]">{error}</div>}
+          {data && (
+            <>
+              <div className="grid gap-1">
+                <h4 className="text-[13px] font-semibold text-gray-700 m-0">Memory Doctor</h4>
+                <div className={`text-[13px] px-3 py-2 rounded-md border ${doctorOk ? 'border-green-200 bg-green-50 text-green-700' : 'border-amber-200 bg-amber-50 text-amber-700'}`}>
+                  {doctor || <span className="text-gray-400">无结果（Redis 版本可能不支持）</span>}
+                </div>
+              </div>
+              <div className="grid gap-1">
+                <h4 className="text-[13px] font-semibold text-gray-700 m-0">Slowlog（最近 20 条）</h4>
+                {data.slowlog ? (
+                  <pre className="text-[12px] bg-gray-50 border border-gray-200 rounded-md p-3 overflow-auto max-h-[200px] whitespace-pre-wrap m-0">{data.slowlog}</pre>
+                ) : (
+                  <span className="text-[13px] text-gray-400">无慢查询记录</span>
+                )}
+              </div>
+              <div className="grid gap-1">
+                <h4 className="text-[13px] font-semibold text-gray-700 m-0">INFO</h4>
+                <pre className="text-[12px] bg-gray-50 border border-gray-200 rounded-md p-3 overflow-auto max-h-[300px] whitespace-pre-wrap m-0">{data.info || '无数据'}</pre>
+              </div>
+              {data.timestamp && <div className="text-[11px] text-gray-400 text-right">采集时间: {data.timestamp}</div>}
+            </>
+          )}
+        </div>
+      </section>
+    </div>
+  );
+}
+
 export function ResizeModal({ instanceName, currentSpecs, requestFn, onClose }) {
   const [memory, setMemory] = useState(currentSpecs?.memory || '');
   const [cpus, setCpus] = useState(currentSpecs?.cpus || '');

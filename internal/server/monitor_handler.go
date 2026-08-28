@@ -43,8 +43,7 @@ func (s *Server) instanceDiagnose(c *gin.Context) {
 		fail(c, http.StatusBadGateway, err.Error())
 		return
 	}
-	var raw json.RawMessage = out
-	ok(c, raw)
+	ok(c, extractAgentData(out))
 }
 
 func (s *Server) instanceSlowlog(c *gin.Context) {

@@ -26,6 +26,7 @@ import {
   AccessModeModal,
   ConfigModal,
   ResizeModal,
+  DiagnoseModal,
   BackupListModal,
   DeleteConfirmModal,
   ConfirmPowerModal,
@@ -75,6 +76,7 @@ function AppShell() {
   const [bigkeysTarget, setBigkeysTarget] = useState(null);
   const [configTarget, setConfigTarget] = useState(null);
   const [resizeTarget, setResizeTarget] = useState(null);
+  const [diagnoseTarget, setDiagnoseTarget] = useState(null);
   const [accessModeTarget, setAccessModeTarget] = useState(null);
   const [createOpen, setCreateOpen] = useState(false);
   const [pendingAction, setPendingAction] = useState('');
@@ -344,6 +346,7 @@ function AppShell() {
                   onBigkeys={(item) => setBigkeysTarget(item.name)}
                   onConfig={(item) => setConfigTarget(item.name)}
                   onResize={(item) => setResizeTarget({ name: item.name, memory: getField(item, 'memory', 'Memory', ''), cpus: String(getField(item, 'cpus', 'CPUs', '') || ''), disk: getField(item, 'disk', 'Disk', '') })}
+                  onDiagnose={(item) => setDiagnoseTarget(item.name)}
                   onToggleAccessMode={toggleAccessMode}
                   onCreate={() => setCreateOpen(true)}
                   servers={servers}
@@ -374,6 +377,7 @@ function AppShell() {
       {bigkeysTarget && <BigkeysModal instanceName={bigkeysTarget} requestFn={request} onClose={() => setBigkeysTarget(null)} />}
       {configTarget && <ConfigModal instanceName={configTarget} requestFn={request} onClose={() => setConfigTarget(null)} />}
       {resizeTarget && <ResizeModal instanceName={resizeTarget.name} currentSpecs={{ memory: resizeTarget.memory, cpus: resizeTarget.cpus, disk: resizeTarget.disk }} requestFn={request} onClose={() => { setResizeTarget(null); refresh(); }} />}
+      {diagnoseTarget && <DiagnoseModal instanceName={diagnoseTarget} requestFn={request} onClose={() => setDiagnoseTarget(null)} />}
       {accessModeTarget && <AccessModeModal group={accessModeTarget} publicHost={serverInfo?.proxy_public_endpoint} sentinelPort={serverInfo?.proxy_sentinel_port} onConfirm={(mode) => toggleAccessMode(accessModeTarget, mode)} onClose={() => setAccessModeTarget(null)} />}
       {backupDetail && <BackupListModal detail={backupDetail} requestFn={request} onRefresh={refresh} onClose={() => setBackupDetail(null)} />}
       {confirmAction && (
