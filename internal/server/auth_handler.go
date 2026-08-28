@@ -16,6 +16,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"golang.org/x/crypto/bcrypt"
 
+	"gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/internal/audit"
 	"gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/internal/store"
 	"gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/pkg/apitypes"
 )
@@ -235,7 +236,7 @@ func (s *Server) authUserCreate(c *gin.Context) {
 		fail(c, http.StatusInternalServerError, "failed to create user")
 		return
 	}
-	s.audit.Log(store.AuditRecord{Operator: createdBy, Action: "user.create", Target: map[string]interface{}{"username": req.Username, "role": req.Role}})
+	s.audit.Log(store.AuditRecord{Operator: createdBy, Action: "user.create", Level: audit.LevelImportant, Result: "success", Target: map[string]interface{}{"username": req.Username, "role": req.Role}})
 	ok(c, gin.H{"username": req.Username, "role": req.Role})
 }
 
@@ -273,7 +274,7 @@ func (s *Server) authUserDelete(c *gin.Context) {
 		fail(c, http.StatusInternalServerError, "failed to delete user")
 		return
 	}
-	s.audit.Log(store.AuditRecord{Operator: currentUser, Action: "user.delete", Target: map[string]interface{}{"username": req.Username}})
+	s.audit.Log(store.AuditRecord{Operator: currentUser, Action: "user.delete", Level: audit.LevelCritical, Result: "success", Target: map[string]interface{}{"username": req.Username}})
 	ok(c, gin.H{"deleted": req.Username})
 }
 

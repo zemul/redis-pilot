@@ -439,7 +439,7 @@ func (s *Server) instanceCreate(c *gin.Context) {
 			s.log.Errorf("instance create: failed to mark %s as failed: %v", req.Name, markErr)
 		}
 		s.audit.Log(store.AuditRecord{Operator: operatorFrom(c), Action: "instance.create", Level: audit.LevelImportant, Result: "failed", Detail: err.Error(),
-			Target: map[string]interface{}{"instance": req.Name, "server": req.Server}})
+			Target: map[string]interface{}{"instance": req.Name, "group": groupName, "server": req.Server}})
 		fail(c, http.StatusInternalServerError, "agent create failed: "+err.Error())
 		return
 	}
@@ -578,7 +578,7 @@ func (s *Server) instanceDelete(c *gin.Context) {
 		Operator: operatorFrom(c),
 		Action:   "instance.delete", Level: audit.LevelCritical, Result: "success",
 		DurationMs: time.Since(start).Milliseconds(),
-		Target:     map[string]interface{}{"instance": req.Name, "server": inst.Server},
+		Target:     map[string]interface{}{"instance": req.Name, "group": inst.Group, "server": inst.Server},
 	})
 
 	s.log.Infof("instance deleted: %s", req.Name)
@@ -658,7 +658,7 @@ func (s *Server) instanceStop(c *gin.Context) {
 		Operator: operatorFrom(c),
 		Action:   "instance.stop", Level: audit.LevelImportant, Result: "success",
 		DurationMs: time.Since(start).Milliseconds(),
-		Target:     map[string]interface{}{"instance": req.Name, "server": inst.Server},
+		Target:     map[string]interface{}{"instance": req.Name, "group": inst.Group, "server": inst.Server},
 	})
 
 	s.syncSentinel()
@@ -744,7 +744,7 @@ func (s *Server) instanceConfig(c *gin.Context) {
 		Operator: operatorFrom(c),
 		Action:   "config.update", Level: audit.LevelImportant, Result: "success",
 		DurationMs: time.Since(start).Milliseconds(),
-		Target:     map[string]interface{}{"instance": req.Name, "server": inst.Server},
+		Target:     map[string]interface{}{"instance": req.Name, "group": inst.Group, "server": inst.Server},
 		Params:     toMap(req.ConfigOverrides),
 	})
 
@@ -1046,7 +1046,7 @@ func (s *Server) directFailover(c *gin.Context, start time.Time, name string) {
 		Operator: operatorFrom(c),
 		Action:   "topology.failover", Level: audit.LevelCritical, Result: "success",
 		DurationMs: time.Since(start).Milliseconds(),
-		Target:     map[string]interface{}{"instance": name, "server": inst.Server},
+		Target:     map[string]interface{}{"instance": name, "group": inst.Group, "server": inst.Server},
 	})
 
 	// 把新角色写进各实例的磁盘配置文件，避免容器重启后角色回退（与 Sentinel 路径一致）。
@@ -1232,7 +1232,7 @@ func (s *Server) instanceReplicate(c *gin.Context) {
 		Operator: operatorFrom(c),
 		Action:   "topology.replicate", Level: audit.LevelImportant, Result: "success",
 		DurationMs: time.Since(start).Milliseconds(),
-		Target:     map[string]interface{}{"instance": req.Name, "server": inst.Server},
+		Target:     map[string]interface{}{"instance": req.Name, "group": targetGroupName, "server": inst.Server},
 		Params:     map[string]interface{}{"replica_of": req.ReplicaOf},
 	})
 
@@ -1315,7 +1315,11 @@ func (s *Server) execBackup(name, operator string) (string, error) {
 		body["retention"] = inst.Backup.Retention
 	}
 
-	payload := operationTaskPayload{Instance: name, Server: inst.Server, Operator: operator}
+	source, trigger := "manual", "manual"
+	if operator == "system" {
+		source, trigger = "scheduler", "scheduled"
+	}
+	payload := operationTaskPayload{Instance: name, Server: inst.Server, Group: inst.Group, Operator: operator, Source: source, Trigger: trigger}
 	if err := s.db.CreateTask(store.Task{ID: taskID, Kind: "backup.create", Status: "pending", Payload: marshalTaskPayload(payload)}); err != nil {
 		return "", err
 	}
@@ -1331,9 +1335,10 @@ func (s *Server) execBackup(name, operator string) (string, error) {
 
 	s.audit.Log(store.AuditRecord{
 		Operator: operator,
-		Action:   "backup.create", Level: audit.LevelNormal, Result: "accepted",
+		Source:   source, Trigger: trigger, CorrelationID: taskID,
+		Action: "backup.create", Level: audit.LevelNormal, Result: "accepted",
 		DurationMs: time.Since(start).Milliseconds(),
-		Target:     map[string]interface{}{"instance": name, "server": inst.Server, "task_id": taskID},
+		Target:     map[string]interface{}{"instance": name, "group": inst.Group, "server": inst.Server, "task_id": taskID},
 	})
 	return taskID, nil
 }
@@ -1374,7 +1379,7 @@ func (s *Server) backupRestore(c *gin.Context) {
 	}
 	operator := operatorFrom(c)
 	payload := operationTaskPayload{
-		Instance: req.Name, Server: inst.Server, Operator: operator, BackupTs: req.BackupTs,
+		Instance: req.Name, Server: inst.Server, Group: inst.Group, Operator: operator, Source: "manual", Trigger: "manual", BackupTs: req.BackupTs,
 		LockSessionID: taskID, LockInstances: state.InstanceGroup(instances, req.Name),
 	}
 	if err := s.db.CreateTask(store.Task{ID: taskID, Kind: "backup.restore", Status: "pending", Payload: marshalTaskPayload(payload)}); err != nil {
@@ -1400,9 +1405,10 @@ func (s *Server) backupRestore(c *gin.Context) {
 
 	s.audit.Log(store.AuditRecord{
 		Operator: operator,
-		Action:   "backup.restore", Level: audit.LevelCritical, Result: "accepted",
+		Source:   "manual", Trigger: "manual", CorrelationID: taskID,
+		Action: "backup.restore", Level: audit.LevelCritical, Result: "accepted",
 		DurationMs: time.Since(start).Milliseconds(),
-		Target:     map[string]interface{}{"instance": req.Name, "server": inst.Server, "task_id": taskID},
+		Target:     map[string]interface{}{"instance": req.Name, "group": inst.Group, "server": inst.Server, "task_id": taskID},
 		Params:     map[string]interface{}{"backup_ts": req.BackupTs},
 	})
 
@@ -1502,6 +1508,8 @@ func (s *Server) backupSetSchedule(c *gin.Context) {
 		fail(c, http.StatusBadRequest, err.Error())
 		return
 	}
+	var groupName, oldSchedule, newSchedule string
+	var oldRetention, newRetention int
 	err := s.db.WithInstances(func(instances *apitypes.InstancesState) error {
 		inst, ok2 := instances.Instances[req.Name]
 		if !ok2 {
@@ -1510,10 +1518,13 @@ func (s *Server) backupSetSchedule(c *gin.Context) {
 		if inst.Backup == nil {
 			inst.Backup = &apitypes.BackupConfig{Retention: 7}
 		}
+		groupName = inst.Group
+		oldSchedule, oldRetention = inst.Backup.Schedule, inst.Backup.Retention
 		inst.Backup.Schedule = req.Schedule
 		if req.Retention > 0 {
 			inst.Backup.Retention = req.Retention
 		}
+		newSchedule, newRetention = inst.Backup.Schedule, inst.Backup.Retention
 		return nil
 	})
 	if err != nil {
@@ -1524,6 +1535,12 @@ func (s *Server) backupSetSchedule(c *gin.Context) {
 		}
 		return
 	}
+	s.audit.Log(store.AuditRecord{
+		Operator: operatorFrom(c), Action: "backup.schedule", Level: audit.LevelImportant, Result: "success",
+		Target: map[string]interface{}{"instance": req.Name, "group": groupName},
+		Before: map[string]interface{}{"schedule": oldSchedule, "retention": oldRetention},
+		After:  map[string]interface{}{"schedule": newSchedule, "retention": newRetention},
+	})
 	ok(c, nil)
 }
 
@@ -1608,7 +1625,7 @@ func (s *Server) instanceSimpleOp(c *gin.Context, newStatus, agentPath, auditAct
 		Operator: operatorFrom(c),
 		Action:   auditAction, Level: level, Result: "success",
 		DurationMs: time.Since(start).Milliseconds(),
-		Target:     map[string]interface{}{"instance": req.Name, "server": inst.Server},
+		Target:     map[string]interface{}{"instance": req.Name, "group": inst.Group, "server": inst.Server},
 	})
 
 	ok(c, nil)

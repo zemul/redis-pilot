@@ -84,11 +84,11 @@ func (s *Server) pushConfigRewrite(
 		"config_overrides":    inst.ConfigOverrides,
 		"rewrite_config_only": true,
 		// 实例无密码：不下发给 Agent（详见 instanceCreate）
-		"password":            "",
-		"memory":              inst.Memory,
-		"engine_version":      group.EngineVersion,
-		"replica_of":          replicaOfAddr,
-		"port":                inst.Port,
+		"password":       "",
+		"memory":         inst.Memory,
+		"engine_version": group.EngineVersion,
+		"replica_of":     replicaOfAddr,
+		"port":           inst.Port,
 	})
 	return err
 }
@@ -150,6 +150,7 @@ func (s *Server) persistGroupRolesLocked(groupName string) {
 type roleDrift struct {
 	Instance   string
 	Server     string
+	Group      string
 	Configured string // 磁盘配置文件里的 replicaof（ip:port，空表示 master）
 	Expected   string // Server 记录对应的 replicaof（ip:port，空表示 master）
 }
@@ -190,6 +191,7 @@ func detectRoleDrift(
 			drifts = append(drifts, roleDrift{
 				Instance:   name,
 				Server:     serverName,
+				Group:      inst.Group,
 				Configured: configured,
 				Expected:   expected,
 			})
@@ -271,10 +273,12 @@ func (s *Server) reconcileRoleDrift(drifts []roleDrift) {
 func (s *Server) auditRoleDrift(d roleDrift, result, detail string) {
 	s.audit.Log(store.AuditRecord{
 		Operator: "system",
+		Source:   "reconcile",
+		Trigger:  "role_drift",
 		Action:   "reconcile.role_drift",
 		Level:    audit.LevelImportant,
 		Result:   result,
-		Target:   map[string]interface{}{"instance": d.Instance, "server": d.Server},
+		Target:   map[string]interface{}{"instance": d.Instance, "group": d.Group, "server": d.Server},
 		Params: map[string]interface{}{
 			"configured_replica_of": d.Configured,
 			"expected_replica_of":   d.Expected,

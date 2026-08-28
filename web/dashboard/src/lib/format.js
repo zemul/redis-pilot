@@ -70,6 +70,7 @@ export function auditActionLabel(action) {
     'instance.delete': '删除实例',
     'instance.start': '启动实例',
     'instance.stop': '停止实例',
+    'instance.access_mode': '切换访问模式',
     'config.update': '更新配置',
     'topology.failover': '故障转移',
     'topology.replicate': '建立复制',
@@ -78,6 +79,9 @@ export function auditActionLabel(action) {
     'node.add': '注册节点',
     'node.remove': '移除节点',
     'node.update': '更新节点',
+    'user.create': '创建用户',
+    'user.delete': '删除用户',
+    'backup.schedule': '修改备份策略',
     'reconcile': '状态协调',
     'reconcile.replica_drift': '副本漂移修复',
     'reconcile.role_drift': '角色漂移修复',
@@ -93,12 +97,30 @@ export function auditLevelLabel(level) {
 export function auditTargetDisplay(target) {
   if (!target) return '-';
   if (typeof target === 'string') return target;
-  const group = target.group || target.Group || target.instance_group;
-  const instance = target.instance || target.Instance || target.name || target.Name || target.new_master;
+  const group = target.group_name || target.group || target.Group || target.instance_group;
+  const instance = target.instance_name || target.instance || target.Instance || target.name || target.Name || target.new_master;
   if (group && instance) return `${group} / ${instance}`;
   if (instance) return instance;
   if (group) return group;
+  if (target.node) return target.node;
+  if (target.username) return target.username;
+  if (target.object_id) return target.object_id;
   return '-';
+}
+
+export function auditSourceLabel(source, actorType) {
+  const labels = { manual: '人工操作', dashboard: '控制台', cli: 'CLI', api: 'API', ai: 'AI 助手', sentinel: 'Sentinel', reconcile: '状态协调', scheduler: '定时任务', system: '系统' };
+  return labels[source] || (actorType === 'system' ? '系统' : source) || '-';
+}
+
+export function auditTriggerLabel(trigger) {
+  const labels = { manual: '手动操作', automatic: '自动处理', instance_down: '实例不可达', role_drift: '角色漂移', replica_drift: '复制偏移', scheduled: '定时策略', sentinel_event: 'Sentinel 事件' };
+  return labels[trigger] || trigger || '-';
+}
+
+export function auditPhaseLabel(phase) {
+  const labels = { requested: '已请求', accepted: '已受理', running: '执行中', completed: '已完成', failed: '失败', skipped: '已跳过' };
+  return labels[phase] || phase || '-';
 }
 
 export function formatAuditDate(value) {
@@ -112,8 +134,13 @@ export function auditQuery(filters, page = 1, pageSize = 30) {
   if (filters.to) params.set('to', formatAuditDate(filters.to));
   if (filters.group) params.set('group', filters.group.trim());
   if (filters.instance) params.set('instance', filters.instance.trim());
+  if (filters.q) params.set('q', filters.q.trim());
+  if (filters.operator) params.set('operator', filters.operator.trim());
+  if (filters.actor_type) params.set('actor_type', filters.actor_type);
+  if (filters.source) params.set('source', filters.source);
   if (filters.level) params.set('level', filters.level);
   if (filters.action) params.set('action', filters.action.trim());
+  if (filters.result) params.set('result', filters.result);
   params.set('page', String(page));
   params.set('page_size', String(pageSize));
   return `/audit/query?${params.toString()}`;
@@ -177,6 +204,9 @@ export function auditResultMeta(result) {
     alert: '告警',
     updated: '已更新',
     skipped: '已跳过',
+    accepted: '已受理',
+    running: '执行中',
+    interrupted: '已中断',
   };
   const tone = {
     success: 'ok',
@@ -184,6 +214,9 @@ export function auditResultMeta(result) {
     updated: 'ok',
     alert: 'warn',
     skipped: 'warn',
+    accepted: 'warn',
+    running: 'warn',
+    interrupted: 'bad',
     failed: 'bad',
   };
   return { label: labels[result] || result, tone: tone[result] || 'neutral' };

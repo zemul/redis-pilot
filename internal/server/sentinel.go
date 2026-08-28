@@ -15,8 +15,8 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/internal/audit"
-	"gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/internal/store"
 	"gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/internal/state"
+	"gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/internal/store"
 	"gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/pkg/apitypes"
 )
 
@@ -601,11 +601,12 @@ func (s *Server) handleSentinelFailover(group, newMasterAddr, source, operator s
 	if err != nil {
 		s.audit.Log(store.AuditRecord{
 			Operator: operator,
-			Action:   "topology.failover", Level: audit.LevelCritical, Result: "failed",
+			Source:   "sentinel", Trigger: sentinelAuditTrigger(source),
+			Action: "topology.failover", Level: audit.LevelCritical, Result: "failed",
 			DurationMs: time.Since(start).Milliseconds(),
-			Target:   map[string]interface{}{"instance_group": group, "new_master": newMasterAddr},
-			Params:   map[string]interface{}{"source": source},
-			Detail:   err.Error(),
+			Target:     map[string]interface{}{"instance_group": group, "new_master": newMasterAddr},
+			Params:     map[string]interface{}{"source": source},
+			Detail:     err.Error(),
 		})
 		return err
 	}
@@ -617,11 +618,12 @@ func (s *Server) handleSentinelFailover(group, newMasterAddr, source, operator s
 	if err != nil {
 		s.audit.Log(store.AuditRecord{
 			Operator: operator,
-			Action:   "topology.failover", Level: audit.LevelCritical, Result: "failed",
+			Source:   "sentinel", Trigger: sentinelAuditTrigger(source),
+			Action: "topology.failover", Level: audit.LevelCritical, Result: "failed",
 			DurationMs: time.Since(start).Milliseconds(),
-			Target:   map[string]interface{}{"instance_group": group, "new_master": newMasterAddr},
-			Params:   map[string]interface{}{"source": source},
-			Detail:   err.Error(),
+			Target:     map[string]interface{}{"instance_group": group, "new_master": newMasterAddr},
+			Params:     map[string]interface{}{"source": source},
+			Detail:     err.Error(),
 		})
 		return err
 	}
@@ -696,11 +698,12 @@ func (s *Server) handleSentinelFailover(group, newMasterAddr, source, operator s
 	if err != nil {
 		s.audit.Log(store.AuditRecord{
 			Operator: operator,
-			Action:   "topology.failover", Level: audit.LevelCritical, Result: "failed",
+			Source:   "sentinel", Trigger: sentinelAuditTrigger(source),
+			Action: "topology.failover", Level: audit.LevelCritical, Result: "failed",
 			DurationMs: time.Since(start).Milliseconds(),
-			Target:   map[string]interface{}{"instance_group": group, "new_master": newMasterAddr},
-			Params:   map[string]interface{}{"source": source},
-			Detail:   err.Error(),
+			Target:     map[string]interface{}{"instance_group": group, "new_master": newMasterAddr},
+			Params:     map[string]interface{}{"source": source},
+			Detail:     err.Error(),
 		})
 		return err
 	}
@@ -716,7 +719,8 @@ func (s *Server) handleSentinelFailover(group, newMasterAddr, source, operator s
 	detail := "sentinel failover synchronized"
 	s.audit.Log(store.AuditRecord{
 		Operator: operator,
-		Action:   "topology.failover", Level: audit.LevelCritical, Result: result,
+		Source:   "sentinel", Trigger: sentinelAuditTrigger(source),
+		Action: "topology.failover", Level: audit.LevelCritical, Result: result,
 		DurationMs: time.Since(start).Milliseconds(),
 		Target: map[string]interface{}{
 			"instance_group":    group,
@@ -737,6 +741,19 @@ func (s *Server) handleSentinelFailover(group, newMasterAddr, source, operator s
 		s.log.Errorf("sentinel sync failed: %v", err)
 	}
 	return nil
+}
+
+func sentinelAuditTrigger(source string) string {
+	switch source {
+	case "manual":
+		return "manual"
+	case "watch":
+		return "instance_down"
+	case "event":
+		return "sentinel_event"
+	default:
+		return "automatic"
+	}
 }
 
 func findInstanceByAddress(node *apitypes.NodeState, instances *apitypes.InstancesState, addr string) string {

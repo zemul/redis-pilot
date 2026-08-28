@@ -229,6 +229,8 @@ func (s *Server) sentinelAgreesOnMaster(
 func (s *Server) auditReplicaDrift(d replicaDrift, result, detail string) {
 	s.audit.Log(store.AuditRecord{
 		Operator: "system",
+		Source:   "reconcile",
+		Trigger:  "replica_drift",
 		Action:   "reconcile.replica_drift",
 		Level:    audit.LevelCritical,
 		Result:   result,

@@ -11,28 +11,45 @@ import (
 
 // AuditRecord 审计日志条目。
 type AuditRecord struct {
-	ID         string                 `json:"id"`
-	Timestamp  string                 `json:"timestamp"`
-	Operator   string                 `json:"operator"`
-	Action     string                 `json:"action"`
-	Level      string                 `json:"level"`
-	Target     map[string]interface{} `json:"target,omitempty"`
-	Params     map[string]interface{} `json:"params,omitempty"`
-	Result     string                 `json:"result"`
-	DurationMs int64                  `json:"duration_ms,omitempty"`
-	Detail     string                 `json:"detail,omitempty"`
+	ID            string                 `json:"id"`
+	Timestamp     string                 `json:"timestamp"`
+	TimestampMs   int64                  `json:"timestamp_ms"`
+	Operator      string                 `json:"operator"`
+	ActorType     string                 `json:"actor_type"`
+	Source        string                 `json:"source"`
+	Trigger       string                 `json:"trigger"`
+	Action        string                 `json:"action"`
+	Phase         string                 `json:"phase"`
+	Level         string                 `json:"level"`
+	ObjectType    string                 `json:"object_type"`
+	ObjectID      string                 `json:"object_id"`
+	GroupName     string                 `json:"group_name,omitempty"`
+	InstanceName  string                 `json:"instance_name,omitempty"`
+	CorrelationID string                 `json:"correlation_id,omitempty"`
+	Target        map[string]interface{} `json:"target,omitempty"`
+	Params        map[string]interface{} `json:"params,omitempty"`
+	Before        map[string]interface{} `json:"before,omitempty"`
+	After         map[string]interface{} `json:"after,omitempty"`
+	Result        string                 `json:"result"`
+	DurationMs    int64                  `json:"duration_ms,omitempty"`
+	Detail        string                 `json:"detail,omitempty"`
 }
 
 // AuditFilter 查询条件。
 type AuditFilter struct {
-	From     string // YYYYMMDD
-	To       string // YYYYMMDD
-	Group    string
-	Instance string
-	Level    string
-	Action   string
-	Limit    int
-	Offset   int
+	From      string // YYYYMMDD
+	To        string // YYYYMMDD
+	Group     string
+	Instance  string
+	Operator  string
+	ActorType string
+	Source    string
+	Level     string
+	Action    string
+	Result    string
+	Query     string
+	Limit     int
+	Offset    int
 }
 
 // InsertAudit 写入一条审计记录。
@@ -49,13 +66,18 @@ func (d *DB) InsertAudit(r AuditRecord) error {
 
 	targetJSON, _ := json.Marshal(r.Target)
 	paramsJSON, _ := json.Marshal(r.Params)
+	beforeJSON, _ := json.Marshal(r.Before)
+	afterJSON, _ := json.Marshal(r.After)
 
 	_, err := d.sql.Exec(`
-		INSERT INTO audit_log(id, ts, date, operator, action, level, target, params, result, duration_ms, detail)
-		VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
-		r.ID, r.Timestamp, date,
-		r.Operator, r.Action, r.Level,
-		string(targetJSON), string(paramsJSON),
+		INSERT INTO audit_log(id, ts, timestamp_ms, date, operator, actor_type, source, trigger,
+			action, phase, level, object_type, object_id, group_name, instance_name, correlation_id,
+			target, params, before_state, after_state, result, duration_ms, detail)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		r.ID, r.Timestamp, r.TimestampMs, date,
+		r.Operator, r.ActorType, r.Source, r.Trigger,
+		r.Action, r.Phase, r.Level, r.ObjectType, r.ObjectID, r.GroupName, r.InstanceName, r.CorrelationID,
+		string(targetJSON), string(paramsJSON), string(beforeJSON), string(afterJSON),
 		r.Result, r.DurationMs, r.Detail,
 	)
 	return err
@@ -87,13 +109,33 @@ func (d *DB) QueryAudit(f AuditFilter) ([]AuditRecord, int, error) {
 		args = append(args, f.Action)
 	}
 	if f.Group != "" {
-		// target 字段是 JSON，用 json_extract 查询
-		where = append(where, "json_extract(target, '$.group') = ?")
+		where = append(where, "group_name = ?")
 		args = append(args, f.Group)
 	}
 	if f.Instance != "" {
-		where = append(where, "json_extract(target, '$.instance') = ?")
+		where = append(where, "instance_name = ?")
 		args = append(args, f.Instance)
+	}
+	if f.Operator != "" {
+		where = append(where, "operator = ?")
+		args = append(args, f.Operator)
+	}
+	if f.ActorType != "" {
+		where = append(where, "actor_type = ?")
+		args = append(args, f.ActorType)
+	}
+	if f.Source != "" {
+		where = append(where, "source = ?")
+		args = append(args, f.Source)
+	}
+	if f.Result != "" {
+		where = append(where, "result = ?")
+		args = append(args, f.Result)
+	}
+	if f.Query != "" {
+		where = append(where, "(object_id LIKE ? OR group_name LIKE ? OR instance_name LIKE ? OR operator LIKE ?)")
+		like := "%" + f.Query + "%"
+		args = append(args, like, like, like, like)
 	}
 
 	whereCl := strings.Join(where, " AND ")
@@ -106,10 +148,12 @@ func (d *DB) QueryAudit(f AuditFilter) ([]AuditRecord, int, error) {
 	}
 
 	query := fmt.Sprintf(`
-		SELECT id, ts, operator, action, level, target, params, result, duration_ms, detail
+		SELECT id, ts, timestamp_ms, operator, actor_type, source, trigger, action, phase, level,
+			object_type, object_id, group_name, instance_name, correlation_id,
+			target, params, before_state, after_state, result, duration_ms, detail
 		FROM audit_log
 		WHERE %s
-		ORDER BY ts DESC
+		ORDER BY timestamp_ms DESC, ts DESC, id DESC
 		LIMIT ? OFFSET ?`, whereCl)
 	args = append(args, f.Limit, f.Offset)
 
@@ -122,16 +166,19 @@ func (d *DB) QueryAudit(f AuditFilter) ([]AuditRecord, int, error) {
 	var results []AuditRecord
 	for rows.Next() {
 		var r AuditRecord
-		var targetJSON, paramsJSON string
+		var targetJSON, paramsJSON, beforeJSON, afterJSON string
 		if err := rows.Scan(
-			&r.ID, &r.Timestamp, &r.Operator, &r.Action, &r.Level,
-			&targetJSON, &paramsJSON,
+			&r.ID, &r.Timestamp, &r.TimestampMs, &r.Operator, &r.ActorType, &r.Source, &r.Trigger,
+			&r.Action, &r.Phase, &r.Level, &r.ObjectType, &r.ObjectID, &r.GroupName, &r.InstanceName, &r.CorrelationID,
+			&targetJSON, &paramsJSON, &beforeJSON, &afterJSON,
 			&r.Result, &r.DurationMs, &r.Detail,
 		); err != nil {
 			return nil, 0, err
 		}
 		json.Unmarshal([]byte(targetJSON), &r.Target) //nolint:errcheck
 		json.Unmarshal([]byte(paramsJSON), &r.Params) //nolint:errcheck
+		json.Unmarshal([]byte(beforeJSON), &r.Before) //nolint:errcheck
+		json.Unmarshal([]byte(afterJSON), &r.After)   //nolint:errcheck
 		results = append(results, r)
 	}
 	return results, total, rows.Err()

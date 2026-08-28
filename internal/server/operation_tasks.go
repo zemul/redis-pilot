@@ -15,7 +15,10 @@ import (
 type operationTaskPayload struct {
 	Instance      string   `json:"instance"`
 	Server        string   `json:"server"`
+	Group         string   `json:"group,omitempty"`
 	Operator      string   `json:"operator"`
+	Source        string   `json:"source,omitempty"`
+	Trigger       string   `json:"trigger,omitempty"`
 	BackupTs      string   `json:"backup_ts,omitempty"`
 	LockSessionID string   `json:"lock_session_id,omitempty"`
 	LockInstances []string `json:"lock_instances,omitempty"`
@@ -124,9 +127,10 @@ func (s *Server) finishOperationTask(task store.Task, p operationTaskPayload, st
 	// while a real audit failure keeps the task active for another attempt.
 	auditErr := s.audit.Log(store.AuditRecord{
 		ID:       "audit-task-" + task.ID,
-		Operator: p.Operator, Action: task.Kind, Level: level, Result: status,
+		Operator: p.Operator, Source: p.Source, Trigger: p.Trigger,
+		Action: task.Kind, Level: level, Result: status, CorrelationID: task.ID,
 		DurationMs: time.Since(started).Milliseconds(),
-		Target:     map[string]interface{}{"instance": p.Instance, "server": p.Server, "task_id": task.ID},
+		Target:     map[string]interface{}{"instance": p.Instance, "group": p.Group, "server": p.Server, "task_id": task.ID},
 		Params:     params, Detail: errMsg,
 	})
 	if auditErr != nil && !strings.Contains(auditErr.Error(), "UNIQUE constraint failed") {

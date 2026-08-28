@@ -204,12 +204,24 @@ func (d *DB) migrate() error {
 		`CREATE TABLE IF NOT EXISTS audit_log (
 			id           TEXT PRIMARY KEY,
 			ts           TEXT NOT NULL,          -- RFC3339
+			timestamp_ms INTEGER NOT NULL DEFAULT 0,
 			date         TEXT NOT NULL,          -- YYYYMMDD，方便按日查询
 			operator     TEXT NOT NULL DEFAULT '',
+			actor_type   TEXT NOT NULL DEFAULT 'system',
+			source       TEXT NOT NULL DEFAULT 'system',
+			trigger      TEXT NOT NULL DEFAULT 'automatic',
 			action       TEXT NOT NULL DEFAULT '',
+			phase        TEXT NOT NULL DEFAULT 'completed',
 			level        TEXT NOT NULL DEFAULT 'normal',
+			object_type  TEXT NOT NULL DEFAULT 'system',
+			object_id    TEXT NOT NULL DEFAULT 'redis-pilot',
+			group_name   TEXT NOT NULL DEFAULT '',
+			instance_name TEXT NOT NULL DEFAULT '',
+			correlation_id TEXT NOT NULL DEFAULT '',
 			target       TEXT NOT NULL DEFAULT '{}', -- JSON
 			params       TEXT NOT NULL DEFAULT '{}', -- JSON
+			before_state TEXT NOT NULL DEFAULT '{}', -- JSON
+			after_state  TEXT NOT NULL DEFAULT '{}', -- JSON
 			result       TEXT NOT NULL DEFAULT '',
 			duration_ms  INTEGER NOT NULL DEFAULT 0,
 			detail       TEXT NOT NULL DEFAULT ''
@@ -330,6 +342,18 @@ func (d *DB) migrate() error {
 		{
 			sql: `ALTER TABLE user_tokens ADD COLUMN description TEXT NOT NULL DEFAULT ''`,
 		},
+		{sql: `ALTER TABLE audit_log ADD COLUMN timestamp_ms INTEGER NOT NULL DEFAULT 0`},
+		{sql: `ALTER TABLE audit_log ADD COLUMN actor_type TEXT NOT NULL DEFAULT 'system'`},
+		{sql: `ALTER TABLE audit_log ADD COLUMN source TEXT NOT NULL DEFAULT 'system'`},
+		{sql: `ALTER TABLE audit_log ADD COLUMN trigger TEXT NOT NULL DEFAULT 'automatic'`},
+		{sql: `ALTER TABLE audit_log ADD COLUMN phase TEXT NOT NULL DEFAULT 'completed'`},
+		{sql: `ALTER TABLE audit_log ADD COLUMN object_type TEXT NOT NULL DEFAULT 'system'`},
+		{sql: `ALTER TABLE audit_log ADD COLUMN object_id TEXT NOT NULL DEFAULT 'redis-pilot'`},
+		{sql: `ALTER TABLE audit_log ADD COLUMN group_name TEXT NOT NULL DEFAULT ''`},
+		{sql: `ALTER TABLE audit_log ADD COLUMN instance_name TEXT NOT NULL DEFAULT ''`},
+		{sql: `ALTER TABLE audit_log ADD COLUMN correlation_id TEXT NOT NULL DEFAULT ''`},
+		{sql: `ALTER TABLE audit_log ADD COLUMN before_state TEXT NOT NULL DEFAULT '{}'`},
+		{sql: `ALTER TABLE audit_log ADD COLUMN after_state TEXT NOT NULL DEFAULT '{}'`},
 	}
 	for _, m := range alterMigrations {
 		if _, err := tx.Exec(m.sql); err != nil {
@@ -348,6 +372,13 @@ func (d *DB) migrate() error {
 	// ALTER TABLE 之后才能安全创建依赖新列的索引
 	postAlterIndexes := []string{
 		`CREATE INDEX IF NOT EXISTS idx_instances_observed_status ON instances(observed_status)`,
+		`CREATE INDEX IF NOT EXISTS idx_audit_timestamp_ms ON audit_log(timestamp_ms)`,
+		`CREATE INDEX IF NOT EXISTS idx_audit_actor_type ON audit_log(actor_type)`,
+		`CREATE INDEX IF NOT EXISTS idx_audit_source ON audit_log(source)`,
+		`CREATE INDEX IF NOT EXISTS idx_audit_result ON audit_log(result)`,
+		`CREATE INDEX IF NOT EXISTS idx_audit_group_name ON audit_log(group_name)`,
+		`CREATE INDEX IF NOT EXISTS idx_audit_instance_name ON audit_log(instance_name)`,
+		`CREATE INDEX IF NOT EXISTS idx_audit_correlation_id ON audit_log(correlation_id)`,
 	}
 	for _, s := range postAlterIndexes {
 		if _, err := tx.Exec(s); err != nil {

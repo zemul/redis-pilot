@@ -19,14 +19,19 @@ func (s *Server) auditQuery(c *gin.Context) {
 	}
 
 	f := store.AuditFilter{
-		From:     c.Query("from"),
-		To:       c.Query("to"),
-		Group:    c.Query("group"),
-		Instance: c.Query("instance"),
-		Level:    c.Query("level"),
-		Action:   c.Query("action"),
-		Limit:    pageSize,
-		Offset:   (page - 1) * pageSize,
+		From:      c.Query("from"),
+		To:        c.Query("to"),
+		Group:     c.Query("group"),
+		Instance:  c.Query("instance"),
+		Operator:  c.Query("operator"),
+		ActorType: c.Query("actor_type"),
+		Source:    c.Query("source"),
+		Level:     c.Query("level"),
+		Action:    c.Query("action"),
+		Result:    c.Query("result"),
+		Query:     c.Query("q"),
+		Limit:     pageSize,
+		Offset:    (page - 1) * pageSize,
 	}
 	records, total, err := s.audit.Query(f)
 	if err != nil {

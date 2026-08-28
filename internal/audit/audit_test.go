@@ -114,3 +114,50 @@ func TestQueryFilterByGroup(t *testing.T) {
 		t.Fatalf("expected [r1], got %v", records)
 	}
 }
+
+func TestLogNormalizesAuditDimensions(t *testing.T) {
+	logger := newTestLogger(t)
+	if err := logger.Log(store.AuditRecord{
+		ID:       "normalized",
+		Operator: "system",
+		Action:   "reconcile.replica_drift",
+		Target: map[string]interface{}{
+			"instance": "order-replica-1", "instance_group": "order",
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	records, _, err := logger.Query(store.AuditFilter{Group: "order", ActorType: "system", Source: "reconcile", Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("expected one normalized record, got %+v", records)
+	}
+	r := records[0]
+	if r.Level != LevelNormal || r.Result != "success" || r.Phase != "completed" {
+		t.Fatalf("defaults not normalized: %+v", r)
+	}
+	if r.GroupName != "order" || r.InstanceName != "order-replica-1" || r.ObjectType != "instance" || r.ObjectID != "order-replica-1" {
+		t.Fatalf("target not normalized: %+v", r)
+	}
+}
+
+func TestQueryAuditByFreeTextAndResult(t *testing.T) {
+	logger := newTestLogger(t)
+	for _, r := range []store.AuditRecord{
+		{ID: "ok", Operator: "admin", Action: "instance.stop", Result: "success", Target: map[string]interface{}{"instance": "cache-1", "group": "cache"}},
+		{ID: "failed", Operator: "system", Action: "topology.failover", Result: "failed", Target: map[string]interface{}{"instance_group": "order"}},
+	} {
+		if err := logger.Log(r); err != nil {
+			t.Fatal(err)
+		}
+	}
+	records, _, err := logger.Query(store.AuditFilter{Query: "order", Result: "failed", Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 1 || records[0].ID != "failed" {
+		t.Fatalf("expected failed order record, got %+v", records)
+	}
+}

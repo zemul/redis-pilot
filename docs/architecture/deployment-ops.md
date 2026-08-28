@@ -162,25 +162,35 @@ podman run -d \
 {
   "id": "audit-20260427-0001",
   "timestamp": "2026-04-27T10:30:00+08:00",
-  "operator": "gal-agent",
-  "action": "instance.create",
+  "actor_type": "system",
+  "operator": "sentinel",
+  "source": "sentinel",
+  "trigger": "instance_down",
+  "action": "topology.failover",
+  "phase": "completed",
+  "level": "critical",
+  "object_type": "group",
+  "object_id": "order",
+  "group_name": "order",
+  "instance_name": "order-replica-1",
+  "correlation_id": "failover-order-20260427",
   "target": {
-    "instance_group": "order",
-    "engine": "kvrocks",
-    "role": "master",
-    "server": "server-a",
-    "port": 6379
+    "group": "order",
+    "new_master": "order-replica-1"
   },
-  "params": {
-    "memory": "4Gi",
-    "cpus": 2,
-    "category": "persistent"
-  },
+  "before": { "current_master": "order-master" },
+  "after": { "current_master": "order-replica-1" },
   "result": "success",
-  "duration_ms": 3200,
-  "detail": "容器 order-master 创建成功，端口 6379 已就绪"
+  "duration_ms": 4200,
+  "detail": "Sentinel failover synchronized"
 }
 ```
+
+字段约束：`actor_type` 区分 `user` / `ai` / `system`；`source` 表示控制台、AI、Sentinel、
+状态协调器或定时任务等执行入口；`trigger` 记录手动操作、实例不可达、角色漂移、复制偏移
+或定时策略等原因。高频查询使用 `object_id` / `group_name` / `instance_name` 独立列，
+`target` / `params` 只承载补充上下文。异步操作用同一个 `correlation_id` 追加 accepted 与终态记录，
+不修改已有审计行。
 
 #### 8.4.3 操作类型清单
 
@@ -198,6 +208,7 @@ podman run -d \
 | | `config.override` | 运行时配置覆盖 | 重要 |
 | 备份恢复 | `backup.create` | 创建备份 | 普通 |
 | | `backup.restore` | 恢复备份 | **关键** |
+| | `backup.schedule` | 修改备份策略 | 重要 |
 | 服务器管理 | `server.register` | 注册服务器 | 重要 |
 | | `server.drain` | 服务器排空 | **关键** |
 
@@ -219,6 +230,11 @@ podman run -d \
 | "order 集群的变更" | `redis-audit --target order` | 按实例组过滤 |
 | "所有关键操作" | `redis-audit --level critical` | 按审计级别过滤 |
 | "某时间段的操作" | `redis-audit --from 2026-04-25 --to 2026-04-27` | 按时间范围 |
+
+Dashboard 的操作审计页提供“全部变更 / 人工操作 / 系统动作 / 失败操作 / 关键操作”快捷分类。
+主表只展示来源、操作者、动作、目标、触发原因、级别与结果；原始参数、错误详情、变更前后状态
+和关联任务 ID 在详情抽屉中展示。异常被发现属于告警事件，系统因此执行的修复、切换或配置下发
+属于审计动作；两者通过关联 ID 串联，不把周期性健康检查写入审计。
 
 ---
 

@@ -175,6 +175,10 @@ GET /observability/slowlogs/query?group=order&instance=order-0&command=HGETALL&f
 恢复失败、故障转移冲突等平台任务告警由 Server 直接产生。两者统一写入 `alert_events`，
 供 H5 展示产生、持续、确认和恢复状态。
 
+告警/事件与操作审计保持清晰边界：实例不可达、复制偏移等“事实被发现”写入告警事件；
+Sentinel 故障转移、reconcile 重新下发复制配置等“平台采取了状态变更动作”写入 `audit_log`。
+同一处置链路通过 `correlation_id` 关联，周期性健康检查正常结果不进入审计，避免重复噪声。
+
 P1 可先交付平台内置规则，不提供任意 PromQL 编辑器。首批规则包括：
 
 - 实例不可达
@@ -219,4 +223,3 @@ observability:
 - 慢日志采集失败：保留游标并记录采集错误；恢复后继续增量采集，但 Redis 环形缓冲区已覆盖的
   记录无法恢复，应产生可观测的丢失风险事件。
 - `pilot.db` 写入失败：慢日志和事件写入必须显式失败并计入 Server 自身指标，不能静默丢弃。
-
