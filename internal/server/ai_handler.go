@@ -274,21 +274,22 @@ func (s *Server) aiExecute(c *gin.Context) {
 		return
 	}
 	var a struct {
-		Name          string  `json:"name"`
-		Key           string  `json:"key"`
-		Value         string  `json:"value"`
-		Group         string  `json:"group"`
-		Category      string  `json:"category"`
-		Engine        string  `json:"engine"`
-		EngineVersion string  `json:"engine_version"`
-		Type          string  `json:"type"`
-		Memory        string  `json:"memory"`
-		CPUs          float64 `json:"cpus"`
-		Disk          string  `json:"disk"`
-		AccessMode    string  `json:"access_mode"`
-		ReplicaOf     string  `json:"replica_of"`
-		Schedule      string  `json:"schedule"`
-		Retention     int     `json:"retention"`
+		Name          string            `json:"name"`
+		Key           string            `json:"key"`
+		Value         string            `json:"value"`
+		Group         string            `json:"group"`
+		Category      string            `json:"category"`
+		Engine        string            `json:"engine"`
+		EngineVersion string            `json:"engine_version"`
+		Type          string            `json:"type"`
+		Memory        string            `json:"memory"`
+		CPUs          float64           `json:"cpus"`
+		Disk          string            `json:"disk"`
+		AccessMode    string            `json:"access_mode"`
+		ReplicaOf     string            `json:"replica_of"`
+		NodeSelector  map[string]string `json:"node_selector"`
+		Schedule      string            `json:"schedule"`
+		Retention     int               `json:"retention"`
 	}
 	if len(req.Args) > 0 {
 		_ = json.Unmarshal(req.Args, &a)
@@ -378,6 +379,9 @@ func (s *Server) aiExecute(c *gin.Context) {
 		}
 		if a.EngineVersion != "" {
 			body["engine_version"] = a.EngineVersion
+		}
+		if len(a.NodeSelector) > 0 {
+			body["node_selector"] = a.NodeSelector
 		}
 	case "start_instance":
 		handler, body = s.instanceStart, map[string]any{"name": a.Name}

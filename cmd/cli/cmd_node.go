@@ -29,9 +29,9 @@ var nodeAddCmd = &cobra.Command{
 	Long:  "Add a new node. The node must have the Agent running and reachable.",
 	Example: `  redis-pilot-cli node add redis01 --endpoint 10.0.0.1 --cpu 16 --memory 64Gi --disk 500Gi
 
-  # With agent token and zone label
+  # With agent token and labels
   redis-pilot-cli node add redis01 --endpoint 10.0.0.1 --cpu 16 --memory 64Gi --disk 500Gi \
-    --agent-token secret123 --zone cn-north-1`,
+    --agent-token secret123 --labels zone=az-1,disk=ssd`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		endpoint, _ := cmd.Flags().GetString("endpoint")
@@ -40,15 +40,11 @@ var nodeAddCmd = &cobra.Command{
 		cpuCores, _ := cmd.Flags().GetFloat64("cpu")
 		memory, _ := cmd.Flags().GetString("memory")
 		disk, _ := cmd.Flags().GetString("disk")
-		zone, _ := cmd.Flags().GetString("zone")
-		role, _ := cmd.Flags().GetString("role")
+		labelsStr, _ := cmd.Flags().GetString("labels")
 
 		labels := map[string]string{}
-		if zone != "" {
-			labels["zone"] = zone
-		}
-		if role != "" {
-			labels["role"] = role
+		if labelsStr != "" {
+			labels = parseKV(labelsStr)
 		}
 
 		return checkResp(client.Post("/node/add", map[string]interface{}{
@@ -114,8 +110,7 @@ func init() {
 	nodeAddCmd.Flags().Float64("cpu", 0, "CPU cores")
 	nodeAddCmd.Flags().String("memory", "", "Memory (e.g. 64Gi)")
 	nodeAddCmd.Flags().String("disk", "", "Disk (e.g. 500Gi)")
-	nodeAddCmd.Flags().String("zone", "", "Zone label")
-	nodeAddCmd.Flags().String("role", "production", "Role label")
+	nodeAddCmd.Flags().String("labels", "", "Custom labels (k=v,k=v, e.g. disk=ssd,zone=az-1)")
 	nodeAddCmd.MarkFlagRequired("endpoint")
 	nodeAddCmd.MarkFlagRequired("cpu")
 	nodeAddCmd.MarkFlagRequired("memory")

@@ -350,6 +350,7 @@ type CreateInstanceRequest struct {
 	Password        string            `json:"password"`
 	ReplicaOf       string            `json:"replica_of,omitempty"`
 	ConfigOverrides map[string]string `json:"config_overrides,omitempty"`
+	NodeSelector    map[string]string `json:"node_selector,omitempty"` // 标签亲和：只调度到 labels 包含所有 kv 的节点
 }
 
 // ResizeInstanceRequest 变配实例请求。

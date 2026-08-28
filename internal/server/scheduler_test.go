@@ -18,7 +18,7 @@ func TestSelectServer_SingleHealthy(t *testing.T) {
 	node := makeNode(map[string]*apitypes.NodeServer{
 		"srv1": {Endpoint: "10.0.0.1", Status: "healthy", Capacity: apitypes.ResourceSpec{CPUCores: 8, Memory: "32Gi"}},
 	})
-	name, err := selectServer(node, emptyInstances(), "4Gi", 2, "", "")
+	name, err := selectServer(node, emptyInstances(), "4Gi", 2, "", "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -32,7 +32,7 @@ func TestSelectServer_FilterUnhealthy(t *testing.T) {
 		"srv1": {Status: "unhealthy", Capacity: apitypes.ResourceSpec{CPUCores: 8, Memory: "32Gi"}},
 		"srv2": {Status: "healthy", Capacity: apitypes.ResourceSpec{CPUCores: 8, Memory: "32Gi"}},
 	})
-	name, err := selectServer(node, emptyInstances(), "4Gi", 2, "", "")
+	name, err := selectServer(node, emptyInstances(), "4Gi", 2, "", "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -51,7 +51,7 @@ func TestSelectServer_FilterInsufficientMemory(t *testing.T) {
 			"big": {Server: "srv1", Memory: "30Gi", CPUs: 1, DesiredState: "running", ObservedStatus: "running"},
 		},
 	}
-	name, err := selectServer(node, instances, "4Gi", 2, "", "")
+	name, err := selectServer(node, instances, "4Gi", 2, "", "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -70,7 +70,7 @@ func TestSelectServer_FilterInsufficientCPU(t *testing.T) {
 			"heavy": {Server: "srv1", Memory: "1Gi", CPUs: 3, DesiredState: "running", ObservedStatus: "running"},
 		},
 	}
-	name, err := selectServer(node, instances, "4Gi", 2, "", "")
+	name, err := selectServer(node, instances, "4Gi", 2, "", "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -84,7 +84,7 @@ func TestSelectServer_PreferMoreResources(t *testing.T) {
 		"srv1": {Status: "healthy", Capacity: apitypes.ResourceSpec{CPUCores: 8, Memory: "16Gi"}},
 		"srv2": {Status: "healthy", Capacity: apitypes.ResourceSpec{CPUCores: 8, Memory: "64Gi"}},
 	})
-	name, err := selectServer(node, emptyInstances(), "4Gi", 2, "", "")
+	name, err := selectServer(node, emptyInstances(), "4Gi", 2, "", "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -104,7 +104,7 @@ func TestSelectServer_ReplicaAvoidMasterServer(t *testing.T) {
 		},
 	}
 	// 从库应避开主库所在的 srv1，选 srv2
-	name, err := selectServer(node, instances, "4Gi", 2, "", "10.0.0.1:6379")
+	name, err := selectServer(node, instances, "4Gi", 2, "", "10.0.0.1:6379", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -125,7 +125,7 @@ func TestSelectServer_ReplicaPreferDifferentZone(t *testing.T) {
 		},
 	}
 	// srv2 资源更多但和主库同 zone，应选 srv3（不同 zone）
-	name, err := selectServer(node, instances, "4Gi", 2, "", "10.0.0.1:6379")
+	name, err := selectServer(node, instances, "4Gi", 2, "", "10.0.0.1:6379", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -143,7 +143,7 @@ func TestSelectServer_NoResourcesAvailable(t *testing.T) {
 			"full": {Server: "srv1", Memory: "4Gi", CPUs: 2, DesiredState: "running", ObservedStatus: "running"},
 		},
 	}
-	_, err := selectServer(node, instances, "4Gi", 2, "", "")
+	_, err := selectServer(node, instances, "4Gi", 2, "", "", nil)
 	if err == nil {
 		t.Fatal("expected error for no resources")
 	}
@@ -151,8 +151,34 @@ func TestSelectServer_NoResourcesAvailable(t *testing.T) {
 
 func TestSelectServer_EmptyNode(t *testing.T) {
 	node := makeNode(map[string]*apitypes.NodeServer{})
-	_, err := selectServer(node, emptyInstances(), "4Gi", 2, "", "")
+	_, err := selectServer(node, emptyInstances(), "4Gi", 2, "", "", nil)
 	if err == nil {
 		t.Fatal("expected error for empty node")
+	}
+}
+
+func TestSelectServer_NodeSelector(t *testing.T) {
+	node := makeNode(map[string]*apitypes.NodeServer{
+		"srv1": {Status: "healthy", Labels: map[string]string{"disk": "hdd", "zone": "az-1"}, Capacity: apitypes.ResourceSpec{CPUCores: 16, Memory: "64Gi"}},
+		"srv2": {Status: "healthy", Labels: map[string]string{"disk": "ssd", "zone": "az-1"}, Capacity: apitypes.ResourceSpec{CPUCores: 8, Memory: "32Gi"}},
+		"srv3": {Status: "healthy", Labels: map[string]string{"disk": "ssd", "zone": "az-2"}, Capacity: apitypes.ResourceSpec{CPUCores: 8, Memory: "32Gi"}},
+	})
+	// 只选 disk=ssd 的节点
+	name, err := selectServer(node, emptyInstances(), "4Gi", 2, "", "", map[string]string{"disk": "ssd"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if name != "srv2" && name != "srv3" {
+		t.Fatalf("expected srv2 or srv3 (disk=ssd), got %s", name)
+	}
+}
+
+func TestSelectServer_NodeSelectorNoMatch(t *testing.T) {
+	node := makeNode(map[string]*apitypes.NodeServer{
+		"srv1": {Status: "healthy", Labels: map[string]string{"disk": "hdd"}, Capacity: apitypes.ResourceSpec{CPUCores: 8, Memory: "32Gi"}},
+	})
+	_, err := selectServer(node, emptyInstances(), "4Gi", 2, "", "", map[string]string{"disk": "ssd"})
+	if err == nil {
+		t.Fatal("expected error when no node matches selector")
 	}
 }

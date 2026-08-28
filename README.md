@@ -256,14 +256,14 @@ redis-pilot-cli config view
 
 # 节点
 redis-pilot-cli node list
-redis-pilot-cli node add <name> --endpoint <ip> --cpu <cores> --memory <size>
+redis-pilot-cli node add <name> --endpoint <ip> --cpu <cores> --memory <size> [--labels k=v,k=v]
 redis-pilot-cli node remove <name>
 redis-pilot-cli node update <name> --json <server.json>
 
 # 实例
 redis-pilot-cli instance list
 redis-pilot-cli instance status <name>
-redis-pilot-cli instance create <name> --group <group> [--engine redis|kvrocks] [--memory 2Gi] [--type standalone|replication] [--access-mode standard|rw-split]
+redis-pilot-cli instance create <name> --group <group> [--engine redis|kvrocks] [--memory 2Gi] [--type standalone|replication] [--access-mode standard|rw-split] [--node-selector k=v,k=v]
 redis-pilot-cli instance delete <name> [--clean-data]
 redis-pilot-cli instance start <name>
 redis-pilot-cli instance stop <name>

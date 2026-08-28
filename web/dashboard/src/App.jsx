@@ -348,7 +348,7 @@ function AppShell() {
                 />
               )}
               {activeTab === 'ai' && <AiChatPanel />}
-              {activeTab === 'servers' && <ServersView servers={servers} />}
+              {activeTab === 'servers' && <ServersView servers={servers} groups={instanceGroups} />}
               {activeTab === 'audit' && (
                 <AuditView
                   filters={auditFilters}

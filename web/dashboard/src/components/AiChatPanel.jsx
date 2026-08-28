@@ -201,6 +201,15 @@ export default function AiChatPanel() {
     if (el) el.scrollTop = el.scrollHeight;
   }, [messages, current, toolStatus, error, pendingConfirm]);
 
+  // 流式输出中拦截页面刷新/关闭，避免用户误操作丢失当前回答
+  useEffect(() => {
+    const handler = (e) => {
+      if (streaming) { e.preventDefault(); e.returnValue = ''; }
+    };
+    window.addEventListener('beforeunload', handler);
+    return () => window.removeEventListener('beforeunload', handler);
+  }, [streaming]);
+
   // 挂载时拉取会话列表 + 探测写操作能力
   useEffect(() => {
     refreshConversations();
@@ -716,12 +725,12 @@ function MessageBubble({ role, content, toolCalls, interrupted }) {
         {content &&
           (isUser ? (
             // 用户消息：淡蓝气泡（对齐 Tair）
-            <div className="rounded-2xl px-3.5 py-2.5 text-[14px] leading-relaxed break-words whitespace-pre-wrap bg-blue-50 text-gray-800">
+            <div className="rounded-2xl px-3.5 py-2.5 text-[15px] leading-relaxed break-words whitespace-pre-wrap bg-blue-50 text-gray-800">
               {content}
             </div>
           ) : (
             // AI 回复：无气泡、无边框，纯文本铺开（对齐 Tair）
-            <div className="text-[14px] leading-relaxed break-words text-gray-800">
+            <div className="text-[15px] leading-relaxed break-words text-gray-800">
               <Markdown>{content}</Markdown>
             </div>
           ))}

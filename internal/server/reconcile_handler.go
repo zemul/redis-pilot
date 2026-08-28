@@ -3,6 +3,7 @@ package server
 import (
 	"encoding/json"
 	"net/http"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
@@ -229,6 +230,7 @@ func (s *Server) runReconcile() ([]ReconcileResult, error) {
 				}
 				if reachable {
 					srv.Status = "healthy"
+					srv.LastHeartbeat = time.Now().Format(time.RFC3339)
 				} else {
 					srv.Status = "unhealthy"
 				}

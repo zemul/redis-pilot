@@ -359,8 +359,7 @@ redis-pilot-cli node add server-1 \
   --cpu 32 \
   --memory 256Gi \
   --disk 2Ti \
-  --zone zone-a \
-  --role production
+  --labels zone=zone-a,role=production
   # 注册服务器
 
 redis-pilot-cli node remove server-1

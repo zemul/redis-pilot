@@ -106,7 +106,8 @@ func (d *DB) ListConversations(user string) ([]AIConversation, error) {
 		SELECT id, user, title, created_at, updated_at
 		FROM ai_conversations
 		WHERE user=? AND deleted=0
-		ORDER BY updated_at DESC`, user)
+		ORDER BY updated_at DESC
+		LIMIT 20`, user)
 	if err != nil {
 		return nil, err
 	}

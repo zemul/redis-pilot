@@ -54,6 +54,7 @@ description: 创建 Redis/Kvrocks 实例，支持单点和主从
 | type | 否 | standalone 或 replication，默认 standalone。声明实例组的拓扑规划：standalone 为单点，replication 表示主从架构（会预分配 proxy auto_port 用于读写分离）。添加从库时 Server 会自动将 standalone 升级为 replication |
 | access-mode | 否 | 代理访问模式：standard 或 rw-split。默认行为：replication 类型默认 rw-split，standalone 类型默认 standard |
 | config | 否 | 配置覆盖，格式 `k=v,k=v` |
+| node-selector | 否 | 标签亲和调度，格式 `k=v,k=v`（如 `disk=ssd,zone=az-1`），只调度到标签全部匹配的节点 |
 
 ## 容量建议
 

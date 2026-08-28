@@ -240,6 +240,7 @@ func (r *toolRegistry) schemas() []openai.ChatCompletionToolParam {
 			"cpus":           map[string]string{"type": "number", "description": "CPU 核数，可选，默认 1。Redis 命令处理单线程，常规负载 1 核即可，除非用户明确要求否则不必调高；Kvrocks 是多线程存储引擎，写密集/大数据量场景可按需给 2-4 核。"},
 			"disk":           map[string]string{"type": "string", "description": "磁盘容量，可选，单位必须用 Gi（如 50Gi）。Redis 为纯内存，磁盘仅用于持久化和备份，留空用默认即可；Kvrocks 是磁盘型存储，数据落盘可远超内存，应根据用户描述的数据规模设置（如预计存 100G 数据则给 100Gi 以上）。"},
 			"replica_of":     map[string]string{"type": "string", "description": "创建从库时填主库实例名（如 order-1），表示把本实例作为该主库的从库加入其主从组并开始复制；group/category/type/engine_version 会自动继承主库，无需重复提供。创建单点或主库时留空。"},
+			"node_selector":  map[string]string{"type": "string", "description": "标签亲和调度，格式 k=v,k=v（如 disk=ssd,zone=az-1）。只调度到标签全部匹配的节点，可选，不传则不限制。"},
 		}
 		tools = append(tools,
 			makeTool("create_instance", "创建一个新的 Redis/Kvrocks 实例（写操作，需用户二次确认后执行；节点由平台自动调度，无需指定）。创建主从实例时分两步：先建主库（提供 group/category，type=replication），再建从库（提供 replica_of=主库名，其余自动继承）。", createArg, []string{"name", "memory"}),

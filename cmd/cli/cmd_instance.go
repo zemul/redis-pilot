@@ -124,6 +124,7 @@ Use ordinal names like order-1, order-2, cache-a, cache-b.`,
 		replicaOf, _ := cmd.Flags().GetString("replica-of")
 		overrides, _ := cmd.Flags().GetString("config")
 		accessMode, _ := cmd.Flags().GetString("access-mode")
+		nodeSelector, _ := cmd.Flags().GetString("node-selector")
 		if replicaOf == "" && strings.TrimSpace(group) == "" {
 			group = args[0]
 		}
@@ -149,6 +150,9 @@ Use ordinal names like order-1, order-2, cache-a, cache-b.`,
 		}
 		if accessMode != "" {
 			req["access_mode"] = accessMode
+		}
+		if nodeSelector != "" {
+			req["node_selector"] = parseKV(nodeSelector)
 		}
 		return checkResp(client.Post("/instance/create", req))
 	},
@@ -367,6 +371,7 @@ func init() {
 	instanceCreateCmd.Flags().String("replica-of", "", "Master instance name or address")
 	instanceCreateCmd.Flags().String("config", "", "Config overrides (k=v,k=v)")
 	instanceCreateCmd.Flags().String("access-mode", "", "Access mode: rw-split | standard (default: rw-split for replication, standard for standalone)")
+	instanceCreateCmd.Flags().String("node-selector", "", "Node label selector for scheduling affinity (k=v,k=v, e.g. disk=ssd,zone=az-1)")
 
 	instanceDeleteCmd.Flags().Bool("clean-data", false, "Also remove data directory")
 

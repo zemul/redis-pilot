@@ -10,9 +10,10 @@ import (
 // selectServer 根据调度策略自动选择服务器
 // 策略：
 //  1. 过滤：排除 status != healthy
-//  2. 过滤：排除剩余资源不足的
-//  3. 排序：主从不同服务器 > 不同可用区 > 剩余资源最多
-func selectServer(node *apitypes.NodeState, instances *apitypes.InstancesState, reqMemory string, reqCPUs float64, reqDisk string, replicaOf string) (string, error) {
+//  2. 过滤：排除 labels 不满足 nodeSelector 的
+//  3. 过滤：排除剩余资源不足的
+//  4. 排序：主从不同服务器 > 不同可用区 > 剩余资源最多
+func selectServer(node *apitypes.NodeState, instances *apitypes.InstancesState, reqMemory string, reqCPUs float64, reqDisk string, replicaOf string, nodeSelector map[string]string) (string, error) {
 	if len(node.Servers) == 0 {
 		return "", fmt.Errorf("no servers in node")
 	}
@@ -49,6 +50,10 @@ func selectServer(node *apitypes.NodeState, instances *apitypes.InstancesState, 
 	for name, srv := range node.Servers {
 		// 过滤不健康
 		if srv.Status != "healthy" && srv.Status != "" {
+			continue
+		}
+		// 过滤标签不匹配
+		if !matchLabels(srv.Labels, nodeSelector) {
 			continue
 		}
 		allocMem, allocCPU, allocDisk := computeAllocated(instances, name)
@@ -129,4 +134,15 @@ func computeAllocatedExcluding(instances *apitypes.InstancesState, serverName, e
 		diskGi += parseMemoryGi(inst.Disk)
 	}
 	return
+}
+
+// matchLabels 检查节点标签是否包含 selector 中的所有 key=value。
+// selector 为空时匹配所有节点。
+func matchLabels(labels, selector map[string]string) bool {
+	for k, v := range selector {
+		if labels[k] != v {
+			return false
+		}
+	}
+	return true
 }

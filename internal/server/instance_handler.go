@@ -329,7 +329,7 @@ func (s *Server) instanceCreate(c *gin.Context) {
 		}
 
 		if req.Server == "" {
-			selected, err := selectServer(node, instances, req.Memory, req.CPUs, req.Disk, resolvedAddr)
+			selected, err := selectServer(node, instances, req.Memory, req.CPUs, req.Disk, resolvedAddr, req.NodeSelector)
 			if err != nil {
 				return fmt.Errorf("schedule: %s", err.Error())
 			}
