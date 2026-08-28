@@ -4,10 +4,11 @@ import { useState, useEffect } from 'react';
 import {
   X, Info, BarChart3, AlertCircle, RefreshCw, Play, HardDrive,
   Calendar, Save, CheckCircle2, Trash2, Power, Database, Server, SlidersHorizontal,
+  AlertTriangle,
 } from 'lucide-react';
 import { StatusBadge, EmptyState, CopyableText } from '../components/common.jsx';
-import { getField, displayValue, formatDateTime, statusMeta } from '../lib/format.js';
-import { extractMetricsPayload, parseRedisInfo, metricValue, engineLabel } from '../lib/instance.js';
+import { getField, displayValue, formatDateTime, statusMeta, formatBytes, formatDuration } from '../lib/format.js';
+import { extractMetricsPayload, parseRedisInfo, metricValue, engineLabel, topologyReason, parseReplicationLinks, topologyLabel } from '../lib/instance.js';
 import { MetricsTrendView } from '../views/MetricsTrendView.jsx';
 
 export function InstanceDetailModal({ detail, requestFn, onClose }) {
@@ -15,6 +16,8 @@ export function InstanceDetailModal({ detail, requestFn, onClose }) {
   const payload = extractMetricsPayload(metrics);
   const info = payload.info || payload.Info || '';
   const sections = parseRedisInfo(info);
+  const reason = topologyReason(group);
+  const isReplication = group.type === 'replication' || group.replicas.length > 0;
   const [activeTab, setActiveTab] = useState('trend');
   const metricsSummary = [
     ['Redis 版本', metricValue(sections, 'redis_version')],
@@ -22,7 +25,7 @@ export function InstanceDetailModal({ detail, requestFn, onClose }) {
     ['已用内存', metricValue(sections, 'used_memory_human')],
     ['连接数', metricValue(sections, 'connected_clients')],
     ['Keyspace', displayValue(sections.keyspace || sections.Keyspace)],
-    ['运行秒数', metricValue(sections, 'uptime_in_seconds')]
+    ['运行时长', formatDuration(metricValue(sections, 'uptime_in_seconds', ''))],
   ];
   // 期望 = 人的意图（仅 running/stopped）；观测 = 最近一次实际状态。
   // statusMeta 覆盖的是 Phase 派生态，missing/空串等原始观测值需单独映射。
@@ -60,9 +63,21 @@ export function InstanceDetailModal({ detail, requestFn, onClose }) {
           <button className="w-8 h-8 rounded-md border border-gray-200 bg-white text-gray-500 inline-flex items-center justify-center hover:bg-gray-50 transition-colors" onClick={onClose} aria-label="关闭" type="button"><X size={18} /></button>
         </div>
         <div className="min-h-0 overflow-auto p-4 grid gap-4">
-          <div className="flex gap-0 border-b border-gray-200 -mx-4 px-4 -mt-4">
+          {reason && (
+            <div className="flex items-start gap-2.5 rounded-md border border-amber-200 bg-amber-50 px-3 py-2.5 text-[13px] text-amber-800">
+              <AlertTriangle size={16} className="mt-0.5 shrink-0 text-amber-500" />
+              <div className="min-w-0">
+                <strong className="font-semibold">{reason.title}</strong>
+                <p className="m-0 mt-0.5 text-[12px] leading-relaxed text-amber-700">{reason.detail}</p>
+              </div>
+            </div>
+          )}
+          <div className={`flex gap-0 border-b border-gray-200 -mx-4 px-4 ${reason ? '' : '-mt-4'}`}>
             <button className={`px-4 py-2.5 text-[13px] border-0 bg-transparent cursor-pointer border-b-2 mb-[-1px] ${activeTab === 'trend' ? 'text-gray-900 border-gray-900 font-medium' : 'text-gray-400 border-transparent hover:text-gray-700'}`} onClick={() => setActiveTab('trend')}>趋势</button>
             <button className={`px-4 py-2.5 text-[13px] border-0 bg-transparent cursor-pointer border-b-2 mb-[-1px] ${activeTab === 'detail' ? 'text-gray-900 border-gray-900 font-medium' : 'text-gray-400 border-transparent hover:text-gray-700'}`} onClick={() => setActiveTab('detail')}>详情</button>
+            {isReplication && (
+              <button className={`px-4 py-2.5 text-[13px] border-0 bg-transparent cursor-pointer border-b-2 mb-[-1px] ${activeTab === 'group' ? 'text-gray-900 border-gray-900 font-medium' : 'text-gray-400 border-transparent hover:text-gray-700'}`} onClick={() => setActiveTab('group')}>实例组</button>
+            )}
           </div>
           {activeTab === 'detail' && (
             <>
@@ -105,7 +120,108 @@ export function InstanceDetailModal({ detail, requestFn, onClose }) {
           {activeTab === 'trend' && (
             <MetricsTrendView instanceName={item.name} requestFn={requestFn} />
           )}
+          {activeTab === 'group' && (
+            <GroupTopologyTab group={group} master={item} sections={sections} loading={loading} error={error} />
+          )}
         </div>
+      </section>
+    </div>
+  );
+}
+
+// 主从复制观测 tab：展示组内节点拓扑 + 从主节点 INFO 解析出的复制健康（延迟/落后/同步状态）。
+function GroupTopologyTab({ group, master, sections, loading, error }) {
+  const repl = parseReplicationLinks(sections);
+  const masterName = getField(master, 'name', 'Name', '-');
+  const nodes = [
+    { item: master, role: 'master' },
+    ...group.replicas.map((r) => ({ item: r, role: 'replica' })),
+  ];
+
+  const stateMeta = (state) => {
+    if (state === 'online') return { label: '在线', cls: 'text-emerald-600' };
+    if (state === 'send_bulk' || state === 'wait_bgsave') return { label: '全量同步中', cls: 'text-amber-600' };
+    return { label: state || '-', cls: 'text-gray-500' };
+  };
+
+  return (
+    <div className="grid gap-4">
+      <section>
+        <h4 className="m-0 mb-3 inline-flex items-center gap-1.5 text-[13px] font-semibold text-gray-500">
+          <Server size={16} className="text-gray-400" /> 拓扑 · {topologyLabel(group, master)}
+        </h4>
+        <div className="grid gap-2">
+          {nodes.map(({ item, role }) => (
+            <div key={getField(item, 'name', 'Name')} className="flex items-center gap-3 border border-gray-200 rounded-md px-3 py-2.5 bg-gray-50">
+              <span className={`inline-flex items-center rounded px-1.5 py-0.5 text-[11px] font-medium ${role === 'master' ? 'bg-blue-50 text-blue-700 border border-blue-100' : 'bg-slate-100 text-slate-600 border border-slate-200'}`}>
+                {role === 'master' ? '主' : '从'}
+              </span>
+              <div className="min-w-0 flex-1">
+                <strong className="block text-[13px] font-medium truncate">{getField(item, 'name', 'Name', '-')}</strong>
+                <span className="block text-[11px] text-gray-400 truncate">
+                  {getField(item, 'server', 'Server', '-')} · :{getField(item, 'port', 'Port', '-')}
+                </span>
+              </div>
+              <StatusBadge status={getField(item, 'status', 'Status')} />
+            </div>
+          ))}
+        </div>
+      </section>
+
+      <section>
+        <h4 className="m-0 mb-3 inline-flex items-center gap-1.5 text-[13px] font-semibold text-gray-500">
+          <RefreshCw size={16} className="text-gray-400" /> 主从复制
+        </h4>
+        {loading ? (
+          <div className="min-h-[80px] border border-dashed border-gray-200 rounded-md grid place-items-center text-gray-400">正在读取主节点 INFO...</div>
+        ) : error ? (
+          <div className="border border-red-200 rounded-md px-3 py-2.5 flex items-center gap-2 bg-red-50 text-red-700 text-[13px]"><AlertCircle size={16} /> 无法从主节点获取复制状态：{error}</div>
+        ) : (
+          <>
+            <div className="flex flex-wrap gap-2 mb-3 text-[12px]">
+              <span className="inline-flex items-center gap-1.5 rounded-md border border-gray-200 bg-gray-50 px-2.5 py-1 text-gray-600">
+                在线从库 <strong className="font-mono text-gray-900">{repl.connectedSlaves}</strong>
+              </span>
+              <span className="inline-flex items-center gap-1.5 rounded-md border border-gray-200 bg-gray-50 px-2.5 py-1 text-gray-600">
+                主偏移量 <strong className="font-mono text-gray-900">{repl.masterOffset || '-'}</strong>
+              </span>
+              {repl.syncInProgress && (
+                <span className="inline-flex items-center gap-1.5 rounded-md border border-amber-200 bg-amber-50 px-2.5 py-1 text-amber-700 font-medium">全量同步进行中</span>
+              )}
+            </div>
+            {repl.slaves.length === 0 ? (
+              <div className="border border-dashed border-gray-200 rounded-md px-3 py-4 text-center text-[13px] text-gray-400">
+                主节点当前未观测到已连接的从库。
+              </div>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full min-w-[440px] border-collapse text-[12px]">
+                  <thead>
+                    <tr className="text-gray-400 text-left border-b border-gray-200">
+                      <th className="font-medium py-2 pr-3">从库</th>
+                      <th className="font-medium py-2 pr-3">同步状态</th>
+                      <th className="font-medium py-2 pr-3">延迟</th>
+                      <th className="font-medium py-2">落后量</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {repl.slaves.map((s) => {
+                      const meta = stateMeta(s.state);
+                      return (
+                        <tr key={`${s.ip}:${s.port}`} className="border-b border-gray-100 last:border-b-0">
+                          <td className="py-2 pr-3 font-mono text-gray-700">{s.ip}:{s.port}</td>
+                          <td className={`py-2 pr-3 font-medium ${meta.cls}`}>{meta.label}</td>
+                          <td className="py-2 pr-3 font-mono text-gray-700">{s.lag !== null ? `${s.lag}s` : '-'}</td>
+                          <td className="py-2 font-mono text-gray-700">{s.byteLag !== null ? formatBytes(s.byteLag) : '-'}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </>
+        )}
       </section>
     </div>
   );

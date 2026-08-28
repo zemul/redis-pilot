@@ -2,7 +2,7 @@
 import { ChevronRight, Database, Server, ShieldCheck, Clock, GitMerge, MemoryStick } from 'lucide-react';
 import { EmptyState, EngineIcon, MemoryUsage, StatusBadge, SummaryCell } from '../components/common.jsx';
 import { formatBytes, getField } from '../lib/format.js';
-import { engineLabel, topologyLabel, instanceStatusTone } from '../lib/instance.js';
+import { engineLabel, topologyLabel, instanceStatusTone, topologyReason } from '../lib/instance.js';
 import { AuditCard } from './AuditView.jsx';
 
 // 大盘只展示实例组态势；节点级明细留在实例管理页和详情弹窗中。
@@ -32,6 +32,7 @@ function DashboardInstanceOverview({ groups, onOpenDetail }) {
           const total = group.instances.length;
           const tone = instanceStatusTone(group.status);
           const isRwSplit = group.access_mode === 'rw-split';
+          const reason = topologyReason(group);
           const rowTint = tone === 'bad' ? 'bg-red-50/40' : tone === 'warn' ? 'bg-amber-50/30' : 'bg-white';
           return (
             <button
@@ -60,7 +61,17 @@ function DashboardInstanceOverview({ groups, onOpenDetail }) {
               </span>
               <MemoryUsage memory={group.resource.memory} memoryUsed={group.resource.memoryUsed} />
               <span className="flex items-center justify-between gap-2 min-w-0">
-                <StatusBadge status={group.status} />
+                <span className="min-w-0">
+                  <StatusBadge status={group.status} title={reason?.detail} />
+                  {reason && (
+                    <span
+                      className={`block mt-0.5 text-[11px] truncate ${tone === 'bad' ? 'text-red-500' : 'text-amber-600'}`}
+                      title={reason.detail}
+                    >
+                      {reason.title}
+                    </span>
+                  )}
+                </span>
                 <ChevronRight size={15} className="text-gray-300 shrink-0" />
               </span>
             </button>
@@ -125,7 +136,6 @@ export function DashboardView({ groups, servers, audits, sentinel, publicHost, o
           <div className="min-h-[54px] px-4 py-3 border-b border-gray-200 flex items-center justify-between gap-3">
             <div>
               <h3 className="m-0 text-[15px] font-semibold">实例运行状况</h3>
-              <p className="m-0 mt-0.5 text-[11px] text-gray-400">异常实例组优先展示，点击可查看主节点详情</p>
             </div>
             <span className={`inline-flex items-center gap-1.5 text-[12px] font-medium ${failedInstances > 0 ? 'text-red-600' : warningInstances > 0 ? 'text-amber-600' : 'text-emerald-600'}`}>
               <span className={`w-2 h-2 rounded-full ${failedInstances > 0 ? 'bg-red-500' : warningInstances > 0 ? 'bg-amber-500' : 'bg-emerald-500'}`} />

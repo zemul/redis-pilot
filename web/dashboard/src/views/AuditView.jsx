@@ -1,12 +1,17 @@
 // 操作审计视图：按来源/结果快速分类，主表展示变更摘要，详情抽屉保留完整上下文。
 import { useState, useEffect } from 'react';
-import { SlidersHorizontal, List, AlertCircle, CheckCircle2, ChevronRight, X } from 'lucide-react';
+import { SlidersHorizontal, List, AlertCircle, CheckCircle2, ChevronRight, X, CalendarDays } from 'lucide-react';
 import { EmptyState, StatusBadge } from '../components/common.jsx';
 import {
   auditQuery, displayValue, formatDateTime, auditOperator, auditActionLabel,
   auditTargetDisplay, auditLevelLabel, auditResultMeta, auditSourceLabel,
   auditTriggerLabel, auditPhaseLabel,
 } from '../lib/format.js';
+import { Input } from '../components/ui/input.jsx';
+import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from '../components/ui/select.jsx';
+import { Button } from '../components/ui/button.jsx';
+import { Popover, PopoverTrigger, PopoverContent } from '../components/ui/popover.jsx';
+import { Calendar } from '../components/ui/calendar.jsx';
 
 const EMPTY_FILTERS = {
   from: '', to: '', q: '', actor_type: '', source: '', level: '', action: '', result: '', operator: '', group: '', instance: ''
@@ -100,24 +105,51 @@ export function AuditView({ filters, setFilters, request }) {
         </div>
         <div className="p-4">
           <div className="grid grid-cols-6 gap-3 max-xl:grid-cols-3 max-md:grid-cols-1">
-            <Filter label="开始日期"><input type="date" className={inputClass} value={filters.from} onChange={(e) => updateFilter('from', e.target.value)} /></Filter>
-            <Filter label="结束日期"><input type="date" className={inputClass} value={filters.to} onChange={(e) => updateFilter('to', e.target.value)} /></Filter>
-            <Filter label="目标或操作者"><input className={inputClass} value={filters.q} onChange={(e) => updateFilter('q', e.target.value)} placeholder="实例、组、节点或用户" /></Filter>
-            <Filter label="来源"><select className={inputClass} value={filters.source} onChange={(e) => updateFilter('source', e.target.value)}>
-              <option value="">全部来源</option><option value="manual">人工操作</option><option value="ai">AI 助手</option>
-              <option value="sentinel">Sentinel</option><option value="reconcile">状态协调</option><option value="scheduler">定时任务</option><option value="system">系统</option>
-            </select></Filter>
-            <Filter label="动作"><select className={inputClass} value={filters.action} onChange={(e) => updateFilter('action', e.target.value)}>
-              <option value="">全部动作</option>{ACTIONS.map((action) => <option key={action} value={action}>{auditActionLabel(action)}</option>)}
-            </select></Filter>
-            <Filter label="结果"><select className={inputClass} value={filters.result} onChange={(e) => updateFilter('result', e.target.value)}>
-              <option value="">全部结果</option><option value="accepted">已受理</option><option value="running">执行中</option>
-              <option value="success">成功</option><option value="corrected">已修正</option><option value="failed">失败</option><option value="interrupted">已中断</option><option value="skipped">已跳过</option>
-            </select></Filter>
+            <Filter label="开始日期"><DatePickerInput value={filters.from} onChange={(v) => updateFilter('from', v)} placeholder="选择开始日期" /></Filter>
+            <Filter label="结束日期"><DatePickerInput value={filters.to} onChange={(v) => updateFilter('to', v)} placeholder="选择结束日期" /></Filter>
+            <Filter label="目标或操作者"><Input value={filters.q} onChange={(e) => updateFilter('q', e.target.value)} placeholder="实例、组、节点或用户" /></Filter>
+            <Filter label="来源">
+              <Select value={filters.source} onValueChange={(v) => updateFilter('source', v)}>
+                <SelectTrigger><SelectValue placeholder="全部来源" /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="">全部来源</SelectItem>
+                  <SelectItem value="manual">人工操作</SelectItem>
+                  <SelectItem value="ai">AI 助手</SelectItem>
+                  <SelectItem value="sentinel">Sentinel</SelectItem>
+                  <SelectItem value="reconcile">状态协调</SelectItem>
+                  <SelectItem value="scheduler">定时任务</SelectItem>
+                  <SelectItem value="system">系统</SelectItem>
+                </SelectContent>
+              </Select>
+            </Filter>
+            <Filter label="动作">
+              <Select value={filters.action} onValueChange={(v) => updateFilter('action', v)}>
+                <SelectTrigger><SelectValue placeholder="全部动作" /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="">全部动作</SelectItem>
+                  {ACTIONS.map((action) => <SelectItem key={action} value={action}>{auditActionLabel(action)}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </Filter>
+            <Filter label="结果">
+              <Select value={filters.result} onValueChange={(v) => updateFilter('result', v)}>
+                <SelectTrigger><SelectValue placeholder="全部结果" /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="">全部结果</SelectItem>
+                  <SelectItem value="accepted">已受理</SelectItem>
+                  <SelectItem value="running">执行中</SelectItem>
+                  <SelectItem value="success">成功</SelectItem>
+                  <SelectItem value="corrected">已修正</SelectItem>
+                  <SelectItem value="failed">失败</SelectItem>
+                  <SelectItem value="interrupted">已中断</SelectItem>
+                  <SelectItem value="skipped">已跳过</SelectItem>
+                </SelectContent>
+              </Select>
+            </Filter>
           </div>
           <div className="mt-3.5 flex justify-end gap-2">
-            <button className={secondaryButtonClass} onClick={resetFilters}>重置</button>
-            <button className={primaryButtonClass} onClick={handleApply}><SlidersHorizontal size={15} /> 应用筛选</button>
+            <Button variant="outline" size="sm" onClick={resetFilters}>重置</Button>
+            <Button size="sm" onClick={handleApply}><SlidersHorizontal size={15} /> 应用筛选</Button>
           </div>
         </div>
       </section>
@@ -162,6 +194,42 @@ export function AuditView({ filters, setFilters, request }) {
       </section>
       {selected && <AuditDetail log={selected} onClose={() => setSelected(null)} />}
     </div>
+  );
+}
+
+// 日期选择器：Popover + Calendar 替代原生 input[type=date]。
+// value 为 ISO date string（"2026-08-28"），空为未选择。
+function DatePickerInput({ value, onChange, placeholder = '选择日期' }) {
+  const [open, setOpen] = useState(false);
+  const selected = value ? new Date(value + 'T00:00:00') : undefined;
+  const label = value || placeholder;
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          className={`flex h-9 w-full items-center justify-between rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-sm ring-offset-background focus:outline-none focus:ring-1 focus:ring-ring ${value ? 'text-gray-900' : 'text-muted-foreground'}`}
+        >
+          <span className="truncate">{label}</span>
+          <CalendarDays size={15} className="ml-1.5 opacity-50 shrink-0" />
+        </button>
+      </PopoverTrigger>
+      <PopoverContent className="w-auto p-3" align="start">
+        <Calendar
+          mode="single"
+          selected={selected}
+          onSelect={(day) => {
+            if (day) {
+              const iso = [day.getFullYear(), String(day.getMonth() + 1).padStart(2, '0'), String(day.getDate()).padStart(2, '0')].join('-');
+              onChange(iso);
+            } else {
+              onChange('');
+            }
+            setOpen(false);
+          }}
+        />
+      </PopoverContent>
+    </Popover>
   );
 }
 
@@ -230,7 +298,4 @@ export function AuditCard({ log }) {
   </div>;
 }
 
-const inputClass = 'w-full h-9 border border-gray-200 rounded-md px-2.5 bg-white text-gray-900 outline-0 focus:border-gray-900 focus:shadow-[0_0_0_3px_rgba(0,0,0,0.08)] transition-all';
-const secondaryButtonClass = 'h-[34px] rounded-md border border-gray-200 px-3 bg-white text-gray-900 font-medium text-[13px] inline-flex items-center gap-1.5 hover:bg-gray-50 hover:border-gray-300 transition-colors cursor-pointer';
-const primaryButtonClass = 'h-[34px] rounded-md px-3 bg-gray-900 text-white font-medium text-[13px] inline-flex items-center gap-1.5 hover:bg-gray-700 transition-colors border-0 cursor-pointer';
 const pageButtonClass = 'h-7 px-2.5 rounded-md border border-gray-200 bg-white text-gray-700 text-xs font-medium hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer transition-colors';

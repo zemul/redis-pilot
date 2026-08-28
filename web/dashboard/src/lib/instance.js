@@ -31,6 +31,55 @@ export function topologyStatus(groupState, instances) {
   return instanceStatus;
 }
 
+// 实例是否处于对外服务态（与后端 IsServing 语义对齐，前端以派生 status 近似）。
+function instanceRunning(item) {
+  return getField(item, 'status', 'Status') === 'running';
+}
+
+// 把 degraded / failover_conflict 这类"只有颜色没有原因"的状态，
+// 从组拓扑数据里派生成可读的原因 + 处置建议，供列表 tooltip 与详情弹窗展示。
+// 返回 null 表示无需额外说明（健康/运行中等）。
+export function topologyReason(group) {
+  const status = group.status;
+  if (status === 'failover_conflict') {
+    return {
+      title: '故障转移冲突',
+      detail: 'Sentinel 记录的主节点与平台状态不一致，读写路由可能异常。请执行 sentinel sync 或检查主从拓扑。',
+    };
+  }
+  if (status !== 'degraded') return null;
+  const isReplication = group.type === 'replication' || group.replicas.length > 0;
+  const masterRunning = group.master && instanceRunning(group.master);
+  if (!masterRunning) {
+    return {
+      title: '主节点不可用',
+      detail: isReplication
+        ? '主从组的主节点当前未在运行，读写可能中断，需尽快恢复或触发故障转移。'
+        : '单点实例当前未在运行。',
+    };
+  }
+  if (isReplication) {
+    const runningReplicas = group.replicas.filter(instanceRunning).length;
+    if (group.replicas.length === 0) {
+      return {
+        title: '缺少从节点',
+        detail: '主从组当前没有从节点，无法进行故障转移与读写分离，建议补充从节点。',
+      };
+    }
+    if (runningReplicas === 0) {
+      return {
+        title: '从节点未运行',
+        detail: `${group.replicas.length} 个从节点均未在运行，主从复制已中断。`,
+      };
+    }
+    return {
+      title: '部分从节点异常',
+      detail: `${group.replicas.length - runningReplicas}/${group.replicas.length} 个从节点未在运行。`,
+    };
+  }
+  return { title: '拓扑降级', detail: '实例组拓扑与预期状态不符。' };
+}
+
 export function buildInstanceGroups(instanceState) {
   const instances = normalizeMap(instanceState, 'Instances', 'instances');
   const groupStates = normalizeNamedMap(instanceState, 'Groups', 'groups');
@@ -144,6 +193,40 @@ export function metricValue(sections, key, fallback = '-') {
     if (section && section[key] !== undefined) return section[key];
   }
   return fallback;
+}
+
+// 从主节点 INFO 的 replication 段解析主从复制观测：连接的从库数、复制偏移量，
+// 以及每个从库的 state / lag(秒) / offset / 落后字节数（master_repl_offset - slave offset）。
+// slaveN 行形如：ip=10.0.1.11,port=6380,state=online,offset=12345,lag=0
+export function parseReplicationLinks(sections) {
+  const repl = sections.replication || sections.Replication || {};
+  const masterOffset = Number(repl.master_repl_offset || 0);
+  const slaves = [];
+  for (const [key, raw] of Object.entries(repl)) {
+    if (!/^slave\d+$/.test(key)) continue;
+    const parts = {};
+    for (const seg of String(raw).split(',')) {
+      const i = seg.indexOf('=');
+      if (i > 0) parts[seg.slice(0, i)] = seg.slice(i + 1);
+    }
+    const offset = Number(parts.offset || 0);
+    slaves.push({
+      ip: parts.ip || '-',
+      port: parts.port || '-',
+      state: parts.state || '-',
+      offset,
+      lag: parts.lag !== undefined && parts.lag !== '' ? Number(parts.lag) : null,
+      byteLag: masterOffset > 0 && offset > 0 ? Math.max(0, masterOffset - offset) : null,
+    });
+  }
+  slaves.sort((a, b) => `${a.ip}:${a.port}`.localeCompare(`${b.ip}:${b.port}`));
+  return {
+    role: repl.role || '',
+    connectedSlaves: repl.connected_slaves !== undefined ? Number(repl.connected_slaves) : slaves.length,
+    masterOffset,
+    syncInProgress: repl.master_sync_in_progress === '1',
+    slaves,
+  };
 }
 
 export function topologyLabel(group, master) {

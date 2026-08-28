@@ -8,11 +8,11 @@ import { categoryLabel } from '../lib/instance.js';
 // 状态色板：ok/warn/bad/neutral 四档，供状态徽标与圆点统一取色。
 export const dotColor = { ok: 'bg-emerald-400', warn: 'bg-amber-500', bad: 'bg-red-500', neutral: 'bg-gray-300' };
 
-export function StatusBadge({ status, children, metaFn = statusMeta }) {
+export function StatusBadge({ status, children, metaFn = statusMeta, title }) {
   const meta = metaFn(status);
   const textTone = { ok: 'text-gray-500', warn: 'text-amber-600', bad: 'text-red-600', neutral: 'text-gray-500' };
   return (
-    <span className={`inline-flex items-center gap-1.5 text-xs font-medium whitespace-nowrap ${textTone[meta.tone] || textTone.neutral}`}>
+    <span title={title} className={`inline-flex items-center gap-1.5 text-xs font-medium whitespace-nowrap ${textTone[meta.tone] || textTone.neutral}`}>
       <span className={`w-2 h-2 rounded-full shrink-0 ${dotColor[meta.tone] || dotColor.neutral}`} />
       {children || meta.label}
     </span>
@@ -56,9 +56,12 @@ export function UserMenu({ username, onLogout, onNavigate }) {
     <div className="relative inline-flex" ref={ref}>
       <button
         type="button"
-        className="h-[34px] rounded-md border border-gray-200 px-3 bg-white text-gray-700 font-medium text-[13px] inline-flex items-center gap-1.5 hover:bg-gray-50 hover:border-gray-300 transition-colors cursor-pointer"
+        className="h-[34px] rounded-full border border-gray-200 pl-1 pr-3 bg-white text-gray-700 font-medium text-[13px] inline-flex items-center gap-2 hover:bg-gray-50 hover:border-gray-300 transition-colors cursor-pointer"
         onClick={() => setOpen(!open)}
       >
+        <span className="w-6 h-6 rounded-full bg-gray-900 text-white text-[11px] font-semibold inline-grid place-items-center shrink-0">
+          {(username || '?')[0].toUpperCase()}
+        </span>
         {username}
         <ChevronDown size={14} className={`text-gray-400 transition-transform ${open ? 'rotate-180' : ''}`} />
       </button>
