@@ -2,7 +2,6 @@ import { Routes, Route, Navigate, useNavigate, useParams } from 'react-router-do
 import { useEffect, useMemo, useState } from 'react';
 import {
   AlertCircle,
-  AlertTriangle,
   Database,
   Key,
   LayoutDashboard,
@@ -18,7 +17,6 @@ import { createRequest } from './lib/request.js';
 import { UserMenu } from './components/common.jsx';
 import { DashboardView } from './views/DashboardView.jsx';
 import { InstancesView } from './views/InstancesView.jsx';
-import { AlertsView } from './views/AlertsView.jsx';
 import { ServersView } from './views/ServersView.jsx';
 import { AuditView } from './views/AuditView.jsx';
 import {
@@ -40,7 +38,6 @@ const TABS = [
   { id: 'dashboard', label: '大盘看板', icon: LayoutDashboard },
   { id: 'instances', label: '实例管理', icon: Database },
   { id: 'ai', label: 'AI 助手', icon: Sparkles },
-  { id: 'alerts', label: '异常总览', icon: AlertTriangle },
   { id: 'servers', label: '服务器节点', icon: Server },
   { id: 'audit', label: '操作审计', icon: List },
   { id: 'users', label: '用户管理', icon: Users },
@@ -66,7 +63,9 @@ function AppShell() {
   const [auth, setAuth] = useState(() => getStoredAuth());
   const [query, setQuery] = useState('');
   const [expandedGroups, setExpandedGroups] = useState({});
-  const [auditFilters, setAuditFilters] = useState({ from: '', to: '', group: '', instance: '', level: '', action: '' });
+  const [auditFilters, setAuditFilters] = useState({
+    from: '', to: '', q: '', actor_type: '', source: '', level: '', action: '', result: '', operator: '', group: '', instance: ''
+  });
   const [detail, setDetail] = useState(null);
   const [backupDetail, setBackupDetail] = useState(null);
   const [confirmAction, setConfirmAction] = useState(null);
@@ -349,7 +348,6 @@ function AppShell() {
                 />
               )}
               {activeTab === 'ai' && <AiChatPanel />}
-              {activeTab === 'alerts' && <AlertsView groups={instanceGroups} servers={servers} publicHost={serverInfo?.proxy_public_endpoint} />}
               {activeTab === 'servers' && <ServersView servers={servers} />}
               {activeTab === 'audit' && (
                 <AuditView
@@ -403,4 +401,3 @@ function AppShell() {
     </div>
   );
 }
-

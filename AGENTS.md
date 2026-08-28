@@ -50,7 +50,7 @@ redis-pilot/
     │   ├── AiChatPanel.jsx # AI 助手对话面板
     │   └── ui/          # shadcn 风格基础组件（button/select/table/badge/input/dialog）
     ├── views/         # 页面级组件，一个导航 tab 一个文件
-    │   └── (Dashboard/Instances/Alerts/Servers/Audit/MetricsTrend)View.jsx
+    │   └── (Dashboard/Instances/Servers/Audit/MetricsTrend)View.jsx
     └── modals/        # 弹窗组件
         └── index.jsx   # 实例详情/慢查询/大Key/接入信息/配置/备份/删除/电源/创建
 ```

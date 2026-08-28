@@ -24,6 +24,15 @@ export function InstanceDetailModal({ detail, requestFn, onClose }) {
     ['Keyspace', displayValue(sections.keyspace || sections.Keyspace)],
     ['运行秒数', metricValue(sections, 'uptime_in_seconds')]
   ];
+  // 期望 = 人的意图（仅 running/stopped）；观测 = 最近一次实际状态。
+  // statusMeta 覆盖的是 Phase 派生态，missing/空串等原始观测值需单独映射。
+  const desiredRaw = getField(item, 'desired_state', 'DesiredState', '');
+  const observedRaw = getField(item, 'observed_status', 'ObservedStatus', '');
+  const desiredLabel = { running: '运行', stopped: '停止' };
+  const observedLabel = {
+    running: '运行中', stopped: '已停止', missing: '容器不存在',
+    unreachable: '不可达', '': '未观测',
+  };
   const fields = [
     ['实例', item.name],
     ['实例组', group.groupName],
@@ -31,6 +40,8 @@ export function InstanceDetailModal({ detail, requestFn, onClose }) {
     ['角色', getField(item, 'role', 'Role', '-')],
     ['节点', getField(item, 'server', 'Server', '-')],
     ['Redis 端口', getField(item, 'port', 'Port', '-')],
+    ['期望状态', desiredLabel[desiredRaw] || displayValue(desiredRaw)],
+    ['观测状态', observedLabel[observedRaw] || displayValue(observedRaw)],
     ['资源', `${getField(item, 'memory', 'Memory', '-')} / ${getField(item, 'cpus', 'CPUs', '-')}C / 磁盘 ${displayValue(getField(item, 'disk', 'Disk'), '0Gi')}`],
     ['数据目录', getField(item, 'data_path', 'DataPath', '-')],
     ['配置目录', getField(item, 'config_path', 'ConfigPath', '-')],
