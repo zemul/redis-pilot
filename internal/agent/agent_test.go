@@ -3,6 +3,7 @@ package agent
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -41,6 +42,10 @@ func (f *fakeRuntime) Create(engine, name, image string, port int, memory string
 func (f *fakeRuntime) Start(name string) error  { f.record("Start:" + name); return nil }
 func (f *fakeRuntime) Stop(name string) error   { f.record("Stop:" + name); return nil }
 func (f *fakeRuntime) Remove(name string) error { f.record("Remove:" + name); return nil }
+func (f *fakeRuntime) Update(name, memory string, cpus float64) error {
+	f.record(fmt.Sprintf("Update:%s:mem=%s:cpus=%g", name, memory, cpus))
+	return nil
+}
 func (f *fakeRuntime) Run(args ...string) (string, error) {
 	f.record("Run:" + strings.Join(args, " "))
 	return "", nil
@@ -788,6 +793,33 @@ func TestInstanceStop_FullFlow(t *testing.T) {
 	}
 	if !fake.hasCalled("Stop:redis-myinst") {
 		t.Errorf("expected Stop call, got %v", fake.calls)
+	}
+}
+
+// CPU-only 变配：应调用 runtime.Update 且不触发 redis-cli（无 memory）。
+func TestInstanceResize_CPUOnly(t *testing.T) {
+	a, fake := newTestAgentWithFake(t)
+	r := a.Router()
+	w := doAgentRequest(r, "POST", "/instance/resize", map[string]interface{}{
+		"name": "myinst", "engine": "redis", "cpus": 2.0,
+	})
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if !fake.hasCalled("Update:redis-myinst:mem=:cpus=2") {
+		t.Errorf("expected Update call with cpus=2 and empty mem, got %v", fake.calls)
+	}
+}
+
+// 既不传 memory 也不传 cpus → 400。
+func TestInstanceResize_NoResourceFields(t *testing.T) {
+	a, _ := newTestAgentWithFake(t)
+	r := a.Router()
+	w := doAgentRequest(r, "POST", "/instance/resize", map[string]interface{}{
+		"name": "myinst", "engine": "redis",
+	})
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", w.Code, w.Body.String())
 	}
 }
 

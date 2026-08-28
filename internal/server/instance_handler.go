@@ -751,6 +751,181 @@ func (s *Server) instanceConfig(c *gin.Context) {
 	ok(c, nil)
 }
 
+// instanceResize 变配实例规格（内存/CPU 不停机 + 磁盘元数据）。
+//
+// 流程：容量校验（升配，排除自身）→ 降配 OOM 护栏 → 转发 Agent（cgroup + maxmemory）
+// → 更新控制面记录 → 审计。三个规格字段均可选，只改传入的维度。
+// 仅改磁盘时不触碰容器，只更新控制面记账。
+func (s *Server) instanceResize(c *gin.Context) {
+	start := time.Now()
+	var req apitypes.ResizeInstanceRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		fail(c, http.StatusBadRequest, err.Error())
+		return
+	}
+	if req.Memory == nil && req.CPUs == nil && req.Disk == nil {
+		fail(c, http.StatusBadRequest, "resize requires at least one of memory, cpus, disk")
+		return
+	}
+	if req.Memory != nil && strings.TrimSpace(*req.Memory) == "" {
+		fail(c, http.StatusBadRequest, "memory must not be empty when specified")
+		return
+	}
+	if req.CPUs != nil && *req.CPUs <= 0 {
+		fail(c, http.StatusBadRequest, "cpus must be greater than 0")
+		return
+	}
+	if req.Disk != nil && strings.TrimSpace(*req.Disk) == "" {
+		fail(c, http.StatusBadRequest, "disk must not be empty when specified")
+		return
+	}
+
+	inst, srv, unlock, err := s.resolveAndLock(c, req.Name, "resize")
+	if err != nil {
+		return
+	}
+	defer unlock()
+
+	groupState, err := s.groupForInstance(req.Name)
+	if err != nil {
+		fail(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	// 容量校验（升配）：排除本实例已占的旧配额，再看新规格加上其它实例是否超过节点容量。
+	instances, err := s.db.ReadInstances()
+	if err != nil {
+		fail(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+	allocMem, allocCPU, allocDisk := computeAllocatedExcluding(instances, inst.Server, req.Name)
+	if req.Memory != nil {
+		need := parseMemoryGi(*req.Memory)
+		if capGi := parseMemoryGi(srv.Capacity.Memory); need > 0 && allocMem+need > capGi {
+			fail(c, http.StatusConflict, fmt.Sprintf(
+				"insufficient memory on node %s: request %s, node capacity %s, %dGi already allocated to other instances",
+				inst.Server, *req.Memory, srv.Capacity.Memory, allocMem))
+			return
+		}
+	}
+	if req.CPUs != nil {
+		if allocCPU+*req.CPUs > srv.Capacity.CPUCores {
+			fail(c, http.StatusConflict, fmt.Sprintf(
+				"insufficient CPU on node %s: request %g, node capacity %g, %g already allocated to other instances",
+				inst.Server, *req.CPUs, srv.Capacity.CPUCores, allocCPU))
+			return
+		}
+	}
+	if req.Disk != nil {
+		need := parseMemoryGi(*req.Disk)
+		if capGi := parseMemoryGi(srv.Capacity.Disk); need > 0 && allocDisk+need > capGi {
+			fail(c, http.StatusConflict, fmt.Sprintf(
+				"insufficient disk on node %s: request %s, node capacity %s, %dGi already allocated to other instances",
+				inst.Server, *req.Disk, srv.Capacity.Disk, allocDisk))
+			return
+		}
+	}
+
+	// 降配 OOM 护栏：新内存不得低于当前 used_memory 的 110%（留 10% 余量），
+	// 否则容器 cgroup 收缩会触发 OOM Kill。used_memory 取 reconcile 的缓存值，
+	// 可能略有滞后，但作为护栏足够；缓存缺失（尚未采集）时跳过，不阻断合法操作。
+	if req.Memory != nil {
+		newBytes := parseMemoryBytes(*req.Memory)
+		s.memoryUsedMu.RLock()
+		used := s.memoryUsed[req.Name]
+		s.memoryUsedMu.RUnlock()
+		if used > 0 && newBytes > 0 && newBytes < used*11/10 {
+			fail(c, http.StatusBadRequest, fmt.Sprintf(
+				"refusing to shrink memory to %s: current used_memory is %d bytes; new limit must leave >=10%% headroom to avoid OOM",
+				*req.Memory, used))
+			return
+		}
+	}
+
+	// 只改磁盘时无需触碰容器，直接更新控制面记账。
+	needAgent := req.Memory != nil || req.CPUs != nil
+	if needAgent {
+		replicaOfAddr, err := s.resolveReplicaOfAddrFor(req.Name)
+		if err != nil {
+			fail(c, http.StatusInternalServerError, "resolve replica_of: "+err.Error())
+			return
+		}
+		payload := map[string]interface{}{
+			"name":             req.Name,
+			"engine":           groupState.Engine,
+			"type":             groupState.Type,
+			"engine_version":   groupState.EngineVersion,
+			"category":         groupState.Category,
+			"replica_of":       replicaOfAddr,
+			"port":             inst.Port,
+			"config_overrides": inst.ConfigOverrides,
+		}
+		if req.Memory != nil {
+			payload["memory"] = *req.Memory
+		}
+		if req.CPUs != nil {
+			payload["cpus"] = *req.CPUs
+		}
+		client := newAgentClient(srv)
+		if _, err := client.post("/instance/resize", payload); err != nil {
+			s.audit.Log(store.AuditRecord{Operator: operatorFrom(c), Action: "instance.resize", Level: audit.LevelImportant, Result: "failed", Detail: err.Error(),
+				Target: map[string]interface{}{"instance": req.Name, "server": inst.Server}})
+			fail(c, http.StatusInternalServerError, "agent resize failed: "+err.Error())
+			return
+		}
+	}
+
+	// 更新控制面记录（持久化新规格；即便 podman update 的 cgroup 变更在重建后回退，
+	// 下次由本系统重建容器时会用这里保存的新值）。
+	if err := s.db.WithInstances(func(is *apitypes.InstancesState) error {
+		if i := is.Instances[req.Name]; i != nil {
+			if req.Memory != nil {
+				i.Memory = *req.Memory
+			}
+			if req.CPUs != nil {
+				i.CPUs = *req.CPUs
+			}
+			if req.Disk != nil {
+				i.Disk = *req.Disk
+			}
+		}
+		return nil
+	}); err != nil {
+		s.log.Errorf("instance resize: failed to persist new spec for %s: %v", req.Name, err)
+		fail(c, http.StatusInternalServerError, "persist resize failed: "+err.Error())
+		return
+	}
+
+	params := map[string]interface{}{}
+	if req.Memory != nil {
+		params["memory"] = *req.Memory
+	}
+	if req.CPUs != nil {
+		params["cpus"] = *req.CPUs
+	}
+	if req.Disk != nil {
+		params["disk"] = *req.Disk
+	}
+	s.audit.Log(store.AuditRecord{
+		Operator:   operatorFrom(c),
+		Action:     "instance.resize", Level: audit.LevelImportant, Result: "success",
+		DurationMs: time.Since(start).Milliseconds(),
+		Target:     map[string]interface{}{"instance": req.Name, "server": inst.Server},
+		Params:     params,
+	})
+
+	s.log.Infof("instance resized: %s (%v)", req.Name, params)
+	// 变配后重新读取，返回最新视图
+	updated, err := s.db.ReadInstances()
+	if err == nil {
+		if v := updated.Instances[req.Name]; v != nil {
+			ok(c, v.ToView())
+			return
+		}
+	}
+	ok(c, nil)
+}
+
 // instanceAccessMode 更新 group 级 access_mode（通过实例名定位 group）。
 func (s *Server) instanceAccessMode(c *gin.Context) {
 	var req struct {
@@ -1783,6 +1958,33 @@ func parseMemoryGi(s string) int {
 	if strings.HasSuffix(s, "M") {
 		n, _ := strconv.Atoi(strings.TrimSuffix(s, "M"))
 		return (n + 1023) / 1024
+	}
+	return 0
+}
+
+// parseMemoryBytes 解析内存字符串为字节数,用于与实时 used_memory(字节)比较。
+// 支持 Gi/Mi/Ki(二进制)与 G/M/K、GB/MB/KB(十进制)。无法解析返回 0。
+func parseMemoryBytes(s string) int64 {
+	s = strings.TrimSpace(s)
+	units := []struct {
+		suffix string
+		mult   int64
+	}{
+		{"Gi", 1 << 30}, {"Mi", 1 << 20}, {"Ki", 1 << 10},
+		{"GB", 1000 * 1000 * 1000}, {"MB", 1000 * 1000}, {"KB", 1000},
+		{"G", 1 << 30}, {"M", 1 << 20}, {"K", 1 << 10},
+	}
+	for _, u := range units {
+		if strings.HasSuffix(s, u.suffix) {
+			n, err := strconv.ParseFloat(strings.TrimSuffix(s, u.suffix), 64)
+			if err != nil {
+				return 0
+			}
+			return int64(n * float64(u.mult))
+		}
+	}
+	if n, err := strconv.ParseInt(s, 10, 64); err == nil {
+		return n
 	}
 	return 0
 }
