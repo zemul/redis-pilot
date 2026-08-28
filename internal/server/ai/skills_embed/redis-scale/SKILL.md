@@ -5,7 +5,7 @@ description: 扩容 Redis 实例（加从库或提升配置）
 
 # redis-scale
 
-加从库或通过替换式升级提升实例配置。
+加从库或提升实例配置。提升配置有两种方式：**原地变配（resize）**和**替换式升级**。
 
 ## 加从库流程
 
@@ -28,9 +28,37 @@ description: 扩容 Redis 实例（加从库或提升配置）
    redis-pilot-cli instance status <replica-name>
    ```
 
-## 提升配置流程（替换式扩容）
+## 提升配置：优先用原地变配（resize，不停机）
 
-通过创建高配从库，确保其为唯一候选后 promote 为主库来实现扩容。
+内存和 CPU 支持在同一节点上原地变配，不停机、不重建容器：
+
+```
+redis-pilot-cli instance resize <name> --memory <new-memory>   # 内存
+redis-pilot-cli instance resize <name> --cpus <n>              # CPU
+redis-pilot-cli instance resize <name> --disk <new-disk>       # 磁盘规划配额
+redis-pilot-cli instance resize <name> --memory 8Gi --cpus 4   # 一起改
+```
+
+三个维度都可选，只改传入的那个；用 flag 是否出现（Changed）判定，不指定即保持不变。
+
+各维度语义与生效方式：
+
+| 维度 | 底层动作 | 生效 | 持久性 |
+|------|---------|------|--------|
+| memory | `podman update --memory/--memory-swap` + 引擎 `maxmemory`/`max-db-size` | 不停机立即 | maxmemory 写入配置文件持久化；cgroup 变更在容器重建前有效 |
+| cpus | `podman update --cpus` | 不停机立即 | 重建前有效 |
+| disk | 仅更新控制面记账 | 立即 | 持久（纯规划元数据，不下发容器） |
+
+**Server 侧护栏（自动执行，无需手动检查）**：
+- **升配容量校验**：目标节点剩余资源不足以容纳新规格时返回 409（校验时排除实例自身当前占用，只看增量）。
+- **降配 OOM 护栏**：内存降到低于实例实时 `used_memory` 的 110% 时返回 400，避免 cgroup 收缩触发 OOM Kill。
+- **仅改磁盘**：不触碰容器，只更新控制面记录。
+
+**已知限制**：`podman update` 调整的是运行中容器的 cgroup，若容器在下次由本系统重建前被**非受控事件**重启（崩溃自动重启策略 `--restart on-failure`、宿主机重启），cgroup 会回退到创建时的值。内存的 `maxmemory` 因写入了配置文件不受影响；容器内存/CPU 上限的回退会在下次受控重建时用控制面保存的新规格纠正。对可靠性要求极高的变配，可在 resize 后安排一次受控重建（如借助下方替换式升级流程换到新容器）。
+
+## 提升配置：替换式升级（跨节点 / 需要全新容器时）
+
+当需要**换到其它节点**、**规格族跨越 podman 在线变配能力**、或要求变配后立即落到全新容器时，用替换式升级：通过创建高配从库，确保其为唯一候选后 promote 为主库来实现扩容。
 
 **核心原则**：
 - failover 前确保只有一个 replica，使 Sentinel 选举结果确定
@@ -83,9 +111,11 @@ description: 扩容 Redis 实例（加从库或提升配置）
 
 ## 注意事项
 
+- **提升配置优先用 `instance resize`（原地、不停机）**，内存/CPU 直接在同节点变配；容量与 OOM 护栏由 Server 自动执行。
+- 仅在需要换节点、跨规格族或要求全新容器时才用替换式升级（建高配从库 → 同步 → 删旧从库 → promote → 清理旧主 → 补从库）。
 - 加从库时优先选择与主库不同的服务器（跨机容灾）
-- 缩容（删从库）使用 redis-delete
+- 缩容内存/CPU 用 `instance resize`（降配）；缩容副本数（删从库）用 redis-delete
+- 磁盘只能通过 `instance resize --disk` 调整规划配额（纯元数据，不强制、可增可减）
 - Redis/Proxy 端口由 Server 自动分配和发布，不从 CLI 传 `--port`
-- 提升配置本质是替换式升级：建高配从库 → 同步 → 删旧从库 → promote → 清理旧主 → 补从库
-- 全程保持至少一个 replica 存活，确保 min-replicas-to-write 不阻断写入
+- 替换式升级全程保持至少一个 replica 存活，确保 min-replicas-to-write 不阻断写入
 - 多从场景：先建一个高配 replica 并同步追平，再逐个删除旧 replica，最后 failover

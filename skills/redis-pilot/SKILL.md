@@ -41,6 +41,9 @@ redis-pilot-cli instance start <name>               # 启动实例
 redis-pilot-cli instance stop <name>                # 停止实例（主库需加 --force）
 redis-pilot-cli instance config <name> --set k=v    # 热更新配置（CONFIG SET + 写文件）
 redis-pilot-cli instance config <name> --set k=v --restart  # 写文件后重启容器（角色不回退）
+redis-pilot-cli instance resize <name> --memory <mem>       # 变配内存（cgroup + maxmemory，不停机）
+redis-pilot-cli instance resize <name> --cpus <n>           # 变配 CPU（cgroup，不停机）
+redis-pilot-cli instance resize <name> --disk <disk>        # 变配磁盘规划配额（仅元数据，不动容器）
 redis-pilot-cli instance failover <name>            # 触发故障转移（参数仅用于定位 group，Sentinel 自行选举新主库）
 redis-pilot-cli instance set-access-mode <name> <standard|rw-split>  # 设置代理访问模式
 ```

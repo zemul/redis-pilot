@@ -226,6 +226,61 @@ Use --restart to restart the instance when the parameter requires it (e.g. bind,
 	},
 }
 
+var instanceResizeCmd = &cobra.Command{
+	Use:   "resize <name>",
+	Short: "Resize instance memory / CPU / disk",
+	Long: `Change an instance's resource spec in place. Specify any subset of
+--memory, --cpus, --disk; unspecified dimensions are left unchanged.
+
+  memory  Adjusts container cgroup (podman update --memory) AND the engine's
+          maxmemory (Redis) / max-db-size (Kvrocks). Applied online without
+          restart. The maxmemory change is persisted to the config file; the
+          cgroup change is re-applied on the next managed container rebuild.
+  cpus    Adjusts container cgroup (podman update --cpus). Online, no restart.
+  disk    Capacity-planning metadata only (used for scheduling accounting);
+          not enforced on the container. Updates the control-plane record only.
+
+The Server rejects an upsize if the node lacks free capacity (excluding this
+instance's own current allocation), and rejects a memory downsize that would
+drop below the instance's live used_memory (+10% headroom) to avoid OOM.
+
+Note: podman cgroup changes revert to the create-time value if the container
+is restarted by an unmanaged event (crash-restart policy, host reboot) before
+the next managed rebuild.`,
+	Example: `  # Grow memory online (cgroup + maxmemory)
+  redis-pilot-cli instance resize order-1 --memory 8Gi
+
+  # Bump CPU only
+  redis-pilot-cli instance resize order-1 --cpus 4
+
+  # Adjust disk planning quota only (no container change)
+  redis-pilot-cli instance resize order-1 --disk 100Gi
+
+  # Change memory and CPU together
+  redis-pilot-cli instance resize order-1 --memory 8Gi --cpus 4`,
+	Args: cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		req := map[string]interface{}{"name": args[0]}
+		// 用 Changed 区分"未指定"与"显式传了默认值",只发送用户实际改动的维度。
+		if cmd.Flags().Changed("memory") {
+			v, _ := cmd.Flags().GetString("memory")
+			req["memory"] = v
+		}
+		if cmd.Flags().Changed("cpus") {
+			v, _ := cmd.Flags().GetFloat64("cpus")
+			req["cpus"] = v
+		}
+		if cmd.Flags().Changed("disk") {
+			v, _ := cmd.Flags().GetString("disk")
+			req["disk"] = v
+		}
+		if len(req) == 1 {
+			return fmt.Errorf("specify at least one of --memory, --cpus, --disk")
+		}
+		return checkResp(client.Post("/instance/resize", req))
+	},
+}
+
 var instanceSetAccessModeCmd = &cobra.Command{
 	Use:   "set-access-mode <name> <mode>",
 	Short: "Set group access mode (rw-split | standard)",
@@ -283,6 +338,7 @@ func init() {
 		instanceDiagnoseCmd,
 		instanceCreateCmd,
 		instanceConfigCmd,
+		instanceResizeCmd,
 		instanceSetAccessModeCmd,
 		instanceStartCmd,
 		instanceStopCmd,
@@ -319,6 +375,10 @@ func init() {
 	instanceConfigCmd.Flags().String("set", "", "Config entries (k=v,k=v)")
 	instanceConfigCmd.Flags().Bool("restart", false, "Restart to apply")
 	instanceConfigCmd.MarkFlagRequired("set")
+
+	instanceResizeCmd.Flags().String("memory", "", "New memory (e.g. 8Gi); adjusts cgroup + maxmemory online")
+	instanceResizeCmd.Flags().Float64("cpus", 0, "New CPU cores; adjusts cgroup online")
+	instanceResizeCmd.Flags().String("disk", "", "New disk planning quota (e.g. 100Gi); metadata only")
 }
 
 func parseKV(s string) map[string]string {

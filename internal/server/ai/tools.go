@@ -30,6 +30,7 @@ var writeTools = map[string]bool{
 	"stop_instance":       true,
 	"failover":            true,
 	"config_set":          true,
+	"resize_instance":     true,
 	"backup_exec":         true,
 	"set_access_mode":     true,
 	"replicate":           true,
@@ -113,6 +114,22 @@ func writeToolSummary(name, argsJSON string) string {
 		return fmt.Sprintf("对实例 %s 所在主从组发起故障转移（由 Sentinel 选举新主，不保证提升 %s 本身）", target, target)
 	case "config_set":
 		return fmt.Sprintf("修改实例 %s 配置：%s = %s（不重启；平台保留配置项会被拒绝）", target, a.Key, a.Value)
+	case "resize_instance":
+		var parts []string
+		if a.Memory != "" {
+			parts = append(parts, "内存→"+a.Memory)
+		}
+		if a.CPUs > 0 {
+			parts = append(parts, fmt.Sprintf("CPU→%g", a.CPUs))
+		}
+		if a.Disk != "" {
+			parts = append(parts, "磁盘→"+a.Disk)
+		}
+		change := "(未指定变更)"
+		if len(parts) > 0 {
+			change = fmt.Sprintf("%v", parts)
+		}
+		return fmt.Sprintf("变配实例 %s：%s（内存/CPU 不停机在线调整，磁盘为规划配额；升配受节点容量校验，内存降配受 OOM 护栏保护）", target, change)
 	case "backup_exec":
 		return fmt.Sprintf("对实例 %s 立即执行一次备份", target)
 	case "set_access_mode":
@@ -213,6 +230,13 @@ func (r *toolRegistry) schemas() []openai.ChatCompletionToolParam {
 			makeTool("stop_instance", "停止指定实例（写操作，需用户二次确认后执行；主从组 master 会被拒绝）", nameArg, []string{"name"}),
 			makeTool("failover", "对指定实例所在的主从组发起故障转移（写操作，需二次确认；由 Sentinel 选举新主）", nameArg, []string{"name"}),
 			makeTool("config_set", "修改指定实例的单个运行配置项（写操作，需二次确认；平台保留配置项会被拒绝）", configSetArg, []string{"name", "key", "value"}),
+			makeTool("resize_instance", "在线变配实例的内存/CPU/磁盘规格（写操作，需二次确认）。内存和 CPU 不停机调整容器 cgroup（内存同时调整 maxmemory）；磁盘为容量规划配额（仅元数据）。三个维度均可选，只改传入的；升配受节点剩余容量校验、内存降配受 OOM 护栏保护。用于纵向扩缩容，优先于替换式升级。",
+				map[string]any{
+					"name":   map[string]string{"type": "string", "description": "实例名"},
+					"memory": map[string]string{"type": "string", "description": "新内存规格，可选，如 8Gi；不改则省略"},
+					"cpus":   map[string]string{"type": "number", "description": "新 CPU 核数，可选，需 >0；不改则省略"},
+					"disk":   map[string]string{"type": "string", "description": "新磁盘规划配额，可选，单位用 Gi 如 100Gi；不改则省略。纯规划元数据，不强制"},
+				}, []string{"name"}),
 			makeTool("backup_exec", "对指定实例立即执行一次备份（写操作，需二次确认）", nameArg, []string{"name"}),
 			makeTool("set_access_mode", "设置实例所在组的访问模式：standard（全部走 master）或 rw-split（读写分离）。影响伪 Sentinel 返回给客户端的端口（写操作，需二次确认）",
 				map[string]any{

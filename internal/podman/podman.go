@@ -16,6 +16,10 @@ type ContainerStatus struct {
 // ContainerRuntime 容器运行时接口
 type ContainerRuntime interface {
 	Create(engine, name, image string, port int, memory string, cpus float64, dataDir string) (string, error)
+	// Update 在线调整运行中容器的资源限制（cgroup），不停机、不重建。
+	// memory 为空则不改内存；cpus <= 0 则不改 CPU；两者都为空则空操作。
+	// 注意：podman update 的变更在容器下次重启/重建时会回退到创建时的值。
+	Update(name, memory string, cpus float64) error
 	Start(name string) error
 	Stop(name string) error
 	Remove(name string) error
@@ -68,6 +72,24 @@ func (r *Runtime) Create(engine, name, image string, port int, memory string, cp
 		image,
 		"redis-server", "/etc/redis/redis.conf",
 	)
+}
+
+// Update 在线调整运行中容器的资源限制。对应 `podman update`。
+// memory 为空跳过内存;cpus<=0 跳过 CPU;无任何变更时直接返回。
+func (r *Runtime) Update(name, memory string, cpus float64) error {
+	args := []string{"update"}
+	if memory != "" {
+		args = append(args, "--memory", memory, "--memory-swap", memory)
+	}
+	if cpus > 0 {
+		args = append(args, "--cpus", fmt.Sprintf("%g", cpus))
+	}
+	if len(args) == 1 {
+		return nil // 没有需要在容器层调整的资源(如仅改 disk)
+	}
+	args = append(args, name)
+	_, err := r.Run(args...)
+	return err
 }
 
 func (r *Runtime) Start(name string) error {

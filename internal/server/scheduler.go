@@ -108,10 +108,20 @@ func nodeEndpoint(node *apitypes.NodeState, serverName string) string {
 }
 
 func computeAllocated(instances *apitypes.InstancesState, serverName string) (memGi int, cpus float64, diskGi int) {
-	for _, inst := range instances.Instances {
+	return computeAllocatedExcluding(instances, serverName, "")
+}
+
+// computeAllocatedExcluding 统计某服务器上已分配的资源，但排除名为 excludeName 的实例。
+// 变配（resize）时目标实例已按旧规格计入配额，校验新规格能否放下必须先把它自己排除，
+// 否则会把它的旧占用重复计算，导致升配被误判为容量不足。excludeName 为空时等价于全量统计。
+func computeAllocatedExcluding(instances *apitypes.InstancesState, serverName, excludeName string) (memGi int, cpus float64, diskGi int) {
+	for name, inst := range instances.Instances {
 		// 容器确实不存在的实例不占用资源。注意这里读观测而非意图：
 		// 一个"意图 running 但容器已消失"的实例不该继续占配额。
 		if inst == nil || inst.Server != serverName || inst.ObservedStatus == apitypes.ObservedMissing {
+			continue
+		}
+		if name == excludeName {
 			continue
 		}
 		memGi += parseMemoryGi(inst.Memory)

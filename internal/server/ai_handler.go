@@ -388,6 +388,24 @@ func (s *Server) aiExecute(c *gin.Context) {
 		}
 		handler = s.instanceConfig
 		body = map[string]any{"name": a.Name, "config_overrides": map[string]string{a.Key: a.Value}, "restart": false}
+	case "resize_instance":
+		// 只把用户/AI 实际指定的维度放进 body，缺省字段留空 → Server 端 ResizeInstanceRequest
+		// 的指针字段为 nil，表示"不改该维度"。至少要有一个，否则 Server 返回 400。
+		body = map[string]any{"name": a.Name}
+		if a.Memory != "" {
+			body["memory"] = a.Memory
+		}
+		if a.CPUs > 0 {
+			body["cpus"] = a.CPUs
+		}
+		if a.Disk != "" {
+			body["disk"] = a.Disk
+		}
+		if len(body) == 1 {
+			fail(c, http.StatusBadRequest, "resize requires at least one of memory, cpus, disk")
+			return
+		}
+		handler = s.instanceResize
 	default:
 		// 在 ai.writeTools 白名单内但此处没有执行器：属于开发期未同步，拒绝而非静默。
 		fail(c, http.StatusInternalServerError, "no executor for write tool: "+req.Tool)

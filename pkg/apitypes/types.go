@@ -352,6 +352,24 @@ type CreateInstanceRequest struct {
 	ConfigOverrides map[string]string `json:"config_overrides,omitempty"`
 }
 
+// ResizeInstanceRequest 变配实例请求。
+//
+// 三个规格字段均为指针，nil 表示"本次不改该维度"，用于区分"未指定"与"指定为零值"。
+// 至少要指定一个非 nil 字段，否则 Server 返回 400。
+//
+// 变配语义：
+//   - Memory：同时调整容器 cgroup（podman update --memory/--memory-swap）与
+//     Redis maxmemory / Kvrocks max-db-size。不停机生效；cgroup 变更在容器重建前有效，
+//     maxmemory 通过重写配置文件持久化。
+//   - CPUs：仅调整容器 cgroup（podman update --cpus）。不停机生效；重建前有效。
+//   - Disk：纯容量规划元数据，只更新控制面记录，不下发容器（与创建时语义一致）。
+type ResizeInstanceRequest struct {
+	Name   string   `json:"name" binding:"required"`
+	Memory *string  `json:"memory,omitempty"`
+	CPUs   *float64 `json:"cpus,omitempty"`
+	Disk   *string  `json:"disk,omitempty"`
+}
+
 // SentinelMaster Sentinel 监控的一个实例组主库
 type SentinelMaster struct {
 	Group                 string `json:"group" yaml:"group"`

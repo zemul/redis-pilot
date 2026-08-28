@@ -200,6 +200,7 @@ func (a *Agent) Router() *gin.Engine {
 		inst.POST("/stop", a.instanceStop)
 		inst.POST("/delete", a.instanceDelete)
 		inst.POST("/config", a.instanceConfig)
+		inst.POST("/resize", a.instanceResize)
 		inst.POST("/promote", a.instancePromote)
 		inst.POST("/replicate", a.instanceReplicate)
 		inst.POST("/backup", a.instanceBackup)
@@ -579,6 +580,90 @@ func (a *Agent) instanceConfig(c *gin.Context) {
 		}
 	}
 
+	ok(c, nil)
+}
+
+// instanceResizeRequest 是 Server 下发的变配载荷。
+// Memory 为空表示不改内存;CPUs<=0 表示不改 CPU。其余字段用于内存变配时重写配置文件
+// （持久化 maxmemory）与热更新 CONFIG SET，语义与 instanceConfig 的 restart/rewrite 模式一致。
+type instanceResizeRequest struct {
+	Name            string            `json:"name" binding:"required"`
+	Engine          string            `json:"engine" binding:"required"`
+	Memory          string            `json:"memory"`
+	CPUs            float64           `json:"cpus"`
+	EngineVersion   string            `json:"engine_version"`
+	Category        string            `json:"category"`
+	Type            string            `json:"type"`
+	ReplicaOf       string            `json:"replica_of"` // "ip:port"
+	Port            int               `json:"port"`
+	ConfigOverrides map[string]string `json:"config_overrides"`
+}
+
+// instanceResize 在线调整实例资源规格,不停机。
+//
+//   - CPU/内存:调整容器 cgroup(podman update)。立即生效,容器重建前有效。
+//   - 内存:额外重写配置文件(持久化 maxmemory/max-db-size)并对运行中实例 CONFIG SET,
+//     使新内存立刻被引擎使用,且重启后不回退到旧 maxmemory。
+//   - 磁盘不在此处处理:它是控制面容量记账,不落到容器。
+func (a *Agent) instanceResize(c *gin.Context) {
+	var req instanceResizeRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		fail(c, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := validateInstanceName(req.Name); err != nil {
+		fail(c, http.StatusBadRequest, err.Error())
+		return
+	}
+	if req.Memory == "" && req.CPUs <= 0 {
+		fail(c, http.StatusBadRequest, "resize requires at least one of memory or cpus")
+		return
+	}
+
+	unlock := a.lockInstance(req.Name)
+	defer unlock()
+
+	containerName := req.Engine + "-" + req.Name
+
+	// 1. 在线调整容器 cgroup(内存/CPU)
+	if err := a.runtime.Update(containerName, req.Memory, req.CPUs); err != nil {
+		fail(c, http.StatusInternalServerError, "podman update: "+err.Error())
+		return
+	}
+
+	// 2. 内存变配:持久化配置文件 + 热更新引擎的 maxmemory,使新内存立即且长期生效
+	if req.Memory != "" {
+		cfgReq := &instanceConfigRequest{
+			Name:            req.Name,
+			Engine:          req.Engine,
+			Type:            req.Type,
+			ConfigOverrides: req.ConfigOverrides,
+			EngineVersion:   req.EngineVersion,
+			Password:        a.getPassword(req.Name),
+			Memory:          req.Memory,
+			Category:        req.Category,
+			ReplicaOf:       req.ReplicaOf,
+			Port:            req.Port,
+		}
+		if err := a.writeInstanceConfig(cfgReq); err != nil {
+			fail(c, http.StatusInternalServerError, "rewrite config: "+err.Error())
+			return
+		}
+		// 热更新:Redis 用 maxmemory,Kvrocks 用 max-db-size,值与配置文件一致(字节)。
+		memBytes := convertMemoryToBytes(req.Memory)
+		key := "maxmemory"
+		if req.Engine == "kvrocks" {
+			key = "max-db-size"
+		}
+		if _, err := redisCmdChecked(req.Name, a.getPassword(req.Name), "CONFIG", "SET", key, memBytes); err != nil {
+			// cgroup 已改、配置文件已写,仅热更新失败:重启后仍会读到新值。
+			// 返回错误让 Server 记审计并提示,但不回滚(回滚代价更高且状态更乱)。
+			fail(c, http.StatusInternalServerError, "CONFIG SET "+key+": "+err.Error())
+			return
+		}
+	}
+
+	a.log.Infof("instance resized: %s (memory=%q cpus=%g)", req.Name, req.Memory, req.CPUs)
 	ok(c, nil)
 }
 
