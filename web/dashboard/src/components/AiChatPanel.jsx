@@ -424,7 +424,7 @@ export default function AiChatPanel() {
       });
       const body = await resp.json().catch(() => null);
       if (!resp.ok) throw new Error(body?.error || `执行失败：${resp.status}`);
-      setMessages((m) => [...m, { role: 'system', content: `✅ 已执行：${summary}` }]);
+      setMessages((m) => [...m, { role: 'system', content: `已完成 · ${summary}` }]);
       setPendingConfirm(null);
       setExecuting(false);
       // 执行成功：自动发起下一轮，让 AI 判断是否还有后续步骤（多步写自动续接）。
