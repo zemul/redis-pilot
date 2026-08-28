@@ -55,6 +55,29 @@ description: 创建 Redis/Kvrocks 实例，支持单点和主从
 | access-mode | 否 | 代理访问模式：standard 或 rw-split。默认行为：replication 类型默认 rw-split，standalone 类型默认 standard |
 | config | 否 | 配置覆盖，格式 `k=v,k=v` |
 
+## 容量建议
+
+按引擎特性选择规格，避免盲目堆资源或让字段取 0（0 会导致调度不计入容量账，存在超卖风险）。
+
+### 内存（memory）
+
+- **决定数据集上限的核心维度**，无论 Redis 还是 Kvrocks 都应按实际数据量规划。
+- Redis 为纯内存，数据集受 `maxmemory` 限制，内存即容量上限；建议在预估数据量基础上留 20%-30% 余量给碎片和缓冲。
+- Kvrocks 内存主要作为缓存/写缓冲，数据主要落盘，内存可远小于总数据量。
+
+### CPU（cpus）
+
+- **Redis：默认 1 核即可，一般无需调高。** Redis 命令处理是单线程的，多给核对常规负载几乎没有收益；只有 BGSAVE/AOF rewrite 的 fork、或显式开启 I/O 多线程时会用到额外 1-2 核。这与云厂商标准版 Redis「按内存卖、不让选 CPU」的做法一致。
+- **Kvrocks：按需给 2-4 核。** Kvrocks 是多线程存储引擎（RocksDB compaction/flush 吃 CPU），写密集或大数据量场景多核有实际收益。
+
+### 磁盘（disk）
+
+- 磁盘用于调度容量核算（`Kvrocks 20Gi / Redis 10Gi` 默认兜底），**单位必须用 `Gi`**（如 `50Gi`）；不写 `GB`/`TB` 等单位。
+- **Redis：磁盘仅用于持久化（RDB/AOF）和备份，默认值通常够用。** 需求约为内存的若干倍——persistent 类（RDB+AOF）比 cache 类（仅 RDB）占用更多，数据量大时可适当调高。
+- **Kvrocks：磁盘是核心容量维度，务必按数据规模设置。** 数据落盘可远超内存，预计存 100G 数据就给 `100Gi` 以上。
+
+> 通过 AI 助手对话创建（`create_instance` 工具）时默认值与本表一致，AI 会按上述引擎特性建议容量；CLI 与 AI 两条创建路径行为对齐。
+
 ## 注意事项
 
 - **实例命名规范：`<group>-<序号>`**，如 `galaxy-1`、`galaxy-2`、`order-1`、`order-2`。不要包含角色（master/replica）或节点（redis01）信息，因为角色会因 failover 切换，实例也可能迁移到不同服务器。当前主库由 group 的 `current_master` 字段维护。

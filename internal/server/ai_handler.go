@@ -274,19 +274,21 @@ func (s *Server) aiExecute(c *gin.Context) {
 		return
 	}
 	var a struct {
-		Name          string `json:"name"`
-		Key           string `json:"key"`
-		Value         string `json:"value"`
-		Group         string `json:"group"`
-		Category      string `json:"category"`
-		Engine        string `json:"engine"`
-		EngineVersion string `json:"engine_version"`
-		Type          string `json:"type"`
-		Memory        string `json:"memory"`
-		AccessMode    string `json:"access_mode"`
-		ReplicaOf     string `json:"replica_of"`
-		Schedule      string `json:"schedule"`
-		Retention     int    `json:"retention"`
+		Name          string  `json:"name"`
+		Key           string  `json:"key"`
+		Value         string  `json:"value"`
+		Group         string  `json:"group"`
+		Category      string  `json:"category"`
+		Engine        string  `json:"engine"`
+		EngineVersion string  `json:"engine_version"`
+		Type          string  `json:"type"`
+		Memory        string  `json:"memory"`
+		CPUs          float64 `json:"cpus"`
+		Disk          string  `json:"disk"`
+		AccessMode    string  `json:"access_mode"`
+		ReplicaOf     string  `json:"replica_of"`
+		Schedule      string  `json:"schedule"`
+		Retention     int     `json:"retention"`
 	}
 	if len(req.Args) > 0 {
 		_ = json.Unmarshal(req.Args, &a)
@@ -325,6 +327,24 @@ func (s *Server) aiExecute(c *gin.Context) {
 			return
 		}
 		handler = s.instanceCreate
+		// cpus/disk 是可选入参：用户/AI 指定则采用，否则用与 CLI 一致的兜底。
+		// cpus 默认 1；disk 按引擎默认（redis 10Gi / kvrocks 20Gi）。
+		// 否则零值会导致 0C/0Gi 且调度不占容量账（见 scheduler reqCPUs>0 / reqDiskGi>0）。
+		cpus := a.CPUs
+		if cpus <= 0 {
+			cpus = 1
+		}
+		disk := a.Disk
+		if disk == "" {
+			disk = "10Gi"
+			if engine == "kvrocks" {
+				disk = "20Gi"
+			}
+		} else if parseMemoryGi(disk) <= 0 {
+			// parseMemoryGi 只认 Gi/G/Mi/M；GB/TB 等会解析成 0 导致不占磁盘账。
+			fail(c, http.StatusBadRequest, "invalid disk (use Gi unit, e.g. 50Gi): "+disk)
+			return
+		}
 		body = map[string]any{
 			"name":     a.Name,
 			"group":    a.Group,
@@ -332,6 +352,8 @@ func (s *Server) aiExecute(c *gin.Context) {
 			"engine":   engine,
 			"type":     typ,
 			"memory":   a.Memory,
+			"cpus":     cpus,
+			"disk":     disk,
 		}
 		if a.EngineVersion != "" {
 			body["engine_version"] = a.EngineVersion

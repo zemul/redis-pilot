@@ -12,8 +12,8 @@ import (
 // MVP 只读工具：list_instances / get_instance_status / diagnose_instance，
 // 外加内置 load_skill（progressive disclosure：按需展开 SKILL.md 正文）。
 type toolRegistry struct {
-	api       PlatformAPI
-	skills    []Skill
+	api        PlatformAPI
+	skills     []Skill
 	allowWrite bool
 }
 
@@ -47,19 +47,21 @@ func IsWriteTool(name string) bool { return isWriteTool(name) }
 // 刻意不使用 LLM 生成的描述，防止模型谎报将要执行的动作。
 func writeToolSummary(name, argsJSON string) string {
 	var a struct {
-		Name          string `json:"name"`
-		Key           string `json:"key"`
-		Value         string `json:"value"`
-		Group         string `json:"group"`
-		Category      string `json:"category"`
-		Engine        string `json:"engine"`
-		EngineVersion string `json:"engine_version"`
-		Type          string `json:"type"`
-		Memory        string `json:"memory"`
-		AccessMode    string `json:"access_mode"`
-		ReplicaOf     string `json:"replica_of"`
-		Schedule      string `json:"schedule"`
-		Retention     int    `json:"retention"`
+		Name          string  `json:"name"`
+		Key           string  `json:"key"`
+		Value         string  `json:"value"`
+		Group         string  `json:"group"`
+		Category      string  `json:"category"`
+		Engine        string  `json:"engine"`
+		EngineVersion string  `json:"engine_version"`
+		Type          string  `json:"type"`
+		Memory        string  `json:"memory"`
+		CPUs          float64 `json:"cpus"`
+		Disk          string  `json:"disk"`
+		AccessMode    string  `json:"access_mode"`
+		ReplicaOf     string  `json:"replica_of"`
+		Schedule      string  `json:"schedule"`
+		Retention     int     `json:"retention"`
 	}
 	if argsJSON != "" {
 		_ = json.Unmarshal([]byte(argsJSON), &a)
@@ -93,7 +95,16 @@ func writeToolSummary(name, argsJSON string) string {
 		if grp == "" {
 			grp = "(未指定 group)"
 		}
-		return fmt.Sprintf("创建实例 %s：%s %s，内存 %s，group=%s，用途=%s", target, engine, typeLabel, mem, grp, a.Category)
+		// cpus/disk 为可选：展示用户/AI 指定的值，未指定则标注按默认，与执行端兜底一致。
+		cpuLabel := "默认 1"
+		if a.CPUs > 0 {
+			cpuLabel = fmt.Sprintf("%g", a.CPUs)
+		}
+		diskLabel := a.Disk
+		if diskLabel == "" {
+			diskLabel = "默认"
+		}
+		return fmt.Sprintf("创建实例 %s：%s %s，内存 %s，CPU %s，磁盘 %s，group=%s，用途=%s", target, engine, typeLabel, mem, cpuLabel, diskLabel, grp, a.Category)
 	case "start_instance":
 		return fmt.Sprintf("启动实例 %s", target)
 	case "stop_instance":
@@ -193,6 +204,8 @@ func (r *toolRegistry) schemas() []openai.ChatCompletionToolParam {
 			"engine_version": map[string]string{"type": "string", "description": "引擎版本，可选，如 redis 的 5/6.2/7；留空用平台默认"},
 			"type":           map[string]string{"type": "string", "description": "拓扑：standalone（单点）或 replication（主从），默认 standalone"},
 			"memory":         map[string]string{"type": "string", "description": "内存规格，如 2Gi、4Gi；必填"},
+			"cpus":           map[string]string{"type": "number", "description": "CPU 核数，可选，默认 1。Redis 命令处理单线程，常规负载 1 核即可，除非用户明确要求否则不必调高；Kvrocks 是多线程存储引擎，写密集/大数据量场景可按需给 2-4 核。"},
+			"disk":           map[string]string{"type": "string", "description": "磁盘容量，可选，单位必须用 Gi（如 50Gi）。Redis 为纯内存，磁盘仅用于持久化和备份，留空用默认即可；Kvrocks 是磁盘型存储，数据落盘可远超内存，应根据用户描述的数据规模设置（如预计存 100G 数据则给 100Gi 以上）。"},
 		}
 		tools = append(tools,
 			makeTool("create_instance", "创建一个新的 Redis/Kvrocks 实例（写操作，需用户二次确认后执行；节点由平台自动调度，无需指定）", createArg, []string{"name", "group", "category", "memory", "type"}),
