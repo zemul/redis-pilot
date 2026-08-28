@@ -25,13 +25,14 @@ import {
   BigkeysModal,
   AccessModeModal,
   ConfigModal,
+  ResizeModal,
   BackupListModal,
   DeleteConfirmModal,
   ConfirmPowerModal,
   CreateInstanceModal,
 } from './modals/index.jsx';
 import AiChatPanel from './components/AiChatPanel.jsx';
-import { normalizeMap, backupRows, auditQuery } from './lib/format.js';
+import { normalizeMap, backupRows, auditQuery, getField } from './lib/format.js';
 import { buildInstanceGroups } from './lib/instance.js';
 
 const TABS = [
@@ -73,6 +74,7 @@ function AppShell() {
   const [slowlogTarget, setSlowlogTarget] = useState(null);
   const [bigkeysTarget, setBigkeysTarget] = useState(null);
   const [configTarget, setConfigTarget] = useState(null);
+  const [resizeTarget, setResizeTarget] = useState(null);
   const [accessModeTarget, setAccessModeTarget] = useState(null);
   const [createOpen, setCreateOpen] = useState(false);
   const [pendingAction, setPendingAction] = useState('');
@@ -341,6 +343,7 @@ function AppShell() {
                   onSlowlog={(item) => setSlowlogTarget(item.name)}
                   onBigkeys={(item) => setBigkeysTarget(item.name)}
                   onConfig={(item) => setConfigTarget(item.name)}
+                  onResize={(item) => setResizeTarget({ name: item.name, memory: getField(item, 'memory', 'Memory', ''), cpus: String(getField(item, 'cpus', 'CPUs', '') || ''), disk: getField(item, 'disk', 'Disk', '') })}
                   onToggleAccessMode={toggleAccessMode}
                   onCreate={() => setCreateOpen(true)}
                   servers={servers}
@@ -370,6 +373,7 @@ function AppShell() {
       {slowlogTarget && <SlowlogModal instanceName={slowlogTarget} requestFn={request} onClose={() => setSlowlogTarget(null)} />}
       {bigkeysTarget && <BigkeysModal instanceName={bigkeysTarget} requestFn={request} onClose={() => setBigkeysTarget(null)} />}
       {configTarget && <ConfigModal instanceName={configTarget} requestFn={request} onClose={() => setConfigTarget(null)} />}
+      {resizeTarget && <ResizeModal instanceName={resizeTarget.name} currentSpecs={{ memory: resizeTarget.memory, cpus: resizeTarget.cpus, disk: resizeTarget.disk }} requestFn={request} onClose={() => { setResizeTarget(null); refresh(); }} />}
       {accessModeTarget && <AccessModeModal group={accessModeTarget} publicHost={serverInfo?.proxy_public_endpoint} sentinelPort={serverInfo?.proxy_sentinel_port} onConfirm={(mode) => toggleAccessMode(accessModeTarget, mode)} onClose={() => setAccessModeTarget(null)} />}
       {backupDetail && <BackupListModal detail={backupDetail} requestFn={request} onRefresh={refresh} onClose={() => setBackupDetail(null)} />}
       {confirmAction && (

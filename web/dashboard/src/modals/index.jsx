@@ -830,6 +830,74 @@ export function ConfirmPowerModal({ detail, loading, onCancel, onConfirm }) {
   );
 }
 
+export function ResizeModal({ instanceName, currentSpecs, requestFn, onClose }) {
+  const [memory, setMemory] = useState(currentSpecs?.memory || '');
+  const [cpus, setCpus] = useState(currentSpecs?.cpus || '');
+  const [disk, setDisk] = useState(currentSpecs?.disk || '');
+  const [submitting, setSubmitting] = useState(false);
+  const [result, setResult] = useState('');
+
+  const hasChange = memory !== (currentSpecs?.memory || '') || cpus !== (currentSpecs?.cpus || '') || disk !== (currentSpecs?.disk || '');
+
+  async function handleSubmit(e) {
+    e.preventDefault();
+    setSubmitting(true);
+    setResult('');
+    const body = { name: instanceName };
+    if (memory && memory !== (currentSpecs?.memory || '')) body.memory = memory;
+    if (cpus && cpus !== (currentSpecs?.cpus || '')) body.cpus = Number(cpus);
+    if (disk && disk !== (currentSpecs?.disk || '')) body.disk = disk;
+    if (!body.memory && !body.cpus && !body.disk) {
+      setResult('至少修改一项规格');
+      setSubmitting(false);
+      return;
+    }
+    try {
+      await requestFn('/instance/resize', { method: 'POST', body: JSON.stringify(body) });
+      setResult('调整成功');
+      setTimeout(onClose, 800);
+    } catch (err) {
+      setResult(`失败: ${err.message || String(err)}`);
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-40 p-7 grid place-items-center bg-black/40 animate-[fadeIn_0.15s_ease-out]" role="presentation" onMouseDown={onClose}>
+      <section className="w-[min(460px,100%)] rounded-xl border border-gray-200 overflow-hidden bg-white shadow-lg animate-[slideUp_0.18s_cubic-bezier(0.16,1,0.3,1)]" role="dialog" aria-modal="true" onMouseDown={(e) => e.stopPropagation()}>
+        <div className="min-h-[56px] px-4 py-3.5 border-b border-gray-200 flex items-center justify-between gap-3">
+          <div><h3 className="m-0 text-base font-semibold">调整规格</h3><span className="block mt-0.5 text-xs text-gray-400">{instanceName}</span></div>
+          <button className="w-8 h-8 rounded-md border border-gray-200 bg-white text-gray-500 inline-flex items-center justify-center hover:bg-gray-50 transition-colors" onClick={onClose} aria-label="关闭" type="button"><X size={18} /></button>
+        </div>
+        <form onSubmit={handleSubmit} className="p-4 grid gap-4">
+          <label className="grid gap-1 text-[13px] font-medium text-gray-700">
+            内存
+            <input className="h-9 px-3 border border-gray-200 rounded-md text-[13px] focus:outline-none focus:border-gray-900 focus:ring-1 focus:ring-gray-900" placeholder="例如 2Gi" value={memory} onChange={(e) => setMemory(e.target.value)} />
+          </label>
+          <label className="grid gap-1 text-[13px] font-medium text-gray-700">
+            CPU
+            <input className="h-9 px-3 border border-gray-200 rounded-md text-[13px] focus:outline-none focus:border-gray-900 focus:ring-1 focus:ring-gray-900" type="number" step="0.1" min="0.1" placeholder="例如 2" value={cpus} onChange={(e) => setCpus(e.target.value)} />
+          </label>
+          <label className="grid gap-1 text-[13px] font-medium text-gray-700">
+            磁盘
+            <input className="h-9 px-3 border border-gray-200 rounded-md text-[13px] focus:outline-none focus:border-gray-900 focus:ring-1 focus:ring-gray-900" placeholder="例如 20Gi" value={disk} onChange={(e) => setDisk(e.target.value)} />
+          </label>
+          {result && (
+            <div className={`text-[13px] px-3 py-2 rounded-md border ${result.startsWith('失败') ? 'border-red-200 bg-red-50 text-red-700' : 'border-green-200 bg-green-50 text-green-700'}`}>
+              {result}
+            </div>
+          )}
+          <div className="flex justify-end gap-2 pt-2">
+            <button type="button" className="h-9 px-4 rounded-md border border-gray-200 bg-white text-[13px] text-gray-700 hover:bg-gray-50 transition-colors cursor-pointer" onClick={onClose}>取消</button>
+            <button type="submit" disabled={submitting || !hasChange} className="h-9 px-4 rounded-md bg-gray-900 text-white text-[13px] font-medium hover:bg-gray-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors cursor-pointer">{submitting ? '提交中...' : '确认调整'}</button>
+          </div>
+        </form>
+      </section>
+    </div>
+  );
+}
+
 export function CreateInstanceModal({ servers, groups, requestFn, onRefresh, onClose }) {
   const [form, setForm] = useState({
     group: '', engine: 'redis', engine_version: '', category: 'cache',
