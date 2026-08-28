@@ -753,6 +753,11 @@ func (s *Server) instanceConfig(c *gin.Context) {
 
 // instanceResize 变配实例规格（内存/CPU 不停机 + 磁盘元数据）。
 //
+// minResizeMemoryBytes 是 resize 允许设置的内存下限（128 MiB）。低于此值时
+// redis/kvrocks 进程的基础开销就会超过 cgroup 限制，容器一起来就被 OOM Kill。
+// 用作 used_memory 缓存缺失（新实例尚未被 reconcile 采集）时的绝对兜底防线。
+const minResizeMemoryBytes = 128 * 1024 * 1024
+
 // 流程：容量校验（升配，排除自身）→ 降配 OOM 护栏 → 转发 Agent（cgroup + maxmemory）
 // → 更新控制面记录 → 审计。三个规格字段均可选，只改传入的维度。
 // 仅改磁盘时不触碰容器，只更新控制面记账。
@@ -828,7 +833,12 @@ func (s *Server) instanceResize(c *gin.Context) {
 
 	// 降配 OOM 护栏：新内存不得低于当前 used_memory 的 110%（留 10% 余量），
 	// 否则容器 cgroup 收缩会触发 OOM Kill。used_memory 取 reconcile 的缓存值，
-	// 可能略有滞后，但作为护栏足够；缓存缺失（尚未采集）时跳过，不阻断合法操作。
+	// 可能略有滞后，但作为护栏足够。
+	//
+	// 缓存缺失（used == 0，如刚创建、reconcile 尚未采集的新实例）时无法算余量，
+	// 此时退到一个绝对下限兜底：任何实例的内存上限都不得低于 minResizeMemoryBytes，
+	// 否则 redis 进程基础开销即超限，一起容器就被 OOM Kill。这道兜底堵住了
+	// “新实例被降到过小值直接压死容器”的路径（缺此兜底会穿透到 agent 执行）。
 	if req.Memory != nil {
 		newBytes := parseMemoryBytes(*req.Memory)
 		s.memoryUsedMu.RLock()
@@ -838,6 +848,12 @@ func (s *Server) instanceResize(c *gin.Context) {
 			fail(c, http.StatusBadRequest, fmt.Sprintf(
 				"refusing to shrink memory to %s: current used_memory is %d bytes; new limit must leave >=10%% headroom to avoid OOM",
 				*req.Memory, used))
+			return
+		}
+		if newBytes > 0 && newBytes < minResizeMemoryBytes {
+			fail(c, http.StatusBadRequest, fmt.Sprintf(
+				"refusing to set memory to %s: below the minimum safe limit of %dMiB; a smaller cgroup limit would OOM-kill the container",
+				*req.Memory, minResizeMemoryBytes/(1024*1024)))
 			return
 		}
 	}
@@ -907,8 +923,8 @@ func (s *Server) instanceResize(c *gin.Context) {
 		params["disk"] = *req.Disk
 	}
 	s.audit.Log(store.AuditRecord{
-		Operator:   operatorFrom(c),
-		Action:     "instance.resize", Level: audit.LevelImportant, Result: "success",
+		Operator: operatorFrom(c),
+		Action:   "instance.resize", Level: audit.LevelImportant, Result: "success",
 		DurationMs: time.Since(start).Milliseconds(),
 		Target:     map[string]interface{}{"instance": req.Name, "server": inst.Server},
 		Params:     params,

@@ -178,6 +178,40 @@ func TestInstanceResize_MemoryDownscale_OOMGuard(t *testing.T) {
 	}
 }
 
+// 新实例场景：reconcile 尚未采集，memoryUsed 缓存为空（used==0）。
+// 此时 110% 余量护栏无从计算，必须由绝对下限（minResizeMemoryBytes）兜底，
+// 否则过小的内存值会穿透到 agent 压死容器（线上实测过的 bug）。
+func TestInstanceResize_MemoryDownscale_AbsoluteFloor_NoUsageCache(t *testing.T) {
+	_, r, cap := resizeTestSetup(t, "16Gi", 8, "500Gi", "8Gi", 1, "10Gi")
+	// 刻意不预置 s.memoryUsed["order-1"]，模拟刚创建、未采集的新实例。
+
+	w := doAuthRequest(r, "POST", "/instance/resize", map[string]interface{}{
+		"name": "order-1", "memory": "1Mi", // 远低于 128Mi 下限
+	})
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 absolute-floor guard, got %d: %s", w.Code, w.Body.String())
+	}
+	if cap.wasCalled() {
+		t.Error("agent should NOT be called when the memory floor guard trips")
+	}
+}
+
+// 无用量缓存但内存高于绝对下限 → 放行（不应误伤合法降配）。
+func TestInstanceResize_MemoryDownscale_AboveFloor_NoUsageCache(t *testing.T) {
+	s, r, _ := resizeTestSetup(t, "16Gi", 8, "500Gi", "8Gi", 1, "10Gi")
+	// 同样不预置 memoryUsed。
+
+	w := doAuthRequest(r, "POST", "/instance/resize", map[string]interface{}{
+		"name": "order-1", "memory": "512Mi", // 高于 128Mi 下限
+	})
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if inst := readInst(t, s, "order-1"); inst.Memory != "512Mi" {
+		t.Errorf("expected persisted memory=512Mi, got %s", inst.Memory)
+	}
+}
+
 // 降配内存但仍高于使用量 → 放行。
 func TestInstanceResize_MemoryDownscale_WithinHeadroom(t *testing.T) {
 	s, r, _ := resizeTestSetup(t, "16Gi", 8, "500Gi", "8Gi", 1, "10Gi")
