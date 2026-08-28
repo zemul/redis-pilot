@@ -242,7 +242,7 @@ export default function AiChatPanel() {
         content: m.content,
         tool_calls: parseToolCalls(m.tool_calls),
         interrupted: m.interrupted,
-      }));
+      })).filter((m) => !(m.role === 'user' && m.content.startsWith('[系统提示]')));
       setMessages(msgs);
       setConvId(id);
       setCurrent('');
