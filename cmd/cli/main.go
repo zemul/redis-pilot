@@ -48,6 +48,7 @@ func init() {
 	rootCmd.AddCommand(nodeCmd)
 	rootCmd.AddCommand(sentinelCmd)
 	rootCmd.AddCommand(auditCmd)
+	rootCmd.AddCommand(configCmd)
 	rootCmd.AddCommand(versionCmd)
 }
 

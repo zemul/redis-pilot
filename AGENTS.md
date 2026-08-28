@@ -63,7 +63,7 @@ redis-pilot/
 - `server.yaml`：Server 监听端口、`jwt_secret`（JWT 签名）、`internal_token`（内部组件通信）、初始管理员账号、Redis/Kvrocks 版本白名单、`data_dir`（`pilot.db` 存放目录）
 - `agent.yaml`：Agent 监听端口、鉴权 Token（空则不鉴权）、S3 备份存储配置（`backup.s3`：endpoint/bucket/access_key/secret_key）
 - `proxy.yaml`：Proxy 的 Server 连接信息（`server_endpoint`/`server_token`）、长轮询参数（`poll_interval`/`poll_timeout`/`poll_wait`）、`metrics_listen`
-- `~/.redis-pilot-cli/config.yaml`：CLI 配置，Server 地址默认 127.0.0.1:8080
+- `~/.redis-pilot-cli/config.yaml`：CLI 配置，Server 地址默认 127.0.0.1:8080；可用 `redis-pilot-cli config set --server/--token` 与 `config view` 读写（含 token，写入权限 0600）
 
 > 服务器节点和实例的完整状态不再使用独立 YAML 文件，统一存储在 `data_dir/pilot.db`（SQLite）。
 

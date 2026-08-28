@@ -24,3 +24,29 @@ func LoadConfig() *Config {
 	}
 	return cfg
 }
+
+// ConfigPath 返回 CLI 配置文件路径 ~/.redis-pilot-cli/config.yaml。
+func ConfigPath() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, ".redis-pilot-cli", "config.yaml"), nil
+}
+
+// SaveConfig 把配置写入 ~/.redis-pilot-cli/config.yaml。
+// 文件含 token，权限设为 0600（仅本人可读写）；目录不存在则创建。
+func SaveConfig(cfg *Config) error {
+	path, err := ConfigPath()
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	data, err := yaml.Marshal(cfg)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, data, 0o600)
+}

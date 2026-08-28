@@ -240,9 +240,20 @@ server: 127.0.0.1:8080
 token: ""
 ```
 
+也可用 `config` 子命令读写该文件，无需手动编辑（文件含 token，写入时权限为 0600）：
+
+```bash
+redis-pilot-cli config set --server 10.0.1.10:8080 --token rpt_xxxxx  # 只传其一则只改其一
+redis-pilot-cli config view                                          # 查看当前配置（token 脱敏）
+```
+
 ## CLI 命令参考
 
 ```bash
+# 配置（读写 ~/.redis-pilot-cli/config.yaml）
+redis-pilot-cli config set --server <addr> --token <rpt_...>
+redis-pilot-cli config view
+
 # 节点
 redis-pilot-cli node list
 redis-pilot-cli node add <name> --endpoint <ip> --cpu <cores> --memory <size>
