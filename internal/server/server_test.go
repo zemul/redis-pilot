@@ -162,6 +162,18 @@ func TestDashboard_NoAuthRequired(t *testing.T) {
 	}
 }
 
+func TestDashboard_RootRedirectsToDashboard(t *testing.T) {
+	s := newTestServer(t, "")
+	r := s.Router()
+	w := doRequest(r, "GET", "/", nil)
+	if w.Code != http.StatusTemporaryRedirect {
+		t.Fatalf("expected 307, got %d", w.Code)
+	}
+	if location := w.Header().Get("Location"); location != "/dashboard" {
+		t.Fatalf("expected redirect to /dashboard, got %q", location)
+	}
+}
+
 // ---------- Internal Token Middleware ----------
 
 // newInternalTokenTestServer 创建配置了 internal_token 的 Server。

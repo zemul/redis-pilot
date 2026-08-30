@@ -13,6 +13,10 @@ import (
 //go:embed dashboard_dist
 var dashboardDist embed.FS
 
+func (s *Server) dashboardRoot(c *gin.Context) {
+	c.Redirect(http.StatusTemporaryRedirect, "/dashboard")
+}
+
 func (s *Server) dashboardIndex(c *gin.Context) {
 	serveDashboardFile(c, "index.html")
 }

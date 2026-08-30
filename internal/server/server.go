@@ -156,7 +156,7 @@ func (s *Server) Router() *gin.Engine {
 
 	// ── 公开路由（无需认证）───────────────────────────────────────────────
 	r.POST("/auth/login", s.authLogin)
-	r.GET("/", s.dashboardIndex)
+	r.GET("/", s.dashboardRoot)
 	r.GET("/dashboard", s.dashboardIndex)
 	r.GET("/dashboard/*filepath", s.dashboardAsset)
 
