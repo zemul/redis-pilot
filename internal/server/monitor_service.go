@@ -117,14 +117,14 @@ func (s *Server) aiListNodes() (json.RawMessage, error) {
 		return nil, err
 	}
 	type item struct {
-		Name          string               `json:"name"`
-		Endpoint      string               `json:"endpoint"`
-		Status        string               `json:"status"`
-		Instances     int                  `json:"instances"`
-		Labels        map[string]string    `json:"labels,omitempty"`
+		Name          string                `json:"name"`
+		Endpoint      string                `json:"endpoint"`
+		Status        string                `json:"status"`
+		Instances     int                   `json:"instances"`
+		Labels        map[string]string     `json:"labels,omitempty"`
 		Capacity      apitypes.ResourceSpec `json:"capacity"`
 		Allocated     apitypes.ResourceSpec `json:"allocated"`
-		LastHeartbeat string               `json:"last_heartbeat,omitempty"`
+		LastHeartbeat string                `json:"last_heartbeat,omitempty"`
 	}
 	list := make([]item, 0, len(node.Servers))
 	for name, srv := range node.Servers {
@@ -184,4 +184,25 @@ func (s *Server) aiListInstances() (json.RawMessage, error) {
 		})
 	}
 	return json.Marshal(list)
+}
+
+// aiQueryTasks 返回任务列表供 AI 查看运行/历史任务（精简字段，隐去 payload）。
+func (s *Server) aiQueryTasks(status, kind string, limit int) (json.RawMessage, error) {
+	if limit <= 0 || limit > 50 {
+		limit = 20
+	}
+	tasks, _, err := s.db.QueryTasks(store.TaskFilter{Status: status, Kind: kind, Limit: limit, Offset: 0})
+	if err != nil {
+		return nil, err
+	}
+	return json.Marshal(tasks)
+}
+
+// aiGetTaskDetail 返回单个任务的完整详情（含 result/error），供 AI 分析结果。
+func (s *Server) aiGetTaskDetail(taskID string) (json.RawMessage, error) {
+	task, err := s.db.GetTask(taskID)
+	if err != nil {
+		return nil, fmt.Errorf("task not found: %s", taskID)
+	}
+	return json.Marshal(task)
 }

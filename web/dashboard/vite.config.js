@@ -27,7 +27,8 @@ export default defineConfig({
       '/audit': apiTarget,
       '/server': apiTarget,
       '/sentinel': apiTarget,
-      '/inventory': apiTarget
+      '/inventory': apiTarget,
+      '/tasks': apiTarget
     }
   }
 });

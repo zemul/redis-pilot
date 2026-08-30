@@ -6,6 +6,7 @@ import {
   Key,
   LayoutDashboard,
   List,
+  ClipboardList,
   Menu,
   Server,
   Sparkles,
@@ -19,6 +20,7 @@ import { DashboardView } from './views/DashboardView.jsx';
 import { InstancesView } from './views/InstancesView.jsx';
 import { ServersView } from './views/ServersView.jsx';
 import { AuditView } from './views/AuditView.jsx';
+import { TasksView } from './views/TasksView.jsx';
 import {
   InstanceDetailModal,
   SlowlogModal,
@@ -40,6 +42,7 @@ const TABS = [
   { id: 'instances', label: '实例管理', icon: Database },
   { id: 'ai', label: 'AI 助手', icon: Sparkles },
   { id: 'servers', label: '服务器节点', icon: Server },
+  { id: 'tasks', label: '运维任务', icon: ClipboardList },
   { id: 'audit', label: '操作审计', icon: List },
   { id: 'users', label: '用户管理', icon: Users },
   { id: 'tokens', label: '密钥管理', icon: Key }
@@ -78,6 +81,7 @@ function AppShell() {
   const [accessModeTarget, setAccessModeTarget] = useState(null);
   const [createOpen, setCreateOpen] = useState(false);
   const [pendingAction, setPendingAction] = useState('');
+  const [activeTaskCount, setActiveTaskCount] = useState(0);
   const [data, setData] = useState({ instances: {}, servers: {}, audits: [], sentinel: null });
   const [serverInfo, setServerInfo] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -122,6 +126,22 @@ function AppShell() {
     if (!auth) return;
     request('/server/info').then((data) => setServerInfo(data)).catch(() => {});
   }, [auth]);
+
+  useEffect(() => {
+    if (!auth) return undefined;
+    let ignore = false;
+    async function loadActiveTasks() {
+      try {
+        const result = await request('/tasks?status=active&page=1&page_size=1');
+        if (!ignore) setActiveTaskCount(result?.total || 0);
+      } catch {
+        if (!ignore) setActiveTaskCount(0);
+      }
+    }
+    loadActiveTasks();
+    const timer = setInterval(loadActiveTasks, 10000);
+    return () => { ignore = true; clearInterval(timer); };
+  }, [auth, request]);
 
   useEffect(() => {
     let ignore = false;
@@ -272,6 +292,7 @@ function AppShell() {
           >
             <Icon size={19} className={activeTab === tab.id ? 'text-white' : 'text-gray-400'} />
             <span>{tab.label}</span>
+            {tab.id === 'tasks' && activeTaskCount > 0 && <span className={`ml-auto min-w-5 h-5 px-1 rounded-full inline-grid place-items-center text-[11px] font-semibold ${activeTab === 'tasks' ? 'bg-white text-gray-900' : 'bg-amber-100 text-amber-700'}`}>{activeTaskCount > 99 ? '99+' : activeTaskCount}</span>}
           </button>
         );
       })}
@@ -352,6 +373,7 @@ function AppShell() {
               )}
               {activeTab === 'ai' && <AiChatPanel />}
               {activeTab === 'servers' && <ServersView servers={servers} groups={instanceGroups} />}
+              {activeTab === 'tasks' && <TasksView request={request} />}
               {activeTab === 'audit' && (
                 <AuditView
                   filters={auditFilters}
@@ -371,11 +393,11 @@ function AppShell() {
       </main>
       {detail && <InstanceDetailModal detail={detail} publicHost={serverInfo?.proxy_public_endpoint} sentinelPort={serverInfo?.proxy_sentinel_port} requestFn={request} onClose={() => setDetail(null)} />}
       {slowlogTarget && <SlowlogModal instanceName={slowlogTarget} requestFn={request} onClose={() => setSlowlogTarget(null)} />}
-      {bigkeysTarget && <BigkeysModal instanceName={bigkeysTarget} requestFn={request} onClose={() => setBigkeysTarget(null)} />}
+      {bigkeysTarget && <BigkeysModal instanceName={bigkeysTarget} requestFn={request} onViewTasks={() => { setBigkeysTarget(null); setActiveTab('tasks'); }} onClose={() => setBigkeysTarget(null)} />}
       {configTarget && <ConfigModal instanceName={configTarget} requestFn={request} onClose={() => setConfigTarget(null)} />}
       {resizeTarget && <ResizeModal instanceName={resizeTarget.name} currentSpecs={{ memory: resizeTarget.memory, cpus: resizeTarget.cpus, disk: resizeTarget.disk }} requestFn={request} onClose={() => { setResizeTarget(null); refresh(); }} />}
       {accessModeTarget && <AccessModeModal group={accessModeTarget} publicHost={serverInfo?.proxy_public_endpoint} sentinelPort={serverInfo?.proxy_sentinel_port} onConfirm={(mode) => toggleAccessMode(accessModeTarget, mode)} onClose={() => setAccessModeTarget(null)} />}
-      {backupDetail && <BackupListModal detail={backupDetail} requestFn={request} onRefresh={refresh} onClose={() => setBackupDetail(null)} />}
+      {backupDetail && <BackupListModal detail={backupDetail} requestFn={request} onReload={() => openBackupList(backupDetail.item, backupDetail.group)} onViewTasks={() => { setBackupDetail(null); setActiveTab('tasks'); }} onClose={() => setBackupDetail(null)} />}
       {confirmAction && (
         <ConfirmPowerModal
           detail={confirmAction}

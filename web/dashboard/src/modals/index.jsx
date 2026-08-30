@@ -4,7 +4,7 @@ import { useState, useEffect } from 'react';
 import {
   X, Info, BarChart3, AlertCircle, RefreshCw, Play, HardDrive,
   Calendar, Save, CheckCircle2, Trash2, Power, Database, Server, SlidersHorizontal,
-  AlertTriangle,
+  AlertTriangle, Search,
 } from 'lucide-react';
 import { StatusBadge, EmptyState, CopyableText } from '../components/common.jsx';
 import { getField, displayValue, formatDateTime, statusMeta, formatBytes, formatDuration } from '../lib/format.js';
@@ -363,20 +363,57 @@ export function SlowlogModal({ instanceName, requestFn, onClose }) {
   );
 }
 
-export function BigkeysModal({ instanceName, requestFn, onClose }) {
-  const [keys, setKeys] = useState(null);
-  const [meta, setMeta] = useState(null);
+export function BigkeysModal({ instanceName, requestFn, onViewTasks, onClose }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [taskId, setTaskId] = useState('');
+  const [task, setTask] = useState(null);
+  const [canceling, setCanceling] = useState(false);
+
+  useEffect(() => {
+    if (!taskId) return undefined;
+    let stopped = false;
+    let timer;
+    async function poll() {
+      try {
+        const latest = await requestFn(`/tasks/${encodeURIComponent(taskId)}`);
+        if (stopped) return;
+        setTask(latest);
+        if (['pending', 'accepted', 'running'].includes(latest?.status)) timer = setTimeout(poll, 2000);
+      } catch (err) {
+        if (!stopped) setError(err.message || String(err));
+      }
+    }
+    poll();
+    return () => { stopped = true; clearTimeout(timer); };
+  }, [taskId]);
 
   function run() {
     setLoading(true);
     setError('');
-    requestFn(`/instance/bigkeys?name=${encodeURIComponent(instanceName)}`)
-      .then((data) => { setKeys(data?.keys || []); setMeta({ scanned: data?.scanned, timeout: data?.timeout, elapsed_ms: data?.elapsed_ms }); })
+    setTaskId('');
+    requestFn('/instance/bigkeys', { method: 'POST', body: JSON.stringify({ name: instanceName }) })
+      .then((data) => setTaskId(data?.task_id || ''))
       .catch((err) => setError(err.message || String(err)))
       .finally(() => setLoading(false));
   }
+
+  async function cancelTask() {
+    setCanceling(true);
+    setError('');
+    try {
+      await requestFn(`/tasks/${encodeURIComponent(taskId)}/cancel`, { method: 'POST' });
+      setTask((current) => current ? { ...current, cancel_requested: true, message: '正在取消' } : current);
+    } catch (err) {
+      setError(err.message || String(err));
+    } finally {
+      setCanceling(false);
+    }
+  }
+
+  const result = parseOperationResult(task?.result);
+  const keys = Array.isArray(result?.keys) ? result.keys : [];
+  const active = task && ['pending', 'accepted', 'running'].includes(task.status);
 
   return (
     <div className="fixed inset-0 z-40 p-7 grid place-items-center bg-black/40 animate-[fadeIn_0.15s_ease-out]" role="presentation" onMouseDown={onClose}>
@@ -388,42 +425,29 @@ export function BigkeysModal({ instanceName, requestFn, onClose }) {
         <div className="min-h-0 overflow-auto p-4 grid gap-4">
           <div className="flex items-center justify-between">
             <span className="text-xs text-gray-400">阈值: string &gt; 100KB，集合类 &gt; 10000 元素</span>
-            <button className="h-7 px-2.5 rounded-md border border-gray-200 bg-white text-gray-700 text-xs font-medium inline-flex items-center gap-1 hover:bg-gray-50 cursor-pointer transition-colors disabled:opacity-50" onClick={run} disabled={loading}>
-              {loading ? <><RefreshCw size={14} className="animate-spin" /> 扫描中...</> : <><Play size={14} /> 开始扫描</>}
+            <button className="h-7 px-2.5 rounded-md border border-gray-200 bg-white text-gray-700 text-xs font-medium inline-flex items-center gap-1 hover:bg-gray-50 cursor-pointer transition-colors disabled:opacity-50" onClick={run} disabled={loading || active}>
+              {loading ? <><RefreshCw size={14} className="animate-spin" /> 提交中...</> : active ? <><RefreshCw size={14} className="animate-spin" /> 扫描中...</> : taskId ? <><Play size={14} /> 再次扫描</> : <><Play size={14} /> 开始扫描</>}
             </button>
           </div>
           {error && <div className="border border-red-200 rounded-md px-3 py-2.5 flex items-center gap-2 bg-red-50 text-red-700 text-[13px]"><AlertCircle size={16} /> {error}</div>}
-          {meta && (
-            <div className="text-xs text-gray-400">
-              已扫描 {meta.scanned} 个 key，耗时 {meta.elapsed_ms}ms
-              {meta.timeout && <span className="text-amber-500"> （达到 60s 上限，结果可能不完整）</span>}
-            </div>
-          )}
-          {keys && keys.length > 0 && (
-            <table className="w-full border-collapse text-[13px]">
-              <thead>
-                <tr>
-                  <th className="text-left px-2.5 py-1.5 font-medium text-gray-400 border-b border-gray-200 text-xs">Key</th>
-                  <th className="text-left px-2.5 py-1.5 font-medium text-gray-400 border-b border-gray-200 text-xs">类型</th>
-                  <th className="text-left px-2.5 py-1.5 font-medium text-gray-400 border-b border-gray-200 text-xs">大小</th>
-                </tr>
-              </thead>
-              <tbody>
-                {keys.map((k, i) => (
-                  <tr key={i} className="hover:bg-gray-50">
-                    <td className="px-2.5 py-1.5 font-mono border-b border-gray-100 max-w-[320px] overflow-hidden text-ellipsis whitespace-nowrap">{k.key}</td>
-                    <td className="px-2.5 py-1.5 border-b border-gray-100">{k.type}</td>
-                    <td className="px-2.5 py-1.5 font-mono border-b border-gray-100">{k.size_desc}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
-          {keys && keys.length === 0 && !loading && <div className="text-center p-8 text-gray-400 text-sm">未发现大 Key</div>}
+          {taskId ? <>
+            <div className="border border-gray-200 rounded-md px-3 py-3 flex items-center gap-3 text-[13px]"><span className={`w-2 h-2 rounded-full ${task?.status === 'success' ? 'bg-emerald-500' : ['failed', 'interrupted'].includes(task?.status) ? 'bg-red-500' : task?.status === 'canceled' ? 'bg-gray-400' : 'bg-amber-500'}`} /><div className="flex-1"><strong className="block font-medium">{operationTaskStatusLabel(task?.status)}</strong><span className="block mt-0.5 text-xs text-gray-400">{task?.message || '正在读取任务状态'}{task?.progress > 0 ? ` · 已扫描 ${task.progress} 个 Key` : ''}</span></div>{active && task?.cancelable && <button type="button" onClick={cancelTask} disabled={canceling || task?.cancel_requested} className="h-7 px-2.5 rounded-md border border-red-200 bg-white text-red-600 text-xs font-medium cursor-pointer hover:bg-red-50 disabled:opacity-50">{canceling || task?.cancel_requested ? '正在取消…' : '取消扫描'}</button>}<button type="button" onClick={onViewTasks} className="h-7 px-2.5 rounded-md border border-gray-200 bg-white text-gray-600 text-xs font-medium cursor-pointer hover:bg-gray-50">任务详情</button></div>
+            {result && <div className="border border-gray-200 rounded-md overflow-hidden"><div className="px-3 py-2.5 border-b border-gray-200 text-xs text-gray-500">已扫描 {result.scanned || 0} 个 Key，命中 {keys.length} 个{result.incomplete ? '，结果不完整' : ''}</div>{keys.length === 0 ? <div className="p-8 text-center text-sm text-gray-400">{active ? '扫描中，暂未发现大 Key' : '未发现超过阈值的大 Key'}</div> : <div className="max-h-[420px] overflow-auto"><table className="w-full border-collapse text-[13px]"><thead><tr>{['Key', '类型', '大小'].map((label) => <th key={label} className="sticky top-0 text-left px-3 py-2 font-medium text-gray-400 border-b border-gray-200 bg-gray-50 text-xs">{label}</th>)}</tr></thead><tbody>{keys.map((item, index) => <tr key={`${item.key}-${index}`}><td className="px-3 py-2 font-mono border-b border-gray-100 max-w-[420px] truncate" title={item.key}>{item.key}</td><td className="px-3 py-2 border-b border-gray-100">{item.type}</td><td className="px-3 py-2 font-mono border-b border-gray-100 whitespace-nowrap">{item.size_desc}</td></tr>)}</tbody></table></div>}</div>}
+          </> : !loading && <div className="min-h-[150px] border border-dashed border-gray-200 rounded-md grid place-items-center content-center gap-2 text-center text-gray-400"><Search size={28} className="text-gray-300" /><span className="text-sm">扫描可留在当前窗口等待，也可以随时关闭后从运维任务继续查看。</span><span className="text-xs">同一实例同时只允许一个扫描任务。</span></div>}
         </div>
       </section>
     </div>
   );
+}
+
+function parseOperationResult(value) {
+  if (!value) return null;
+  if (typeof value === 'object') return value;
+  try { return JSON.parse(value); } catch { return null; }
+}
+
+function operationTaskStatusLabel(status) {
+  return { pending: '等待受理', accepted: '已受理', running: '执行中', success: '扫描完成', failed: '扫描失败', interrupted: '扫描中断', canceled: '已取消' }[status] || '任务已提交';
 }
 
 export function AccessModeModal({ group, publicHost, sentinelPort, onConfirm, onClose }) {
@@ -628,10 +652,12 @@ export function ConfigModal({ instanceName, requestFn, onClose }) {
   );
 }
 
-export function BackupListModal({ detail, requestFn, onRefresh, onClose }) {
+export function BackupListModal({ detail, requestFn, onReload, onViewTasks, onClose }) {
   const { item, group, loading, error, backups } = detail;
   const [execLoading, setExecLoading] = useState(false);
   const [execMsg, setExecMsg] = useState('');
+  const [execTaskId, setExecTaskId] = useState('');
+  const [execTask, setExecTask] = useState(null);
   const [scheduleLoading, setScheduleLoading] = useState(true);
   const [schedule, setSchedule] = useState('');
   const [retention, setRetention] = useState(7);
@@ -658,12 +684,44 @@ export function BackupListModal({ detail, requestFn, onRefresh, onClose }) {
     return () => { ignore = true; };
   }, [item.name]);
 
+  useEffect(() => {
+    if (!execTaskId) return undefined;
+    let ignore = false;
+    let timer;
+
+    async function pollTask() {
+      try {
+        const latest = await requestFn(`/tasks/${encodeURIComponent(execTaskId)}`);
+        if (ignore) return;
+        setExecTask(latest);
+        if (['pending', 'running', 'canceling'].includes(latest?.status)) {
+          timer = window.setTimeout(pollTask, 2000);
+          return;
+        }
+        if (latest?.status === 'success') {
+          setExecMsg('');
+          onReload?.();
+        }
+      } catch (err) {
+        if (!ignore) setExecMsg(`任务状态读取失败: ${err.message || String(err)}`);
+      }
+    }
+
+    pollTask();
+    return () => {
+      ignore = true;
+      if (timer) window.clearTimeout(timer);
+    };
+  }, [execTaskId]);
+
   const isMaster = getField(item, 'role', 'Role') === 'master';
   const hasReplicas = group.replicas && group.replicas.length > 0;
 
   async function handleExecBackup() {
     setExecLoading(true);
     setExecMsg('');
+    setExecTaskId('');
+    setExecTask(null);
     try {
       const res = await requestFn('/backup/exec', {
         method: 'POST',
@@ -675,31 +733,24 @@ export function BackupListModal({ detail, requestFn, onRefresh, onClose }) {
         setExecLoading(false);
         return;
       }
-      setExecMsg('备份执行中...');
-      const poll = setInterval(async () => {
-        try {
-          const statusRes = await requestFn(`/backup/status?name=${encodeURIComponent(item.name)}&task_id=${encodeURIComponent(taskId)}`);
-          const status = statusRes?.status;
-          if (status === 'success') {
-            clearInterval(poll);
-            setExecMsg('备份完成');
-            setExecLoading(false);
-          } else if (status === 'failed' || status === 'interrupted') {
-            clearInterval(poll);
-            setExecMsg((status === 'interrupted' ? '备份中断: ' : '备份失败: ') + (statusRes?.error || '未知错误'));
-            setExecLoading(false);
-          }
-        } catch {
-          clearInterval(poll);
-          setExecMsg('查询状态失败');
-          setExecLoading(false);
-        }
-      }, 2000);
+      setExecTaskId(taskId);
+      setExecLoading(false);
     } catch (err) {
       setExecMsg('备份触发失败: ' + (err.message || String(err)));
       setExecLoading(false);
     }
   }
+
+  const execActive = ['pending', 'running', 'canceling'].includes(execTask?.status);
+  const execStatusLabel = {
+    pending: '等待执行',
+    running: '正在备份',
+    canceling: '正在取消',
+    success: '备份完成',
+    failed: '备份失败',
+    interrupted: '备份已中断'
+  }[execTask?.status];
+  const execFailed = ['failed', 'interrupted'].includes(execTask?.status) || execMsg.includes('失败');
 
   async function handleSaveSchedule() {
     setScheduleSaving(true);
@@ -735,12 +786,12 @@ export function BackupListModal({ detail, requestFn, onRefresh, onClose }) {
               <button
                 className="h-7 px-2.5 rounded-md bg-gray-900 text-white text-xs font-medium inline-flex items-center gap-1 hover:bg-gray-700 border-0 cursor-pointer transition-colors disabled:opacity-50"
                 onClick={handleExecBackup}
-                disabled={execLoading}
+                disabled={execLoading || execActive}
               >
-                {execLoading ? <><RefreshCw size={14} className="animate-spin" /> 备份中...</> : <><Play size={14} /> 立即备份</>}
+                {execLoading || execActive ? <><RefreshCw size={14} className="animate-spin" /> {execLoading ? '正在提交...' : '备份中...'}</> : <><Play size={14} /> 立即备份</>}
               </button>
             </div>
-            {execMsg && <div className={`border rounded-md px-3 py-2 flex items-center gap-2 text-[13px] mb-2 ${execMsg.includes('失败') ? 'border-red-200 bg-red-50 text-red-700' : 'border-emerald-200 bg-emerald-50 text-emerald-700'}`}><AlertCircle size={16} /> {execMsg}</div>}
+            {(execTask || execMsg) && <div className={`border rounded-md px-3 py-2 flex items-center gap-2 text-[13px] mb-2 ${execFailed ? 'border-red-200 bg-red-50 text-red-700' : 'border-gray-200 bg-gray-50 text-gray-700'}`}><AlertCircle size={16} /> <span className="flex-1">{execMsg || execTask?.message || execStatusLabel}{execTask?.error ? `：${execTask.error}` : ''}</span>{execTaskId && onViewTasks && <button type="button" className="h-7 px-2.5 rounded-md border border-gray-300 bg-white text-gray-700 text-xs font-medium cursor-pointer hover:bg-gray-100" onClick={onViewTasks}>任务详情</button>}</div>}
             {isMaster && hasReplicas && <div className="text-xs text-gray-500 bg-gray-100 rounded-md px-2.5 py-2 mb-2">⚠️ 当前为主库，建议在从库上执行备份以避免影响主库性能。</div>}
             {loading ? (
               <div className="min-h-[110px] border border-dashed border-gray-200 rounded-md grid place-items-center text-gray-400">正在读取备份列表...</div>

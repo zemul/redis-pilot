@@ -207,6 +207,7 @@ func (s *Server) Router() *gin.Engine {
 		instance.GET("/diagnose", s.instanceDiagnose)
 		instance.GET("/slowlog", s.instanceSlowlog)
 		instance.GET("/bigkeys", s.instanceBigkeys)
+		instance.POST("/bigkeys", s.instanceBigkeysStart)
 		instance.GET("/config", s.instanceConfigGet)
 		instance.POST("/create", s.instanceCreate)
 		instance.POST("/delete", s.instanceDelete)
@@ -232,6 +233,9 @@ func (s *Server) Router() *gin.Engine {
 	}
 
 	authed.GET("/audit/query", s.auditQuery)
+	authed.GET("/tasks", s.taskQuery)
+	authed.GET("/tasks/:id", s.taskDetail)
+	authed.POST("/tasks/:id/cancel", s.adminOnly(), s.taskCancel)
 	authed.GET("/server/info", s.serverInfo)
 	authed.GET("/metrics", s.metricsCollect)
 

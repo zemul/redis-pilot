@@ -54,3 +54,27 @@ func TestOperationTrackerPersistsRestoreResultAndReleasesLock(t *testing.T) {
 		t.Fatalf("final audit missing: records=%+v err=%v", records, err)
 	}
 }
+
+func TestOperationTrackerPersistsCanceledBigkeysPartialResult(t *testing.T) {
+	agent := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(apitypes.APIResponse{Success: true, Data: map[string]interface{}{
+			"id": "scan-1", "instance": "redis-1", "status": "canceled", "progress": 42,
+			"result": map[string]interface{}{"scanned": 42, "incomplete": true, "keys": []interface{}{}},
+		}})
+	}))
+	defer agent.Close()
+	host, port := fakeAgentHostPort(agent.Listener.Addr().String())
+	s := newTestServer(t, "")
+	if err := s.db.WriteNode(&apitypes.NodeState{Servers: map[string]*apitypes.NodeServer{"srv1": {Endpoint: host, AgentPort: port}}}); err != nil {
+		t.Fatal(err)
+	}
+	payload := operationTaskPayload{Instance: "redis-1", Server: "srv1", Group: "g", Operator: "admin", Source: "manual", Trigger: "manual"}
+	if err := s.db.CreateTask(store.Task{ID: "scan-1", Kind: "diagnostic.bigkeys", Status: "running", Cancelable: true, Payload: marshalTaskPayload(payload)}); err != nil {
+		t.Fatal(err)
+	}
+	s.trackOperationTasksOnce()
+	task, err := s.db.GetTask("scan-1")
+	if err != nil || task.Status != "canceled" || task.Progress != 42 || !strings.Contains(task.Result, `"incomplete":true`) || task.Cancelable {
+		t.Fatalf("partial result not persisted: task=%+v err=%v", task, err)
+	}
+}

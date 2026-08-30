@@ -30,6 +30,7 @@ const ACTIONS = [
   'config.update', 'topology.failover', 'topology.replicate', 'backup.create', 'backup.restore',
   'backup.schedule', 'node.add', 'node.remove', 'node.update', 'user.create', 'user.delete',
   'reconcile.replica_drift', 'reconcile.role_drift',
+  'diagnostic.bigkeys',
 ];
 
 export function AuditView({ filters, setFilters, request }) {
@@ -142,6 +143,7 @@ export function AuditView({ filters, setFilters, request }) {
                   <SelectItem value="corrected">已修正</SelectItem>
                   <SelectItem value="failed">失败</SelectItem>
                   <SelectItem value="interrupted">已中断</SelectItem>
+                  <SelectItem value="canceled">已取消</SelectItem>
                   <SelectItem value="skipped">已跳过</SelectItem>
                 </SelectContent>
               </Select>

@@ -234,14 +234,28 @@ func (d *DB) migrate() error {
 		`CREATE TABLE IF NOT EXISTS tasks (
 			id          TEXT PRIMARY KEY,
 			kind        TEXT NOT NULL DEFAULT '',
-			status      TEXT NOT NULL DEFAULT 'pending', -- pending|accepted|running|success|failed|interrupted
+			status      TEXT NOT NULL DEFAULT 'pending', -- pending|accepted|running|success|failed|interrupted|canceled
+			phase       TEXT NOT NULL DEFAULT '',
+			progress    INTEGER NOT NULL DEFAULT 0,
+			message     TEXT NOT NULL DEFAULT '',
+			cancelable  INTEGER NOT NULL DEFAULT 0,
+			cancel_requested INTEGER NOT NULL DEFAULT 0,
 			payload     TEXT NOT NULL DEFAULT '{}',
 			result      TEXT NOT NULL DEFAULT '',
 			error       TEXT NOT NULL DEFAULT '',
+			operator    TEXT NOT NULL DEFAULT 'system',
+			source      TEXT NOT NULL DEFAULT 'system',
+			trigger     TEXT NOT NULL DEFAULT 'automatic',
+			group_name  TEXT NOT NULL DEFAULT '',
+			instance_name TEXT NOT NULL DEFAULT '',
+			server_name TEXT NOT NULL DEFAULT '',
 			created_at  TEXT NOT NULL DEFAULT '',
+			started_at  TEXT NOT NULL DEFAULT '',
+			finished_at TEXT NOT NULL DEFAULT '',
 			updated_at  TEXT NOT NULL DEFAULT ''
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status)`,
+		`CREATE INDEX IF NOT EXISTS idx_tasks_created_at ON tasks(created_at)`,
 
 		// ── 用户 ────────────────────────────────────────────────────────────
 		`CREATE TABLE IF NOT EXISTS users (
@@ -354,6 +368,19 @@ func (d *DB) migrate() error {
 		{sql: `ALTER TABLE audit_log ADD COLUMN correlation_id TEXT NOT NULL DEFAULT ''`},
 		{sql: `ALTER TABLE audit_log ADD COLUMN before_state TEXT NOT NULL DEFAULT '{}'`},
 		{sql: `ALTER TABLE audit_log ADD COLUMN after_state TEXT NOT NULL DEFAULT '{}'`},
+		{sql: `ALTER TABLE tasks ADD COLUMN operator TEXT NOT NULL DEFAULT 'system'`},
+		{sql: `ALTER TABLE tasks ADD COLUMN source TEXT NOT NULL DEFAULT 'system'`},
+		{sql: `ALTER TABLE tasks ADD COLUMN trigger TEXT NOT NULL DEFAULT 'automatic'`},
+		{sql: `ALTER TABLE tasks ADD COLUMN group_name TEXT NOT NULL DEFAULT ''`},
+		{sql: `ALTER TABLE tasks ADD COLUMN instance_name TEXT NOT NULL DEFAULT ''`},
+		{sql: `ALTER TABLE tasks ADD COLUMN server_name TEXT NOT NULL DEFAULT ''`},
+		{sql: `ALTER TABLE tasks ADD COLUMN started_at TEXT NOT NULL DEFAULT ''`},
+		{sql: `ALTER TABLE tasks ADD COLUMN finished_at TEXT NOT NULL DEFAULT ''`},
+		{sql: `ALTER TABLE tasks ADD COLUMN phase TEXT NOT NULL DEFAULT ''`},
+		{sql: `ALTER TABLE tasks ADD COLUMN progress INTEGER NOT NULL DEFAULT 0`},
+		{sql: `ALTER TABLE tasks ADD COLUMN message TEXT NOT NULL DEFAULT ''`},
+		{sql: `ALTER TABLE tasks ADD COLUMN cancelable INTEGER NOT NULL DEFAULT 0`},
+		{sql: `ALTER TABLE tasks ADD COLUMN cancel_requested INTEGER NOT NULL DEFAULT 0`},
 	}
 	for _, m := range alterMigrations {
 		if _, err := tx.Exec(m.sql); err != nil {
@@ -379,6 +406,9 @@ func (d *DB) migrate() error {
 		`CREATE INDEX IF NOT EXISTS idx_audit_group_name ON audit_log(group_name)`,
 		`CREATE INDEX IF NOT EXISTS idx_audit_instance_name ON audit_log(instance_name)`,
 		`CREATE INDEX IF NOT EXISTS idx_audit_correlation_id ON audit_log(correlation_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_tasks_created_at ON tasks(created_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_tasks_kind ON tasks(kind)`,
+		`CREATE INDEX IF NOT EXISTS idx_tasks_instance_name ON tasks(instance_name)`,
 	}
 	for _, s := range postAlterIndexes {
 		if _, err := tx.Exec(s); err != nil {

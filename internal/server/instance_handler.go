@@ -1511,7 +1511,11 @@ func (s *Server) execBackup(name, operator string) (string, error) {
 		source, trigger = "scheduler", "scheduled"
 	}
 	payload := operationTaskPayload{Instance: name, Server: inst.Server, Group: inst.Group, Operator: operator, Source: source, Trigger: trigger}
-	if err := s.db.CreateTask(store.Task{ID: taskID, Kind: "backup.create", Status: "pending", Payload: marshalTaskPayload(payload)}); err != nil {
+	if err := s.db.CreateTask(store.Task{
+		ID: taskID, Kind: "backup.create", Status: "pending", Payload: marshalTaskPayload(payload),
+		Operator: operator, Source: source, Trigger: trigger,
+		GroupName: inst.Group, InstanceName: name, ServerName: inst.Server,
+	}); err != nil {
 		return "", err
 	}
 	client := newAgentClient(srv)
@@ -1573,7 +1577,11 @@ func (s *Server) backupRestore(c *gin.Context) {
 		Instance: req.Name, Server: inst.Server, Group: inst.Group, Operator: operator, Source: "manual", Trigger: "manual", BackupTs: req.BackupTs,
 		LockSessionID: taskID, LockInstances: state.InstanceGroup(instances, req.Name),
 	}
-	if err := s.db.CreateTask(store.Task{ID: taskID, Kind: "backup.restore", Status: "pending", Payload: marshalTaskPayload(payload)}); err != nil {
+	if err := s.db.CreateTask(store.Task{
+		ID: taskID, Kind: "backup.restore", Status: "pending", Payload: marshalTaskPayload(payload),
+		Operator: operator, Source: "manual", Trigger: "manual",
+		GroupName: inst.Group, InstanceName: req.Name, ServerName: inst.Server,
+	}); err != nil {
 		fail(c, http.StatusInternalServerError, err.Error())
 		return
 	}

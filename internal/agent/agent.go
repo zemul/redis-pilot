@@ -3,11 +3,13 @@ package agent
 import (
 	"context"
 	"crypto/subtle"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -57,36 +59,51 @@ type Agent struct {
 	instanceLocks sync.Map         // instanceName -> *sync.Mutex
 	backupTasks   sync.Map         // taskID -> *operationTask
 	restoreTasks  sync.Map         // taskID -> *operationTask
+	bigkeyTasks   sync.Map         // taskID -> *operationTask
+	bigkeyRunning sync.Map         // instanceName -> taskID
 }
 
 // operationTask tracks an async Agent operation. All reads and writes go through
 // snapshot/update so status polling is race-free.
 type operationTask struct {
-	mu        sync.RWMutex
-	ID        string `json:"id"`
-	Instance  string `json:"instance"`
-	Status    string `json:"status"` // "running", "success", "failed"
-	StartedAt string `json:"started_at"`
-	DoneAt    string `json:"done_at,omitempty"`
-	Error     string `json:"error,omitempty"`
-	Backup    string `json:"backup,omitempty"` // timestamp of the backup on success
+	mu              sync.RWMutex
+	ID              string          `json:"id"`
+	Instance        string          `json:"instance"`
+	Status          string          `json:"status"` // "running", "success", "failed"
+	StartedAt       string          `json:"started_at"`
+	DoneAt          string          `json:"done_at,omitempty"`
+	Error           string          `json:"error,omitempty"`
+	Backup          string          `json:"backup,omitempty"` // timestamp of the backup on success
+	Result          json.RawMessage `json:"result,omitempty"`
+	Progress        int64           `json:"progress"`
+	Message         string          `json:"message,omitempty"`
+	Cancelable      bool            `json:"cancelable"`
+	CancelRequested bool            `json:"cancel_requested"`
+	cancelCh        chan struct{}
+	cancelOnce      sync.Once
 }
 
 type operationTaskView struct {
-	ID        string `json:"id"`
-	Instance  string `json:"instance"`
-	Status    string `json:"status"`
-	StartedAt string `json:"started_at"`
-	DoneAt    string `json:"done_at,omitempty"`
-	Error     string `json:"error,omitempty"`
-	Backup    string `json:"backup,omitempty"`
+	ID              string          `json:"id"`
+	Instance        string          `json:"instance"`
+	Status          string          `json:"status"`
+	StartedAt       string          `json:"started_at"`
+	DoneAt          string          `json:"done_at,omitempty"`
+	Error           string          `json:"error,omitempty"`
+	Backup          string          `json:"backup,omitempty"`
+	Result          json.RawMessage `json:"result,omitempty"`
+	Progress        int64           `json:"progress"`
+	Message         string          `json:"message,omitempty"`
+	Cancelable      bool            `json:"cancelable"`
+	CancelRequested bool            `json:"cancel_requested"`
 }
 
 func (t *operationTask) snapshot() operationTaskView {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
 	return operationTaskView{ID: t.ID, Instance: t.Instance, Status: t.Status, StartedAt: t.StartedAt,
-		DoneAt: t.DoneAt, Error: t.Error, Backup: t.Backup}
+		DoneAt: t.DoneAt, Error: t.Error, Backup: t.Backup, Result: t.Result, Progress: t.Progress,
+		Message: t.Message, Cancelable: t.Cancelable, CancelRequested: t.CancelRequested}
 }
 
 func (t *operationTask) finish(status, result, errMsg string) {
@@ -96,6 +113,25 @@ func (t *operationTask) finish(status, result, errMsg string) {
 	t.DoneAt = time.Now().Format(time.RFC3339)
 	t.Backup = result
 	t.Error = errMsg
+	t.Cancelable = false
+}
+
+func (t *operationTask) updateScan(progress int64, message string, result json.RawMessage) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.Progress, t.Message, t.Result = progress, message, result
+}
+
+func (t *operationTask) requestCancel() bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.Status != "running" || !t.Cancelable {
+		return false
+	}
+	t.CancelRequested = true
+	t.Message = "正在取消"
+	t.cancelOnce.Do(func() { close(t.cancelCh) })
+	return true
 }
 
 func New(cfg *Config) *Agent {
@@ -211,6 +247,9 @@ func (a *Agent) Router() *gin.Engine {
 		inst.GET("/diagnose", a.instanceDiagnose)
 		inst.GET("/slowlog", a.instanceSlowlog)
 		inst.GET("/bigkeys", a.instanceBigkeys)
+		inst.POST("/bigkeys", a.instanceBigkeysStart)
+		inst.GET("/bigkeys/status", a.instanceBigkeysStatus)
+		inst.POST("/bigkeys/cancel", a.instanceBigkeysCancel)
 		inst.GET("/config", a.instanceConfigGet)
 		inst.GET("/metrics", a.instanceMetrics)
 	}
@@ -940,38 +979,148 @@ func (a *Agent) instanceBigkeys(c *gin.Context) {
 		fail(c, http.StatusBadRequest, err.Error())
 		return
 	}
-	pw := a.getPassword(name)
+	legacyID := fmt.Sprintf("legacy-bigkeys-%d", time.Now().UnixNano())
+	if running, loaded := a.bigkeyRunning.LoadOrStore(name, legacyID); loaded {
+		fail(c, http.StatusConflict, "big key scan already running: "+running.(string))
+		return
+	}
+	defer a.bigkeyRunning.Delete(name)
+	result, _, err := a.scanBigkeys(name, nil, nil)
+	if err != nil {
+		fail(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+	ok(c, result)
+}
 
-	// 阈值: string > 100KB, 集合类 > 10000 元素
-	const stringThreshold = 102400
-	const collectionThreshold = 10000
+func (a *Agent) instanceBigkeysStart(c *gin.Context) {
+	var req struct {
+		Name   string `json:"name" binding:"required"`
+		TaskID string `json:"task_id" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		fail(c, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := validateInstanceName(req.Name); err != nil {
+		fail(c, http.StatusBadRequest, err.Error())
+		return
+	}
+	if running, loaded := a.bigkeyRunning.LoadOrStore(req.Name, req.TaskID); loaded {
+		fail(c, http.StatusConflict, "big key scan already running: "+running.(string))
+		return
+	}
+	task := &operationTask{ID: req.TaskID, Instance: req.Name, Status: "running", StartedAt: time.Now().Format(time.RFC3339),
+		Message: "正在扫描", Cancelable: true, cancelCh: make(chan struct{})}
+	if _, loaded := a.bigkeyTasks.LoadOrStore(req.TaskID, task); loaded {
+		a.bigkeyRunning.Delete(req.Name)
+		fail(c, http.StatusConflict, "task already exists")
+		return
+	}
+	go a.runBigkeys(task)
+	ok(c, gin.H{"task_id": req.TaskID})
+}
+
+func (a *Agent) instanceBigkeysStatus(c *gin.Context) {
+	v, exists := a.bigkeyTasks.Load(c.Query("task_id"))
+	if !exists {
+		fail(c, http.StatusNotFound, "task not found")
+		return
+	}
+	ok(c, v.(*operationTask).snapshot())
+}
+
+func (a *Agent) instanceBigkeysCancel(c *gin.Context) {
+	var req struct {
+		TaskID string `json:"task_id" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		fail(c, http.StatusBadRequest, err.Error())
+		return
+	}
+	v, exists := a.bigkeyTasks.Load(req.TaskID)
+	if !exists {
+		fail(c, http.StatusNotFound, "task not found")
+		return
+	}
+	if !v.(*operationTask).requestCancel() {
+		fail(c, http.StatusConflict, "task is no longer cancelable")
+		return
+	}
+	ok(c, gin.H{"task_id": req.TaskID, "status": "canceling"})
+}
+
+func (a *Agent) runBigkeys(task *operationTask) {
+	defer a.bigkeyRunning.Delete(task.Instance)
+	result, canceled, err := a.scanBigkeys(task.Instance, func(scanned int64, partial map[string]interface{}) {
+		data, _ := json.Marshal(partial)
+		task.updateScan(scanned, "正在扫描", data)
+	}, task.cancelCh)
+	if err != nil {
+		task.finish("failed", "", err.Error())
+		return
+	}
+	if task.snapshot().CancelRequested && !canceled {
+		canceled = true
+		result["canceled"] = true
+		result["incomplete"] = true
+	}
+	data, _ := json.Marshal(result)
+	message := "扫描完成"
+	if canceled {
+		message = "已取消，结果不完整"
+	}
+	task.updateScan(int64(result["scanned"].(int)), message, data)
+	if canceled {
+		task.finish("canceled", "", "")
+		return
+	}
+	task.finish("success", "", "")
+}
+
+func (a *Agent) scanBigkeys(name string, onProgress func(int64, map[string]interface{}), cancelCh <-chan struct{}) (map[string]interface{}, bool, error) {
+	const stringThreshold int64 = 102400
+	const collectionThreshold int64 = 10000
 	const maxDuration = 60 * time.Second
 	const scanCount = "200"
-	const sleepInterval = 10 * time.Millisecond
-
-	var bigKeys []map[string]interface{}
-	cursor := "0"
-	start := time.Now()
-	scanned := 0
-
+	const maxResults = 100
+	pw := a.getPassword(name)
+	bigKeys := []map[string]interface{}{}
+	cursor, scanned, start, canceled := "0", 0, time.Now(), false
+	isCanceled := func() bool {
+		if cancelCh == nil {
+			return false
+		}
+		select {
+		case <-cancelCh:
+			return true
+		default:
+			return false
+		}
+	}
 	for {
+		if isCanceled() {
+			canceled = true
+			break
+		}
 		if time.Since(start) > maxDuration {
 			break
 		}
 		out, err := redisCmd(name, pw, "SCAN", cursor, "COUNT", scanCount)
 		if err != nil {
-			fail(c, http.StatusInternalServerError, err.Error())
-			return
+			return nil, false, err
 		}
 		lines := strings.SplitN(out, "\n", 2)
 		if len(lines) < 2 {
 			break
 		}
 		cursor = strings.TrimSpace(lines[0])
-		keys := strings.Split(strings.TrimSpace(lines[1]), "\n")
-
-		for _, key := range keys {
-			key = strings.TrimSpace(key)
+		for _, rawKey := range strings.Split(strings.TrimSpace(lines[1]), "\n") {
+			if isCanceled() {
+				canceled = true
+				break
+			}
+			key := strings.TrimSpace(rawKey)
 			if key == "" {
 				continue
 			}
@@ -981,97 +1130,53 @@ func (a *Agent) instanceBigkeys(c *gin.Context) {
 				continue
 			}
 			keyType := strings.TrimSpace(typeOut)
-
-			var size int64
-			var unit string
+			command, unit, threshold := "", "", collectionThreshold
 			switch keyType {
 			case "string":
-				lenOut, err := redisCmd(name, pw, "STRLEN", key)
-				if err != nil {
-					continue
-				}
-				size = parseIntFromReply(lenOut)
-				if size <= int64(stringThreshold) {
-					continue
-				}
-				unit = "bytes"
+				command, unit, threshold = "STRLEN", "bytes", stringThreshold
 			case "list":
-				lenOut, err := redisCmd(name, pw, "LLEN", key)
-				if err != nil {
-					continue
-				}
-				size = parseIntFromReply(lenOut)
-				if size <= int64(collectionThreshold) {
-					continue
-				}
-				unit = "elements"
+				command, unit = "LLEN", "elements"
 			case "hash":
-				lenOut, err := redisCmd(name, pw, "HLEN", key)
-				if err != nil {
-					continue
-				}
-				size = parseIntFromReply(lenOut)
-				if size <= int64(collectionThreshold) {
-					continue
-				}
-				unit = "fields"
+				command, unit = "HLEN", "fields"
 			case "set":
-				lenOut, err := redisCmd(name, pw, "SCARD", key)
-				if err != nil {
-					continue
-				}
-				size = parseIntFromReply(lenOut)
-				if size <= int64(collectionThreshold) {
-					continue
-				}
-				unit = "members"
+				command, unit = "SCARD", "members"
 			case "zset":
-				lenOut, err := redisCmd(name, pw, "ZCARD", key)
-				if err != nil {
-					continue
-				}
-				size = parseIntFromReply(lenOut)
-				if size <= int64(collectionThreshold) {
-					continue
-				}
-				unit = "members"
+				command, unit = "ZCARD", "members"
 			case "stream":
-				lenOut, err := redisCmd(name, pw, "XLEN", key)
-				if err != nil {
-					continue
-				}
-				size = parseIntFromReply(lenOut)
-				if size <= int64(collectionThreshold) {
-					continue
-				}
-				unit = "entries"
+				command, unit = "XLEN", "entries"
 			default:
 				continue
 			}
-			bigKeys = append(bigKeys, map[string]interface{}{
-				"key":       key,
-				"type":      keyType,
-				"size":      size,
-				"size_desc": fmt.Sprintf("%d %s", size, unit),
-			})
+			lenOut, err := redisCmd(name, pw, command, key)
+			if err != nil {
+				continue
+			}
+			size := parseIntFromReply(lenOut)
+			if size <= threshold {
+				continue
+			}
+			bigKeys = append(bigKeys, map[string]interface{}{"key": key, "type": keyType, "size": size, "size_desc": fmt.Sprintf("%d %s", size, unit)})
+			sort.Slice(bigKeys, func(i, j int) bool { return bigKeys[i]["size"].(int64) > bigKeys[j]["size"].(int64) })
+			if len(bigKeys) > maxResults {
+				bigKeys = bigKeys[:maxResults]
+			}
 		}
-
-		if cursor == "0" {
+		partial := bigkeysResult(bigKeys, scanned, time.Since(start), false, canceled, cursor != "0")
+		if onProgress != nil {
+			onProgress(int64(scanned), partial)
+		}
+		if canceled || cursor == "0" {
 			break
 		}
-		time.Sleep(sleepInterval)
+		time.Sleep(10 * time.Millisecond)
 	}
+	result := bigkeysResult(bigKeys, scanned, time.Since(start), time.Since(start) > maxDuration, canceled, canceled || cursor != "0")
+	return result, canceled, nil
+}
 
-	ok(c, gin.H{
-		"keys":       bigKeys,
-		"scanned":    scanned,
-		"timeout":    time.Since(start) > maxDuration,
-		"elapsed_ms": time.Since(start).Milliseconds(),
-		"threshold": map[string]interface{}{
-			"string_bytes":        stringThreshold,
-			"collection_elements": collectionThreshold,
-		},
-	})
+func bigkeysResult(keys []map[string]interface{}, scanned int, elapsed time.Duration, timeout, canceled, incomplete bool) map[string]interface{} {
+	return map[string]interface{}{"keys": keys, "scanned": scanned, "timeout": timeout, "canceled": canceled, "incomplete": incomplete,
+		"elapsed_ms": elapsed.Milliseconds(), "threshold": map[string]interface{}{"string_bytes": 102400, "collection_elements": 10000}}
 }
 
 func (a *Agent) instanceConfigGet(c *gin.Context) {

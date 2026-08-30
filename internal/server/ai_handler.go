@@ -48,6 +48,12 @@ func (p aiPlatform) ListNodes(_ context.Context) (json.RawMessage, error) {
 func (p aiPlatform) QueryAudit(_ context.Context, limit int) (json.RawMessage, error) {
 	return p.s.aiQueryAudit(limit)
 }
+func (p aiPlatform) QueryTasks(_ context.Context, status, kind string, limit int) (json.RawMessage, error) {
+	return p.s.aiQueryTasks(status, kind, limit)
+}
+func (p aiPlatform) GetTaskDetail(_ context.Context, taskID string) (json.RawMessage, error) {
+	return p.s.aiGetTaskDetail(taskID)
+}
 
 // sseSink 把 Agent 的运行事件写成 SSE 帧推给前端，同时把工具调用与 token 用量
 // 写入结构化日志（可观测性，见 §7.5；token 记录见 §7.3）。
@@ -290,11 +296,12 @@ func (s *Server) aiExecute(c *gin.Context) {
 		NodeSelector  map[string]string `json:"node_selector"`
 		Schedule      string            `json:"schedule"`
 		Retention     int               `json:"retention"`
+		TaskID        string            `json:"task_id"`
 	}
 	if len(req.Args) > 0 {
 		_ = json.Unmarshal(req.Args, &a)
 	}
-	if a.Name == "" {
+	if a.Name == "" && req.Tool != "cancel_task" {
 		fail(c, http.StatusBadRequest, "missing arg: name")
 		return
 	}
@@ -431,6 +438,18 @@ func (s *Server) aiExecute(c *gin.Context) {
 			return
 		}
 		handler = s.instanceResize
+	case "scan_bigkeys":
+		handler, body = s.instanceBigkeysStart, map[string]any{"name": a.Name}
+	case "cancel_task":
+		// cancel_task 的参数是 task_id 而不是 name；路由是 /tasks/:id/cancel。
+		// 复用 taskCancel handler，需要把 task_id 设置到 URL param。
+		taskID := a.TaskID
+		if taskID == "" {
+			fail(c, http.StatusBadRequest, "missing arg: task_id")
+			return
+		}
+		c.Params = append(c.Params, gin.Param{Key: "id", Value: taskID})
+		handler, body = s.taskCancel, map[string]any{}
 	default:
 		// 在 ai.writeTools 白名单内但此处没有执行器：属于开发期未同步，拒绝而非静默。
 		fail(c, http.StatusInternalServerError, "no executor for write tool: "+req.Tool)

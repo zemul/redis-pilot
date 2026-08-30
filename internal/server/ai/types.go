@@ -14,13 +14,13 @@ type Message struct {
 // Sink 接收 Agent 运行过程中的流式事件；由调用方（如 SSE handler）实现。
 // 所有回调在 Agent.Run 的 goroutine 内串行调用。
 type Sink interface {
-	OnToken(text string)                              // 助手回复的增量文本
-	OnToolCall(name, args string)                     // 模型请求调用某工具
-	OnToolResult(name string, ok bool, errMsg string) // 工具执行结果（不含原始数据，避免刷屏/泄敏）
-	OnConfirm(tool, args, summary string)             // 模型提议一个写操作，需用户二次确认后经 /ai/execute 执行（见 §7.2）
+	OnToken(text string)                                       // 助手回复的增量文本
+	OnToolCall(name, args string)                              // 模型请求调用某工具
+	OnToolResult(name string, ok bool, errMsg string)          // 工具执行结果（不含原始数据，避免刷屏/泄敏）
+	OnConfirm(tool, args, summary string)                      // 模型提议一个写操作，需用户二次确认后经 /ai/execute 执行（见 §7.2）
 	OnUsage(promptTokens, completionTokens, totalTokens int64) // 本次对话累计 token 消耗（结束前回调一次）
-	OnError(err error)                                // 出错
-	OnDone()                                          // 正常结束
+	OnError(err error)                                         // 出错
+	OnDone()                                                   // 正常结束
 }
 
 // PlatformAPI 是 AI 可调用的平台只读能力，由 Server 进程内直接实现
@@ -35,4 +35,6 @@ type PlatformAPI interface {
 	GetMetricsHistory(ctx context.Context, name, timeRange string) (json.RawMessage, error)
 	ListNodes(ctx context.Context) (json.RawMessage, error)
 	QueryAudit(ctx context.Context, limit int) (json.RawMessage, error)
+	QueryTasks(ctx context.Context, status, kind string, limit int) (json.RawMessage, error)
+	GetTaskDetail(ctx context.Context, taskID string) (json.RawMessage, error)
 }

@@ -48,6 +48,14 @@ func (m *mockPlatform) QueryAudit(_ context.Context, limit int) (json.RawMessage
 	m.calls = append(m.calls, "audit")
 	return json.RawMessage(`{"records":[],"total":0}`), nil
 }
+func (m *mockPlatform) QueryTasks(_ context.Context, status, kind string, limit int) (json.RawMessage, error) {
+	m.calls = append(m.calls, "tasks")
+	return json.RawMessage(`[]`), nil
+}
+func (m *mockPlatform) GetTaskDetail(_ context.Context, taskID string) (json.RawMessage, error) {
+	m.calls = append(m.calls, "task_detail:"+taskID)
+	return json.RawMessage(`{"id":"` + taskID + `","status":"success"}`), nil
+}
 
 type captureSink struct {
 	tokens    strings.Builder
@@ -57,13 +65,13 @@ type captureSink struct {
 	err       error
 }
 
-func (s *captureSink) OnToken(t string)                    { s.tokens.WriteString(t) }
-func (s *captureSink) OnToolCall(name, _ string)           { s.toolCalls = append(s.toolCalls, name) }
-func (s *captureSink) OnToolResult(string, bool, string)   {}
-func (s *captureSink) OnConfirm(tool, _, _ string)         { s.confirms = append(s.confirms, tool) }
-func (s *captureSink) OnUsage(_, _, _ int64)               {}
-func (s *captureSink) OnError(err error)                   { s.err = err }
-func (s *captureSink) OnDone()                             { s.done = true }
+func (s *captureSink) OnToken(t string)                  { s.tokens.WriteString(t) }
+func (s *captureSink) OnToolCall(name, _ string)         { s.toolCalls = append(s.toolCalls, name) }
+func (s *captureSink) OnToolResult(string, bool, string) {}
+func (s *captureSink) OnConfirm(tool, _, _ string)       { s.confirms = append(s.confirms, tool) }
+func (s *captureSink) OnUsage(_, _, _ int64)             {}
+func (s *captureSink) OnError(err error)                 { s.err = err }
+func (s *captureSink) OnDone()                           { s.done = true }
 
 // TestAgentEndToEnd 用真实 LLM 网关 + mock 平台跑通完整 agent loop。
 // 需要 AGP_API_KEY 环境变量，否则跳过（CI 无 key 时不失败）。

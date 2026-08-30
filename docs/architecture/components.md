@@ -38,12 +38,19 @@
   POST /instance/replicate      设置复制目标（Sentinel 托管组上拒绝，避免与自动拓扑管理冲突）
   GET  /instance/list           列出所有实例
   GET  /instance/status         实例详细状态
+  GET  /instance/bigkeys        兼容同步大 Key 扫描（同实例存在异步扫描时拒绝）
+  POST /instance/bigkeys        提交异步大 Key 扫描（返回 task_id）
 
 备份管理（转发到目标服务器 Agent）
   POST /backup/exec             执行备份（异步，返回 task_id）
   GET  /backup/status           查询备份或恢复任务的持久化状态
   POST /backup/restore          从备份恢复（异步，返回 task_id）
   GET  /backup/list             列出可用备份
+
+运维任务（读取 pilot.db，不依赖原操作弹窗存活）
+  GET  /tasks                   分页查询任务；支持 status/kind/operator/q 筛选
+  GET  /tasks/:id               查询任务详情、目标、执行时间、结果与失败原因
+  POST /tasks/:id/cancel        请求取消可安全停止的任务；当前仅支持大 Key 扫描
 
 代理管理
   GET  /api/v1/proxy/snapshot   查看代理层结构化快照
@@ -190,6 +197,12 @@ CLI Token 优先级（从高到低）：`--token` 参数 > `REDIS_SERVER_TOKEN` 
                                runtime_replica_of（进程此刻实际在复制谁，取健康探测缓存，
                                不现场探测；过期或探测失败的实例不出现在其中）
   GET  /instance/status        实例详细状态（含 INFO 解析）
+
+诊断任务
+  GET  /instance/bigkeys         兼容同步扫描
+  POST /instance/bigkeys         提交异步扫描；同一实例仅允许一个
+  GET  /instance/bigkeys/status  查询扫描数量、部分结果和取消状态
+  POST /instance/bigkeys/cancel  协作式取消扫描
 
 备份管理
   POST /instance/backup        执行备份（异步，返回 task_id）
@@ -680,6 +693,15 @@ Key 完全可预测，不需要索引。`backup list` 通过 `ListObjects(prefix
 任务终态为 `success`、`failed` 或 `interrupted`，持久化后即使 Server 重启仍可查询。
 恢复任务执行期间 Server 持续续租整个实例组的操作锁，结束后释放，并写入最终审计。
 Agent 重启导致内存任务丢失时，Server 将任务标记为 `interrupted`，避免无限显示运行中。
+Dashboard 提供独立的「运维任务」入口，并定时读取 Server 持久化状态。备份与大 Key 弹窗
+提交任务后继续轮询同一任务状态：用户愿意等待时可在原弹窗查看进度和结果，也可随时关闭；
+关闭不会中止任务，后续状态、耗时、结果、失败原因及影响的实例/节点仍可在任务详情中查看。
+任务状态与审计职责分离，二者使用任务 ID / `correlation_id` 关联。
+
+大 Key 扫描复用同一任务模型：Agent 使用限速 `SCAN`，最多运行 60 秒、只保留按大小排序的
+前 100 条命中结果，并持续上报已扫描 Key 数和部分结果。同一实例同时只允许一个扫描。
+取消采用协作式停止，Server 先向 Agent 请求取消，Agent 在当前 Redis 命令结束后退出扫描；
+最终任务标记为 `canceled`，保留已产生结果并标记 `incomplete=true`。备份与恢复不开放取消。
 
 **Redis 实例恢复（优先 AOF → 回退 RDB）：**
 

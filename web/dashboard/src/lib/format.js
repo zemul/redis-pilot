@@ -88,6 +88,7 @@ export function auditActionLabel(action) {
     'topology.replicate': '建立复制',
     'backup.create': '创建备份',
     'backup.restore': '恢复备份',
+    'diagnostic.bigkeys': '大 Key 扫描',
     'node.add': '注册节点',
     'node.remove': '移除节点',
     'node.update': '更新节点',
@@ -219,6 +220,7 @@ export function auditResultMeta(result) {
     accepted: '已受理',
     running: '执行中',
     interrupted: '已中断',
+    canceled: '已取消',
   };
   const tone = {
     success: 'ok',
@@ -229,7 +231,62 @@ export function auditResultMeta(result) {
     accepted: 'warn',
     running: 'warn',
     interrupted: 'bad',
+    canceled: 'neutral',
     failed: 'bad',
   };
   return { label: labels[result] || result, tone: tone[result] || 'neutral' };
+}
+
+export function taskKindLabel(kind) {
+  const labels = {
+    'backup.create': '创建备份',
+    'backup.restore': '恢复备份',
+    'diagnostic.bigkeys': '大 Key 扫描',
+  };
+  return labels[kind] || kind || '-';
+}
+
+export function taskStatusMeta(status) {
+  const labels = {
+    pending: '等待受理',
+    accepted: '已受理',
+    running: '执行中',
+    success: '成功',
+    failed: '失败',
+    interrupted: '已中断',
+    canceled: '已取消',
+  };
+  const tones = {
+    pending: 'warn',
+    accepted: 'warn',
+    running: 'warn',
+    success: 'ok',
+    failed: 'bad',
+    interrupted: 'bad',
+    canceled: 'neutral',
+  };
+  return { label: labels[status] || status || '未知', tone: tones[status] || 'neutral' };
+}
+
+export function taskTargetDisplay(task) {
+  const group = task?.group_name || task?.GroupName;
+  const instance = task?.instance_name || task?.InstanceName;
+  if (group && instance) return `${group} / ${instance}`;
+  return instance || group || '-';
+}
+
+export function taskDuration(task) {
+  const started = task?.started_at || task?.StartedAt || task?.created_at || task?.CreatedAt;
+  const status = task?.status || task?.Status;
+  const terminal = ['success', 'failed', 'interrupted', 'canceled'].includes(status);
+  const ended = task?.finished_at || task?.FinishedAt || (terminal ? (task?.updated_at || task?.UpdatedAt) : new Date().toISOString());
+  if (!started || !ended) return '-';
+  const ms = new Date(ended).getTime() - new Date(started).getTime();
+  if (!Number.isFinite(ms) || ms < 0) return '-';
+  if (ms < 1000) return '< 1秒';
+  const seconds = Math.round(ms / 1000);
+  if (seconds < 60) return `${seconds}秒`;
+  const minutes = Math.floor(seconds / 60);
+  const rest = seconds % 60;
+  return `${minutes}分${rest ? `${rest}秒` : ''}`;
 }

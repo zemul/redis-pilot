@@ -79,6 +79,8 @@ func (s *Server) trackOperationTask(task store.Task) {
 	path := "/instance/backup/status?task_id=" + task.ID
 	if task.Kind == "backup.restore" {
 		path = "/instance/restore/status?task_id=" + task.ID
+	} else if task.Kind == "diagnostic.bigkeys" {
+		path = "/instance/bigkeys/status?task_id=" + task.ID
 	}
 	body, err := newAgentClient(node.Servers[p.Server]).get(path)
 	if err != nil {
@@ -94,21 +96,38 @@ func (s *Server) trackOperationTask(task store.Task) {
 	var envelope struct {
 		Success bool `json:"success"`
 		Data    struct {
-			Status string `json:"status"`
-			Error  string `json:"error"`
-			Backup string `json:"backup"`
+			Status          string          `json:"status"`
+			Error           string          `json:"error"`
+			Backup          string          `json:"backup"`
+			Result          json.RawMessage `json:"result"`
+			Progress        int64           `json:"progress"`
+			Message         string          `json:"message"`
+			Cancelable      bool            `json:"cancelable"`
+			CancelRequested bool            `json:"cancel_requested"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(body, &envelope); err != nil || !envelope.Success {
 		return
 	}
 	switch envelope.Data.Status {
-	case "success", "failed":
-		s.finishOperationTask(task, p, envelope.Data.Status, envelope.Data.Backup, envelope.Data.Error)
+	case "success", "failed", "canceled":
+		result := envelope.Data.Backup
+		if len(envelope.Data.Result) > 0 {
+			result = string(envelope.Data.Result)
+		}
+		if task.Kind == "diagnostic.bigkeys" {
+			_ = s.db.UpdateTaskProgress(task.ID, "scanning", envelope.Data.Progress, envelope.Data.Message, result, false, envelope.Data.CancelRequested)
+		}
+		s.finishOperationTask(task, p, envelope.Data.Status, result, envelope.Data.Error)
 	case "running":
 		if task.Status != "running" {
 			_ = s.db.UpdateTaskStatus(task.ID, "running", "", "")
 		}
+		result := task.Result
+		if len(envelope.Data.Result) > 0 {
+			result = string(envelope.Data.Result)
+		}
+		_ = s.db.UpdateTaskProgress(task.ID, "scanning", envelope.Data.Progress, envelope.Data.Message, result, envelope.Data.Cancelable, envelope.Data.CancelRequested)
 	}
 }
 

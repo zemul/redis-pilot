@@ -35,6 +35,8 @@ var writeTools = map[string]bool{
 	"set_access_mode":     true,
 	"replicate":           true,
 	"backup_set_schedule": true,
+	"scan_bigkeys":        true,
+	"cancel_task":         true,
 }
 
 // isWriteTool 判断工具名是否为写操作。
@@ -72,6 +74,20 @@ func writeToolSummary(name, argsJSON string) string {
 		target = "(未指定实例)"
 	}
 	switch name {
+	case "scan_bigkeys":
+		return fmt.Sprintf("对实例 %s 发起异步大 Key 扫描（限速 SCAN，最长 60 秒）", target)
+	case "cancel_task":
+		taskID := "(未指定)"
+		if argsJSON != "" {
+			var t struct {
+				TaskID string `json:"task_id"`
+			}
+			_ = json.Unmarshal([]byte(argsJSON), &t)
+			if t.TaskID != "" {
+				taskID = t.TaskID
+			}
+		}
+		return fmt.Sprintf("取消任务 %s", taskID)
 	case "create_instance":
 		engine := a.Engine
 		if engine == "" {
@@ -219,6 +235,16 @@ func (r *toolRegistry) schemas() []openai.ChatCompletionToolParam {
 		makeTool("get_metrics_history", "获取指定实例的历史监控指标（内存、连接数、QPS 等）", metricsArg, []string{"name"}),
 		makeTool("list_nodes", "列出所有服务器节点及其状态、容量、已分配资源、实例数", map[string]any{}, nil),
 		makeTool("query_audit", "查询最近的运维操作审计日志（谁在什么时候对哪个实例做了什么）", auditArg, nil),
+		makeTool("query_tasks", "查询运维任务列表（备份、恢复、大 Key 扫描等异步任务的状态和进度）",
+			map[string]any{
+				"status": map[string]string{"type": "string", "description": "按状态筛选：active（进行中）/ success / failed / canceled，可选"},
+				"kind":   map[string]string{"type": "string", "description": "按类型筛选：backup.full / backup.restore / diagnostic.bigkeys，可选"},
+				"limit":  map[string]string{"type": "integer", "description": "返回条数，可选，默认 20，最大 50"},
+			}, nil),
+		makeTool("get_task_detail", "查询单个运维任务的详情（含结果、错误原因、进度、目标实例/节点）",
+			map[string]any{
+				"task_id": map[string]string{"type": "string", "description": "任务 ID"},
+			}, []string{"task_id"}),
 		makeTool("load_skill", "加载指定运维技能的详细操作手册；当需要按某类运维流程分析或给出步骤时先调用它", skillArg, []string{"name"}),
 	}
 	// 写操作工具仅在 allowWrite（配置总闸开启 且 调用者为 admin）时才暴露给模型。
@@ -243,6 +269,11 @@ func (r *toolRegistry) schemas() []openai.ChatCompletionToolParam {
 			"node_selector":  map[string]string{"type": "string", "description": "标签亲和调度，格式 k=v,k=v（如 disk=ssd,zone=az-1）。只调度到标签全部匹配的节点，可选，不传则不限制。"},
 		}
 		tools = append(tools,
+			makeTool("scan_bigkeys", "对指定实例发起异步大 Key 扫描（写操作，需用户二次确认后执行；限速 SCAN，最长 60 秒，同一实例同时只允许一个扫描任务）", nameArg, []string{"name"}),
+			makeTool("cancel_task", "取消一个正在运行的可取消任务（写操作，需二次确认；当前仅大 Key 扫描支持取消，备份/恢复不支持）",
+				map[string]any{
+					"task_id": map[string]string{"type": "string", "description": "要取消的任务 ID"},
+				}, []string{"task_id"}),
 			makeTool("create_instance", "创建一个新的 Redis/Kvrocks 实例（写操作，需用户二次确认后执行；节点由平台自动调度，无需指定）。创建主从实例时分两步：先建主库（提供 group/category，type=replication），再建从库（提供 replica_of=主库名，其余自动继承）。", createArg, []string{"name", "memory"}),
 			makeTool("start_instance", "启动指定实例（写操作，需用户二次确认后执行）", nameArg, []string{"name"}),
 			makeTool("stop_instance", "停止指定实例（写操作，需用户二次确认后执行；主从组 master 会被拒绝）", nameArg, []string{"name"}),
@@ -280,10 +311,13 @@ func (r *toolRegistry) schemas() []openai.ChatCompletionToolParam {
 // exec 执行一个工具调用，返回其结果 JSON（回填给模型）。
 func (r *toolRegistry) exec(ctx context.Context, name, argsJSON string) (json.RawMessage, error) {
 	var args struct {
-		Name  string `json:"name"`
-		Count int    `json:"count"`
-		Range string `json:"range"`
-		Limit int    `json:"limit"`
+		Name   string `json:"name"`
+		Count  int    `json:"count"`
+		Range  string `json:"range"`
+		Limit  int    `json:"limit"`
+		Status string `json:"status"`
+		Kind   string `json:"kind"`
+		TaskID string `json:"task_id"`
 	}
 	if argsJSON != "" {
 		_ = json.Unmarshal([]byte(argsJSON), &args)
@@ -336,6 +370,13 @@ func (r *toolRegistry) exec(ctx context.Context, name, argsJSON string) (json.Ra
 		return r.api.ListNodes(ctx)
 	case "query_audit":
 		return r.api.QueryAudit(ctx, args.Limit)
+	case "query_tasks":
+		return r.api.QueryTasks(ctx, args.Status, args.Kind, args.Limit)
+	case "get_task_detail":
+		if args.TaskID == "" {
+			return nil, fmt.Errorf("missing arg: task_id")
+		}
+		return r.api.GetTaskDetail(ctx, args.TaskID)
 	case "load_skill":
 		for _, sk := range r.skills {
 			if sk.Name == args.Name {
