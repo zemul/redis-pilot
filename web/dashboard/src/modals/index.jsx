@@ -1370,3 +1370,219 @@ export function GroupLabelsModal({ group, requestFn, onSaved, onClose }) {
     </div>
   );
 }
+
+// ─── 受限 K/V 浏览器（仅 admin）───────────────────────────────────────────────
+// 读全类型 + 分页（集合类游标「加载更多」，list/string 偏移），写按类型给表单，
+// DELETE 二次确认。服务端强制 admin，本弹窗仅在 admin 时挂载。
+export function KeyBrowserModal({ instanceName, requestFn, onClose }) {
+  const [keyInput, setKeyInput] = useState('');
+  const [meta, setMeta] = useState(null);   // { type, size, ttl, truncated }
+  const [items, setItems] = useState([]);
+  const [cursor, setCursor] = useState('0'); // scan 类型游标
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+  const [notice, setNotice] = useState('');
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [form, setForm] = useState({ value: '', field: '', member: '', score: '', side: 'right', ttl: '' });
+
+  const queriedKey = meta?._key || '';
+
+  function baseQuery(k) {
+    return `/instance/key/get?name=${encodeURIComponent(instanceName)}&key=${encodeURIComponent(k)}`;
+  }
+
+  async function query(k) {
+    const key = (k ?? keyInput).trim();
+    if (!key) return;
+    setLoading(true); setError(''); setNotice(''); setConfirmDelete(false);
+    try {
+      const data = await requestFn(`${baseQuery(key)}&count=200`);
+      setMeta({ ...data, _key: key });
+      setItems(Array.isArray(data.items) ? data.items : []);
+      setCursor(data.next_cursor || '0');
+    } catch (err) {
+      setMeta(null); setItems([]);
+      setError(err.message || String(err));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function loadMore() {
+    if (!meta) return;
+    setLoading(true); setError('');
+    try {
+      let url = `${baseQuery(queriedKey)}&count=200`;
+      const scanType = ['hash', 'set', 'zset'].includes(meta.type);
+      if (scanType) url += `&cursor=${encodeURIComponent(cursor)}`;
+      else url += `&offset=${items.length}`; // list/string 偏移
+      const data = await requestFn(url);
+      const more = Array.isArray(data.items) ? data.items : [];
+      // scan 类型可能有重复，按 field/member 去重
+      setItems((prev) => scanType ? dedupeKV(prev.concat(more)) : prev.concat(more));
+      setCursor(data.next_cursor || '0');
+    } catch (err) {
+      setError(err.message || String(err));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function doWrite(op, args) {
+    setLoading(true); setError(''); setNotice('');
+    try {
+      await requestFn('/instance/key/write', { method: 'POST', body: JSON.stringify({ name: instanceName, key: queriedKey || keyInput.trim(), op, args }) });
+      setNotice('写入成功');
+      await query(queriedKey || keyInput.trim());
+    } catch (err) {
+      setError(err.message || String(err));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function doDelete() {
+    setLoading(true); setError(''); setNotice('');
+    try {
+      await requestFn('/instance/key/delete', { method: 'POST', body: JSON.stringify({ name: instanceName, key: queriedKey }) });
+      setNotice('已删除');
+      setMeta(null); setItems([]); setConfirmDelete(false);
+    } catch (err) {
+      setError(err.message || String(err));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  const scanType = meta && ['hash', 'set', 'zset'].includes(meta.type);
+  const hasMore = meta && (scanType ? cursor !== '0' : (meta.size > items.length && meta.type !== 'string') || (meta.type === 'string' && meta.truncated));
+
+  return (
+    <div className="fixed inset-0 z-40 p-7 grid place-items-center bg-black/40 animate-[fadeIn_0.15s_ease-out]" role="presentation" onMouseDown={onClose}>
+      <section className="w-[min(980px,100%)] max-h-[min(860px,calc(100vh-56px))] rounded-xl border border-gray-200 overflow-hidden grid grid-rows-[auto_minmax(0,1fr)] bg-white shadow-lg animate-[slideUp_0.18s_cubic-bezier(0.16,1,0.3,1)]" role="dialog" aria-modal="true" onMouseDown={(e) => e.stopPropagation()}>
+        <div className="min-h-[62px] px-4 py-4 border-b border-gray-200 flex items-center justify-between gap-3">
+          <div><h3 className="m-0 text-base font-semibold">Key 浏览器</h3><span className="block mt-0.5 text-xs text-gray-400">{instanceName} · 读写均作用于当前主库</span></div>
+          <button className="w-8 h-8 rounded-md border border-gray-200 bg-white text-gray-500 inline-flex items-center justify-center hover:bg-gray-50 transition-colors" onClick={onClose} aria-label="关闭" type="button"><X size={18} /></button>
+        </div>
+        <div className="min-h-0 overflow-auto p-4 grid gap-4">
+          <div className="flex items-center gap-2">
+            <input className="flex-1 h-9 px-3 rounded-md border border-gray-200 text-[13px] font-mono focus:outline-none focus:ring-1 focus:ring-gray-400" placeholder="输入 key 后查询" value={keyInput} onChange={(e) => setKeyInput(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') query(); }} />
+            <button className="h-9 px-3 rounded-md border border-gray-200 bg-white text-gray-700 text-[13px] font-medium inline-flex items-center gap-1 hover:bg-gray-50 disabled:opacity-50" onClick={() => query()} disabled={loading || !keyInput.trim()}><Search size={14} /> 查询</button>
+          </div>
+          {notice && <div className="border border-emerald-200 rounded-md px-3 py-2 flex items-center gap-2 bg-emerald-50 text-emerald-700 text-[13px]"><CheckCircle2 size={16} /> {notice}</div>}
+          {error && <div className="border border-red-200 rounded-md px-3 py-2.5 flex items-center gap-2 bg-red-50 text-red-700 text-[13px]"><AlertCircle size={16} /> {error}</div>}
+
+          {meta && meta.type === 'none' && <div className="text-center p-8 text-gray-400 text-sm">key 不存在</div>}
+
+          {meta && meta.type !== 'none' && <>
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-gray-500 border border-gray-200 rounded-md px-3 py-2">
+              <span>类型 <b className="text-gray-800 font-mono">{meta.type}</b></span>
+              <span>大小 <b className="text-gray-800 font-mono">{meta.size}</b>{meta.type === 'string' ? ' bytes' : ' 个'}</span>
+              <span>TTL <b className="text-gray-800 font-mono">{meta.ttl === -1 ? '永久' : meta.ttl === -2 ? '-' : `${meta.ttl}s`}</b></span>
+              {meta.truncated && <span className="text-amber-600">已截断显示</span>}
+            </div>
+
+            <KVValueView type={meta.type} items={items} />
+
+            {hasMore && <button className="h-8 px-3 rounded-md border border-gray-200 bg-white text-gray-700 text-xs font-medium inline-flex items-center gap-1 hover:bg-gray-50 self-start disabled:opacity-50" onClick={loadMore} disabled={loading}><RefreshCw size={14} className={loading ? 'animate-spin' : ''} /> 加载更多</button>}
+
+            <KVWriteArea type={meta.type} form={form} setForm={setForm} onWrite={doWrite} loading={loading} />
+
+            <div className="border-t border-gray-100 pt-3">
+              {confirmDelete ? (
+                <div className="flex items-center gap-2 text-[13px]">
+                  <span className="text-red-600">确认删除整个 key <b className="font-mono">{queriedKey}</b>？不可恢复。</span>
+                  <button className="h-8 px-3 rounded-md border border-red-300 bg-red-600 text-white text-xs font-medium hover:bg-red-700 disabled:opacity-50" onClick={doDelete} disabled={loading}>确认删除</button>
+                  <button className="h-8 px-3 rounded-md border border-gray-200 bg-white text-gray-600 text-xs font-medium hover:bg-gray-50" onClick={() => setConfirmDelete(false)}>取消</button>
+                </div>
+              ) : (
+                <button className="h-8 px-3 rounded-md border border-red-200 bg-white text-red-600 text-xs font-medium inline-flex items-center gap-1 hover:bg-red-50" onClick={() => setConfirmDelete(true)}><Trash2 size={14} /> 删除整个 key</button>
+              )}
+            </div>
+          </>}
+        </div>
+      </section>
+    </div>
+  );
+}
+
+// dedupeKV 对 scan 结果按 field/member 去重（游标遍历可能重复）。
+function dedupeKV(list) {
+  const seen = new Set();
+  const out = [];
+  for (const it of list) {
+    const k = it.field ?? it.member ?? it.value;
+    if (seen.has(k)) continue;
+    seen.add(k); out.push(it);
+  }
+  return out;
+}
+
+// KVValueView 按类型渲染值。
+function KVValueView({ type, items }) {
+  if (!items || items.length === 0) return <div className="text-center p-6 text-gray-400 text-sm">（空）</div>;
+  if (type === 'string') {
+    return <pre className="border border-gray-200 rounded-md p-3 text-[13px] font-mono whitespace-pre-wrap break-all max-h-[300px] overflow-auto bg-gray-50">{items.map((i) => i.value).join('')}</pre>;
+  }
+  const cols = type === 'hash' ? ['字段', '值'] : type === 'zset' ? ['成员', 'score'] : type === 'list' ? ['#', '值'] : ['成员'];
+  return (
+    <div className="border border-gray-200 rounded-md overflow-hidden">
+      <div className="max-h-[300px] overflow-auto">
+        <table className="w-full border-collapse text-[13px]">
+          <thead><tr>{cols.map((c) => <th key={c} className="sticky top-0 text-left px-3 py-2 font-medium text-gray-400 border-b border-gray-200 bg-gray-50 text-xs">{c}</th>)}</tr></thead>
+          <tbody>
+            {items.map((it, i) => (
+              <tr key={i} className="hover:bg-gray-50">
+                {type === 'hash' && <><td className="px-3 py-1.5 font-mono border-b border-gray-100 align-top break-all">{it.field}</td><td className="px-3 py-1.5 font-mono border-b border-gray-100 align-top break-all">{it.value}</td></>}
+                {type === 'zset' && <><td className="px-3 py-1.5 font-mono border-b border-gray-100 align-top break-all">{it.member}</td><td className="px-3 py-1.5 font-mono border-b border-gray-100 align-top">{it.score}</td></>}
+                {type === 'list' && <><td className="px-3 py-1.5 font-mono border-b border-gray-100 align-top text-gray-400">{it.index}</td><td className="px-3 py-1.5 font-mono border-b border-gray-100 align-top break-all">{it.value}</td></>}
+                {type === 'set' && <td className="px-3 py-1.5 font-mono border-b border-gray-100 align-top break-all">{it.member}</td>}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+// KVWriteArea 按类型给对应写表单 + TTL 设置。
+function KVWriteArea({ type, form, setForm, onWrite, loading }) {
+  const inputCls = 'h-8 px-2.5 rounded-md border border-gray-200 text-[13px] font-mono focus:outline-none focus:ring-1 focus:ring-gray-400';
+  const btnCls = 'h-8 px-3 rounded-md border border-gray-200 bg-white text-gray-700 text-xs font-medium inline-flex items-center gap-1 hover:bg-gray-50 disabled:opacity-50';
+  const set = (k) => (e) => setForm({ ...form, [k]: e.target.value });
+  return (
+    <div className="border border-gray-200 rounded-md p-3 grid gap-2 bg-gray-50/50">
+      <div className="text-xs text-gray-400">写入（作用于当前 key）</div>
+      <div className="flex flex-wrap items-center gap-2">
+        {type === 'string' && <>
+          <input className={`${inputCls} flex-1 min-w-[200px]`} placeholder="value" value={form.value} onChange={set('value')} />
+          <button className={btnCls} onClick={() => onWrite('set', { value: form.value })} disabled={loading}><Save size={14} /> SET</button>
+        </>}
+        {type === 'hash' && <>
+          <input className={inputCls} placeholder="field" value={form.field} onChange={set('field')} />
+          <input className={`${inputCls} flex-1 min-w-[160px]`} placeholder="value" value={form.value} onChange={set('value')} />
+          <button className={btnCls} onClick={() => onWrite('hset', { field: form.field, value: form.value })} disabled={loading || !form.field}><Save size={14} /> HSET</button>
+        </>}
+        {type === 'list' && <>
+          <select className={inputCls} value={form.side} onChange={set('side')}><option value="left">左(LPUSH)</option><option value="right">右(RPUSH)</option></select>
+          <input className={`${inputCls} flex-1 min-w-[160px]`} placeholder="value" value={form.value} onChange={set('value')} />
+          <button className={btnCls} onClick={() => onWrite('push', { value: form.value, side: form.side })} disabled={loading}><Save size={14} /> PUSH</button>
+        </>}
+        {type === 'set' && <>
+          <input className={`${inputCls} flex-1 min-w-[200px]`} placeholder="member" value={form.member} onChange={set('member')} />
+          <button className={btnCls} onClick={() => onWrite('sadd', { member: form.member })} disabled={loading || !form.member}><Save size={14} /> SADD</button>
+        </>}
+        {type === 'zset' && <>
+          <input className={inputCls} placeholder="member" value={form.member} onChange={set('member')} />
+          <input className={`${inputCls} w-24`} placeholder="score" value={form.score} onChange={set('score')} />
+          <button className={btnCls} onClick={() => onWrite('zadd', { member: form.member, score: form.score })} disabled={loading || !form.member}><Save size={14} /> ZADD</button>
+        </>}
+      </div>
+      <div className="flex flex-wrap items-center gap-2">
+        <input className={`${inputCls} w-32`} placeholder="TTL 秒(<0 永久)" value={form.ttl} onChange={set('ttl')} />
+        <button className={btnCls} onClick={() => onWrite('expire', { ttl_seconds: parseInt(form.ttl, 10) || 0 })} disabled={loading || form.ttl === ''}>设置 TTL</button>
+      </div>
+    </div>
+  );
+}

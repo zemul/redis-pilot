@@ -16,7 +16,7 @@ import { topologyLabel, engineLabel, powerActionFor } from '../lib/instance.js';
 // 实例列表统一的网格列模板：实例组/节点 | 类型 | 接入/拓扑 | 架构/版本 | 节点/接入点 | 内存使用 | 状态 | 操作
 const INST_GRID = 'grid items-center gap-4 grid-cols-[280px_84px_120px_130px_minmax(220px,1fr)_90px_92px_112px] px-4';
 
-export function InstancesView({ groups, publicHost, sentinelPort, query, setQuery, expandedGroups, setExpandedGroups, onOpenDetail, onOpenBackups, onPowerAction, onDelete, onSlowlog, onBigkeys, onConfig, onResize, onToggleAccessMode, onEditLabels, onCreate, pendingAction }) {
+export function InstancesView({ groups, publicHost, sentinelPort, query, setQuery, expandedGroups, setExpandedGroups, onOpenDetail, onOpenBackups, onPowerAction, onDelete, onSlowlog, onBigkeys, onConfig, onKeyBrowser, canKeyBrowser, onResize, onToggleAccessMode, onEditLabels, onCreate, pendingAction }) {
   const filtered = groups.filter((group) => {
     const text = [
       group.groupName,
@@ -81,6 +81,8 @@ export function InstancesView({ groups, publicHost, sentinelPort, query, setQuer
               onSlowlog={onSlowlog}
               onBigkeys={onBigkeys}
               onConfig={onConfig}
+              onKeyBrowser={onKeyBrowser}
+              canKeyBrowser={canKeyBrowser}
               onResize={onResize}
               onToggleAccessMode={onToggleAccessMode}
               onEditLabels={onEditLabels}
@@ -93,7 +95,7 @@ export function InstancesView({ groups, publicHost, sentinelPort, query, setQuer
   );
 }
 
-function InstanceGroupCard({ group, expanded, onToggle, publicHost, sentinelPort, onOpenDetail, onOpenBackups, onPowerAction, onDelete, onSlowlog, onBigkeys, onConfig, onResize, onToggleAccessMode, onEditLabels, pendingAction }) {
+function InstanceGroupCard({ group, expanded, onToggle, publicHost, sentinelPort, onOpenDetail, onOpenBackups, onPowerAction, onDelete, onSlowlog, onBigkeys, onConfig, onKeyBrowser, canKeyBrowser, onResize, onToggleAccessMode, onEditLabels, pendingAction }) {
   const master = group.master;
   const hasReplicas = group.replicas.length > 0;
   const topology = topologyLabel(group, master);
@@ -109,6 +111,7 @@ function InstanceGroupCard({ group, expanded, onToggle, publicHost, sentinelPort
     { label: '编辑标签', onClick: () => onEditLabels(group) },
     { label: '慢查询', onClick: () => onSlowlog(master) },
     { label: '大 Key 分析', onClick: () => onBigkeys(master) },
+    canKeyBrowser && { label: 'Key 浏览器', onClick: () => onKeyBrowser(master) },
     powerAction && {
       label: powerAction.label,
       disabled: powerAction.disabledReason || pendingAction === `${powerAction.action}:${master.name}`,

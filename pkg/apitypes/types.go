@@ -423,3 +423,63 @@ type SentinelStatus struct {
 	Port    int      `json:"port"`
 	Masters []string `json:"masters"`
 }
+
+// ─── 受限 K/V 浏览器（Server ↔ Agent 共享）─────────────────────────────────
+// 仅供 admin 使用的受限 key 查看/读写。读走 /instance/key/get，写走
+// /instance/key/write（op 区分），整 key 删除走 /instance/key/delete。
+// 设计见 KEY_BROWSER_PLAN.md（feature 分支临时文档）。
+
+// KVItem 是 K/V 浏览器读结果里的一个元素，字段按 key 类型取用：
+//   string → Value
+//   hash   → Field + Value
+//   list   → Index + Value（Index 为绝对下标，用指针以保留 0）
+//   set    → Member
+//   zset   → Member + Score
+type KVItem struct {
+	Field  string `json:"field,omitempty"`
+	Member string `json:"member,omitempty"`
+	Value  string `json:"value,omitempty"`
+	Score  string `json:"score,omitempty"`
+	Index  *int64 `json:"index,omitempty"`
+}
+
+// KeyGetResponse 是 /instance/key/get 的响应：一次返回元信息 + 一页值。
+type KeyGetResponse struct {
+	Type       string   `json:"type"`                  // string|hash|list|set|zset|none
+	Size       int64    `json:"size"`                  // STRLEN/HLEN/LLEN/SCARD/ZCARD
+	TTL        int64    `json:"ttl"`                   // -1 无过期，-2 不存在
+	Items      []KVItem `json:"items"`                 // meta=true 时为空
+	NextCursor string   `json:"next_cursor,omitempty"` // 仅 scan 类型；"0"=到底
+	Truncated  bool     `json:"truncated"`             // 命中字节兜底或分片未读完
+}
+
+// KeyWriteArgs 是写操作的参数，按 op 取用不同字段。
+type KeyWriteArgs struct {
+	Value      string `json:"value,omitempty"`       // set / hset / push
+	Field      string `json:"field,omitempty"`       // hset
+	Member     string `json:"member,omitempty"`      // sadd / zadd
+	Score      string `json:"score,omitempty"`       // zadd
+	Side       string `json:"side,omitempty"`        // push: left|right
+	TTLSeconds int64  `json:"ttl_seconds,omitempty"` // expire: <0 表示 PERSIST
+}
+
+// KeyWriteRequest 是 /instance/key/write 的请求体。
+// Op ∈ set|hset|push|sadd|zadd|expire（白名单在 Server service 与 Agent 双重校验）。
+type KeyWriteRequest struct {
+	Name string       `json:"name" binding:"required"`
+	Key  string       `json:"key" binding:"required"`
+	Op   string       `json:"op" binding:"required"`
+	Args KeyWriteArgs `json:"args"`
+}
+
+// KeyWriteResponse 是写/删操作的响应，Result 为 redis 回复原文（如 OK / 整数）。
+type KeyWriteResponse struct {
+	OK     bool   `json:"ok"`
+	Result string `json:"result"`
+}
+
+// KeyDeleteRequest 是 /instance/key/delete 的请求体（整 key 删除）。
+type KeyDeleteRequest struct {
+	Name string `json:"name" binding:"required"`
+	Key  string `json:"key" binding:"required"`
+}

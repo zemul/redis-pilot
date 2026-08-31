@@ -23,6 +23,19 @@ export function getStoredAuth() {
   return token ? { token, username: user || '' } : null;
 }
 
+// getStoredRole 从浏览器 JWT 解出角色（仅用于前端 UI 展示/隐藏，服务端仍强制校验）。
+// 非 JWT（如 rpt_ API Token）或解析失败时返回空串。
+export function getStoredRole() {
+  const token = localStorage.getItem(TOKEN_KEY);
+  if (!token || !token.includes('.')) return '';
+  try {
+    const part = token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/');
+    return JSON.parse(atob(part)).role || '';
+  } catch {
+    return '';
+  }
+}
+
 export function setStoredAuth(token, username) {
   localStorage.setItem(TOKEN_KEY, token);
   localStorage.setItem(USER_KEY, username);

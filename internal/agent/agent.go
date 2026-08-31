@@ -252,6 +252,9 @@ func (a *Agent) Router() *gin.Engine {
 		inst.POST("/bigkeys/cancel", a.instanceBigkeysCancel)
 		inst.GET("/config", a.instanceConfigGet)
 		inst.GET("/metrics", a.instanceMetrics)
+		inst.GET("/key/get", a.instanceKeyGet)
+		inst.POST("/key/write", a.instanceKeyWrite)
+		inst.POST("/key/delete", a.instanceKeyDelete)
 	}
 
 	return r

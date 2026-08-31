@@ -219,6 +219,10 @@ func (s *Server) Router() *gin.Engine {
 		instance.POST("/labels", s.instanceGroupLabels)
 		instance.POST("/failover", s.instanceFailover)
 		instance.POST("/replicate", s.instanceReplicate)
+		// 受限 K/V 浏览器（仅 admin，handler 内硬校验；读写都路由到组 master）
+		instance.GET("/key/get", s.instanceKeyGet)
+		instance.POST("/key/write", s.instanceKeyWrite)
+		instance.POST("/key/delete", s.instanceKeyDelete)
 	}
 
 	// 备份（需要 admin 才能写）

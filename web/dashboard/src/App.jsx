@@ -13,7 +13,7 @@ import {
   Users,
   X
 } from 'lucide-react';
-import { LoginPage, UserManagement, TokenManagement, getStoredAuth, clearStoredAuth } from './Auth.jsx';
+import { LoginPage, UserManagement, TokenManagement, getStoredAuth, clearStoredAuth, getStoredRole } from './Auth.jsx';
 import { createRequest } from './lib/request.js';
 import { UserMenu } from './components/common.jsx';
 import { DashboardView } from './views/DashboardView.jsx';
@@ -33,6 +33,7 @@ import {
   ConfirmPowerModal,
   CreateInstanceModal,
   GroupLabelsModal,
+  KeyBrowserModal,
 } from './modals/index.jsx';
 import AiChatPanel from './components/AiChatPanel.jsx';
 import { normalizeMap, backupRows, auditQuery, getField } from './lib/format.js';
@@ -81,6 +82,7 @@ function AppShell() {
   const [resizeTarget, setResizeTarget] = useState(null);
   const [accessModeTarget, setAccessModeTarget] = useState(null);
   const [labelsTarget, setLabelsTarget] = useState(null);
+  const [keyBrowserTarget, setKeyBrowserTarget] = useState(null);
   const [createOpen, setCreateOpen] = useState(false);
   const [pendingAction, setPendingAction] = useState('');
   const [activeTaskCount, setActiveTaskCount] = useState(0);
@@ -92,6 +94,7 @@ function AppShell() {
   const instanceGroups = useMemo(() => buildInstanceGroups(data.instances), [data.instances]);
   const servers = useMemo(() => normalizeMap(data.servers, 'Servers', 'servers'), [data.servers]);
   const activeTitle = TABS.find((tab) => tab.id === activeTab)?.label || '大盘看板';
+  const isAdmin = getStoredRole() === 'admin';
 
   const request = useMemo(
     () => createRequest({
@@ -366,6 +369,8 @@ function AppShell() {
                   onSlowlog={(item) => setSlowlogTarget(item.name)}
                   onBigkeys={(item) => setBigkeysTarget(item.name)}
                   onConfig={(item) => setConfigTarget(item.name)}
+                  onKeyBrowser={(item) => setKeyBrowserTarget(item.name)}
+                  canKeyBrowser={isAdmin}
                   onResize={(item) => setResizeTarget({ name: item.name, memory: getField(item, 'memory', 'Memory', ''), cpus: String(getField(item, 'cpus', 'CPUs', '') || ''), disk: getField(item, 'disk', 'Disk', '') })}
                   onToggleAccessMode={toggleAccessMode}
                   onEditLabels={setLabelsTarget}
@@ -398,6 +403,7 @@ function AppShell() {
       {slowlogTarget && <SlowlogModal instanceName={slowlogTarget} requestFn={request} onClose={() => setSlowlogTarget(null)} />}
       {bigkeysTarget && <BigkeysModal instanceName={bigkeysTarget} requestFn={request} onViewTasks={() => { setBigkeysTarget(null); setActiveTab('tasks'); }} onClose={() => setBigkeysTarget(null)} />}
       {configTarget && <ConfigModal instanceName={configTarget} requestFn={request} onClose={() => setConfigTarget(null)} />}
+      {keyBrowserTarget && <KeyBrowserModal instanceName={keyBrowserTarget} requestFn={request} onClose={() => setKeyBrowserTarget(null)} />}
       {resizeTarget && <ResizeModal instanceName={resizeTarget.name} currentSpecs={{ memory: resizeTarget.memory, cpus: resizeTarget.cpus, disk: resizeTarget.disk }} requestFn={request} onClose={() => { setResizeTarget(null); refresh(); }} />}
       {accessModeTarget && <AccessModeModal group={accessModeTarget} publicHost={serverInfo?.proxy_public_endpoint} sentinelPort={serverInfo?.proxy_sentinel_port} onConfirm={(mode) => toggleAccessMode(accessModeTarget, mode)} onClose={() => setAccessModeTarget(null)} />}
       {labelsTarget && <GroupLabelsModal group={labelsTarget} requestFn={request} onSaved={refresh} onClose={() => setLabelsTarget(null)} />}
