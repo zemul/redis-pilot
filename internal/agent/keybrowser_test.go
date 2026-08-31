@@ -9,6 +9,7 @@ import (
 )
 
 func TestKvBuildWriteArgs(t *testing.T) {
+	i64 := func(n int64) *int64 { return &n }
 	cases := []struct {
 		name    string
 		op      string
@@ -28,6 +29,15 @@ func TestKvBuildWriteArgs(t *testing.T) {
 		{"zadd bad score", "zadd", apitypes.KeyWriteArgs{Member: "m", Score: "abc"}, nil, true},
 		{"expire", "expire", apitypes.KeyWriteArgs{TTLSeconds: 60}, []string{"EXPIRE", "k", "60"}, false},
 		{"persist", "expire", apitypes.KeyWriteArgs{TTLSeconds: -1}, []string{"PERSIST", "k"}, false},
+		{"hdel", "hdel", apitypes.KeyWriteArgs{Field: "f"}, []string{"HDEL", "k", "f"}, false},
+		{"hdel missing field", "hdel", apitypes.KeyWriteArgs{}, nil, true},
+		{"srem", "srem", apitypes.KeyWriteArgs{Member: "m"}, []string{"SREM", "k", "m"}, false},
+		{"srem missing member", "srem", apitypes.KeyWriteArgs{}, nil, true},
+		{"zrem", "zrem", apitypes.KeyWriteArgs{Member: "m"}, []string{"ZREM", "k", "m"}, false},
+		{"zrem missing member", "zrem", apitypes.KeyWriteArgs{}, nil, true},
+		{"lset", "lset", apitypes.KeyWriteArgs{Index: i64(2), Value: "v"}, []string{"LSET", "k", "2", "v"}, false},
+		{"lset index zero ok", "lset", apitypes.KeyWriteArgs{Index: i64(0), Value: "v"}, []string{"LSET", "k", "0", "v"}, false},
+		{"lset missing index", "lset", apitypes.KeyWriteArgs{Value: "v"}, nil, true},
 		{"unknown op", "flushall", apitypes.KeyWriteArgs{}, nil, true},
 	}
 	for _, tc := range cases {
@@ -57,7 +67,7 @@ func TestKvBuildWriteArgsRejectsOversizedValue(t *testing.T) {
 }
 
 func TestKvWriteOpsWhitelist(t *testing.T) {
-	for _, op := range []string{"set", "hset", "push", "sadd", "zadd", "expire"} {
+	for _, op := range []string{"set", "hset", "push", "sadd", "zadd", "expire", "hdel", "srem", "zrem", "lset"} {
 		if !kvWriteOps[op] {
 			t.Errorf("op %q should be whitelisted", op)
 		}

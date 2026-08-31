@@ -16,6 +16,7 @@ import (
 // serverKvWriteOps 是写操作白名单（Server 侧防线，Agent 侧亦校验）。
 var serverKvWriteOps = map[string]bool{
 	"set": true, "hset": true, "push": true, "sadd": true, "zadd": true, "expire": true,
+	"hdel": true, "srem": true, "zrem": true, "lset": true,
 }
 
 // resolveMaster 把任意实例名/从库名归一到其组的当前 master，并返回 master 所在节点。

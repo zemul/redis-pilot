@@ -455,16 +455,17 @@ type KeyGetResponse struct {
 
 // KeyWriteArgs 是写操作的参数，按 op 取用不同字段。
 type KeyWriteArgs struct {
-	Value      string `json:"value,omitempty"`       // set / hset / push
-	Field      string `json:"field,omitempty"`       // hset
-	Member     string `json:"member,omitempty"`      // sadd / zadd
+	Value      string `json:"value,omitempty"`       // set / hset / push / lset
+	Field      string `json:"field,omitempty"`       // hset / hdel
+	Member     string `json:"member,omitempty"`      // sadd / zadd / srem / zrem
 	Score      string `json:"score,omitempty"`       // zadd
 	Side       string `json:"side,omitempty"`        // push: left|right
+	Index      *int64 `json:"index,omitempty"`       // lset: 目标下标
 	TTLSeconds int64  `json:"ttl_seconds,omitempty"` // expire: <0 表示 PERSIST
 }
 
 // KeyWriteRequest 是 /instance/key/write 的请求体。
-// Op ∈ set|hset|push|sadd|zadd|expire（白名单在 Server service 与 Agent 双重校验）。
+// Op ∈ set|hset|push|sadd|zadd|expire|hdel|srem|zrem|lset（白名单在 Server service 与 Agent 双重校验）。
 type KeyWriteRequest struct {
 	Name string       `json:"name" binding:"required"`
 	Key  string       `json:"key" binding:"required"`

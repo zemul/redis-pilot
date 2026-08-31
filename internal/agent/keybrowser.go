@@ -24,6 +24,7 @@ const (
 // kvWriteOps 是写操作白名单（Agent 侧防线，Server service 层亦会校验）。
 var kvWriteOps = map[string]bool{
 	"set": true, "hset": true, "push": true, "sadd": true, "zadd": true, "expire": true,
+	"hdel": true, "srem": true, "zrem": true, "lset": true,
 }
 
 // redisCmdRaw 在 redisCmd 之上强制 --raw 输出：整数/状态回复为裸值、多行元素以 \n 分隔，
@@ -228,7 +229,7 @@ func kvReadScan(name, pw, cmd, key, cursor string, count int, resp *apitypes.Key
 	}
 }
 
-// instanceKeyWrite 按 op 走白名单写入（set/hset/push/sadd/zadd/expire）。
+// instanceKeyWrite 按 op 走白名单写入（set/hset/push/sadd/zadd/expire/hdel/srem/zrem/lset）。
 func (a *Agent) instanceKeyWrite(c *gin.Context) {
 	var req apitypes.KeyWriteRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -312,6 +313,29 @@ func kvBuildWriteArgs(key, op string, a apitypes.KeyWriteArgs) ([]string, error)
 			return []string{"PERSIST", key}, nil
 		}
 		return []string{"EXPIRE", key, strconv.FormatInt(a.TTLSeconds, 10)}, nil
+	case "hdel":
+		if a.Field == "" {
+			return nil, fmt.Errorf("field is required for hdel")
+		}
+		return []string{"HDEL", key, a.Field}, nil
+	case "srem":
+		if a.Member == "" {
+			return nil, fmt.Errorf("member is required for srem")
+		}
+		return []string{"SREM", key, a.Member}, nil
+	case "zrem":
+		if a.Member == "" {
+			return nil, fmt.Errorf("member is required for zrem")
+		}
+		return []string{"ZREM", key, a.Member}, nil
+	case "lset":
+		if a.Index == nil {
+			return nil, fmt.Errorf("index is required for lset")
+		}
+		if err := tooBig(a.Value); err != nil {
+			return nil, err
+		}
+		return []string{"LSET", key, strconv.FormatInt(*a.Index, 10), a.Value}, nil
 	}
 	return nil, fmt.Errorf("unsupported op: %s", op)
 }

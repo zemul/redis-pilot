@@ -4,7 +4,7 @@ import { useState, useEffect } from 'react';
 import {
   X, Info, BarChart3, AlertCircle, RefreshCw, Play, HardDrive,
   Calendar, Save, CheckCircle2, Trash2, Power, Database, Server, SlidersHorizontal,
-  AlertTriangle, Search,
+  AlertTriangle, Search, Pencil, Check,
 } from 'lucide-react';
 import { StatusBadge, EmptyState, CopyableText } from '../components/common.jsx';
 import { getField, displayValue, formatDateTime, statusMeta, formatBytes, formatDuration } from '../lib/format.js';
@@ -1534,6 +1534,19 @@ export function KeyBrowserModal({ instanceName, requestFn, onClose }) {
     }
   }
 
+  // rowDelete 删除单个元素：hash→HDEL / set→SREM / zset→ZREM（list 不支持按元素删）。
+  async function rowDelete(it) {
+    if (meta.type === 'hash') return doWrite('hdel', { field: it.field });
+    if (meta.type === 'set') return doWrite('srem', { member: it.member });
+    if (meta.type === 'zset') return doWrite('zrem', { member: it.member });
+  }
+  // rowSave 就地编辑：hash 改值(HSET) / zset 改分数(ZADD) / list 按下标改值(LSET)。
+  async function rowSave(it, val) {
+    if (meta.type === 'hash') return doWrite('hset', { field: it.field, value: val });
+    if (meta.type === 'zset') return doWrite('zadd', { member: it.member, score: val });
+    if (meta.type === 'list') return doWrite('lset', { index: it.index, value: val });
+  }
+
   const scanType = meta && ['hash', 'set', 'zset'].includes(meta.type);
   const hasMore = meta && (scanType ? cursor !== '0' : (meta.size > items.length && meta.type !== 'string') || (meta.type === 'string' && meta.truncated));
 
@@ -1579,7 +1592,7 @@ export function KeyBrowserModal({ instanceName, requestFn, onClose }) {
               {meta.truncated && <span className="ml-auto inline-flex items-center gap-1 text-[11px] text-amber-600 bg-amber-50 border border-amber-200 rounded px-1.5 py-0.5">已截断显示</span>}
             </div>
 
-            <KVValueView type={meta.type} items={items} />
+            <KVValueView type={meta.type} items={items} onRowDelete={rowDelete} onRowSave={rowSave} busy={loading} />
 
             {hasMore && <button className="h-8 px-3 rounded-md border border-gray-200 bg-white text-gray-700 text-xs font-medium inline-flex items-center gap-1 hover:bg-gray-50 self-start disabled:opacity-50" onClick={loadMore} disabled={loading}><RefreshCw size={14} className={loading ? 'animate-spin' : ''} /> 加载更多</button>}
 
@@ -1624,27 +1637,70 @@ const KV_TYPE_BADGE = {
   zset: 'bg-rose-50 text-rose-700 border border-rose-200',
 };
 
-// KVValueView 按类型渲染值。
-function KVValueView({ type, items }) {
+// KVValueView 按类型渲染值。集合类支持行内删除（HDEL/SREM/ZREM）与行内编辑
+// （hash 改值 HSET / zset 改分数 ZADD / list 按下标改值 LSET）；set 成员即值，只能删不能改。
+function KVValueView({ type, items, onRowDelete, onRowSave, busy }) {
+  const [editIdx, setEditIdx] = useState(-1);
+  const [editVal, setEditVal] = useState('');
   if (!items || items.length === 0) return <div className="text-center p-6 text-gray-400 text-sm">（空）</div>;
   if (type === 'string') {
     return <pre className="border border-gray-200 rounded-md p-3 text-[13px] font-mono whitespace-pre-wrap break-all max-h-[300px] overflow-auto bg-gray-50">{items.map((i) => i.value).join('')}</pre>;
   }
+  const canDelete = ['hash', 'set', 'zset'].includes(type);
+  const canEdit = ['hash', 'zset', 'list'].includes(type); // set 无「改」概念
+  const hasActions = canDelete || canEdit;
   const cols = type === 'hash' ? ['字段', '值'] : type === 'zset' ? ['成员', 'score'] : type === 'list' ? ['#', '值'] : ['成员'];
+  // editField：可编辑的目标单元格（hash/list 改 value，zset 改 score）。
+  const editValueOf = (it) => (type === 'zset' ? it.score : it.value);
+  const startEdit = (i, it) => { setEditIdx(i); setEditVal(editValueOf(it) ?? ''); };
+  const cancelEdit = () => { setEditIdx(-1); setEditVal(''); };
+  const saveEdit = async (it) => { const v = editVal; setEditIdx(-1); await onRowSave?.(it, v); };
+  const iconBtn = 'w-7 h-7 rounded-md inline-flex items-center justify-center border transition-colors disabled:opacity-40 disabled:cursor-not-allowed';
+  const editInput = 'h-7 w-full px-2 rounded border border-gray-300 text-[13px] font-mono focus:outline-none focus:ring-1 focus:ring-gray-400';
   return (
     <div className="border border-gray-200 rounded-md overflow-hidden">
       <div className="max-h-[300px] overflow-auto">
         <table className="w-full border-collapse text-[13px]">
-          <thead><tr>{cols.map((c) => <th key={c} className="sticky top-0 text-left px-3 py-2 font-medium text-gray-400 border-b border-gray-200 bg-gray-50 text-xs">{c}</th>)}</tr></thead>
+          <thead><tr>
+            {cols.map((c) => <th key={c} className="sticky top-0 text-left px-3 py-2 font-medium text-gray-400 border-b border-gray-200 bg-gray-50 text-xs">{c}</th>)}
+            {hasActions && <th className="sticky top-0 w-[92px] px-3 py-2 border-b border-gray-200 bg-gray-50"></th>}
+          </tr></thead>
           <tbody>
-            {items.map((it, i) => (
-              <tr key={i} className="hover:bg-gray-50">
-                {type === 'hash' && <><td className="px-3 py-1.5 font-mono border-b border-gray-100 align-top break-all">{it.field}</td><td className="px-3 py-1.5 font-mono border-b border-gray-100 align-top break-all">{it.value}</td></>}
-                {type === 'zset' && <><td className="px-3 py-1.5 font-mono border-b border-gray-100 align-top break-all">{it.member}</td><td className="px-3 py-1.5 font-mono border-b border-gray-100 align-top">{it.score}</td></>}
-                {type === 'list' && <><td className="px-3 py-1.5 font-mono border-b border-gray-100 align-top text-gray-400">{it.index}</td><td className="px-3 py-1.5 font-mono border-b border-gray-100 align-top break-all">{it.value}</td></>}
-                {type === 'set' && <td className="px-3 py-1.5 font-mono border-b border-gray-100 align-top break-all">{it.member}</td>}
-              </tr>
-            ))}
+            {items.map((it, i) => {
+              const editing = editIdx === i;
+              return (
+                <tr key={i} className="hover:bg-gray-50 group">
+                  {type === 'hash' && <>
+                    <td className="px-3 py-1.5 font-mono border-b border-gray-100 align-top break-all">{it.field}</td>
+                    <td className="px-3 py-1.5 font-mono border-b border-gray-100 align-top break-all">{editing ? <input className={editInput} value={editVal} onChange={(e) => setEditVal(e.target.value)} autoFocus /> : it.value}</td>
+                  </>}
+                  {type === 'zset' && <>
+                    <td className="px-3 py-1.5 font-mono border-b border-gray-100 align-top break-all">{it.member}</td>
+                    <td className="px-3 py-1.5 font-mono border-b border-gray-100 align-top">{editing ? <input className={`${editInput} w-24`} value={editVal} onChange={(e) => setEditVal(e.target.value)} autoFocus /> : it.score}</td>
+                  </>}
+                  {type === 'list' && <>
+                    <td className="px-3 py-1.5 font-mono border-b border-gray-100 align-top text-gray-400">{it.index}</td>
+                    <td className="px-3 py-1.5 font-mono border-b border-gray-100 align-top break-all">{editing ? <input className={editInput} value={editVal} onChange={(e) => setEditVal(e.target.value)} autoFocus /> : it.value}</td>
+                  </>}
+                  {type === 'set' && <td className="px-3 py-1.5 font-mono border-b border-gray-100 align-top break-all">{it.member}</td>}
+                  {hasActions && (
+                    <td className="px-3 py-1.5 border-b border-gray-100 align-top text-right whitespace-nowrap">
+                      {editing ? (
+                        <span className="inline-flex gap-1">
+                          <button className={`${iconBtn} border-gray-900 bg-gray-900 text-white hover:bg-gray-700`} title="保存" disabled={busy} onClick={() => saveEdit(it)}><Check size={14} /></button>
+                          <button className={`${iconBtn} border-gray-200 bg-white text-gray-500 hover:bg-gray-50`} title="取消" onClick={cancelEdit}><X size={14} /></button>
+                        </span>
+                      ) : (
+                        <span className="inline-flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                          {canEdit && <button className={`${iconBtn} border-gray-200 bg-white text-gray-500 hover:bg-gray-100`} title="编辑" disabled={busy} onClick={() => startEdit(i, it)}><Pencil size={13} /></button>}
+                          {canDelete && <button className={`${iconBtn} border-red-200 bg-white text-red-500 hover:bg-red-50`} title="删除" disabled={busy} onClick={() => onRowDelete?.(it)}><Trash2 size={13} /></button>}
+                        </span>
+                      )}
+                    </td>
+                  )}
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       </div>
