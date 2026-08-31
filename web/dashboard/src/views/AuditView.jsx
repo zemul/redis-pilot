@@ -5,7 +5,7 @@ import { EmptyState, StatusBadge } from '../components/common.jsx';
 import {
   auditQuery, displayValue, formatDateTime, auditOperator, auditActionLabel,
   auditTargetDisplay, auditLevelLabel, auditResultMeta, auditSourceLabel,
-  auditTriggerLabel, auditPhaseLabel,
+  auditTriggerLabel, auditPhaseLabel, collapseAuditRecords,
 } from '../lib/format.js';
 import { Input } from '../components/ui/input.jsx';
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from '../components/ui/select.jsx';
@@ -16,12 +16,6 @@ import { Calendar } from '../components/ui/calendar.jsx';
 const EMPTY_FILTERS = {
   from: '', to: '', q: '', actor_type: '', source: '', level: '', action: '', result: '', operator: '', group: '', instance: ''
 };
-
-// 异步任务的终态结果。列表折叠用：同一 correlation_id 若已存在终态记录，
-// 则隐藏其中间态行（accepted/running），只保留终态那条，减少列表噪音。
-// 仍在进行中的任务（只有 accepted、尚无终态）不受影响，正常展示。
-const TERMINAL_RESULTS = new Set(['success', 'failed', 'corrected', 'interrupted', 'canceled', 'skipped']);
-const INTERMEDIATE_RESULTS = new Set(['accepted', 'running']);
 
 const PRESETS = [
   { id: 'all', label: '全部变更', values: { actor_type: '', result: '', level: '' } },
@@ -99,18 +93,7 @@ export function AuditView({ filters, setFilters, request }) {
 
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
 
-  // 折叠：同一 correlation_id 已有终态记录时，隐藏其 accepted/running 中间态行。
-  const terminalCids = new Set();
-  for (const log of records) {
-    const cid = log.correlation_id || log.CorrelationID;
-    const res = log.result || log.Result;
-    if (cid && TERMINAL_RESULTS.has(res)) terminalCids.add(cid);
-  }
-  const visibleRecords = records.filter((log) => {
-    const cid = log.correlation_id || log.CorrelationID;
-    const res = log.result || log.Result;
-    return !(cid && INTERMEDIATE_RESULTS.has(res) && terminalCids.has(cid));
-  });
+  const visibleRecords = collapseAuditRecords(records);
 
   return (
     <div className="grid gap-4">

@@ -159,6 +159,25 @@ export function auditQuery(filters, page = 1, pageSize = 30) {
   return `/audit/query?${params.toString()}`;
 }
 
+// 同一异步任务已有终态时，列表只展示终态；尚未完成的 accepted/running 仍保留。
+export function collapseAuditRecords(records = []) {
+  const terminalResults = new Set(['success', 'failed', 'corrected', 'interrupted', 'canceled', 'skipped']);
+  const intermediateResults = new Set(['accepted', 'running']);
+  const terminalCorrelationIds = new Set();
+
+  for (const record of records) {
+    const correlationId = record.correlation_id || record.CorrelationID;
+    const result = record.result || record.Result;
+    if (correlationId && terminalResults.has(result)) terminalCorrelationIds.add(correlationId);
+  }
+
+  return records.filter((record) => {
+    const correlationId = record.correlation_id || record.CorrelationID;
+    const result = record.result || record.Result;
+    return !(correlationId && intermediateResults.has(result) && terminalCorrelationIds.has(correlationId));
+  });
+}
+
 export function parseGi(value) {
   if (!value) return 0;
   const match = String(value).trim().match(/^([0-9.]+)\s*(Gi|G|Mi|M|Ti|T)?/i);

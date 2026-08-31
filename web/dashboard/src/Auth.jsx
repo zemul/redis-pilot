@@ -277,7 +277,7 @@ export function UserManagement({ request }) {
             </div>
             <div className="space-y-1.5">
               <label className="text-sm text-muted-foreground">角色</label>
-              <select className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+              <select className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground"
                 value={newUser.role} onChange={(e) => setNewUser({ ...newUser, role: e.target.value })}>
                 <option value="admin">管理员 (admin)</option>
                 <option value="viewer">只读 (viewer)</option>

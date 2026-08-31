@@ -7,7 +7,7 @@ import {
   AlertTriangle, Search, Pencil, Check, ShieldCheck,
 } from 'lucide-react';
 import { StatusBadge, EmptyState, CopyableText } from '../components/common.jsx';
-import { getField, displayValue, formatDateTime, statusMeta, formatBytes, formatDuration, auditQuery, auditActionLabel, auditSourceLabel, auditOperator, auditResultMeta, auditTargetDisplay, auditTriggerLabel, taskKindLabel, taskStatusMeta, taskDuration } from '../lib/format.js';
+import { getField, displayValue, formatDateTime, statusMeta, formatBytes, formatDuration, auditQuery, auditActionLabel, auditSourceLabel, auditOperator, auditResultMeta, auditTargetDisplay, auditTriggerLabel, taskKindLabel, taskStatusMeta, taskDuration, collapseAuditRecords } from '../lib/format.js';
 import { extractMetricsPayload, parseRedisInfo, metricValue, engineLabel, topologyReason, parseReplicationLinks, topologyLabel } from '../lib/instance.js';
 import { MetricsTrendView } from '../views/MetricsTrendView.jsx';
 
@@ -221,21 +221,23 @@ function InstanceAuditTab({ instanceName, requestFn, onViewAll }) {
     return () => { ignore = true; };
   }, [instanceName]);
 
+  const visibleRecords = collapseAuditRecords(records);
+
   if (loading) return <div className="min-h-[150px] border border-dashed border-gray-200 rounded-md grid place-items-center text-gray-400 text-[13px]">正在读取审计记录...</div>;
   if (error) return <div className="border border-red-200 rounded-md px-3 py-2.5 flex items-center gap-2 bg-red-50 text-red-700 text-[13px]"><AlertCircle size={16} /> {error}</div>;
-  if (records.length === 0) return <EmptyState icon={SlidersHorizontal} title="暂无审计记录" detail="该实例的人工、AI 与系统操作都会记录在这里。" />;
+  if (visibleRecords.length === 0) return <EmptyState icon={SlidersHorizontal} title="暂无审计记录" detail="该实例的人工、AI 与系统操作都会记录在这里。" />;
 
   return (
     <section>
       <div className="mb-3 flex items-center justify-between">
         <h4 className="m-0 inline-flex items-center gap-1.5 text-[13px] font-semibold text-gray-500"><SlidersHorizontal size={16} className="text-gray-400" /> 操作审计</h4>
-        <span className="text-xs text-gray-400">最近 {records.length} 条</span>
+        <span className="text-xs text-gray-400">最近 {visibleRecords.length} 条</span>
       </div>
       <div className="border border-gray-200 rounded-md overflow-hidden overflow-x-auto">
         <table className="w-full min-w-[720px] border-collapse">
           <thead><tr>{['时间', '来源 / 操作者', '动作', '目标', '触发原因', '结果'].map((label) => <th key={label} className="px-3 py-2.5 border-b border-gray-200 text-left text-xs font-medium text-gray-400 bg-gray-50">{label}</th>)}</tr></thead>
           <tbody>
-            {records.map((log, index) => {
+            {visibleRecords.map((log, index) => {
               const id = log.id || log.ID || index;
               const actorType = log.actor_type || log.ActorType;
               const source = log.source || log.Source;
@@ -908,7 +910,7 @@ export function ConfigModal({ instanceName, requestFn, onClose }) {
                           <td className="px-2.5 py-1.5 font-mono border-b border-gray-100">{key}</td>
                           <td className="px-2.5 py-1.5 border-b border-gray-100">
                             <input
-                              className={`w-full border bg-transparent px-1 py-0.5 font-mono text-xs rounded transition-colors focus:outline-none focus:border-gray-900 ${modified ? 'border-gray-900' : 'border-transparent'}`}
+                              className={`w-full border bg-transparent px-1 py-0.5 font-mono text-xs text-gray-900 rounded transition-colors focus:outline-none focus:border-gray-900 ${modified ? 'border-gray-900' : 'border-transparent'}`}
                               value={current}
                               onChange={(e) => handleEdit(key, e.target.value)}
                             />
@@ -1266,15 +1268,15 @@ export function ResizeModal({ instanceName, currentSpecs, requestFn, onClose }) 
         <form onSubmit={handleSubmit} className="p-4 grid gap-4">
           <label className="grid gap-1 text-[13px] font-medium text-gray-700">
             内存
-            <input className="h-9 px-3 border border-gray-200 rounded-md text-[13px] focus:outline-none focus:border-gray-900 focus:ring-1 focus:ring-gray-900" placeholder="例如 2Gi" value={memory} onChange={(e) => setMemory(e.target.value)} />
+            <input className="h-9 px-3 border border-gray-200 rounded-md bg-white text-[13px] text-gray-900 placeholder:text-gray-400 focus:outline-none focus:border-gray-900 focus:ring-1 focus:ring-gray-900" placeholder="例如 2Gi" value={memory} onChange={(e) => setMemory(e.target.value)} />
           </label>
           <label className="grid gap-1 text-[13px] font-medium text-gray-700">
             CPU
-            <input className="h-9 px-3 border border-gray-200 rounded-md text-[13px] focus:outline-none focus:border-gray-900 focus:ring-1 focus:ring-gray-900" type="number" step="0.1" min="0.1" placeholder="例如 2" value={cpus} onChange={(e) => setCpus(e.target.value)} />
+            <input className="h-9 px-3 border border-gray-200 rounded-md bg-white text-[13px] text-gray-900 placeholder:text-gray-400 focus:outline-none focus:border-gray-900 focus:ring-1 focus:ring-gray-900" type="number" step="0.1" min="0.1" placeholder="例如 2" value={cpus} onChange={(e) => setCpus(e.target.value)} />
           </label>
           <label className="grid gap-1 text-[13px] font-medium text-gray-700">
             磁盘
-            <input className="h-9 px-3 border border-gray-200 rounded-md text-[13px] focus:outline-none focus:border-gray-900 focus:ring-1 focus:ring-gray-900" placeholder="例如 20Gi" value={disk} onChange={(e) => setDisk(e.target.value)} />
+            <input className="h-9 px-3 border border-gray-200 rounded-md bg-white text-[13px] text-gray-900 placeholder:text-gray-400 focus:outline-none focus:border-gray-900 focus:ring-1 focus:ring-gray-900" placeholder="例如 20Gi" value={disk} onChange={(e) => setDisk(e.target.value)} />
           </label>
           {result && (
             <div className={`text-[13px] px-3 py-2 rounded-md border ${result.startsWith('失败') ? 'border-red-200 bg-red-50 text-red-700' : 'border-green-200 bg-green-50 text-green-700'}`}>

@@ -46,7 +46,7 @@ function DateTimeField({ label, value, onChange, min, max }) {
         />
         <div className="flex items-center gap-2 border-t border-gray-100 pt-2">
           <span className="text-xs text-gray-400">时间</span>
-          <input type="time" value={timeStr} onChange={pickTime} className="h-7 px-2 rounded-md border border-gray-200 text-xs text-gray-700 outline-0 focus:border-gray-900" />
+          <input type="time" value={timeStr} onChange={pickTime} className="h-7 px-2 rounded-md border border-gray-200 text-xs text-gray-900 outline-0 focus:border-gray-900" />
           <button type="button" onClick={() => setOpen(false)} className="ml-auto h-7 px-3 rounded-md bg-gray-900 text-white text-xs font-medium border-0 cursor-pointer hover:bg-gray-700 transition-colors">完成</button>
         </div>
       </PopoverContent>
