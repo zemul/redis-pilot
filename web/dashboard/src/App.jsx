@@ -90,6 +90,10 @@ function AppShell() {
   const [error, setError] = useState('');
 
   const instanceGroups = useMemo(() => buildInstanceGroups(data.instances), [data.instances]);
+  const labelSuggestions = useMemo(
+    () => [...new Set(instanceGroups.flatMap((group) => group.labels || []))].sort((a, b) => a.localeCompare(b)),
+    [instanceGroups]
+  );
   const servers = useMemo(() => normalizeMap(data.servers, 'Servers', 'servers'), [data.servers]);
   const activeTitle = TABS.find((tab) => tab.id === activeTab)?.label || '大盘看板';
 
@@ -400,7 +404,7 @@ function AppShell() {
       {configTarget && <ConfigModal instanceName={configTarget} requestFn={request} onClose={() => setConfigTarget(null)} />}
       {resizeTarget && <ResizeModal instanceName={resizeTarget.name} currentSpecs={{ memory: resizeTarget.memory, cpus: resizeTarget.cpus, disk: resizeTarget.disk }} requestFn={request} onClose={() => { setResizeTarget(null); refresh(); }} />}
       {accessModeTarget && <AccessModeModal group={accessModeTarget} publicHost={serverInfo?.proxy_public_endpoint} sentinelPort={serverInfo?.proxy_sentinel_port} onConfirm={(mode) => toggleAccessMode(accessModeTarget, mode)} onClose={() => setAccessModeTarget(null)} />}
-      {labelsTarget && <GroupLabelsModal group={labelsTarget} requestFn={request} onSaved={refresh} onClose={() => setLabelsTarget(null)} />}
+      {labelsTarget && <GroupLabelsModal group={labelsTarget} suggestions={labelSuggestions} requestFn={request} onSaved={refresh} onClose={() => setLabelsTarget(null)} />}
       {backupDetail && <BackupListModal detail={backupDetail} requestFn={request} onReload={() => openBackupList(backupDetail.item, backupDetail.group)} onViewTasks={() => { setBackupDetail(null); setActiveTab('tasks'); }} onClose={() => setBackupDetail(null)} />}
       {confirmAction && (
         <ConfirmPowerModal

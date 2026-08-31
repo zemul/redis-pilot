@@ -167,7 +167,7 @@ func (s *Server) injectMemoryUsed(view *apitypes.InstancesStateView) {
 	}
 }
 
-func instanceMatchesListFilters(inst *apitypes.Instance, group *apitypes.InstanceGroupState, groupFilter, serverFilter, engineFilter, engineVersionFilter, roleFilter, statusFilter, categoryFilter string, labelSelector map[string]string) bool {
+func instanceMatchesListFilters(inst *apitypes.Instance, group *apitypes.InstanceGroupState, groupFilter, serverFilter, engineFilter, engineVersionFilter, roleFilter, statusFilter, categoryFilter string, labelSelector []string) bool {
 	if groupFilter != "" && inst.Group != groupFilter {
 		return false
 	}

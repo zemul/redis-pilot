@@ -161,11 +161,7 @@ Use ordinal names like order-1, order-2, cache-a, cache-b.`,
 			req["node_selector"] = parseKV(nodeSelector)
 		}
 		if labels != "" {
-			parsed, err := parseStrictKV(labels)
-			if err != nil {
-				return fmt.Errorf("labels: %w", err)
-			}
-			req["labels"] = parsed
+			req["labels"] = parseTags(labels)
 		}
 		return checkResp(client.Post("/instance/create", req))
 	},
@@ -326,22 +322,18 @@ Takes effect on next proxy snapshot poll (within seconds).`,
 }
 
 var instanceSetLabelsCmd = &cobra.Command{
-	Use:   "set-labels <group> [key=value,...]",
+	Use:   "set-labels <group> [label,...]",
 	Short: "Replace an instance group's classification labels",
 	Long: `Replace all labels on an instance group. Labels are classification metadata only;
 they do not affect permissions, scheduling, or runtime behavior. Omit the second
 argument to clear all labels.`,
-	Example: `  redis-pilot-cli instance set-labels order 'team=trade,env=prod'
+	Example: `  redis-pilot-cli instance set-labels order '生产,交易,核心'
   redis-pilot-cli instance set-labels order`,
 	Args: cobra.RangeArgs(1, 2),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		labels := map[string]string{}
+		labels := []string{}
 		if len(args) == 2 {
-			var err error
-			labels, err = parseStrictKV(args[1])
-			if err != nil {
-				return err
-			}
+			labels = parseTags(args[1])
 		}
 		return checkResp(client.Post("/instance/labels", map[string]interface{}{
 			"group": args[0], "labels": labels,
@@ -395,7 +387,7 @@ func init() {
 	instanceListCmd.Flags().String("role", "", "Filter by role: master | replica")
 	instanceListCmd.Flags().String("status", "", "Filter by instance status")
 	instanceListCmd.Flags().String("category", "", "Filter by category: cache | persistent")
-	instanceListCmd.Flags().StringArray("label", nil, "Filter by group label key=value (repeatable)")
+	instanceListCmd.Flags().StringArray("label", nil, "Filter by group label (repeatable)")
 
 	instanceCreateCmd.Flags().String("category", "cache", "Category: cache | persistent")
 	instanceCreateCmd.Flags().String("engine", "redis", "Engine: redis | kvrocks")
@@ -411,7 +403,7 @@ func init() {
 	instanceCreateCmd.Flags().String("config", "", "Config overrides (k=v,k=v)")
 	instanceCreateCmd.Flags().String("access-mode", "", "Access mode: rw-split | standard (default: rw-split for replication, standard for standalone)")
 	instanceCreateCmd.Flags().String("node-selector", "", "Node label selector for scheduling affinity (k=v,k=v, e.g. disk=ssd,zone=az-1)")
-	instanceCreateCmd.Flags().String("labels", "", "Group classification labels (k=v,k=v, e.g. team=trade,env=prod)")
+	instanceCreateCmd.Flags().String("labels", "", "Group classification labels (comma-separated, e.g. production,trade,core)")
 
 	instanceDeleteCmd.Flags().Bool("clean-data", false, "Also remove data directory")
 
@@ -437,18 +429,12 @@ func parseKV(s string) map[string]string {
 	return m
 }
 
-func parseStrictKV(s string) (map[string]string, error) {
-	m := map[string]string{}
-	for _, pair := range strings.Split(s, ",") {
-		key, value, ok := strings.Cut(strings.TrimSpace(pair), "=")
-		key = strings.TrimSpace(key)
-		if !ok || key == "" {
-			return nil, fmt.Errorf("expected key=value, got %q", pair)
+func parseTags(s string) []string {
+	tags := make([]string, 0)
+	for _, raw := range strings.Split(s, ",") {
+		if tag := strings.TrimSpace(raw); tag != "" {
+			tags = append(tags, tag)
 		}
-		if _, exists := m[key]; exists {
-			return nil, fmt.Errorf("duplicate key %q", key)
-		}
-		m[key] = strings.TrimSpace(value)
 	}
-	return m, nil
+	return tags
 }

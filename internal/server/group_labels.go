@@ -16,84 +16,62 @@ import (
 
 const maxGroupLabels = 20
 
-func normalizeGroupLabels(labels map[string]string) (map[string]string, error) {
+func normalizeGroupLabels(labels []string) ([]string, error) {
 	if len(labels) > maxGroupLabels {
 		return nil, fmt.Errorf("labels must not contain more than %d entries", maxGroupLabels)
 	}
-	normalized := make(map[string]string, len(labels))
-	for rawKey, rawValue := range labels {
-		key := strings.TrimSpace(rawKey)
-		value := strings.TrimSpace(rawValue)
-		if key == "" || len(key) > 63 {
-			return nil, fmt.Errorf("label key must be 1-63 characters")
+	normalized := make([]string, 0, len(labels))
+	seen := make(map[string]struct{}, len(labels))
+	for _, raw := range labels {
+		label := strings.TrimSpace(raw)
+		if label == "" || len([]rune(label)) > 64 {
+			return nil, fmt.Errorf("label must be 1-64 characters")
 		}
-		for _, r := range key {
-			if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '.' || r == '_' || r == '-' {
-				continue
-			}
-			return nil, fmt.Errorf("invalid label key %q", key)
-		}
-		if len([]rune(value)) > 128 {
-			return nil, fmt.Errorf("label value for %q must not exceed 128 characters", key)
-		}
-		for _, r := range value {
-			if unicode.IsControl(r) {
-				return nil, fmt.Errorf("label value for %q contains control characters", key)
+		for _, r := range label {
+			if unicode.IsControl(r) || r == ',' {
+				return nil, fmt.Errorf("label %q contains unsupported characters", label)
 			}
 		}
-		if _, exists := normalized[key]; exists {
-			return nil, fmt.Errorf("duplicate label key %q", key)
+		if _, exists := seen[label]; exists {
+			continue
 		}
-		normalized[key] = value
+		seen[label] = struct{}{}
+		normalized = append(normalized, label)
 	}
 	return normalized, nil
 }
 
-func parseLabelSelector(values []string) (map[string]string, error) {
-	selector := make(map[string]string, len(values))
-	for _, raw := range values {
-		key, value, ok := strings.Cut(raw, "=")
-		if !ok {
-			return nil, fmt.Errorf("label filter must use key=value")
-		}
-		normalized, err := normalizeGroupLabels(map[string]string{key: value})
-		if err != nil {
-			return nil, err
-		}
-		for k, v := range normalized {
-			selector[k] = v
-		}
-	}
-	return selector, nil
+func parseLabelSelector(values []string) ([]string, error) {
+	return normalizeGroupLabels(values)
 }
 
-func groupMatchesLabels(group *apitypes.InstanceGroupState, selector map[string]string) bool {
+func groupMatchesLabels(group *apitypes.InstanceGroupState, selector []string) bool {
 	if len(selector) == 0 {
 		return true
 	}
 	if group == nil {
 		return false
 	}
-	for key, value := range selector {
-		if group.Labels[key] != value {
+	available := make(map[string]struct{}, len(group.Labels))
+	for _, label := range group.Labels {
+		available[label] = struct{}{}
+	}
+	for _, label := range selector {
+		if _, ok := available[label]; !ok {
 			return false
 		}
 	}
 	return true
 }
 
-func cloneLabels(labels map[string]string) map[string]string {
-	cloned := make(map[string]string, len(labels))
-	for key, value := range labels {
-		cloned[key] = value
-	}
-	return cloned
+func cloneLabels(labels []string) []string {
+	return append([]string(nil), labels...)
 }
 
 func (s *Server) instanceGroupLabels(c *gin.Context) {
 	var req struct {
-		Group  string             `json:"group" binding:"required"`
-		Labels *map[string]string `json:"labels" binding:"required"`
+		Group  string    `json:"group" binding:"required"`
+		Labels *[]string `json:"labels" binding:"required"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		fail(c, http.StatusBadRequest, err.Error())
@@ -106,7 +84,7 @@ func (s *Server) instanceGroupLabels(c *gin.Context) {
 		return
 	}
 
-	var before map[string]string
+	var before []string
 	found := false
 	err = s.db.WithInstances(func(instances *apitypes.InstancesState) error {
 		group := instances.Groups[groupName]
