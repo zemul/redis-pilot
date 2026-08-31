@@ -134,6 +134,15 @@ func (s *Server) runReconcile() ([]ReconcileResult, error) {
 		replicaDrifts = append(replicaDrifts,
 			detectReplicaDrift(node, instances, serverName, instNames, runtimeReplicaOf)...)
 
+		// 缓存运行时复制关系，供列表接口推导每组"运行时实际 master"（大盘三视角展示）。
+		if len(runtimeReplicaOf) > 0 {
+			s.runtimeReplMu.Lock()
+			for name, addr := range runtimeReplicaOf {
+				s.runtimeReplicaOf[name] = addr
+			}
+			s.runtimeReplMu.Unlock()
+		}
+
 		// 缓存实例内存使用
 		usedMemory := parseUsedMemory(apiResp.Data)
 		if len(usedMemory) > 0 {

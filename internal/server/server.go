@@ -52,6 +52,17 @@ type Server struct {
 	memoryUsedMu sync.RWMutex
 	memoryUsed   map[string]int64
 
+	// sentinelMaster 缓存每组 Sentinel 共识认为的 master（已解析成实例名，解析不到时
+	// 退回 host:port）。由 sentinel reconcile 写入，列表接口读取，用于大盘三视角一致性
+	// 展示。Sentinel 关闭或本轮未取得共识时该组无条目。
+	sentinelMasterMu sync.RWMutex
+	sentinelMaster   map[string]string
+
+	// runtimeReplicaOf 缓存各实例进程此刻实际在复制的地址（""=自认 master，缺项=未观测）。
+	// 由 reconcile 写入，列表接口据此推导每组运行时实际 master。重启后为空自动重建。
+	runtimeReplMu    sync.RWMutex
+	runtimeReplicaOf map[string]string
+
 	// aiAgent 内嵌式 AI 运维助手；仅在 cfg.AI.Enabled 时构造，否则为 nil。
 	aiAgent *ai.Agent
 }
@@ -74,12 +85,14 @@ func New(cfg *Config) (*Server, error) {
 	}
 
 	s := &Server{
-		cfg:            cfg,
-		db:             db,
-		log:            logger.Setup(logger.Config{Dir: cfg.Log.Dir, Stdout: cfg.Log.Stdout, RetentionDays: cfg.Log.RetentionDays, Level: cfg.Log.Level, Component: "server"}),
-		audit:          audit.New(db),
-		alertInstances: make(map[string]bool),
-		memoryUsed:     make(map[string]int64),
+		cfg:              cfg,
+		db:               db,
+		log:              logger.Setup(logger.Config{Dir: cfg.Log.Dir, Stdout: cfg.Log.Stdout, RetentionDays: cfg.Log.RetentionDays, Level: cfg.Log.Level, Component: "server"}),
+		audit:            audit.New(db),
+		alertInstances:   make(map[string]bool),
+		memoryUsed:       make(map[string]int64),
+		sentinelMaster:   make(map[string]string),
+		runtimeReplicaOf: make(map[string]string),
 	}
 	s.scheduler = newBackupScheduler(s)
 	s.initAIAgent()

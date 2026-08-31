@@ -4,7 +4,7 @@ import { useState, useEffect } from 'react';
 import {
   X, Info, BarChart3, AlertCircle, RefreshCw, Play, HardDrive,
   Calendar, Save, CheckCircle2, Trash2, Power, Database, Server, SlidersHorizontal,
-  AlertTriangle, Search, Pencil, Check,
+  AlertTriangle, Search, Pencil, Check, ShieldCheck,
 } from 'lucide-react';
 import { StatusBadge, EmptyState, CopyableText } from '../components/common.jsx';
 import { getField, displayValue, formatDateTime, statusMeta, formatBytes, formatDuration } from '../lib/format.js';
@@ -210,8 +210,59 @@ function GroupTopologyTab({ group, master, sections, loading, error }) {
     return { label: state || '-', cls: 'text-gray-500' };
   };
 
+  // 三视角 master 一致性：平台记录（Server 状态）/ Sentinel 共识 / 运行时实际（进程自认）。
+  // 空值表示该视角未知（Sentinel 未启用、或运行时尚未观测），不计入"不符"。
+  const recordedMaster = group.currentMaster || '';
+  const consensusMaster = group.sentinelMaster || '';
+  const runtimeMaster = group.runtimeMaster || '';
+  const masterMismatch =
+    (consensusMaster && consensusMaster !== recordedMaster) ||
+    (runtimeMaster && runtimeMaster !== recordedMaster);
+  // 三行三视角。一致的行不再显示"一致"标记（头部徽章已表达整体一致），
+  // 只有"不符"（红）或"未知"（灰，该来源无数据）才标注，减少重复噪音。
+  const masterViewRow = (label, value, isBaseline) => {
+    let marker = null;
+    if (!isBaseline) {
+      if (!value) {
+        marker = <span className="text-[11px] text-gray-400">未知</span>;
+      } else if (value !== recordedMaster) {
+        marker = <span className="inline-flex items-center gap-1 text-[11px] text-red-600"><AlertTriangle size={13} /> 不符</span>;
+      }
+    }
+    return (
+      <div className="flex items-center gap-3 px-3 py-2 border-b border-gray-100 last:border-b-0">
+        <span className="text-[12px] text-gray-500 flex-1 min-w-0">{label}</span>
+        {marker && <span className="shrink-0">{marker}</span>}
+        <span className="font-mono text-[13px] text-gray-800 shrink-0">{value || '—'}</span>
+      </div>
+    );
+  };
+
   return (
     <div className="grid gap-4">
+      <section>
+        <div className="flex items-center justify-between mb-3">
+          <h4 className="m-0 inline-flex items-center gap-1.5 text-[13px] font-semibold text-gray-500">
+            <ShieldCheck size={16} className="text-gray-400" /> Master 权威一致性
+          </h4>
+          {masterMismatch ? (
+            <span className="inline-flex items-center gap-1 rounded-md border border-red-200 bg-red-50 px-2 py-0.5 text-[11px] font-medium text-red-600"><AlertTriangle size={12} /> 不一致 · 需处理</span>
+          ) : (
+            <span className="inline-flex items-center gap-1 rounded-md border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-[11px] font-medium text-emerald-600"><CheckCircle2 size={12} /> 一致</span>
+          )}
+        </div>
+        <div className="border border-gray-200 rounded-md bg-gray-50 overflow-hidden">
+          {masterViewRow('平台记录', recordedMaster, true)}
+          {masterViewRow('Sentinel 共识', consensusMaster, false)}
+          {masterViewRow('运行时实际', runtimeMaster, false)}
+        </div>
+        {masterMismatch && (
+          <p className="m-0 mt-2 text-[12px] leading-relaxed text-red-600">
+            Sentinel 或运行时观测到的 master 与平台记录不一致，可能正处于故障转移中或 reconcile 尚未收敛；若持续不收敛请检查主从拓扑或执行 sentinel sync。
+          </p>
+        )}
+      </section>
+
       <section>
         <h4 className="m-0 mb-3 inline-flex items-center gap-1.5 text-[13px] font-semibold text-gray-500">
           <Server size={16} className="text-gray-400" /> 拓扑 · {topologyLabel(group, master)}
@@ -220,7 +271,7 @@ function GroupTopologyTab({ group, master, sections, loading, error }) {
           {nodes.map(({ item, role }) => (
             <div key={getField(item, 'name', 'Name')} className="flex items-center gap-3 border border-gray-200 rounded-md px-3 py-2.5 bg-gray-50">
               <span className={`inline-flex items-center rounded px-1.5 py-0.5 text-[11px] font-medium ${role === 'master' ? 'bg-blue-50 text-blue-700 border border-blue-100' : 'bg-slate-100 text-slate-600 border border-slate-200'}`}>
-                {role === 'master' ? '主' : '从'}
+                {role === 'master' ? '主库' : '从库'}
               </span>
               <div className="min-w-0 flex-1">
                 <strong className="block text-[13px] font-medium truncate">{getField(item, 'name', 'Name', '-')}</strong>

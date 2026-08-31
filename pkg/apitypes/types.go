@@ -158,6 +158,13 @@ type InstanceGroupView struct {
 	Proxy            *ProxyConfig `json:"proxy,omitempty"`
 	CreatedAt        string       `json:"created_at"`
 	UpdatedAt        string       `json:"updated_at"`
+	// SentinelMaster 是 Sentinel 共识认为的当前 master（已解析成实例名，解析不到时
+	// 退回原始 host:port）。仅 replication 组有意义；由 Server 缓存注入，ToView 不填。
+	// 空表示 Sentinel 未启用或本轮尚未取得共识。
+	SentinelMaster string `json:"sentinel_master,omitempty"`
+	// RuntimeMaster 是组内此刻进程自认 master 的实例名（运行时实际），由 Server 从
+	// reconcile 观测缓存推导注入。空表示尚未观测到。
+	RuntimeMaster string `json:"runtime_master,omitempty"`
 }
 
 func (g *InstanceGroupState) ToView() *InstanceGroupView {
@@ -430,11 +437,12 @@ type SentinelStatus struct {
 // 设计见 KEY_BROWSER_PLAN.md（feature 分支临时文档）。
 
 // KVItem 是 K/V 浏览器读结果里的一个元素，字段按 key 类型取用：
-//   string → Value
-//   hash   → Field + Value
-//   list   → Index + Value（Index 为绝对下标，用指针以保留 0）
-//   set    → Member
-//   zset   → Member + Score
+//
+//	string → Value
+//	hash   → Field + Value
+//	list   → Index + Value（Index 为绝对下标，用指针以保留 0）
+//	set    → Member
+//	zset   → Member + Score
 type KVItem struct {
 	Field  string `json:"field,omitempty"`
 	Member string `json:"member,omitempty"`

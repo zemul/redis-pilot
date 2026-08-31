@@ -145,11 +145,13 @@ func (s *Server) instanceList(c *gin.Context) {
 			Instances: filteredInstances,
 		}).ToView()
 		s.injectMemoryUsed(view)
+		s.injectSentinelRuntime(view)
 		ok(c, view)
 		return
 	}
 	view := state.ToView()
 	s.injectMemoryUsed(view)
+	s.injectSentinelRuntime(view)
 	ok(c, view)
 }
 
@@ -165,6 +167,42 @@ func (s *Server) injectMemoryUsed(view *apitypes.InstancesStateView) {
 			inst.MemoryUsed = v
 		}
 	}
+}
+
+// injectSentinelRuntime 为每个 replication 组注入 Sentinel 共识 master 与运行时实际
+// master，配合已有的 CurrentMaster（平台记录）构成三视角一致性展示的数据来源。
+// standalone 组无 master 选举，保持空。
+func (s *Server) injectSentinelRuntime(view *apitypes.InstancesStateView) {
+	if view == nil {
+		return
+	}
+	// Sentinel 共识 master：缓存里已是实例名（或原始地址兜底）。
+	s.sentinelMasterMu.RLock()
+	for name, g := range view.Groups {
+		if g == nil || g.Type != "replication" {
+			continue
+		}
+		if m, ok := s.sentinelMaster[name]; ok {
+			g.SentinelMaster = m
+		}
+	}
+	s.sentinelMasterMu.RUnlock()
+
+	// 运行时实际 master：组内此刻进程自认 master（runtimeReplicaOf 观测为空）的实例。
+	s.runtimeReplMu.RLock()
+	for name, inst := range view.Instances {
+		if inst == nil {
+			continue
+		}
+		g := view.Groups[inst.Group]
+		if g == nil || g.Type != "replication" {
+			continue
+		}
+		if addr, ok := s.runtimeReplicaOf[name]; ok && addr == "" {
+			g.RuntimeMaster = name
+		}
+	}
+	s.runtimeReplMu.RUnlock()
 }
 
 func instanceMatchesListFilters(inst *apitypes.Instance, group *apitypes.InstanceGroupState, groupFilter, serverFilter, engineFilter, engineVersionFilter, roleFilter, statusFilter, categoryFilter string, labelSelector []string) bool {

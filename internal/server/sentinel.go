@@ -207,6 +207,13 @@ func parseSwitchMasterMessage(reply interface{}) (string, bool) {
 	return fields[0], true
 }
 
+// setSentinelMaster 记录某组最近一次 Sentinel 共识 master（实例名或原始地址兜底）。
+func (s *Server) setSentinelMaster(group, master string) {
+	s.sentinelMasterMu.Lock()
+	s.sentinelMaster[group] = master
+	s.sentinelMasterMu.Unlock()
+}
+
 func (s *Server) confirmSentinelMaster(group string) (string, error) {
 	node, err := s.db.ReadNode()
 	if err != nil {
@@ -282,6 +289,13 @@ func (s *Server) reconcileSentinelOnce() error {
 			s.log.Errorf("query sentinel master %s failed: %v", groupName, err)
 			continue
 		}
+		// 缓存本组 Sentinel 共识 master（解析成实例名，解析不到用原始地址兜底），
+		// 供列表接口做"平台记录 / Sentinel 共识 / 运行时实际"三视角一致性展示。
+		resolved := findInstanceByAddress(node, instances, current)
+		if resolved == "" {
+			resolved = current
+		}
+		s.setSentinelMaster(groupName, resolved)
 		if current != "" && current != expected {
 			pending = append(pending, pendingFailover{group: groupName, addr: current})
 		}
