@@ -105,7 +105,6 @@ function InstanceGroupCard({ group, expanded, onToggle, publicHost, sentinelPort
 
   const menuItems = master ? [
     { label: '备份列表', onClick: () => onOpenBackups(master, group) },
-    { label: '接入信息', onClick: () => onToggleAccessMode(group, null) },
     { label: '修改配置', onClick: () => onConfig(master) },
     { label: '调整规格', onClick: () => onResize(master) },
     { label: '编辑标签', onClick: () => onEditLabels(group) },
@@ -247,7 +246,6 @@ function InstanceNodeRow({ item, group, role, first, onOpenDetail, onOpenBackups
 
   const menuItems = [
     { label: '备份列表', onClick: () => onOpenBackups(item, group) },
-    !isReplica && { label: '接入信息', onClick: () => onToggleAccessMode(group, null) },
     { label: '修改配置', onClick: () => onConfig(item) },
     { label: '调整规格', onClick: () => onResize(item) },
     { label: '慢查询', onClick: () => onSlowlog(item) },

@@ -25,7 +25,6 @@ import {
   InstanceDetailModal,
   SlowlogModal,
   BigkeysModal,
-  AccessModeModal,
   ConfigModal,
   ResizeModal,
   BackupListModal,
@@ -80,7 +79,6 @@ function AppShell() {
   const [bigkeysTarget, setBigkeysTarget] = useState(null);
   const [configTarget, setConfigTarget] = useState(null);
   const [resizeTarget, setResizeTarget] = useState(null);
-  const [accessModeTarget, setAccessModeTarget] = useState(null);
   const [labelsTarget, setLabelsTarget] = useState(null);
   const [keyBrowserTarget, setKeyBrowserTarget] = useState(null);
   const [createOpen, setCreateOpen] = useState(false);
@@ -233,23 +231,6 @@ function AppShell() {
     }
   }
 
-  async function toggleAccessMode(group, mode) {
-    if (!mode) {
-      setAccessModeTarget(group);
-      return;
-    }
-    try {
-      await request('/instance/access-mode', {
-        method: 'POST',
-        body: JSON.stringify({ name: group.groupName, access_mode: mode })
-      });
-      setAccessModeTarget(null);
-      await refresh();
-    } catch (err) {
-      setError(err.message || String(err));
-    }
-  }
-
   async function executeDelete() {
     if (!deleteConfirm) return;
     const { item, cleanData } = deleteConfirm;
@@ -376,7 +357,6 @@ function AppShell() {
                   onKeyBrowser={(item) => setKeyBrowserTarget(item.name)}
                   canKeyBrowser={isAdmin}
                   onResize={(item) => setResizeTarget({ name: item.name, memory: getField(item, 'memory', 'Memory', ''), cpus: String(getField(item, 'cpus', 'CPUs', '') || ''), disk: getField(item, 'disk', 'Disk', '') })}
-                  onToggleAccessMode={toggleAccessMode}
                   onEditLabels={setLabelsTarget}
                   onCreate={() => setCreateOpen(true)}
                   servers={servers}
@@ -403,13 +383,12 @@ function AppShell() {
           )}
         </section>
       </main>
-      {detail && <InstanceDetailModal detail={detail} publicHost={serverInfo?.proxy_public_endpoint} sentinelPort={serverInfo?.proxy_sentinel_port} requestFn={request} onClose={() => setDetail(null)} />}
+      {detail && <InstanceDetailModal detail={detail} publicHost={serverInfo?.proxy_public_endpoint} sentinelPort={serverInfo?.proxy_sentinel_port} requestFn={request} onRefresh={refresh} onClose={() => setDetail(null)} />}
       {slowlogTarget && <SlowlogModal instanceName={slowlogTarget} requestFn={request} onClose={() => setSlowlogTarget(null)} />}
       {bigkeysTarget && <BigkeysModal instanceName={bigkeysTarget} requestFn={request} onViewTasks={() => { setBigkeysTarget(null); setActiveTab('tasks'); }} onClose={() => setBigkeysTarget(null)} />}
       {configTarget && <ConfigModal instanceName={configTarget} requestFn={request} onClose={() => setConfigTarget(null)} />}
       {keyBrowserTarget && <KeyBrowserModal instanceName={keyBrowserTarget} requestFn={request} onClose={() => setKeyBrowserTarget(null)} />}
       {resizeTarget && <ResizeModal instanceName={resizeTarget.name} currentSpecs={{ memory: resizeTarget.memory, cpus: resizeTarget.cpus, disk: resizeTarget.disk }} requestFn={request} onClose={() => { setResizeTarget(null); refresh(); }} />}
-      {accessModeTarget && <AccessModeModal group={accessModeTarget} publicHost={serverInfo?.proxy_public_endpoint} sentinelPort={serverInfo?.proxy_sentinel_port} onConfirm={(mode) => toggleAccessMode(accessModeTarget, mode)} onClose={() => setAccessModeTarget(null)} />}
       {labelsTarget && <GroupLabelsModal group={labelsTarget} suggestions={labelSuggestions} requestFn={request} onSaved={refresh} onClose={() => setLabelsTarget(null)} />}
       {backupDetail && <BackupListModal detail={backupDetail} requestFn={request} onReload={() => openBackupList(backupDetail.item, backupDetail.group)} onViewTasks={() => { setBackupDetail(null); setActiveTab('tasks'); }} onClose={() => setBackupDetail(null)} />}
       {confirmAction && (

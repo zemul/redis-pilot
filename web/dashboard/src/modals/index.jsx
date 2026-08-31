@@ -73,7 +73,7 @@ function LabelInput({ labels, onChange, suggestions = [], disabled = false }) {
   );
 }
 
-export function InstanceDetailModal({ detail, publicHost, sentinelPort, requestFn, onClose }) {
+export function InstanceDetailModal({ detail, publicHost, sentinelPort, requestFn, onRefresh, onClose }) {
   const { item, group, loading, error, metrics } = detail;
   const payload = extractMetricsPayload(metrics);
   const info = payload.info || payload.Info || '';
@@ -187,7 +187,7 @@ export function InstanceDetailModal({ detail, publicHost, sentinelPort, requestF
             <GroupTopologyTab group={group} master={item} sections={sections} loading={loading} error={error} />
           )}
           {activeTab === 'access' && (
-            <AccessInfoTab group={group} publicHost={publicHost} sentinelPort={sentinelPort} />
+            <AccessInfoTab group={group} publicHost={publicHost} sentinelPort={sentinelPort} requestFn={requestFn} onRefresh={onRefresh} />
           )}
         </div>
       </section>
@@ -294,16 +294,35 @@ function GroupTopologyTab({ group, master, sections, loading, error }) {
 }
 
 // 接入信息 tab：展示 Proxy 连接地址和 Sentinel 模式接入方式（只读展示）。
-function AccessInfoTab({ group, publicHost, sentinelPort }) {
+function AccessInfoTab({ group, publicHost, sentinelPort, requestFn, onRefresh }) {
   const proxy = getField(group, 'proxy', 'Proxy', {}) || {};
   const masterPort = proxy.master_port || proxy.MasterPort;
   const autoPort = proxy.auto_port || proxy.AutoPort;
   const password = proxy.password || proxy.Password || '';
-  const isRwSplit = group.access_mode === 'rw-split';
+  const [current, setCurrent] = useState(group.access_mode === 'rw-split' ? 'rw-split' : 'standard');
+  const [sel, setSel] = useState(group.access_mode === 'rw-split' ? 'rw-split' : 'standard');
+  const [saving, setSaving] = useState(false);
+  const [switchErr, setSwitchErr] = useState('');
+  const isRwSplit = current === 'rw-split';
   const activePort = isRwSplit ? (autoPort || masterPort) : (masterPort || autoPort);
   const directEndpoint = publicHost && activePort ? `${publicHost}:${activePort}` : (activePort || '-');
   const sentinelEndpoint = publicHost && sentinelPort ? `${publicHost}:${sentinelPort}` : null;
-  const accessLabel = isRwSplit ? '读写分离' : '标准';
+  const pendingPort = sel === 'rw-split' ? (autoPort || masterPort) : (masterPort || autoPort);
+  const pendingEndpoint = publicHost && pendingPort ? `${publicHost}:${pendingPort}` : pendingPort;
+
+  async function applySwitch() {
+    if (sel === current || saving) return;
+    setSaving(true); setSwitchErr('');
+    try {
+      await requestFn('/instance/access-mode', { method: 'POST', body: JSON.stringify({ name: group.groupName, access_mode: sel }) });
+      setCurrent(sel);
+      onRefresh && onRefresh();
+    } catch (e) {
+      setSwitchErr(e.message || String(e));
+    } finally {
+      setSaving(false);
+    }
+  }
 
   return (
     <div className="grid gap-4">
@@ -320,10 +339,6 @@ function AccessInfoTab({ group, publicHost, sentinelPort }) {
               <CopyableText text={password} className="text-[13px] font-mono text-gray-900" />
             </div>
           )}
-          <div>
-            <span className="text-[11px] text-gray-400 block mb-0.5">接入方式</span>
-            <span className="text-[13px] text-gray-700">{accessLabel}</span>
-          </div>
         </div>
       </section>
 
@@ -352,6 +367,33 @@ function AccessInfoTab({ group, publicHost, sentinelPort }) {
           </div>
         </section>
       )}
+
+      <section className="space-y-2.5">
+        <h4 className="m-0 text-[13px] font-semibold text-gray-500">接入方式</h4>
+        {switchErr && <div className="border border-red-200 rounded-md px-3 py-2 flex items-center gap-2 bg-red-50 text-red-700 text-[13px]"><AlertCircle size={16} /> {switchErr}</div>}
+        <div className="border border-gray-200 rounded-md px-3 py-2.5 space-y-2">
+          <label className="flex items-center gap-2 cursor-pointer">
+            <input type="radio" name="access_mode" value="standard" checked={sel === 'standard'} onChange={() => setSel('standard')} disabled={saving} />
+            <span className="text-[13px]"><strong className="font-medium">标准</strong> — 所有流量走主库{current === 'standard' && <span className="ml-1 text-[11px] text-gray-400">（当前）</span>}</span>
+          </label>
+          <label className="flex items-center gap-2 cursor-pointer">
+            <input type="radio" name="access_mode" value="rw-split" checked={sel === 'rw-split'} onChange={() => setSel('rw-split')} disabled={saving} />
+            <span className="text-[13px]"><strong className="font-medium">读写分离</strong> — 读请求分发到从库{current === 'rw-split' && <span className="ml-1 text-[11px] text-gray-400">（当前）</span>}</span>
+          </label>
+          {sel !== current && pendingEndpoint && (
+            <p className="text-[12px] text-amber-600 bg-amber-50 border border-amber-200 rounded px-2.5 py-1.5 m-0">
+              切换后接入端口将变更为 <span className="font-mono font-medium">{pendingEndpoint}</span>
+            </p>
+          )}
+          <div className="flex justify-end pt-1">
+            <button type="button" disabled={sel === current || saving}
+              className="h-8 px-3 rounded-md bg-gray-900 text-white text-xs font-medium hover:bg-gray-700 disabled:opacity-50 disabled:cursor-not-allowed inline-flex items-center gap-1"
+              onClick={applySwitch}>
+              {saving ? <><RefreshCw size={14} className="animate-spin" /> 切换中…</> : '切换模式'}
+            </button>
+          </div>
+        </div>
+      </section>
     </div>
   );
 }
@@ -1420,6 +1462,7 @@ export function KeyBrowserModal({ instanceName, requestFn, onClose }) {
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [newType, setNewType] = useState('string'); // 新建不存在 key 时选定的类型
   const [form, setForm] = useState({ value: '', field: '', member: '', score: '', side: 'right', ttl: '' });
 
   const queriedKey = meta?._key || '';
@@ -1504,19 +1547,36 @@ export function KeyBrowserModal({ instanceName, requestFn, onClose }) {
         <div className="min-h-0 overflow-auto p-4 grid gap-4">
           <div className="flex items-center gap-2">
             <input className="flex-1 h-9 px-3 rounded-md border border-gray-200 text-[13px] font-mono focus:outline-none focus:ring-1 focus:ring-gray-400" placeholder="输入 key 后查询" value={keyInput} onChange={(e) => setKeyInput(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') query(); }} />
-            <button className="h-9 px-3 rounded-md border border-gray-200 bg-white text-gray-700 text-[13px] font-medium inline-flex items-center gap-1 hover:bg-gray-50 disabled:opacity-50" onClick={() => query()} disabled={loading || !keyInput.trim()}><Search size={14} /> 查询</button>
+            <button className="h-9 px-4 rounded-md bg-gray-900 text-white text-[13px] font-medium inline-flex items-center gap-1 hover:bg-gray-700 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer transition-colors" onClick={() => query()} disabled={loading || !keyInput.trim()}><Search size={14} /> 查询</button>
           </div>
           {notice && <div className="border border-emerald-200 rounded-md px-3 py-2 flex items-center gap-2 bg-emerald-50 text-emerald-700 text-[13px]"><CheckCircle2 size={16} /> {notice}</div>}
           {error && <div className="border border-red-200 rounded-md px-3 py-2.5 flex items-center gap-2 bg-red-50 text-red-700 text-[13px]"><AlertCircle size={16} /> {error}</div>}
 
-          {meta && meta.type === 'none' && <div className="text-center p-8 text-gray-400 text-sm">key 不存在</div>}
+          {meta && meta.type === 'none' && (
+            <div className="grid gap-3">
+              <div className="text-[13px] text-gray-500">key <b className="font-mono text-gray-800">{queriedKey}</b> 不存在，可选择类型新建：</div>
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-gray-400">新建类型</span>
+                <select className="h-8 px-2.5 rounded-md border border-gray-200 text-[13px]" value={newType} onChange={(e) => setNewType(e.target.value)}>
+                  <option value="string">string</option>
+                  <option value="hash">hash</option>
+                  <option value="list">list</option>
+                  <option value="set">set</option>
+                  <option value="zset">zset</option>
+                </select>
+                <span className="text-xs text-gray-400">写入后即创建该 key</span>
+              </div>
+              <KVWriteArea type={newType} form={form} setForm={setForm} onWrite={doWrite} loading={loading} />
+            </div>
+          )}
 
           {meta && meta.type !== 'none' && <>
-            <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-gray-500 border border-gray-200 rounded-md px-3 py-2">
-              <span>类型 <b className="text-gray-800 font-mono">{meta.type}</b></span>
-              <span>大小 <b className="text-gray-800 font-mono">{meta.size}</b>{meta.type === 'string' ? ' bytes' : ' 个'}</span>
-              <span>TTL <b className="text-gray-800 font-mono">{meta.ttl === -1 ? '永久' : meta.ttl === -2 ? '-' : `${meta.ttl}s`}</b></span>
-              {meta.truncated && <span className="text-amber-600">已截断显示</span>}
+            <div className="flex flex-wrap items-center gap-2.5 border border-gray-200 rounded-md px-3 py-2.5">
+              <span className={`inline-flex items-center rounded px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wide ${KV_TYPE_BADGE[meta.type] || 'bg-gray-100 text-gray-600'}`}>{meta.type}</span>
+              <span className="text-xs text-gray-500">大小 <b className="text-gray-800 font-mono">{meta.size}</b>{meta.type === 'string' ? ' bytes' : ' 个'}</span>
+              <span className="text-gray-300">·</span>
+              <span className="text-xs text-gray-500">TTL <b className="text-gray-800 font-mono">{meta.ttl === -1 ? '永久' : meta.ttl === -2 ? '-' : `${meta.ttl}s`}</b></span>
+              {meta.truncated && <span className="ml-auto inline-flex items-center gap-1 text-[11px] text-amber-600 bg-amber-50 border border-amber-200 rounded px-1.5 py-0.5">已截断显示</span>}
             </div>
 
             <KVValueView type={meta.type} items={items} />
@@ -1555,6 +1615,15 @@ function dedupeKV(list) {
   return out;
 }
 
+// KV_TYPE_BADGE 按 redis 类型给徽章配色。
+const KV_TYPE_BADGE = {
+  string: 'bg-blue-50 text-blue-700 border border-blue-200',
+  hash: 'bg-violet-50 text-violet-700 border border-violet-200',
+  list: 'bg-amber-50 text-amber-700 border border-amber-200',
+  set: 'bg-emerald-50 text-emerald-700 border border-emerald-200',
+  zset: 'bg-rose-50 text-rose-700 border border-rose-200',
+};
+
 // KVValueView 按类型渲染值。
 function KVValueView({ type, items }) {
   if (!items || items.length === 0) return <div className="text-center p-6 text-gray-400 text-sm">（空）</div>;
@@ -1585,40 +1654,47 @@ function KVValueView({ type, items }) {
 
 // KVWriteArea 按类型给对应写表单 + TTL 设置。
 function KVWriteArea({ type, form, setForm, onWrite, loading }) {
-  const inputCls = 'h-8 px-2.5 rounded-md border border-gray-200 text-[13px] font-mono focus:outline-none focus:ring-1 focus:ring-gray-400';
-  const btnCls = 'h-8 px-3 rounded-md border border-gray-200 bg-white text-gray-700 text-xs font-medium inline-flex items-center gap-1 hover:bg-gray-50 disabled:opacity-50';
+  const inputCls = 'h-8 px-2.5 rounded-md border border-gray-200 bg-white text-[13px] font-mono focus:outline-none focus:ring-1 focus:ring-gray-400';
+  const btnCls = 'h-8 px-3 rounded-md bg-gray-900 text-white text-xs font-medium inline-flex items-center gap-1 hover:bg-gray-700 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer transition-colors';
+  const ghostBtn = 'h-8 px-3 rounded-md border border-gray-200 bg-white text-gray-700 text-xs font-medium inline-flex items-center gap-1 hover:bg-gray-50 disabled:opacity-50 cursor-pointer transition-colors';
   const set = (k) => (e) => setForm({ ...form, [k]: e.target.value });
+  const Fld = ({ label, grow, children }) => (
+    <label className={`flex flex-col gap-1 ${grow ? 'flex-1 min-w-[160px]' : ''}`}>
+      <span className="text-[11px] text-gray-400">{label}</span>
+      {children}
+    </label>
+  );
   return (
-    <div className="border border-gray-200 rounded-md p-3 grid gap-2 bg-gray-50/50">
-      <div className="text-xs text-gray-400">写入（作用于当前 key）</div>
-      <div className="flex flex-wrap items-center gap-2">
+    <div className="border border-gray-200 rounded-md p-3.5 grid gap-3 bg-gray-50/60">
+      <div className="text-xs font-medium text-gray-500">写入 · 作用于当前 key</div>
+      <div className="flex flex-wrap items-end gap-2">
         {type === 'string' && <>
-          <input className={`${inputCls} flex-1 min-w-[200px]`} placeholder="value" value={form.value} onChange={set('value')} />
+          <Fld label="值 value" grow><input className={`${inputCls} w-full`} placeholder="要写入的字符串" value={form.value} onChange={set('value')} /></Fld>
           <button className={btnCls} onClick={() => onWrite('set', { value: form.value })} disabled={loading}><Save size={14} /> SET</button>
         </>}
         {type === 'hash' && <>
-          <input className={inputCls} placeholder="field" value={form.field} onChange={set('field')} />
-          <input className={`${inputCls} flex-1 min-w-[160px]`} placeholder="value" value={form.value} onChange={set('value')} />
+          <Fld label="字段 field"><input className={`${inputCls} w-40`} placeholder="field" value={form.field} onChange={set('field')} /></Fld>
+          <Fld label="值 value" grow><input className={`${inputCls} w-full`} placeholder="value" value={form.value} onChange={set('value')} /></Fld>
           <button className={btnCls} onClick={() => onWrite('hset', { field: form.field, value: form.value })} disabled={loading || !form.field}><Save size={14} /> HSET</button>
         </>}
         {type === 'list' && <>
-          <select className={inputCls} value={form.side} onChange={set('side')}><option value="left">左(LPUSH)</option><option value="right">右(RPUSH)</option></select>
-          <input className={`${inputCls} flex-1 min-w-[160px]`} placeholder="value" value={form.value} onChange={set('value')} />
+          <Fld label="方向"><select className={`${inputCls} w-32`} value={form.side} onChange={set('side')}><option value="left">左 (LPUSH)</option><option value="right">右 (RPUSH)</option></select></Fld>
+          <Fld label="值 value" grow><input className={`${inputCls} w-full`} placeholder="value" value={form.value} onChange={set('value')} /></Fld>
           <button className={btnCls} onClick={() => onWrite('push', { value: form.value, side: form.side })} disabled={loading}><Save size={14} /> PUSH</button>
         </>}
         {type === 'set' && <>
-          <input className={`${inputCls} flex-1 min-w-[200px]`} placeholder="member" value={form.member} onChange={set('member')} />
+          <Fld label="成员 member" grow><input className={`${inputCls} w-full`} placeholder="member" value={form.member} onChange={set('member')} /></Fld>
           <button className={btnCls} onClick={() => onWrite('sadd', { member: form.member })} disabled={loading || !form.member}><Save size={14} /> SADD</button>
         </>}
         {type === 'zset' && <>
-          <input className={inputCls} placeholder="member" value={form.member} onChange={set('member')} />
-          <input className={`${inputCls} w-24`} placeholder="score" value={form.score} onChange={set('score')} />
+          <Fld label="成员 member" grow><input className={`${inputCls} w-full`} placeholder="member" value={form.member} onChange={set('member')} /></Fld>
+          <Fld label="分数 score"><input className={`${inputCls} w-24`} placeholder="score" value={form.score} onChange={set('score')} /></Fld>
           <button className={btnCls} onClick={() => onWrite('zadd', { member: form.member, score: form.score })} disabled={loading || !form.member}><Save size={14} /> ZADD</button>
         </>}
       </div>
-      <div className="flex flex-wrap items-center gap-2">
-        <input className={`${inputCls} w-32`} placeholder="TTL 秒(<0 永久)" value={form.ttl} onChange={set('ttl')} />
-        <button className={btnCls} onClick={() => onWrite('expire', { ttl_seconds: parseInt(form.ttl, 10) || 0 })} disabled={loading || form.ttl === ''}>设置 TTL</button>
+      <div className="flex flex-wrap items-end gap-2 pt-2.5 border-t border-gray-200/70">
+        <Fld label="TTL（秒，留空或 <0 表示永久）"><input className={`${inputCls} w-44`} placeholder="如 3600" value={form.ttl} onChange={set('ttl')} /></Fld>
+        <button className={ghostBtn} onClick={() => onWrite('expire', { ttl_seconds: parseInt(form.ttl, 10) || -1 })} disabled={loading || form.ttl === ''}>设置 TTL</button>
       </div>
     </div>
   );
