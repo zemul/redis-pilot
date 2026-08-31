@@ -38,9 +38,8 @@ func TestInstanceView_NoPasswordField(t *testing.T) {
 	}
 }
 
-// TestInstancesStateView_GroupPasswordVisible 确认管理接口能看到 group 级别密码。
-// 密码已提升到 InstanceGroupState，管理员 API（需 Token 鉴权）展示完整状态是合理的。
-func TestInstancesStateView_GroupPasswordVisible(t *testing.T) {
+// TestInstancesStateView_GroupPasswordHidden 确认实例列表不会泄露 Proxy 前端密码。
+func TestInstancesStateView_GroupPasswordHidden(t *testing.T) {
 	state := &apitypes.InstancesState{
 		Groups: map[string]*apitypes.InstanceGroupState{
 			"order": {Type: "replication", CurrentMaster: "order-master", Password: "front-pass"},
@@ -54,8 +53,13 @@ func TestInstancesStateView_GroupPasswordVisible(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// group password 对管理员可见
-	if !strings.Contains(string(data), "front-pass") {
-		t.Errorf("group password should be visible in admin view: %s", data)
+	body := strings.ToLower(string(data))
+	if strings.Contains(body, "front-pass") || strings.Contains(body, "password") {
+		t.Errorf("group password should not be visible in instance view: %s", data)
+	}
+	for _, want := range []string{"replication", "order-master"} {
+		if !strings.Contains(string(data), want) {
+			t.Errorf("group view missing expected field %q: %s", want, data)
+		}
 	}
 }

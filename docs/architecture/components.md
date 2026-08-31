@@ -83,6 +83,7 @@ data_dir: /opt/redis-server/state
 
 - Dashboard 登录签发 JWT（HS256，72h 过期），仅用于浏览器会话；用户与 `rpt_` 前缀 API Token 存 `pilot.db` 的 `users` / `user_tokens` 表，页面「用户管理」可自助创建/吊销
 - CLI 长期凭证使用页面创建的 API Token（Bearer）
+- 实例查询 API 使用安全投影返回实例组信息，不暴露仅供 Server 生成 Proxy 内部快照使用的前端密码。
 
 内部组件（机器凭证走配置文件，与用户体系分离）：
 

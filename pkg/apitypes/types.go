@@ -63,15 +63,15 @@ type ProxyConfig struct {
 
 // ProxySnapshot is the stable, read-only view consumed by redis-proxy.
 type ProxySnapshot struct {
-	Version     string          `json:"version"`
-	GeneratedAt string          `json:"generated_at"`
+	Version     string `json:"version"`
+	GeneratedAt string `json:"generated_at"`
 	// AnnounceIP 是 Proxy 对外暴露的域名/IP（不含端口），由 Server 的
 	// server.yaml 的 proxy_public_endpoint 统一配置分发。伪 Sentinel
 	// 协议应答 SENTINEL get-master-addr-by-name 时使用该值作为返回的
 	// host；为空时退化为连接命中的本地 IP（跨 NAT 环境下不可用）。
-	AnnounceIP  string          `json:"announce_ip,omitempty"`
-	Listeners   []ProxyListener `json:"listeners"`
-	Clusters    []ProxyCluster  `json:"clusters"`
+	AnnounceIP string          `json:"announce_ip,omitempty"`
+	Listeners  []ProxyListener `json:"listeners"`
+	Clusters   []ProxyCluster  `json:"clusters"`
 }
 
 // ProxyListener describes one Proxy Redis proxy listener.
@@ -126,11 +126,11 @@ type Persistence struct {
 
 // InstanceGroupState 实例组权威状态。
 type InstanceGroupState struct {
-	Type             string       `yaml:"type" json:"type"` // standalone | replication
-	Engine           string       `yaml:"engine" json:"engine"`
-	EngineVersion    string       `yaml:"engine_version,omitempty" json:"engine_version,omitempty"`
-	Category         string       `yaml:"category" json:"category"`
-	AccessMode       string       `yaml:"access_mode,omitempty" json:"access_mode,omitempty"` // rw-split | standard（空视为 rw-split）
+	Type          string `yaml:"type" json:"type"` // standalone | replication
+	Engine        string `yaml:"engine" json:"engine"`
+	EngineVersion string `yaml:"engine_version,omitempty" json:"engine_version,omitempty"`
+	Category      string `yaml:"category" json:"category"`
+	AccessMode    string `yaml:"access_mode,omitempty" json:"access_mode,omitempty"` // rw-split | standard（空视为 rw-split）
 	// Password 是 Proxy 前端密码（客户端 → Proxy 鉴权）。
 	// 实例本身不设 requirepass，鉴权只在 Proxy 前端终结；空串表示不鉴权。
 	Password         string       `yaml:"password,omitempty" json:"password,omitempty"`
@@ -140,6 +140,34 @@ type InstanceGroupState struct {
 	Proxy            *ProxyConfig `yaml:"proxy,omitempty" json:"proxy,omitempty"`
 	CreatedAt        string       `yaml:"created_at" json:"created_at"`
 	UpdatedAt        string       `yaml:"updated_at" json:"updated_at"`
+}
+
+// InstanceGroupView 是实例组面向用户 API 的安全投影。
+// Password 只供 Server 生成 Proxy 内部快照，不通过实例查询接口返回。
+type InstanceGroupView struct {
+	Type             string       `json:"type"`
+	Engine           string       `json:"engine"`
+	EngineVersion    string       `json:"engine_version,omitempty"`
+	Category         string       `json:"category"`
+	AccessMode       string       `json:"access_mode,omitempty"`
+	CurrentMaster    string       `json:"current_master"`
+	TopologyStatus   string       `json:"topology_status"`
+	FailoverConflict bool         `json:"failover_conflict"`
+	Proxy            *ProxyConfig `json:"proxy,omitempty"`
+	CreatedAt        string       `json:"created_at"`
+	UpdatedAt        string       `json:"updated_at"`
+}
+
+func (g *InstanceGroupState) ToView() *InstanceGroupView {
+	if g == nil {
+		return nil
+	}
+	return &InstanceGroupView{
+		Type: g.Type, Engine: g.Engine, EngineVersion: g.EngineVersion,
+		Category: g.Category, AccessMode: g.AccessMode, CurrentMaster: g.CurrentMaster,
+		TopologyStatus: g.TopologyStatus, FailoverConflict: g.FailoverConflict,
+		Proxy: g.Proxy, CreatedAt: g.CreatedAt, UpdatedAt: g.UpdatedAt,
+	}
 }
 
 // Instance 单容器运行状态
@@ -306,8 +334,8 @@ func (i *Instance) ToView() *InstanceView {
 
 // InstancesStateView 是 InstancesState 的对外投影，Instances 使用含派生状态的 InstanceView。
 type InstancesStateView struct {
-	Groups    map[string]*InstanceGroupState `json:"groups"`
-	Instances map[string]*InstanceView       `json:"instances"`
+	Groups    map[string]*InstanceGroupView `json:"groups"`
+	Instances map[string]*InstanceView      `json:"instances"`
 }
 
 // ToView 将 InstancesState 转换为对外展示视图。
@@ -319,8 +347,12 @@ func (s *InstancesState) ToView() *InstancesStateView {
 	for name, inst := range s.Instances {
 		views[name] = inst.ToView()
 	}
+	groups := make(map[string]*InstanceGroupView, len(s.Groups))
+	for name, group := range s.Groups {
+		groups[name] = group.ToView()
+	}
 	return &InstancesStateView{
-		Groups:    s.Groups,
+		Groups:    groups,
 		Instances: views,
 	}
 }
