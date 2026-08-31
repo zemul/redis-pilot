@@ -17,6 +17,12 @@ const EMPTY_FILTERS = {
   from: '', to: '', q: '', actor_type: '', source: '', level: '', action: '', result: '', operator: '', group: '', instance: ''
 };
 
+// 异步任务的终态结果。列表折叠用：同一 correlation_id 若已存在终态记录，
+// 则隐藏其中间态行（accepted/running），只保留终态那条，减少列表噪音。
+// 仍在进行中的任务（只有 accepted、尚无终态）不受影响，正常展示。
+const TERMINAL_RESULTS = new Set(['success', 'failed', 'corrected', 'interrupted', 'canceled', 'skipped']);
+const INTERMEDIATE_RESULTS = new Set(['accepted', 'running']);
+
 const PRESETS = [
   { id: 'all', label: '全部变更', values: { actor_type: '', result: '', level: '' } },
   { id: 'human', label: '人工操作', values: { actor_type: 'user', result: '', level: '' } },
@@ -93,6 +99,19 @@ export function AuditView({ filters, setFilters, request }) {
 
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
 
+  // 折叠：同一 correlation_id 已有终态记录时，隐藏其 accepted/running 中间态行。
+  const terminalCids = new Set();
+  for (const log of records) {
+    const cid = log.correlation_id || log.CorrelationID;
+    const res = log.result || log.Result;
+    if (cid && TERMINAL_RESULTS.has(res)) terminalCids.add(cid);
+  }
+  const visibleRecords = records.filter((log) => {
+    const cid = log.correlation_id || log.CorrelationID;
+    const res = log.result || log.Result;
+    return !(cid && INTERMEDIATE_RESULTS.has(res) && terminalCids.has(cid));
+  });
+
   return (
     <div className="grid gap-4">
       <section className="border border-gray-200 rounded-lg bg-white overflow-hidden">
@@ -167,8 +186,8 @@ export function AuditView({ filters, setFilters, request }) {
             <thead><tr>{['时间', '来源 / 操作者', '动作', '目标', '触发原因', '级别', '结果', ''].map((label, index) => <th key={`${label}-${index}`} className="px-4 py-3 border-b border-gray-200 text-left text-xs font-medium text-gray-400 bg-gray-50">{label}</th>)}</tr></thead>
             <tbody>
               {loading ? <tr><td colSpan="8" className="px-4 py-8 text-center text-gray-400 text-[13px]">加载中...</td></tr>
-                : records.length === 0 ? <tr><td colSpan="8"><EmptyState icon={List} title="暂无审计记录" /></td></tr>
-                : records.map((log, index) => {
+                : visibleRecords.length === 0 ? <tr><td colSpan="8"><EmptyState icon={List} title="暂无审计记录" /></td></tr>
+                : visibleRecords.map((log, index) => {
                   const id = log.id || log.ID || index;
                   const actorType = log.actor_type || log.ActorType;
                   const source = log.source || log.Source;
