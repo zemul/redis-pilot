@@ -71,7 +71,7 @@
 - **权限**：仅 admin。`/instance` 组的 `adminOnly()` 会放行 viewer 的 GET，故这三个 handler 内再**硬校验 admin**（含读 GET）；前端按 JWT 角色隐藏入口。
 - **路由**：读写都打实例组的当前 master（`CurrentMaster`），绕开 replica 的 READONLY；不做读写分离读。
 - **大 value 保护**：先 `TYPE` 分流，再用 O(1) 命令探大小（STRLEN/HLEN/LLEN/SCARD/ZCARD）；string 用 `GETRANGE` 64KB 分片、list 用 `LRANGE` 偏移分页、hash/set/zset 用 `HSCAN`/`SSCAN`/`ZSCAN` 游标分页；响应值累计 256KB 兜底截断，写入 value 上限 512KB。绝不无脑 `GET`/`HGETALL`/`LRANGE 0 -1`。
-- **单一能力源**：Server 侧核心逻辑落在 service 层（`keyGet`/`keyMeta`/`keyWrite`/`keyDelete`），HTTP handler 仅薄封装。后续把读/写暴露给 AI 助手（`describe_key`/`get_key` 只读、`write_key`/`delete_key` 经 confirm 二次确认）时复用同一份 service，不重写逻辑（见 ai-assistant.md）。
+- **单一能力源**：Server 侧核心逻辑落在 service 层（`keyGet`/`keyMeta`/`keyWrite`/`keyDelete`），HTTP handler 仅薄封装。读/写也已暴露给 AI 助手（`describe_key`/`get_key` 只读、仅 admin 可见；`write_key`/`delete_key` 经 confirm 二次确认）——复用同一份 service，不重写逻辑（见 ai-assistant.md）。
 - **写审计**：`key.write`（important）/`key.delete`（critical）落审计，记录 operator/实例/key/op。
 - **输出解析**：Agent 用宿主机 `redis-cli --raw` 执行并按行解析，不引入 RESP 客户端；value 含换行的极端情况会被拆行，属受限浏览器可接受的已知限制。
 

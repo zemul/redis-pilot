@@ -56,6 +56,14 @@ func (m *mockPlatform) GetTaskDetail(_ context.Context, taskID string) (json.Raw
 	m.calls = append(m.calls, "task_detail:"+taskID)
 	return json.RawMessage(`{"id":"` + taskID + `","status":"success"}`), nil
 }
+func (m *mockPlatform) DescribeKey(_ context.Context, name, key string) (json.RawMessage, error) {
+	m.calls = append(m.calls, "describe_key:"+name+"/"+key)
+	return json.RawMessage(`{"type":"string","size":3,"ttl":-1}`), nil
+}
+func (m *mockPlatform) GetKey(_ context.Context, name, key, cursor string, offset, count int) (json.RawMessage, error) {
+	m.calls = append(m.calls, "get_key:"+name+"/"+key)
+	return json.RawMessage(`{"type":"string","size":3,"ttl":-1,"items":[{"value":"abc"}]}`), nil
+}
 
 type captureSink struct {
 	tokens    strings.Builder
@@ -96,7 +104,7 @@ func TestAgentEndToEnd(t *testing.T) {
 	sink := &captureSink{}
 	agent.Run(context.Background(), []Message{
 		{Role: "user", Content: "诊断实例 galaxy-1，看看内存碎片和慢查询有没有问题，给出结论和建议。"},
-	}, sink, false)
+	}, sink, false, false)
 
 	if sink.err != nil {
 		t.Fatalf("agent error: %v", sink.err)

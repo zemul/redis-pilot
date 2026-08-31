@@ -54,6 +54,12 @@ func (p aiPlatform) QueryTasks(_ context.Context, status, kind string, limit int
 func (p aiPlatform) GetTaskDetail(_ context.Context, taskID string) (json.RawMessage, error) {
 	return p.s.aiGetTaskDetail(taskID)
 }
+func (p aiPlatform) DescribeKey(_ context.Context, name, key string) (json.RawMessage, error) {
+	return p.s.keyMeta(name, key)
+}
+func (p aiPlatform) GetKey(_ context.Context, name, key, cursor string, offset, count int) (json.RawMessage, error) {
+	return p.s.keyGet(name, key, cursor, offset, count, false)
+}
 
 // sseSink 把 Agent 的运行事件写成 SSE 帧推给前端，同时把工具调用与 token 用量
 // 写入结构化日志（可观测性，见 §7.5；token 记录见 §7.3）。
@@ -209,9 +215,11 @@ func (s *Server) aiChat(c *gin.Context) {
 
 	// 写操作闸门 = 配置总闸 && 调用者为 admin。为 false 时模型看不到写工具。
 	allowWrite := s.cfg.AI.AllowWrite && c.GetString("auth_role") == "admin"
+	// admin 门控受限 K/V 浏览器的读工具（describe_key/get_key），与 handler 硬校验 admin 一致。
+	admin := c.GetString("auth_role") == "admin"
 	// c.Request.Context() 在客户端断开时取消，Agent 会随之中止。
 	ctx := c.Request.Context()
-	s.aiAgent.Run(ctx, req.Messages, sink, allowWrite)
+	s.aiAgent.Run(ctx, req.Messages, sink, allowWrite, admin)
 
 	// ── Agent 结束后落库 assistant 消息（§13.7） ───────────────────────────
 	// 正常结束 interrupted=0；ctx 被取消（客户端断开/停止）interrupted=1，content=已累积部分。
@@ -297,6 +305,13 @@ func (s *Server) aiExecute(c *gin.Context) {
 		Schedule      string            `json:"schedule"`
 		Retention     int               `json:"retention"`
 		TaskID        string            `json:"task_id"`
+		Op            string            `json:"op"`
+		Field         string            `json:"field"`
+		Member        string            `json:"member"`
+		Score         string            `json:"score"`
+		Side          string            `json:"side"`
+		Index         *int64            `json:"index"`
+		TTLSeconds    int64             `json:"ttl_seconds"`
 	}
 	if len(req.Args) > 0 {
 		_ = json.Unmarshal(req.Args, &a)
@@ -450,6 +465,35 @@ func (s *Server) aiExecute(c *gin.Context) {
 		}
 		c.Params = append(c.Params, gin.Param{Key: "id", Value: taskID})
 		handler, body = s.taskCancel, map[string]any{}
+	case "write_key":
+		if a.Key == "" {
+			fail(c, http.StatusBadRequest, "missing arg: key")
+			return
+		}
+		if a.Op == "" {
+			fail(c, http.StatusBadRequest, "missing arg: op")
+			return
+		}
+		// 复用 instanceKeyWrite handler（内含 admin 硬校验、白名单、master 路由、写审计）。
+		// args 按 KeyWriteArgs 结构组织；index 仅 lset 用，非空才带上。
+		kvArgs := map[string]any{
+			"value":       a.Value,
+			"field":       a.Field,
+			"member":      a.Member,
+			"score":       a.Score,
+			"side":        a.Side,
+			"ttl_seconds": a.TTLSeconds,
+		}
+		if a.Index != nil {
+			kvArgs["index"] = *a.Index
+		}
+		handler, body = s.instanceKeyWrite, map[string]any{"name": a.Name, "key": a.Key, "op": a.Op, "args": kvArgs}
+	case "delete_key":
+		if a.Key == "" {
+			fail(c, http.StatusBadRequest, "missing arg: key")
+			return
+		}
+		handler, body = s.instanceKeyDelete, map[string]any{"name": a.Name, "key": a.Key}
 	default:
 		// 在 ai.writeTools 白名单内但此处没有执行器：属于开发期未同步，拒绝而非静默。
 		fail(c, http.StatusInternalServerError, "no executor for write tool: "+req.Tool)

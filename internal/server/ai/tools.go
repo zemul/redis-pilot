@@ -15,6 +15,7 @@ type toolRegistry struct {
 	api        PlatformAPI
 	skills     []Skill
 	allowWrite bool
+	admin      bool // 调用者是否 admin：门控受限 K/V 浏览器的读工具（describe_key/get_key）
 }
 
 // writeTools 是代码级白名单：只有列在此处的工具属于写操作。
@@ -37,6 +38,8 @@ var writeTools = map[string]bool{
 	"backup_set_schedule": true,
 	"scan_bigkeys":        true,
 	"cancel_task":         true,
+	"write_key":           true,
+	"delete_key":          true,
 }
 
 // isWriteTool 判断工具名是否为写操作。
@@ -65,6 +68,13 @@ func writeToolSummary(name, argsJSON string) string {
 		ReplicaOf     string  `json:"replica_of"`
 		Schedule      string  `json:"schedule"`
 		Retention     int     `json:"retention"`
+		Op            string  `json:"op"`
+		Field         string  `json:"field"`
+		Member        string  `json:"member"`
+		Score         string  `json:"score"`
+		Side          string  `json:"side"`
+		Index         *int64  `json:"index"`
+		TTLSeconds    int64   `json:"ttl_seconds"`
 	}
 	if argsJSON != "" {
 		_ = json.Unmarshal([]byte(argsJSON), &a)
@@ -188,6 +198,52 @@ func writeToolSummary(name, argsJSON string) string {
 			ret = fmt.Sprintf("，保留 %d 份", a.Retention)
 		}
 		return fmt.Sprintf("设置实例 %s 的自动备份计划：cron=%q%s", target, a.Schedule, ret)
+	case "write_key":
+		keyLabel := a.Key
+		if keyLabel == "" {
+			keyLabel = "(未指定 key)"
+		}
+		switch a.Op {
+		case "set":
+			return fmt.Sprintf("在实例 %s 上 SET key %s（覆盖整个字符串值）", target, keyLabel)
+		case "hset":
+			return fmt.Sprintf("在实例 %s 上 HSET key %s 字段 %q（新增或覆盖该字段的值）", target, keyLabel, a.Field)
+		case "push":
+			side := "右(RPUSH)"
+			if a.Side == "left" {
+				side = "左(LPUSH)"
+			}
+			return fmt.Sprintf("在实例 %s 上向 list %s %s 追加一个元素", target, keyLabel, side)
+		case "sadd":
+			return fmt.Sprintf("在实例 %s 上 SADD 到 set %s：添加成员 %q", target, keyLabel, a.Member)
+		case "zadd":
+			return fmt.Sprintf("在实例 %s 上 ZADD 到 zset %s：成员 %q 分数 %s（新增或更新）", target, keyLabel, a.Member, a.Score)
+		case "expire":
+			if a.TTLSeconds < 0 {
+				return fmt.Sprintf("在实例 %s 上 PERSIST key %s（移除过期时间，改为永久）", target, keyLabel)
+			}
+			return fmt.Sprintf("在实例 %s 上 EXPIRE key %s：设置过期 %d 秒", target, keyLabel, a.TTLSeconds)
+		case "hdel":
+			return fmt.Sprintf("在实例 %s 上 HDEL：删除 hash %s 的字段 %q", target, keyLabel, a.Field)
+		case "srem":
+			return fmt.Sprintf("在实例 %s 上 SREM：删除 set %s 的成员 %q", target, keyLabel, a.Member)
+		case "zrem":
+			return fmt.Sprintf("在实例 %s 上 ZREM：删除 zset %s 的成员 %q", target, keyLabel, a.Member)
+		case "lset":
+			idx := "(未指定下标)"
+			if a.Index != nil {
+				idx = fmt.Sprintf("%d", *a.Index)
+			}
+			return fmt.Sprintf("在实例 %s 上 LSET：覆盖 list %s 下标 %s 的值", target, keyLabel, idx)
+		default:
+			return fmt.Sprintf("在实例 %s 上对 key %s 执行受限写操作 %q", target, keyLabel, a.Op)
+		}
+	case "delete_key":
+		keyLabel := a.Key
+		if keyLabel == "" {
+			keyLabel = "(未指定 key)"
+		}
+		return fmt.Sprintf("在实例 %s 上 DEL：删除整个 key %s（不可恢复）", target, keyLabel)
 	default:
 		return fmt.Sprintf("%s(%s)", name, target)
 	}
@@ -247,6 +303,25 @@ func (r *toolRegistry) schemas() []openai.ChatCompletionToolParam {
 			}, []string{"task_id"}),
 		makeTool("load_skill", "加载指定运维技能的详细操作手册；当需要按某类运维流程分析或给出步骤时先调用它", skillArg, []string{"name"}),
 	}
+	// 受限 K/V 浏览器读工具：仅 admin 可见——与 HTTP handler 硬校验 admin 一致，
+	// 避免非 admin 用户经 AI 读到任意 key 的值（key 值可能含敏感数据）。
+	if r.admin {
+		describeKeyArg := map[string]any{
+			"name": map[string]string{"type": "string", "description": "实例名或从库名（读写都会路由到其所在组的当前主库）"},
+			"key":  map[string]string{"type": "string", "description": "要查看的 key"},
+		}
+		getKeyArg := map[string]any{
+			"name":   map[string]string{"type": "string", "description": "实例名或从库名（路由到当前主库）"},
+			"key":    map[string]string{"type": "string", "description": "要读取的 key"},
+			"cursor": map[string]string{"type": "string", "description": "hash/set/zset 分页游标，取自上一页的 next_cursor；首页留空或 0"},
+			"offset": map[string]string{"type": "integer", "description": "list/string 偏移分页起点，首页 0"},
+			"count":  map[string]string{"type": "integer", "description": "返回条数，可选，默认 200，最大 1000"},
+		}
+		tools = append(tools,
+			makeTool("describe_key", "查看一个 key 的元信息（类型/大小/TTL），不拉取值。大 key 应先用它探明规模，再决定是否 get_key", describeKeyArg, []string{"name", "key"}),
+			makeTool("get_key", "读取一个 key 的值（带大 value 保护与分页：string 分片、list 偏移、hash/set/zset 游标遍历，响应有字节上限）。仅 admin 可用", getKeyArg, []string{"name", "key"}),
+		)
+	}
 	// 写操作工具仅在 allowWrite（配置总闸开启 且 调用者为 admin）时才暴露给模型。
 	// 即便暴露，它们也只会走 confirm 二次确认，不会在对话循环内直接执行。
 	if r.allowWrite {
@@ -303,6 +378,24 @@ func (r *toolRegistry) schemas() []openai.ChatCompletionToolParam {
 					"schedule":  map[string]string{"type": "string", "description": "cron 表达式，如 '0 2 * * *'；留空关闭自动备份"},
 					"retention": map[string]string{"type": "integer", "description": "保留备份份数，可选；0 或省略表示不改动现值"},
 				}, []string{"name"}),
+			makeTool("write_key", "对一个 key 做受限写操作（写操作，需二次确认；读写都路由到组当前主库）。op 决定动作：set(字符串)/hset(hash 设字段)/push(list 追加)/sadd(set 加成员)/zadd(zset 加/改成员分数)/expire(设过期,ttl_seconds<0 为永久)/hdel(删 hash 字段)/srem(删 set 成员)/zrem(删 zset 成员)/lset(按下标改 list 值)。按 op 提供对应参数。",
+				map[string]any{
+					"name":        map[string]string{"type": "string", "description": "实例名或从库名（路由到当前主库）"},
+					"key":         map[string]string{"type": "string", "description": "目标 key"},
+					"op":          map[string]string{"type": "string", "description": "set/hset/push/sadd/zadd/expire/hdel/srem/zrem/lset 之一"},
+					"value":       map[string]string{"type": "string", "description": "值：set/hset/push/lset 用"},
+					"field":       map[string]string{"type": "string", "description": "hash 字段：hset/hdel 用"},
+					"member":      map[string]string{"type": "string", "description": "成员：sadd/zadd/srem/zrem 用"},
+					"score":       map[string]string{"type": "string", "description": "zset 分数（数字字符串）：zadd 用"},
+					"side":        map[string]string{"type": "string", "description": "list 方向 left|right：push 用，默认 right"},
+					"index":       map[string]string{"type": "integer", "description": "list 下标：lset 用"},
+					"ttl_seconds": map[string]string{"type": "integer", "description": "过期秒数：expire 用，<0 表示永久(PERSIST)"},
+				}, []string{"name", "key", "op"}),
+			makeTool("delete_key", "删除整个 key（写操作，需二次确认；不可恢复，路由到组当前主库）。只删单个元素请改用 write_key 的 hdel/srem/zrem",
+				map[string]any{
+					"name": map[string]string{"type": "string", "description": "实例名或从库名（路由到当前主库）"},
+					"key":  map[string]string{"type": "string", "description": "要删除的整个 key"},
+				}, []string{"name", "key"}),
 		)
 	}
 	return tools
@@ -318,6 +411,9 @@ func (r *toolRegistry) exec(ctx context.Context, name, argsJSON string) (json.Ra
 		Status string `json:"status"`
 		Kind   string `json:"kind"`
 		TaskID string `json:"task_id"`
+		Key    string `json:"key"`
+		Cursor string `json:"cursor"`
+		Offset int    `json:"offset"`
 	}
 	if argsJSON != "" {
 		_ = json.Unmarshal([]byte(argsJSON), &args)
@@ -377,6 +473,25 @@ func (r *toolRegistry) exec(ctx context.Context, name, argsJSON string) (json.Ra
 			return nil, fmt.Errorf("missing arg: task_id")
 		}
 		return r.api.GetTaskDetail(ctx, args.TaskID)
+	case "describe_key", "get_key":
+		// 防御纵深：读 key 是 admin-only 能力；即便工具未暴露给非 admin，exec 再挡一道。
+		if !r.admin {
+			return nil, fmt.Errorf("admin role required for %s", name)
+		}
+		if err := needName(); err != nil {
+			return nil, err
+		}
+		if args.Key == "" {
+			return nil, fmt.Errorf("missing arg: key")
+		}
+		if name == "describe_key" {
+			return r.api.DescribeKey(ctx, args.Name, args.Key)
+		}
+		cursor := args.Cursor
+		if cursor == "" {
+			cursor = "0"
+		}
+		return r.api.GetKey(ctx, args.Name, args.Key, cursor, args.Offset, args.Count)
 	case "load_skill":
 		for _, sk := range r.skills {
 			if sk.Name == args.Name {

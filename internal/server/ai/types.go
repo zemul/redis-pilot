@@ -37,4 +37,7 @@ type PlatformAPI interface {
 	QueryAudit(ctx context.Context, limit int) (json.RawMessage, error)
 	QueryTasks(ctx context.Context, status, kind string, limit int) (json.RawMessage, error)
 	GetTaskDetail(ctx context.Context, taskID string) (json.RawMessage, error)
+	// 受限 K/V 浏览器（admin-only 能力，复用 Server key_service 单一能力源）。
+	DescribeKey(ctx context.Context, name, key string) (json.RawMessage, error)
+	GetKey(ctx context.Context, name, key, cursor string, offset, count int) (json.RawMessage, error)
 }

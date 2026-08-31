@@ -241,6 +241,8 @@ ai:
 | `get_metrics_history` | `/instance/metrics/history`（range 参数） | 读 | ✅ M3 |
 | `list_nodes` | 节点清单（读 store，脱敏 agent_token） | 读 | ✅ M3 |
 | `query_audit` | 审计查询（`s.audit.Query`） | 读 | ✅ M3 |
+| `describe_key` | `keyMeta`（受限 K/V 浏览器，只取 type/size/ttl）；**仅 admin 暴露** | 读 | ✅ |
+| `get_key` | `keyGet`（受限 K/V 浏览器，带大 value 保护+分页）；**仅 admin 暴露** | 读 | ✅ |
 | `start_instance` / `stop_instance` | `instanceStart` / `instanceStop`（re-dispatch） | 写 | ✅ M5 |
 | `failover` | `instanceFailover`（re-dispatch） | 写 | ✅ M5 |
 | `config_set` | `instanceConfig`（re-dispatch，单 key/value，保留字校验） | 写 | ✅ M5 |
@@ -249,6 +251,8 @@ ai:
 | `set_access_mode` | `instanceAccessMode`（re-dispatch，standard/rw-split） | 写 | ✅ M6 |
 | `replicate` | `instanceReplicate`（re-dispatch，加副本/扩容，name→replica_of） | 写 | ✅ M6 |
 | `backup_set_schedule` | `backupSetSchedule`（re-dispatch，cron+retention，空 cron=关闭） | 写 | ✅ M6 |
+| `write_key` | `instanceKeyWrite`（re-dispatch，受限 K/V 写：set/hset/push/sadd/zadd/expire/hdel/srem/zrem/lset，白名单+master 路由） | 写 | ✅ |
+| `delete_key` | `instanceKeyDelete`（re-dispatch，删整个 key／DEL） | 写 | ✅ |
 | `delete_instance` / `backup restore` / `clean-data` / `node remove` | — | 写 | ❌ 永久排除（破坏性/不可逆，只走人工 CLI） |
 
 每个工具 = 一个 JSON schema（name/description/parameters）+ 一个执行函数（调 `PlatformAPI`）。约 15–30 行/个。只读工具的 service 实现集中在 `internal/server/monitor_service.go`，工具 schema 与分发在 `internal/server/ai/tools.go`。
@@ -308,8 +312,9 @@ ai:
 - 写操作强制校验 admin + 落审计。
 
 **M5 落地（方案 A：无状态 confirm + 独立执行端点）——已实现：**
-- **写工具白名单**（代码级，`internal/server/ai/tools.go` 的 `writeTools`）：当前为 `create_instance`、`start_instance`、`stop_instance`、`failover`、`config_set`、`backup_exec`、`set_access_mode`、`replicate`、`backup_set_schedule`。**破坏性/不可逆操作（delete / restore / clean-data / node remove）刻意永不纳入**，只走人工 CLI。
+- **写工具白名单**（代码级，`internal/server/ai/tools.go` 的 `writeTools`）：当前为 `create_instance`、`start_instance`、`stop_instance`、`failover`、`config_set`、`backup_exec`、`set_access_mode`、`replicate`、`backup_set_schedule`、`scan_bigkeys`、`cancel_task`、`write_key`、`delete_key`。**实例/节点级的破坏性不可逆操作（delete_instance / backup restore / clean-data / node remove）刻意永不纳入**，只走人工 CLI。
   - 纳入标准：**非破坏性、可回滚/可调整**。除 create 外新增的三项同理——`set_access_mode`（改回来即可）、`replicate`（多余副本可删）、`backup_set_schedule`（改计划或置空即可），均不造成不可逆的数据丢失。`replicate` 的 `replica_of` 指定复制源主实例；`backup_set_schedule` 的 cron 留空表示关闭自动备份。
+  - `write_key`/`delete_key` 的定性：属**受限 K/V 浏览器**（admin-only）的写路径，作用域是**单个 key**而非实例/节点，且同样走双闸 + 二次确认 + 可信摘要 + 审计。`delete_key`（DEL 整个 key）与被排除的实例级 `delete_instance` 不同——它作用域小、由 admin 逐个显式确认，故纳入；元素级删除（hdel/srem/zrem）与按下标改（lset）经 `write_key` 的 `op` 表达。读路径 `describe_key`/`get_key` 是只读工具，仅在调用者为 admin 时才暴露给模型（与 HTTP handler 硬校验 admin 一致，防止非 admin 经 AI 读到任意 key 值）。
   - `create_instance` 纳入白名单的定性：创建虽会真起容器、占端口/内存，但属于**可回滚**操作（建错删掉即可），风险等级低于删除类的不可逆数据丢失，因此在同一套「双闸 + 二次确认 + 可信摘要 + 审计」约束下开放给 AI。节点由平台调度器自动选择，AI 无需也无法指定落点；`memory`/`group`/`category` 必填（缺省会被执行端点拒绝），`engine` 默认 redis、`type` 默认 standalone。`cpus`/`disk` 为**可选**入参：不填时按与 CLI 一致的兜底补齐（`cpus=1`；`disk` 按引擎默认 redis 10Gi / kvrocks 20Gi），避免零值导致 0C/0Gi 且调度不占容量账。工具描述引导 AI 按引擎特性取值——Redis 单线程常规负载 1 核即可、磁盘仅用于持久化/备份；Kvrocks 多线程且磁盘型，写密集/大数据量时按需给更多核与磁盘。`disk` 单位必须为 `Gi`，非法单位（如 `GB`/`TB`，会被 `parseMemoryGi` 解析成 0）在执行端点直接以 400 拒绝。
 - **两层闸门**：`allowWrite = cfg.AI.AllowWrite（配置总闸）&& 调用者 role==admin`。为 false 时写工具**根本不出现在给模型的工具集里**（非 admin 连"提议"都不会发生）。
 - **提议而非执行**：对话循环遇到写工具**不执行**，改为发 `confirm` 事件（`{tool, args, summary}`）并结束本轮。`summary` 由**后端**按 tool+args 用模板生成（`writeToolSummary`），**不信任 LLM 的文本描述**，防止谎报动作。一次只提议一个写操作。

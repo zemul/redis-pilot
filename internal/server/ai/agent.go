@@ -60,7 +60,10 @@ const writeRule = `- 你可以提议少量写操作（如启动/停止实例）�
 - 当用户的意图本质上需要多个写操作才能完成时（典型如"创建主从实例"＝先建主库、再建从库并建立复制），你必须把它拆成有序的多步，一步一个确认。完成前一步后，不要就此结束：应主动说明"下一步要做什么"并立即发起下一步的确认，直到整个意图完成或用户喊停。绝不能只做第一步（如只建了主库）就当作完成——那会让用户以为主从已就绪，实则只有单点。
 `
 
-func (a *Agent) systemPrompt(allowWrite bool) string {
+const keyInspectRule = `- 你可以用 describe_key / get_key 查看某实例中一个 key 的类型/大小/TTL 与值（受限只读，带大 value 保护与分页）；排查具体 key、数据结构或内存占用问题时使用。查大 key 前先 describe_key 探明规模，避免拉取过大数据。修改或删除 key 请用 write_key / delete_key（同样走用户二次确认），删除整个 key 前务必确认用户意图。
+`
+
+func (a *Agent) systemPrompt(allowWrite, admin bool) string {
 	var b strings.Builder
 	for _, sk := range a.skills {
 		fmt.Fprintf(&b, "- %s: %s\n", sk.Name, sk.Description)
@@ -69,6 +72,9 @@ func (a *Agent) systemPrompt(allowWrite bool) string {
 	if allowWrite {
 		rule = writeRule
 	}
+	if admin {
+		rule += keyInspectRule
+	}
 	return fmt.Sprintf(systemPromptTmpl, rule, b.String())
 }
 
@@ -76,17 +82,18 @@ func (a *Agent) systemPrompt(allowWrite bool) string {
 // 阻塞直到结束、出错或超时；ctx 取消（如客户端断开）会立即中止。
 // allowWrite 为本次请求的写操作闸门（= 配置总闸 && 调用者为 admin），由调用方计算传入；
 // 为 true 时才向模型暴露写工具，且写工具只会产出 confirm、不在循环内执行。
-func (a *Agent) Run(ctx context.Context, history []Message, sink Sink, allowWrite bool) {
+// admin 表示调用者是否 admin，用于门控受限 K/V 浏览器的读工具（describe_key/get_key）。
+func (a *Agent) Run(ctx context.Context, history []Message, sink Sink, allowWrite, admin bool) {
 	if a.opts.Timeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, a.opts.Timeout)
 		defer cancel()
 	}
-	reg := &toolRegistry{api: a.api, skills: a.skills, allowWrite: allowWrite}
+	reg := &toolRegistry{api: a.api, skills: a.skills, allowWrite: allowWrite, admin: admin}
 	tools := reg.schemas()
 
 	msgs := []openai.ChatCompletionMessageParamUnion{
-		openai.SystemMessage(a.systemPrompt(allowWrite)),
+		openai.SystemMessage(a.systemPrompt(allowWrite, admin)),
 	}
 	for _, m := range history {
 		if m.Role == "assistant" {
