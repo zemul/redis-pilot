@@ -294,7 +294,7 @@ func (r *toolRegistry) schemas() []openai.ChatCompletionToolParam {
 		makeTool("query_tasks", "查询运维任务列表（备份、恢复、大 Key 扫描等异步任务的状态和进度）",
 			map[string]any{
 				"status": map[string]string{"type": "string", "description": "按状态筛选：active（进行中）/ success / failed / canceled，可选"},
-				"kind":   map[string]string{"type": "string", "description": "按类型筛选：backup.full / backup.restore / diagnostic.bigkeys，可选"},
+				"kind":   map[string]string{"type": "string", "description": "按类型筛选：backup.create / backup.restore / diagnostic.bigkeys，可选"},
 				"limit":  map[string]string{"type": "integer", "description": "返回条数，可选，默认 20，最大 50"},
 			}, nil),
 		makeTool("get_task_detail", "查询单个运维任务的详情（含结果、错误原因、进度、目标实例/节点）",
