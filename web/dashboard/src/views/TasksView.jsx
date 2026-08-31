@@ -14,15 +14,15 @@ const PRESETS = [
   { id: 'success', label: '已成功', status: 'success' },
 ];
 
-export function TasksView({ request }) {
+export function TasksView({ request, initialInstance = '' }) {
   const [records, setRecords] = useState([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [preset, setPreset] = useState('all');
-  const [filters, setFilters] = useState({ q: '', kind: '', status: '' });
-  const [appliedFilters, setAppliedFilters] = useState({ q: '', kind: '', status: '' });
+  const [filters, setFilters] = useState({ q: '', kind: '', status: '', instance: initialInstance });
+  const [appliedFilters, setAppliedFilters] = useState({ q: '', kind: '', status: '', instance: initialInstance });
   const [selected, setSelected] = useState(null);
   const [canceling, setCanceling] = useState(false);
   const [actionError, setActionError] = useState('');
@@ -35,6 +35,7 @@ export function TasksView({ request }) {
     if (nextFilters.q.trim()) params.set('q', nextFilters.q.trim());
     if (nextFilters.kind) params.set('kind', nextFilters.kind);
     if (nextFilters.status) params.set('status', nextFilters.status);
+    if (nextFilters.instance) params.set('instance', nextFilters.instance);
     try {
       const data = await request(`/tasks?${params.toString()}`);
       setRecords(data?.records || []);
@@ -75,6 +76,14 @@ export function TasksView({ request }) {
   function goPage(nextPage) {
     setPage(nextPage);
     fetchTasks(nextPage, appliedFilters);
+  }
+
+  function clearInstance() {
+    const next = { ...appliedFilters, instance: '' };
+    setFilters((current) => ({ ...current, instance: '' }));
+    setAppliedFilters(next);
+    setPage(1);
+    fetchTasks(1, next);
   }
 
   async function openDetail(task) {
@@ -134,6 +143,14 @@ export function TasksView({ request }) {
           </label>
           <button type="button" onClick={applyFilters} className="h-9 px-3 rounded-md bg-gray-900 text-white text-[13px] font-medium border-0 cursor-pointer hover:bg-gray-700">应用筛选</button>
         </div>
+        {appliedFilters.instance && (
+          <div className="px-4 pb-4 -mt-1">
+            <span className="inline-flex items-center gap-1.5 rounded-full border border-gray-200 bg-gray-50 px-2.5 py-1 text-[12px] text-gray-600">
+              实例：<strong className="font-medium text-gray-900">{appliedFilters.instance}</strong>
+              <button type="button" onClick={clearInstance} className="text-gray-400 hover:text-gray-700 cursor-pointer" aria-label="清除实例过滤"><X size={13} /></button>
+            </span>
+          </div>
+        )}
       </section>
 
       <section className="border border-gray-200 rounded-lg bg-white overflow-hidden">

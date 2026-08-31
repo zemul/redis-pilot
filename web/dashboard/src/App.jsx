@@ -82,6 +82,7 @@ function AppShell() {
   const [labelsTarget, setLabelsTarget] = useState(null);
   const [keyBrowserTarget, setKeyBrowserTarget] = useState(null);
   const [createOpen, setCreateOpen] = useState(false);
+  const [taskInstanceFilter, setTaskInstanceFilter] = useState('');
   const [pendingAction, setPendingAction] = useState('');
   const [activeTaskCount, setActiveTaskCount] = useState(0);
   const [data, setData] = useState({ instances: {}, servers: {}, audits: [], sentinel: null });
@@ -187,6 +188,20 @@ function AppShell() {
     setAuth(null);
   }
 
+  // 从实例详情弹窗跳到独立页并按该实例过滤：审计用 q 关键词（页面可见可清除），
+  // 任务用后端 instance 精确过滤（TasksView 展示可清除的过滤标签）。
+  function openInstanceAudit(name) {
+    setAuditFilters({ from: '', to: '', q: name, actor_type: '', source: '', level: '', action: '', result: '', operator: '', group: '', instance: '' });
+    setDetail(null);
+    setActiveTab('audit');
+  }
+
+  function openInstanceTasks(name) {
+    setTaskInstanceFilter(name);
+    setDetail(null);
+    setActiveTab('tasks');
+  }
+
   async function openInstanceDetail(item, group) {
     setDetail({ item, group, loading: true, error: '', metrics: null });
     try {
@@ -276,6 +291,7 @@ function AppShell() {
                 : 'bg-transparent text-gray-500 hover:bg-gray-100 hover:text-gray-900'
             }`}
             onClick={() => {
+              if (tab.id === 'tasks') setTaskInstanceFilter('');
               setActiveTab(tab.id);
               setMobileOpen(false);
             }}
@@ -365,7 +381,7 @@ function AppShell() {
               )}
               {activeTab === 'ai' && <AiChatPanel />}
               {activeTab === 'servers' && <ServersView servers={servers} groups={instanceGroups} />}
-              {activeTab === 'tasks' && <TasksView request={request} />}
+              {activeTab === 'tasks' && <TasksView request={request} initialInstance={taskInstanceFilter} />}
               {activeTab === 'audit' && (
                 <AuditView
                   filters={auditFilters}
@@ -383,14 +399,14 @@ function AppShell() {
           )}
         </section>
       </main>
-      {detail && <InstanceDetailModal detail={detail} publicHost={serverInfo?.proxy_public_endpoint} sentinelPort={serverInfo?.proxy_sentinel_port} requestFn={request} onRefresh={refresh} onClose={() => setDetail(null)} />}
+      {detail && <InstanceDetailModal detail={detail} publicHost={serverInfo?.proxy_public_endpoint} sentinelPort={serverInfo?.proxy_sentinel_port} requestFn={request} onRefresh={refresh} onNavigateAudit={openInstanceAudit} onNavigateTasks={openInstanceTasks} onClose={() => setDetail(null)} />}
       {slowlogTarget && <SlowlogModal instanceName={slowlogTarget} requestFn={request} onClose={() => setSlowlogTarget(null)} />}
-      {bigkeysTarget && <BigkeysModal instanceName={bigkeysTarget} requestFn={request} onViewTasks={() => { setBigkeysTarget(null); setActiveTab('tasks'); }} onClose={() => setBigkeysTarget(null)} />}
+      {bigkeysTarget && <BigkeysModal instanceName={bigkeysTarget} requestFn={request} onViewTasks={() => { setTaskInstanceFilter(bigkeysTarget); setBigkeysTarget(null); setActiveTab('tasks'); }} onClose={() => setBigkeysTarget(null)} />}
       {configTarget && <ConfigModal instanceName={configTarget} requestFn={request} onClose={() => setConfigTarget(null)} />}
       {keyBrowserTarget && <KeyBrowserModal instanceName={keyBrowserTarget} requestFn={request} onClose={() => setKeyBrowserTarget(null)} />}
       {resizeTarget && <ResizeModal instanceName={resizeTarget.name} currentSpecs={{ memory: resizeTarget.memory, cpus: resizeTarget.cpus, disk: resizeTarget.disk }} requestFn={request} onClose={() => { setResizeTarget(null); refresh(); }} />}
       {labelsTarget && <GroupLabelsModal group={labelsTarget} suggestions={labelSuggestions} requestFn={request} onSaved={refresh} onClose={() => setLabelsTarget(null)} />}
-      {backupDetail && <BackupListModal detail={backupDetail} requestFn={request} onReload={() => openBackupList(backupDetail.item, backupDetail.group)} onViewTasks={() => { setBackupDetail(null); setActiveTab('tasks'); }} onClose={() => setBackupDetail(null)} />}
+      {backupDetail && <BackupListModal detail={backupDetail} requestFn={request} onReload={() => openBackupList(backupDetail.item, backupDetail.group)} onViewTasks={() => { setTaskInstanceFilter(backupDetail.item.name); setBackupDetail(null); setActiveTab('tasks'); }} onClose={() => setBackupDetail(null)} />}
       {confirmAction && (
         <ConfirmPowerModal
           detail={confirmAction}

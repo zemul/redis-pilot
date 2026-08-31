@@ -73,7 +73,7 @@ function LabelInput({ labels, onChange, suggestions = [], disabled = false }) {
   );
 }
 
-export function InstanceDetailModal({ detail, publicHost, sentinelPort, requestFn, onRefresh, onClose }) {
+export function InstanceDetailModal({ detail, publicHost, sentinelPort, requestFn, onRefresh, onNavigateAudit, onNavigateTasks, onClose }) {
   const { item, group, loading, error, metrics } = detail;
   const payload = extractMetricsPayload(metrics);
   const info = payload.info || payload.Info || '';
@@ -192,10 +192,10 @@ export function InstanceDetailModal({ detail, publicHost, sentinelPort, requestF
             <AccessInfoTab group={group} publicHost={publicHost} sentinelPort={sentinelPort} requestFn={requestFn} onRefresh={onRefresh} />
           )}
           {activeTab === 'audit' && (
-            <InstanceAuditTab instanceName={item.name} requestFn={requestFn} />
+            <InstanceAuditTab instanceName={item.name} requestFn={requestFn} onViewAll={onNavigateAudit ? () => onNavigateAudit(item.name) : null} />
           )}
           {activeTab === 'tasks' && (
-            <InstanceTasksTab instanceName={item.name} requestFn={requestFn} />
+            <InstanceTasksTab instanceName={item.name} requestFn={requestFn} onViewAll={onNavigateTasks ? () => onNavigateTasks(item.name) : null} />
           )}
         </div>
       </section>
@@ -205,7 +205,7 @@ export function InstanceDetailModal({ detail, publicHost, sentinelPort, requestF
 
 // 实例作用域的操作审计：只拉取该实例相关的审计记录（后端 instance 精确过滤），
 // 展示最近若干条摘要；完整筛选/分页仍在独立的「操作审计」页。
-function InstanceAuditTab({ instanceName, requestFn }) {
+function InstanceAuditTab({ instanceName, requestFn, onViewAll }) {
   const [records, setRecords] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -214,7 +214,7 @@ function InstanceAuditTab({ instanceName, requestFn }) {
     let ignore = false;
     setLoading(true);
     setError('');
-    requestFn(auditQuery({ instance: instanceName }, 1, 30))
+    requestFn(auditQuery({ instance: instanceName }, 1, 15))
       .then((data) => { if (!ignore) setRecords(data?.records || data?.Records || []); })
       .catch((err) => { if (!ignore) { setError(err.message || String(err)); setRecords([]); } })
       .finally(() => { if (!ignore) setLoading(false); });
@@ -254,12 +254,17 @@ function InstanceAuditTab({ instanceName, requestFn }) {
           </tbody>
         </table>
       </div>
+      {onViewAll && (
+        <div className="mt-3 text-right">
+          <button type="button" onClick={onViewAll} className="inline-flex items-center gap-1 bg-transparent border-0 text-[12px] font-medium text-gray-500 hover:text-gray-900 cursor-pointer">查看全部 →</button>
+        </div>
+      )}
     </section>
   );
 }
 
 // 实例作用域的运维任务：按 instance 精确过滤拉取该实例的任务；进行中任务每 5s 轮询刷新。
-function InstanceTasksTab({ instanceName, requestFn }) {
+function InstanceTasksTab({ instanceName, requestFn, onViewAll }) {
   const [records, setRecords] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -310,6 +315,11 @@ function InstanceTasksTab({ instanceName, requestFn }) {
           </tbody>
         </table>
       </div>
+      {onViewAll && (
+        <div className="mt-3 text-right">
+          <button type="button" onClick={onViewAll} className="inline-flex items-center gap-1 bg-transparent border-0 text-[12px] font-medium text-gray-500 hover:text-gray-900 cursor-pointer">查看全部 →</button>
+        </div>
+      )}
     </section>
   );
 }
