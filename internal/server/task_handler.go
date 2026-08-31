@@ -20,7 +20,7 @@ func (s *Server) taskQuery(c *gin.Context) {
 		pageSize = 30
 	}
 	tasks, total, err := s.db.QueryTasks(store.TaskFilter{
-		Status: c.Query("status"), Kind: c.Query("kind"), Operator: c.Query("operator"), Query: c.Query("q"),
+		Status: c.Query("status"), Kind: c.Query("kind"), Operator: c.Query("operator"), Instance: c.Query("instance"), Query: c.Query("q"),
 		Limit: pageSize, Offset: (page - 1) * pageSize,
 	})
 	if err != nil {

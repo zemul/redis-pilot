@@ -7,7 +7,7 @@ import {
   AlertTriangle, Search, Pencil, Check, ShieldCheck,
 } from 'lucide-react';
 import { StatusBadge, EmptyState, CopyableText } from '../components/common.jsx';
-import { getField, displayValue, formatDateTime, statusMeta, formatBytes, formatDuration } from '../lib/format.js';
+import { getField, displayValue, formatDateTime, statusMeta, formatBytes, formatDuration, auditQuery, auditActionLabel, auditSourceLabel, auditOperator, auditResultMeta, auditTargetDisplay, auditTriggerLabel, taskKindLabel, taskStatusMeta, taskDuration } from '../lib/format.js';
 import { extractMetricsPayload, parseRedisInfo, metricValue, engineLabel, topologyReason, parseReplicationLinks, topologyLabel } from '../lib/instance.js';
 import { MetricsTrendView } from '../views/MetricsTrendView.jsx';
 
@@ -141,6 +141,8 @@ export function InstanceDetailModal({ detail, publicHost, sentinelPort, requestF
               <button className={`px-4 py-2.5 text-[13px] border-0 bg-transparent cursor-pointer border-b-2 mb-[-1px] ${activeTab === 'group' ? 'text-gray-900 border-gray-900 font-medium' : 'text-gray-400 border-transparent hover:text-gray-700'}`} onClick={() => setActiveTab('group')}>实例组</button>
             )}
             <button className={`px-4 py-2.5 text-[13px] border-0 bg-transparent cursor-pointer border-b-2 mb-[-1px] ${activeTab === 'access' ? 'text-gray-900 border-gray-900 font-medium' : 'text-gray-400 border-transparent hover:text-gray-700'}`} onClick={() => setActiveTab('access')}>接入</button>
+            <button className={`px-4 py-2.5 text-[13px] border-0 bg-transparent cursor-pointer border-b-2 mb-[-1px] ${activeTab === 'audit' ? 'text-gray-900 border-gray-900 font-medium' : 'text-gray-400 border-transparent hover:text-gray-700'}`} onClick={() => setActiveTab('audit')}>操作审计</button>
+            <button className={`px-4 py-2.5 text-[13px] border-0 bg-transparent cursor-pointer border-b-2 mb-[-1px] ${activeTab === 'tasks' ? 'text-gray-900 border-gray-900 font-medium' : 'text-gray-400 border-transparent hover:text-gray-700'}`} onClick={() => setActiveTab('tasks')}>运维任务</button>
           </div>
           {activeTab === 'detail' && (
             <>
@@ -189,9 +191,126 @@ export function InstanceDetailModal({ detail, publicHost, sentinelPort, requestF
           {activeTab === 'access' && (
             <AccessInfoTab group={group} publicHost={publicHost} sentinelPort={sentinelPort} requestFn={requestFn} onRefresh={onRefresh} />
           )}
+          {activeTab === 'audit' && (
+            <InstanceAuditTab instanceName={item.name} requestFn={requestFn} />
+          )}
+          {activeTab === 'tasks' && (
+            <InstanceTasksTab instanceName={item.name} requestFn={requestFn} />
+          )}
         </div>
       </section>
     </div>
+  );
+}
+
+// 实例作用域的操作审计：只拉取该实例相关的审计记录（后端 instance 精确过滤），
+// 展示最近若干条摘要；完整筛选/分页仍在独立的「操作审计」页。
+function InstanceAuditTab({ instanceName, requestFn }) {
+  const [records, setRecords] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    let ignore = false;
+    setLoading(true);
+    setError('');
+    requestFn(auditQuery({ instance: instanceName }, 1, 30))
+      .then((data) => { if (!ignore) setRecords(data?.records || data?.Records || []); })
+      .catch((err) => { if (!ignore) { setError(err.message || String(err)); setRecords([]); } })
+      .finally(() => { if (!ignore) setLoading(false); });
+    return () => { ignore = true; };
+  }, [instanceName]);
+
+  if (loading) return <div className="min-h-[150px] border border-dashed border-gray-200 rounded-md grid place-items-center text-gray-400 text-[13px]">正在读取审计记录...</div>;
+  if (error) return <div className="border border-red-200 rounded-md px-3 py-2.5 flex items-center gap-2 bg-red-50 text-red-700 text-[13px]"><AlertCircle size={16} /> {error}</div>;
+  if (records.length === 0) return <EmptyState icon={SlidersHorizontal} title="暂无审计记录" detail="该实例的人工、AI 与系统操作都会记录在这里。" />;
+
+  return (
+    <section>
+      <div className="mb-3 flex items-center justify-between">
+        <h4 className="m-0 inline-flex items-center gap-1.5 text-[13px] font-semibold text-gray-500"><SlidersHorizontal size={16} className="text-gray-400" /> 操作审计</h4>
+        <span className="text-xs text-gray-400">最近 {records.length} 条</span>
+      </div>
+      <div className="border border-gray-200 rounded-md overflow-hidden overflow-x-auto">
+        <table className="w-full min-w-[720px] border-collapse">
+          <thead><tr>{['时间', '来源 / 操作者', '动作', '目标', '触发原因', '结果'].map((label) => <th key={label} className="px-3 py-2.5 border-b border-gray-200 text-left text-xs font-medium text-gray-400 bg-gray-50">{label}</th>)}</tr></thead>
+          <tbody>
+            {records.map((log, index) => {
+              const id = log.id || log.ID || index;
+              const actorType = log.actor_type || log.ActorType;
+              const source = log.source || log.Source;
+              const target = { ...(log.target || log.Target || {}), group_name: log.group_name || log.GroupName, instance_name: log.instance_name || log.InstanceName, object_id: log.object_id || log.ObjectID };
+              return (
+                <tr key={id} className="border-b border-gray-200 last:border-b-0">
+                  <td className="px-3 py-2.5 text-[12px] font-mono tabular-nums whitespace-nowrap">{formatDateTime(log.timestamp || log.Timestamp)}</td>
+                  <td className="px-3 py-2.5"><span className="block text-[12px] text-gray-800">{auditSourceLabel(source, actorType)}</span><span className="block text-[11px] text-gray-400">{auditOperator(log)}</span></td>
+                  <td className="px-3 py-2.5 text-[12px] font-medium">{auditActionLabel(log.action || log.Action)}</td>
+                  <td className="px-3 py-2.5 text-[12px] font-mono">{auditTargetDisplay(target)}</td>
+                  <td className="px-3 py-2.5 text-[12px] text-gray-500">{auditTriggerLabel(log.trigger || log.Trigger)}</td>
+                  <td className="px-3 py-2.5"><StatusBadge status={log.result || log.Result} metaFn={auditResultMeta} /></td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  );
+}
+
+// 实例作用域的运维任务：按 instance 精确过滤拉取该实例的任务；进行中任务每 5s 轮询刷新。
+function InstanceTasksTab({ instanceName, requestFn }) {
+  const [records, setRecords] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    let ignore = false;
+    async function load(quiet) {
+      if (!quiet) setLoading(true);
+      try {
+        const params = new URLSearchParams({ instance: instanceName, page: '1', page_size: '30' });
+        const data = await requestFn(`/tasks?${params.toString()}`);
+        if (!ignore) { setRecords(data?.records || []); setError(''); }
+      } catch (err) {
+        if (!ignore && !quiet) { setError(err.message || String(err)); setRecords([]); }
+      } finally {
+        if (!ignore && !quiet) setLoading(false);
+      }
+    }
+    load(false);
+    const timer = setInterval(() => load(true), 5000);
+    return () => { ignore = true; clearInterval(timer); };
+  }, [instanceName]);
+
+  if (loading) return <div className="min-h-[150px] border border-dashed border-gray-200 rounded-md grid place-items-center text-gray-400 text-[13px]">正在读取运维任务...</div>;
+  if (error) return <div className="border border-red-200 rounded-md px-3 py-2.5 flex items-center gap-2 bg-red-50 text-red-700 text-[13px]"><AlertCircle size={16} /> {error}</div>;
+  if (records.length === 0) return <EmptyState icon={RefreshCw} title="暂无运维任务" detail="备份、恢复、大 Key 扫描等任务会显示在这里。" />;
+
+  return (
+    <section>
+      <div className="mb-3 flex items-center justify-between">
+        <h4 className="m-0 inline-flex items-center gap-1.5 text-[13px] font-semibold text-gray-500"><RefreshCw size={16} className="text-gray-400" /> 运维任务</h4>
+        <span className="text-xs text-gray-400">最近 {records.length} 条</span>
+      </div>
+      <div className="border border-gray-200 rounded-md overflow-hidden overflow-x-auto">
+        <table className="w-full min-w-[680px] border-collapse">
+          <thead><tr>{['创建时间', '任务', '节点', '操作者', '状态', '耗时'].map((label) => <th key={label} className="px-3 py-2.5 border-b border-gray-200 text-left text-xs font-medium text-gray-400 bg-gray-50">{label}</th>)}</tr></thead>
+          <tbody>
+            {records.map((task) => (
+              <tr key={task.id} className="border-b border-gray-200 last:border-b-0">
+                <td className="px-3 py-2.5 text-[12px] font-mono whitespace-nowrap">{formatDateTime(task.created_at)}</td>
+                <td className="px-3 py-2.5"><strong className="block text-[12px] font-medium">{taskKindLabel(task.kind)}</strong><span className="block max-w-52 truncate text-[11px] font-mono text-gray-400">{task.id}</span></td>
+                <td className="px-3 py-2.5 text-[12px] font-mono text-gray-500">{task.server_name || '-'}</td>
+                <td className="px-3 py-2.5 text-[12px]">{task.operator || '系统'}</td>
+                <td className="px-3 py-2.5"><StatusBadge status={task.status} metaFn={taskStatusMeta} />{task.message && <span className="block text-[11px] text-gray-400">{task.message}{task.progress > 0 ? ` · ${task.progress} 个 Key` : ''}</span>}</td>
+                <td className="px-3 py-2.5 text-[12px] text-gray-500 tabular-nums">{taskDuration(task)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </section>
   );
 }
 

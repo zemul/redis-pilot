@@ -35,6 +35,7 @@ type TaskFilter struct {
 	Status   string
 	Kind     string
 	Operator string
+	Instance string
 	Query    string
 	Limit    int
 	Offset   int
@@ -105,6 +106,10 @@ func (d *DB) QueryTasks(f TaskFilter) ([]Task, int, error) {
 	if f.Operator != "" {
 		where = append(where, "operator = ?")
 		args = append(args, f.Operator)
+	}
+	if f.Instance != "" {
+		where = append(where, "instance_name = ?")
+		args = append(args, f.Instance)
 	}
 	if f.Query != "" {
 		where = append(where, "(id LIKE ? OR group_name LIKE ? OR instance_name LIKE ? OR server_name LIKE ? OR operator LIKE ?)")

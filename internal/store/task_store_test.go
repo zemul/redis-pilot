@@ -37,6 +37,7 @@ func TestQueryTasksFiltersAndKeepsOperationContext(t *testing.T) {
 	tasks := []Task{
 		{ID: "backup-1", Kind: "backup.create", Status: "running", Operator: "alice", Source: "manual", Trigger: "manual", GroupName: "order", InstanceName: "order-1", ServerName: "srv-a"},
 		{ID: "restore-1", Kind: "backup.restore", Status: "interrupted", Operator: "bob", GroupName: "cache", InstanceName: "cache-1", ServerName: "srv-b"},
+		{ID: "backup-2", Kind: "backup.create", Status: "success", Operator: "alice", GroupName: "order", InstanceName: "order-10", ServerName: "srv-a"},
 	}
 	for _, task := range tasks {
 		if err := db.CreateTask(task); err != nil {
@@ -50,6 +51,11 @@ func TestQueryTasksFiltersAndKeepsOperationContext(t *testing.T) {
 	failed, total, err := db.QueryTasks(TaskFilter{Status: "failed", Query: "srv-b", Limit: 30})
 	if err != nil || total != 1 || len(failed) != 1 || failed[0].InstanceName != "cache-1" {
 		t.Fatalf("failed query: tasks=%+v total=%d err=%v", failed, total, err)
+	}
+	// Instance 是精确过滤：order-1 不应把同前缀的 order-10 带出来。
+	scoped, total, err := db.QueryTasks(TaskFilter{Instance: "order-1", Limit: 30})
+	if err != nil || total != 1 || len(scoped) != 1 || scoped[0].ID != "backup-1" {
+		t.Fatalf("instance query: tasks=%+v total=%d err=%v", scoped, total, err)
 	}
 	if active[0].Operator != "alice" || active[0].GroupName != "order" || active[0].ServerName != "srv-a" {
 		t.Fatalf("operation context missing: %+v", active[0])
