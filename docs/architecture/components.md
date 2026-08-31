@@ -42,6 +42,9 @@
   GET  /instance/status         实例详细状态
   GET  /instance/bigkeys        兼容同步大 Key 扫描（同实例存在异步扫描时拒绝）
   POST /instance/bigkeys        提交异步大 Key 扫描（返回 task_id）
+  GET  /instance/key/get        受限 K/V 浏览器：查看单个 key（元信息 + 分页值）；仅 admin
+  POST /instance/key/write      受限 K/V 浏览器：按 op 写入（set/hset/push/sadd/zadd/expire）；仅 admin
+  POST /instance/key/delete     受限 K/V 浏览器：删除整个 key（DEL）；仅 admin
 
 备份管理（转发到目标服务器 Agent）
   POST /backup/exec             执行备份（异步，返回 task_id）
@@ -59,14 +62,19 @@
   GET  /proxy/snapshot          查看代理层结构化快照
 ```
 
-#### 部署
+#### 受限 K/V 浏览器
 
-```
-/opt/redis-server/
-  ├── server.yaml               # Server 自身配置
-  └── state/
-      └── pilot.db               # SQLite：servers / instance_groups / instances / audit_log 等表
-```
+面向 admin 的受限 key 查看/读写能力，替代登机器跑 `redis-cli`。定位是**受限浏览器而非命令控制台**：只暴露白名单命令，禁止 `KEYS`/`FLUSHALL`/`CONFIG`/`EVAL` 等。
+
+- **接口**：读一个 `GET /instance/key/get`（读 key 是单一操作，类型由响应里的 `type` 驱动前端渲染，不需要 op）；写一个 `POST /instance/key/write`（`op` = set/hset/push/sadd/zadd/expire，参数按 op 取用）；删一个 `POST /instance/key/delete`（整 key，前端二次确认）。
+- **权限**：仅 admin。`/instance` 组的 `adminOnly()` 会放行 viewer 的 GET，故这三个 handler 内再**硬校验 admin**（含读 GET）；前端按 JWT 角色隐藏入口。
+- **路由**：读写都打实例组的当前 master（`CurrentMaster`），绕开 replica 的 READONLY；不做读写分离读。
+- **大 value 保护**：先 `TYPE` 分流，再用 O(1) 命令探大小（STRLEN/HLEN/LLEN/SCARD/ZCARD）；string 用 `GETRANGE` 64KB 分片、list 用 `LRANGE` 偏移分页、hash/set/zset 用 `HSCAN`/`SSCAN`/`ZSCAN` 游标分页；响应值累计 256KB 兜底截断，写入 value 上限 512KB。绝不无脑 `GET`/`HGETALL`/`LRANGE 0 -1`。
+- **单一能力源**：Server 侧核心逻辑落在 service 层（`keyGet`/`keyMeta`/`keyWrite`/`keyDelete`），HTTP handler 仅薄封装。后续把读/写暴露给 AI 助手（`describe_key`/`get_key` 只读、`write_key`/`delete_key` 经 confirm 二次确认）时复用同一份 service，不重写逻辑（见 ai-assistant.md）。
+- **写审计**：`key.write`（important）/`key.delete`（critical）落审计，记录 operator/实例/key/op。
+- **输出解析**：Agent 用宿主机 `redis-cli --raw` 执行并按行解析，不引入 RESP 客户端；value 含换行的极端情况会被拆行，属受限浏览器可接受的已知限制。
+
+
 
 #### 认证
 
@@ -206,6 +214,11 @@ CLI Token 优先级（从高到低）：`--token` 参数 > `REDIS_SERVER_TOKEN` 
   POST /instance/bigkeys         提交异步扫描；同一实例仅允许一个
   GET  /instance/bigkeys/status  查询扫描数量、部分结果和取消状态
   POST /instance/bigkeys/cancel  协作式取消扫描
+
+受限 K/V 浏览器（仅经 Server 的 admin 端点转发调用）
+  GET  /instance/key/get         查看单个 key：TYPE 分流 + 探大小 + 分页值（meta=true 只取元信息）
+  POST /instance/key/write       按 op 写入（set/hset/push/sadd/zadd/expire），白名单校验
+  POST /instance/key/delete      删除整个 key（DEL）
 
 备份管理
   POST /instance/backup        执行备份（异步，返回 task_id）
