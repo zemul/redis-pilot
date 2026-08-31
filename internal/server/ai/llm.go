@@ -3,6 +3,7 @@ package ai
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/openai/openai-go"
 	"github.com/openai/openai-go/option"
@@ -68,4 +69,32 @@ func (l *llmClient) stream(
 		return openai.ChatCompletionMessage{}, acc.Usage, fmt.Errorf("llm returned no choices")
 	}
 	return acc.Choices[0].Message, acc.Usage, nil
+}
+
+// summarize 对早期历史消息做一次非流式摘要，返回摘要正文。
+// 不带工具、限制输出长度；供上下文压缩使用。
+func (l *llmClient) summarize(ctx context.Context, msgs []Message) (string, error) {
+	if len(msgs) == 0 {
+		return "", nil
+	}
+	var b strings.Builder
+	for _, m := range msgs {
+		fmt.Fprintf(&b, "%s: %s\n", m.Role, m.Content)
+	}
+	params := openai.ChatCompletionNewParams{
+		Model: openai.ChatModel(l.model),
+		Messages: []openai.ChatCompletionMessageParamUnion{
+			openai.SystemMessage(summarizePrompt),
+			openai.UserMessage(b.String()),
+		},
+		MaxTokens: openai.Int(512),
+	}
+	resp, err := l.client.Chat.Completions.New(ctx, params)
+	if err != nil {
+		return "", err
+	}
+	if len(resp.Choices) == 0 {
+		return "", fmt.Errorf("summarize: llm returned no choices")
+	}
+	return resp.Choices[0].Message.Content, nil
 }

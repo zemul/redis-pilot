@@ -72,7 +72,9 @@ ai:
   api_key: "${AI_API_KEY}"
   model: ""                             # 模型名（可带 provider 前缀，如 volcengine/deepseek-v4-flash）
   skills_dir: ""                        # 空=用内嵌 skill 副本；填目录路径=从磁盘读取（开发热更）
-  max_turns: 8                          # 工具调用循环轮数上限（防失控），默认 8
+  max_turns: 100                        # 工具调用循环轮数上限（防失控），默认 8
   max_tokens: 2048                      # 单次回复 token 上限，默认 2048
+  history_summary_threshold: 20         # 对话消息数超过该值时，把早期消息压缩成一条摘要（0=用默认20）
+  history_summary_keep: 6               # 压缩时保留的最近消息条数（原文不动），默认 6
   timeout: 120s                         # 单次对话总超时，默认 120s
   allow_write: false                    # 是否允许写操作工具（MVP 只读，保持 false）

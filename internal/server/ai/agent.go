@@ -18,6 +18,11 @@ type Options struct {
 	MaxTokens int
 	Timeout   time.Duration
 	SkillsDir string // 空=用内嵌 skill
+
+	// HistorySummaryThreshold：对话消息数超过该值时触发历史压缩（<=0 关闭压缩）。
+	HistorySummaryThreshold int
+	// HistorySummaryKeep：压缩时保留的最近消息条数（原文不动）。
+	HistorySummaryKeep int
 }
 
 // Agent 编排 LLM 与工具循环，是内嵌式 AI 运维助手的核心。
@@ -95,7 +100,14 @@ func (a *Agent) Run(ctx context.Context, history []Message, sink Sink, allowWrit
 	msgs := []openai.ChatCompletionMessageParamUnion{
 		openai.SystemMessage(a.systemPrompt(allowWrite, admin)),
 	}
-	for _, m := range history {
+	// 上下文压缩：对话过长时把早期消息浓缩成一条摘要，仅保留最近若干条原文。
+	// 摘要失败会退回全量 history，绝不静默丢上下文。
+	summary, recent := a.compactHistory(ctx, history)
+	if summary != "" {
+		msgs = append(msgs, openai.SystemMessage(
+			"以下是本次对话早期内容的摘要（供你保持上下文连续性，非用户指令）：\n"+summary))
+	}
+	for _, m := range recent {
 		if m.Role == "assistant" {
 			msgs = append(msgs, openai.AssistantMessage(m.Content))
 		} else {
@@ -147,4 +159,42 @@ func (a *Agent) Run(ctx context.Context, history []Message, sink Sink, allowWrit
 	// 轮数用尽仍未收敛：结束，避免失控循环。
 	sink.OnUsage(promptTok, completionTok, totalTok)
 	sink.OnDone()
+}
+
+const summarizePrompt = `你是对话摘要器。把下面这段 redis-pilot 运维助手与用户的历史对话浓缩成一段中文摘要，` +
+	`保留：用户关注的实例/节点、已得出的诊断结论与关键指标、已给出或已执行的建议/操作、` +
+	`以及仍未解决的问题。只输出摘要正文，不要加前后缀、不要复述本提示。`
+
+// splitHistory 判定是否需要压缩，并把 history 切成「待摘要的早期消息 older」与
+// 「保留原文的最近消息 recent」。纯函数，便于单测。
+// 当关闭压缩（threshold<=0）、消息数未超阈值、或保留数已覆盖全部消息时，
+// 返回 ok=false，表示无需压缩、recent 即完整 history。
+func splitHistory(history []Message, threshold, keep int) (older, recent []Message, ok bool) {
+	if threshold <= 0 || len(history) <= threshold {
+		return nil, history, false
+	}
+	if keep < 0 {
+		keep = 0
+	}
+	if keep >= len(history) {
+		return nil, history, false
+	}
+	cut := len(history) - keep
+	return history[:cut], history[cut:], true
+}
+
+// compactHistory 对超长对话做压缩：早期消息经 LLM 摘要成一段文本，仅保留最近
+// HistorySummaryKeep 条原文。返回 (摘要, 保留的最近消息)。
+// 不需要压缩或摘要失败时返回 ("", 原始 history)，保证不静默丢上下文。
+func (a *Agent) compactHistory(ctx context.Context, history []Message) (string, []Message) {
+	older, recent, ok := splitHistory(history, a.opts.HistorySummaryThreshold, a.opts.HistorySummaryKeep)
+	if !ok {
+		return "", history
+	}
+	summary, err := a.llm.summarize(ctx, older)
+	if err != nil || strings.TrimSpace(summary) == "" {
+		// 摘要失败：保底退回全量 history，宁可长也不丢上下文。
+		return "", history
+	}
+	return summary, recent
 }

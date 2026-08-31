@@ -58,18 +58,23 @@ type AIConfig struct {
 	MaxTokens  int    `yaml:"max_tokens"`  // 单次回复 token 上限，默认 2048
 	Timeout    string `yaml:"timeout"`     // 单次对话总超时，默认 120s
 	AllowWrite bool   `yaml:"allow_write"` // 是否允许写操作工具，默认 false（MVP 只读）
+	// HistorySummaryThreshold：对话消息数超过该值时，把早期消息压缩成一条摘要，
+	// 只保留最近 HistorySummaryKeep 条原文，控制上下文长度。默认 20。
+	HistorySummaryThreshold int `yaml:"history_summary_threshold"`
+	// HistorySummaryKeep：压缩时保留的最近消息条数（原文不动），默认 6。
+	HistorySummaryKeep int `yaml:"history_summary_keep"`
 }
 
 type Config struct {
-	Port                int                          `yaml:"port"`
-	DataDir             string                       `yaml:"data_dir"`
-	JWTSecret           string                       `yaml:"jwt_secret"`
-	InternalToken       string                       `yaml:"internal_token"`
-	Admin               AdminConfig                  `yaml:"admin"`
-	Ports               PortConfig                   `yaml:"ports"`
-	Images              map[string]EngineImageConfig `yaml:"images"`
-	Sentinel            SentinelConfig               `yaml:"sentinel"`
-	Log                 LogConfig                    `yaml:"log"`
+	Port          int                          `yaml:"port"`
+	DataDir       string                       `yaml:"data_dir"`
+	JWTSecret     string                       `yaml:"jwt_secret"`
+	InternalToken string                       `yaml:"internal_token"`
+	Admin         AdminConfig                  `yaml:"admin"`
+	Ports         PortConfig                   `yaml:"ports"`
+	Images        map[string]EngineImageConfig `yaml:"images"`
+	Sentinel      SentinelConfig               `yaml:"sentinel"`
+	Log           LogConfig                    `yaml:"log"`
 	// ProxyPublicEndpoint 是 Proxy 对外暴露的域名/IP（不含端口）。由 Server 统一
 	// 管理并通过 /api/v1/proxy/snapshot 快照下发给 Proxy（用作伪 Sentinel 应答
 	// host）和 Dashboard（拼接展示完整连接地址 <ProxyPublicEndpoint>:<port>）。
@@ -129,6 +134,12 @@ func LoadConfig(path string) (*Config, error) {
 	}
 	if cfg.AI.MaxTokens == 0 {
 		cfg.AI.MaxTokens = 2048
+	}
+	if cfg.AI.HistorySummaryThreshold == 0 {
+		cfg.AI.HistorySummaryThreshold = 20
+	}
+	if cfg.AI.HistorySummaryKeep == 0 {
+		cfg.AI.HistorySummaryKeep = 6
 	}
 	if cfg.AI.Timeout == "" {
 		cfg.AI.Timeout = "120s"

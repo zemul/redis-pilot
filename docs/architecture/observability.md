@@ -172,10 +172,12 @@ GET /observability/slowlogs/query?group=order&instance=order-0&command=HGETALL&f
 ## 7. 告警
 
 指标告警由 Prometheus rules 计算，并通过 Alertmanager webhook 送入 Server；备份失败、
-恢复失败、故障转移冲突等平台任务告警由 Server 直接产生。两者统一写入 `alert_events`，
-供 H5 展示产生、持续、确认和恢复状态。
+恢复失败、故障转移冲突等平台任务异常由 Server 直接产生。两者统一通过 IncidentService 写入
+`health_incidents`（早期规划中的 `alert_events` 由该异常生命周期模型取代），供 H5 展示
+产生、持续、确认和恢复状态。具体检测规则、防抖、关键时间线、表结构、API 和页面设计见
+[异常记录功能设计](health-incidents.md)。
 
-告警/事件与操作审计保持清晰边界：实例不可达、复制偏移等“事实被发现”写入告警事件；
+异常记录与操作审计保持清晰边界：实例不可达、复制偏移等“事实被发现”写入异常记录；
 Sentinel 故障转移、reconcile 重新下发复制配置等“平台采取了状态变更动作”写入 `audit_log`。
 同一处置链路通过 `correlation_id` 关联，周期性健康检查正常结果不进入审计，避免重复噪声。
 
