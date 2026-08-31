@@ -34,11 +34,11 @@
   POST /instance/start          启动实例
   POST /instance/stop           停止实例
   POST /instance/config         更新配置
-  POST /instance/labels         整体替换或清空实例组分类标签（仅分类/筛选，不参与权限和调度）
+  POST /instance/labels         整体替换或清空实例组标签列表（仅分类/筛选，不参与权限和调度）
   POST /instance/failover       触发故障转移（Sentinel 托管组：转发 SENTINEL FAILOVER；未托管组：直接操作 Agent，等价于旧版 promote）
   POST /instance/replicate      设置复制目标（Sentinel 托管组上拒绝，避免与自动拓扑管理冲突）
   GET  /instance/list           列出所有实例
-                               可重复传 label=key=value，多个条件按 AND 匹配实例组
+                               可重复传 label=标签内容，多个条件按 AND 匹配实例组
   GET  /instance/status         实例详细状态
   GET  /instance/bigkeys        兼容同步大 Key 扫描（同实例存在异步扫描时拒绝）
   POST /instance/bigkeys        提交异步大 Key 扫描（返回 task_id）
@@ -389,9 +389,7 @@ groups:
     type: replication                 # standalone | replication
     engine: kvrocks                   # redis | kvrocks
     category: persistent              # cache | persistent
-    labels:                          # 实例组级分类元数据；主从成员共享，不参与权限或调度
-      team: trade
-      env: prod
+    labels: [生产, 交易, 核心]       # 实例组级分类元数据；主从成员共享，不参与权限或调度
     current_master: order-1      # 当前主库实例名
     topology_status: healthy          # standalone: 主库运行即 healthy；replication: 主库和至少 1 个从库运行才 healthy
     failover_conflict: false

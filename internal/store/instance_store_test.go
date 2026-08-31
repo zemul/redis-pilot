@@ -75,7 +75,7 @@ func TestGroupRoundTrip_Labels(t *testing.T) {
 	db := openTestDB(t)
 	group := &apitypes.InstanceGroupState{
 		Type: "standalone", Engine: "redis", Category: "cache",
-		Labels: map[string]string{"team": "trade", "env": "prod"},
+		Labels: []string{"交易", "生产"},
 	}
 	if err := db.UpsertGroup("order", group); err != nil {
 		t.Fatalf("UpsertGroup: %v", err)
@@ -85,11 +85,11 @@ func TestGroupRoundTrip_Labels(t *testing.T) {
 		t.Fatalf("GetAllGroups: %v", err)
 	}
 	got := groups["order"]
-	if got == nil || got.Labels["team"] != "trade" || got.Labels["env"] != "prod" {
+	if got == nil || len(got.Labels) != 2 || got.Labels[0] != "交易" || got.Labels[1] != "生产" {
 		t.Fatalf("labels did not round trip: %#v", got)
 	}
 
-	group.Labels = map[string]string{}
+	group.Labels = []string{}
 	if err := db.UpsertGroup("order", group); err != nil {
 		t.Fatalf("clear labels: %v", err)
 	}

@@ -450,14 +450,19 @@ func scanGroups(rows *sql.Rows) (map[string]*apitypes.InstanceGroupState, error)
 			return nil, err
 		}
 		g.FailoverConflict = failoverConflict != 0
-		json.Unmarshal([]byte(labelsJSON), &g.Labels) //nolint:errcheck
-		if g.Labels == nil {
-			g.Labels = map[string]string{}
-		}
+		g.Labels = decodeGroupLabels(labelsJSON)
 		json.Unmarshal([]byte(proxyJSON), &g.Proxy) //nolint:errcheck
 		result[name] = g
 	}
 	return result, rows.Err()
+}
+
+func decodeGroupLabels(raw string) []string {
+	var labels []string
+	if json.Unmarshal([]byte(raw), &labels) != nil || labels == nil {
+		return []string{}
+	}
+	return labels
 }
 
 func boolToInt(b bool) int {

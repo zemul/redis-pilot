@@ -11,18 +11,66 @@ import { getField, displayValue, formatDateTime, statusMeta, formatBytes, format
 import { extractMetricsPayload, parseRedisInfo, metricValue, engineLabel, topologyReason, parseReplicationLinks, topologyLabel } from '../lib/instance.js';
 import { MetricsTrendView } from '../views/MetricsTrendView.jsx';
 
-function parseLabelText(text) {
-  const labels = {};
-  for (const raw of String(text || '').split(/[\n,]+/)) {
-    const item = raw.trim();
-    if (!item) continue;
-    const eq = item.indexOf('=');
-    if (eq < 1) throw new Error(`标签格式错误：${item}`);
-    const key = item.slice(0, eq).trim();
-    if (Object.prototype.hasOwnProperty.call(labels, key)) throw new Error(`标签键重复：${key}`);
-    labels[key] = item.slice(eq + 1).trim();
+function LabelInput({ labels, onChange, suggestions = [], disabled = false }) {
+  const [draft, setDraft] = useState('');
+  const available = suggestions
+    .filter((label) => !labels.includes(label) && (!draft.trim() || label.toLowerCase().includes(draft.trim().toLowerCase())))
+    .slice(0, 12);
+
+  function add(raw) {
+    if (labels.length >= 20) return;
+    const next = String(raw || '').trim();
+    if (!next || labels.includes(next)) {
+      setDraft('');
+      return;
+    }
+    onChange([...labels, next]);
+    setDraft('');
   }
-  return labels;
+
+  function remove(label) {
+    onChange(labels.filter((item) => item !== label));
+  }
+
+  function handleKeyDown(event) {
+    if (event.nativeEvent.isComposing) return;
+    if (event.key === 'Enter' || event.key === ',') {
+      event.preventDefault();
+      add(draft);
+    } else if (event.key === 'Backspace' && !draft && labels.length > 0) {
+      remove(labels[labels.length - 1]);
+    }
+  }
+
+  return (
+    <div className="grid gap-2">
+      <div className="min-h-10 rounded-md border border-gray-200 bg-white px-2 py-1.5 flex flex-wrap items-center gap-1.5 focus-within:border-gray-900 focus-within:ring-1 focus-within:ring-gray-900">
+        {labels.map((label) => (
+          <span key={label} className="inline-flex max-w-full items-center gap-1 rounded-md border border-gray-200 bg-gray-50 px-2 py-1 text-xs text-gray-700">
+            <span className="truncate">{label}</span>
+            <button type="button" className="text-gray-400 hover:text-gray-700 disabled:opacity-40" onClick={() => remove(label)} disabled={disabled} aria-label={`删除标签 ${label}`}><X size={12} /></button>
+          </span>
+        ))}
+        <input
+          className="h-6 min-w-[120px] flex-1 border-0 bg-transparent px-1 text-[13px] text-gray-900 outline-none"
+          value={draft}
+          onChange={(event) => setDraft(event.target.value)}
+          onKeyDown={handleKeyDown}
+          placeholder={labels.length === 0 ? '输入标签后按回车' : ''}
+          disabled={disabled || labels.length >= 20}
+        />
+      </div>
+      {available.length > 0 && (
+        <div className="flex flex-wrap items-center gap-1.5">
+          <span className="text-[11px] text-gray-400">已有标签</span>
+          {available.map((label) => (
+            <button key={label} type="button" className="rounded-md border border-gray-200 bg-white px-2 py-1 text-[11px] text-gray-600 hover:border-gray-400 hover:text-gray-900" onMouseDown={(event) => event.preventDefault()} onClick={() => add(label)} disabled={disabled}>{label}</button>
+          ))}
+        </div>
+      )}
+      <span className="text-[11px] text-gray-400">最多 20 个，每个不超过 64 个字符</span>
+    </div>
+  );
 }
 
 export function InstanceDetailModal({ detail, publicHost, sentinelPort, requestFn, onClose }) {
@@ -1035,7 +1083,7 @@ export function CreateInstanceModal({ servers, groups, requestFn, onRefresh, onC
     group: '', engine: 'redis', engine_version: '', category: 'cache',
     joinExisting: false, replicaCount: 1, access_mode: 'standard',
     memory: '', memory_unit: 'Gi', cpus: '', disk: '', disk_unit: 'Gi',
-    server: '', password: '', labels: '', config_overrides: ''
+    server: '', password: '', labels: [], config_overrides: ''
   });
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
@@ -1050,6 +1098,7 @@ export function CreateInstanceModal({ servers, groups, requestFn, onRefresh, onC
   const defaultVersion = engines && engines[form.engine] ? engines[form.engine].default || '' : '';
 
   const replicaGroups = groups.filter((g) => g.master);
+  const labelSuggestions = [...new Set(groups.flatMap((group) => group.labels || []))].sort((a, b) => a.localeCompare(b));
   const isReplica = form.joinExisting;
 
   function update(key, value) {
@@ -1118,8 +1167,6 @@ export function CreateInstanceModal({ servers, groups, requestFn, onRefresh, onC
     }
 
     const isStandalone = form.replicaCount === 0;
-    let labels = {};
-    try { labels = parseLabelText(form.labels); } catch { labels = {}; }
     const masterName = isStandalone ? form.group : `${form.group}-0`;
     const list = [{
       name: masterName,
@@ -1129,7 +1176,7 @@ export function CreateInstanceModal({ servers, groups, requestFn, onRefresh, onC
         name: masterName,
         type: isStandalone ? 'standalone' : 'replication',
         group: form.group,
-        ...(Object.keys(labels).length ? { labels } : {}),
+        ...(form.labels.length ? { labels: form.labels } : {}),
         ...(form.engine_version.trim() ? { engine_version: form.engine_version.trim() } : {}),
         ...(!isStandalone && form.access_mode ? { access_mode: form.access_mode } : {})
       }
@@ -1150,7 +1197,6 @@ export function CreateInstanceModal({ servers, groups, requestFn, onRefresh, onC
     setError('');
     if (!form.group.trim()) { setError(isReplica ? '请选择实例组' : '请填写名称'); return; }
     if (!form.memory.trim()) { setError('请填写内存'); return; }
-    try { parseLabelText(form.labels); } catch (err) { setError(err.message); return; }
 
     setSubmitting(true);
     const created = [];
@@ -1286,10 +1332,9 @@ export function CreateInstanceModal({ servers, groups, requestFn, onRefresh, onC
           <section>
             <h4 className="m-0 mb-3 inline-flex items-center gap-1.5 text-[13px] font-semibold text-gray-500"><SlidersHorizontal size={16} className="text-gray-400" /> 高级</h4>
             <div className="grid grid-cols-1 gap-3 mt-3">
-              {!isReplica && <label className="block text-xs font-medium text-gray-400">分类标签
-                <input className={inputCls} value={form.labels} onChange={(e) => update('labels', e.target.value)} placeholder="team=trade, env=prod" />
-                <span className="block mt-1 text-[11px] font-normal text-gray-400">使用 key=value，多个标签用逗号分隔</span>
-              </label>}
+              {!isReplica && <div className="block text-xs font-medium text-gray-400">分类标签
+                <div className="mt-1.5"><LabelInput labels={form.labels} onChange={(labels) => update('labels', labels)} suggestions={labelSuggestions} disabled={submitting} /></div>
+              </div>}
               <label className="block text-xs font-medium text-gray-400">配置覆盖
                 <textarea className="mt-1.5 w-full border border-gray-200 rounded-md px-2.5 py-2 bg-white text-gray-900 outline-0 focus:border-gray-900 text-[13px] font-inherit resize-y min-h-[80px]" rows="4" value={form.config_overrides} onChange={(e) => update('config_overrides', e.target.value)} placeholder={'每行一个，格式 key=value\n如 maxmemory-policy=allkeys-lru'} />
               </label>
@@ -1323,21 +1368,13 @@ export function CreateInstanceModal({ servers, groups, requestFn, onRefresh, onC
   );
 }
 
-export function GroupLabelsModal({ group, requestFn, onSaved, onClose }) {
-  const initial = Object.entries(group.labels || {}).sort(([a], [b]) => a.localeCompare(b)).map(([key, value]) => `${key}=${value}`).join('\n');
-  const [text, setText] = useState(initial);
+export function GroupLabelsModal({ group, suggestions, requestFn, onSaved, onClose }) {
+  const [labels, setLabels] = useState([...(group.labels || [])]);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
 
   async function save() {
-    let labels;
     setError('');
-    try {
-      labels = parseLabelText(text);
-    } catch (err) {
-      setError(err.message);
-      return;
-    }
     setSaving(true);
     try {
       await requestFn('/instance/labels', { method: 'POST', body: JSON.stringify({ group: group.groupName, labels }) });
@@ -1358,8 +1395,8 @@ export function GroupLabelsModal({ group, requestFn, onSaved, onClose }) {
           <button type="button" className="w-8 h-8 rounded-md border border-gray-200 bg-white text-gray-500 inline-flex items-center justify-center" onClick={onClose} disabled={saving}><X size={18} /></button>
         </div>
         <div className="p-4 grid gap-3">
-          <p className="m-0 text-[13px] text-gray-500">每行一个 <code>key=value</code>。标签只用于分类和搜索，清空内容即可删除全部标签。</p>
-          <textarea autoFocus rows={8} className="w-full border border-gray-200 rounded-md px-3 py-2 text-[13px] font-mono outline-0 focus:border-gray-900 resize-y" value={text} onChange={(e) => setText(e.target.value)} placeholder={'team=trade\nenv=prod\nproject=order'} />
+          <p className="m-0 text-[13px] text-gray-500">输入内容后按回车添加标签，也可以直接选择其他实例组使用过的标签。标签只用于分类和搜索。</p>
+          <LabelInput labels={labels} onChange={setLabels} suggestions={suggestions} disabled={saving} />
           {error && <div className="border border-red-200 rounded-md px-3 py-2 bg-red-50 text-red-700 text-[13px]">{error}</div>}
         </div>
         <div className="px-4 py-3 border-t border-gray-200 flex justify-end gap-2">

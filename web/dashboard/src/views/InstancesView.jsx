@@ -25,7 +25,7 @@ export function InstancesView({ groups, publicHost, sentinelPort, query, setQuer
       group.category,
       group.type,
       group.status,
-      ...Object.entries(group.labels || {}).flatMap(([key, value]) => [key, value, `${key}=${value}`]),
+      ...(group.labels || []),
       ...group.instances.flatMap((item) => [
         item.name,
         getField(item, 'server', 'Server'),
@@ -144,12 +144,12 @@ function InstanceGroupCard({ group, expanded, onToggle, publicHost, sentinelPort
             ) : (
               <span className="text-[11px] text-red-500 block mt-0.5">主库状态异常</span>
             )}
-            {Object.keys(group.labels || {}).length > 0 && (
+            {(group.labels || []).length > 0 && (
               <div className="flex flex-wrap gap-1 mt-1">
-                {Object.entries(group.labels).sort(([a], [b]) => a.localeCompare(b)).slice(0, 3).map(([key, value]) => (
-                  <span key={key} title={`${key}=${value}`} className="max-w-[88px] truncate rounded border border-gray-200 bg-gray-50 px-1.5 py-0.5 text-[10px] text-gray-500">{key}={value}</span>
+                {[...group.labels].sort((a, b) => a.localeCompare(b)).slice(0, 3).map((label) => (
+                  <span key={label} title={label} className="max-w-[88px] truncate rounded border border-gray-200 bg-gray-50 px-1.5 py-0.5 text-[10px] text-gray-500">{label}</span>
                 ))}
-                {Object.keys(group.labels).length > 3 && <span className="text-[10px] text-gray-400">+{Object.keys(group.labels).length - 3}</span>}
+                {group.labels.length > 3 && <span className="text-[10px] text-gray-400">+{group.labels.length - 3}</span>}
               </div>
             )}
           </div>

@@ -95,7 +95,7 @@ export function buildInstanceGroups(instanceState) {
         engineVersion: getField(groupState, 'engine_version', 'EngineVersion', ''),
         category: getField(groupState, 'category', 'Category', ''),
         access_mode: getField(groupState, 'access_mode', 'AccessMode', 'standard'),
-        labels: getField(groupState, 'labels', 'Labels', {}) || {},
+        labels: normalizeGroupLabels(getField(groupState, 'labels', 'Labels', [])),
         type: getField(groupState, 'type', 'Type', ''),
         currentMaster: getField(groupState, 'current_master', 'CurrentMaster', ''),
         proxy: getField(groupState, 'proxy', 'Proxy', null),
@@ -123,7 +123,7 @@ export function buildInstanceGroups(instanceState) {
         engineVersion: getField(groupState, 'engine_version', 'EngineVersion', ''),
         category: getField(groupState, 'category', 'Category', ''),
         access_mode: getField(groupState, 'access_mode', 'AccessMode', 'standard'),
-        labels: getField(groupState, 'labels', 'Labels', {}) || {},
+        labels: normalizeGroupLabels(getField(groupState, 'labels', 'Labels', [])),
         type: getField(groupState, 'type', 'Type', ''),
         currentMaster: getField(groupState, 'current_master', 'CurrentMaster', ''),
         proxy: getField(groupState, 'proxy', 'Proxy', null),
@@ -153,6 +153,12 @@ export function buildInstanceGroups(instanceState) {
       resource: { memory, memoryUsed, disk, cpus }
     };
   });
+}
+
+function normalizeGroupLabels(raw) {
+  if (Array.isArray(raw)) return raw.filter((label) => typeof label === 'string' && label.trim()).map((label) => label.trim());
+  if (!raw || typeof raw !== 'object') return [];
+  return Object.entries(raw).map(([key, value]) => value ? `${key}=${value}` : key);
 }
 
 export function engineLabel(group) {
