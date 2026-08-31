@@ -13,7 +13,7 @@ import (
 // GetAllGroups 读取所有实例组。
 func (d *DB) GetAllGroups() (map[string]*apitypes.InstanceGroupState, error) {
 	rows, err := d.sql.Query(
-		`SELECT name, type, engine, engine_version, category, access_mode, password,
+		`SELECT name, type, engine, engine_version, category, access_mode, labels, password,
 		        current_master, topology_status, failover_conflict, proxy, created_at, updated_at
 		 FROM instance_groups`)
 	if err != nil {
@@ -26,16 +26,18 @@ func (d *DB) GetAllGroups() (map[string]*apitypes.InstanceGroupState, error) {
 // UpsertGroup 新增或更新实例组。
 func (d *DB) UpsertGroup(name string, g *apitypes.InstanceGroupState) error {
 	proxyJSON, _ := json.Marshal(g.Proxy)
+	labelsJSON, _ := json.Marshal(g.Labels)
 	return d.execWrite(`
-		INSERT INTO instance_groups(name, type, engine, engine_version, category, access_mode, password,
+		INSERT INTO instance_groups(name, type, engine, engine_version, category, access_mode, labels, password,
 		    current_master, topology_status, failover_conflict, proxy, created_at, updated_at)
-		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 		ON CONFLICT(name) DO UPDATE SET
 			type              = excluded.type,
 			engine            = excluded.engine,
 			engine_version    = excluded.engine_version,
 			category          = excluded.category,
 			access_mode       = excluded.access_mode,
+			labels            = excluded.labels,
 			password          = excluded.password,
 			current_master    = excluded.current_master,
 			topology_status   = excluded.topology_status,
@@ -44,7 +46,7 @@ func (d *DB) UpsertGroup(name string, g *apitypes.InstanceGroupState) error {
 			created_at        = excluded.created_at,
 			updated_at        = excluded.updated_at`,
 		name,
-		g.Type, g.Engine, g.EngineVersion, g.Category, g.AccessMode, g.Password,
+		g.Type, g.Engine, g.EngineVersion, g.Category, g.AccessMode, string(labelsJSON), g.Password,
 		g.CurrentMaster, g.TopologyStatus, boolToInt(g.FailoverConflict),
 		string(proxyJSON), g.CreatedAt, g.UpdatedAt,
 	)
@@ -170,16 +172,18 @@ func (d *DB) WithInstances(fn func(*apitypes.InstancesState) error) error {
 	// 增量写回 groups：upsert 当前存在的，delete 被移除的
 	for name, g := range st.Groups {
 		proxyJSON, _ := json.Marshal(g.Proxy)
+		labelsJSON, _ := json.Marshal(g.Labels)
 		if _, err := tx.Exec(`
-			INSERT INTO instance_groups(name, type, engine, engine_version, category, access_mode, password,
+			INSERT INTO instance_groups(name, type, engine, engine_version, category, access_mode, labels, password,
 			    current_master, topology_status, failover_conflict, proxy, created_at, updated_at)
-			VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
+			VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 			ON CONFLICT(name) DO UPDATE SET
 				type              = excluded.type,
 				engine            = excluded.engine,
 				engine_version    = excluded.engine_version,
 				category          = excluded.category,
 				access_mode       = excluded.access_mode,
+				labels            = excluded.labels,
 				password          = excluded.password,
 				current_master    = excluded.current_master,
 				topology_status   = excluded.topology_status,
@@ -188,7 +192,7 @@ func (d *DB) WithInstances(fn func(*apitypes.InstancesState) error) error {
 				created_at        = excluded.created_at,
 				updated_at        = excluded.updated_at`,
 			name,
-			g.Type, g.Engine, g.EngineVersion, g.Category, g.AccessMode, g.Password,
+			g.Type, g.Engine, g.EngineVersion, g.Category, g.AccessMode, string(labelsJSON), g.Password,
 			g.CurrentMaster, g.TopologyStatus, boolToInt(g.FailoverConflict),
 			string(proxyJSON), g.CreatedAt, g.UpdatedAt,
 		); err != nil {
@@ -315,7 +319,7 @@ func loadInstancesState(db *sql.DB) (*apitypes.InstancesState, error) {
 
 	// 读 groups
 	gRows, err := db.Query(
-		`SELECT name, type, engine, engine_version, category, access_mode, password,
+		`SELECT name, type, engine, engine_version, category, access_mode, labels, password,
 		        current_master, topology_status, failover_conflict, proxy, created_at, updated_at
 		 FROM instance_groups`)
 	if err != nil {
@@ -351,7 +355,7 @@ func loadInstancesStateTx(tx *sql.Tx) (*apitypes.InstancesState, error) {
 	}
 
 	gRows, err := tx.Query(
-		`SELECT name, type, engine, engine_version, category, access_mode, password,
+		`SELECT name, type, engine, engine_version, category, access_mode, labels, password,
 		        current_master, topology_status, failover_conflict, proxy, created_at, updated_at
 		 FROM instance_groups`)
 	if err != nil {
@@ -434,18 +438,22 @@ func scanGroups(rows *sql.Rows) (map[string]*apitypes.InstanceGroupState, error)
 	defer rows.Close()
 	result := make(map[string]*apitypes.InstanceGroupState)
 	for rows.Next() {
-		var name, proxyJSON string
+		var name, labelsJSON, proxyJSON string
 		var failoverConflict int
 		g := &apitypes.InstanceGroupState{}
 		if err := rows.Scan(
 			&name,
-			&g.Type, &g.Engine, &g.EngineVersion, &g.Category, &g.AccessMode, &g.Password,
+			&g.Type, &g.Engine, &g.EngineVersion, &g.Category, &g.AccessMode, &labelsJSON, &g.Password,
 			&g.CurrentMaster, &g.TopologyStatus, &failoverConflict,
 			&proxyJSON, &g.CreatedAt, &g.UpdatedAt,
 		); err != nil {
 			return nil, err
 		}
 		g.FailoverConflict = failoverConflict != 0
+		json.Unmarshal([]byte(labelsJSON), &g.Labels) //nolint:errcheck
+		if g.Labels == nil {
+			g.Labels = map[string]string{}
+		}
 		json.Unmarshal([]byte(proxyJSON), &g.Proxy) //nolint:errcheck
 		result[name] = g
 	}

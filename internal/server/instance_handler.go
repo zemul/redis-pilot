@@ -114,14 +114,19 @@ func (s *Server) instanceList(c *gin.Context) {
 	roleFilter := c.Query("role")
 	statusFilter := c.Query("status")
 	categoryFilter := c.Query("category")
+	labelSelector, err := parseLabelSelector(c.QueryArray("label"))
+	if err != nil {
+		fail(c, http.StatusBadRequest, err.Error())
+		return
+	}
 
 	if groupFilter != "" || serverFilter != "" || engineFilter != "" || engineVersionFilter != "" ||
-		roleFilter != "" || statusFilter != "" || categoryFilter != "" {
+		roleFilter != "" || statusFilter != "" || categoryFilter != "" || len(labelSelector) > 0 {
 		filteredGroups := make(map[string]*apitypes.InstanceGroupState)
 		filteredInstances := make(map[string]*apitypes.Instance)
 		for name, inst := range state.Instances {
 			group := state.Groups[inst.Group]
-			if !instanceMatchesListFilters(inst, group, groupFilter, serverFilter, engineFilter, engineVersionFilter, roleFilter, statusFilter, categoryFilter) {
+			if !instanceMatchesListFilters(inst, group, groupFilter, serverFilter, engineFilter, engineVersionFilter, roleFilter, statusFilter, categoryFilter, labelSelector) {
 				continue
 			}
 			filteredInstances[name] = inst
@@ -130,7 +135,7 @@ func (s *Server) instanceList(c *gin.Context) {
 			}
 		}
 		if groupFilter != "" && len(filteredInstances) == 0 && serverFilter == "" && engineFilter == "" &&
-			engineVersionFilter == "" && roleFilter == "" && statusFilter == "" && categoryFilter == "" {
+			engineVersionFilter == "" && roleFilter == "" && statusFilter == "" && categoryFilter == "" && len(labelSelector) == 0 {
 			if g, exists := state.Groups[groupFilter]; exists {
 				filteredGroups[groupFilter] = g
 			}
@@ -162,7 +167,7 @@ func (s *Server) injectMemoryUsed(view *apitypes.InstancesStateView) {
 	}
 }
 
-func instanceMatchesListFilters(inst *apitypes.Instance, group *apitypes.InstanceGroupState, groupFilter, serverFilter, engineFilter, engineVersionFilter, roleFilter, statusFilter, categoryFilter string) bool {
+func instanceMatchesListFilters(inst *apitypes.Instance, group *apitypes.InstanceGroupState, groupFilter, serverFilter, engineFilter, engineVersionFilter, roleFilter, statusFilter, categoryFilter string, labelSelector map[string]string) bool {
 	if groupFilter != "" && inst.Group != groupFilter {
 		return false
 	}
@@ -190,6 +195,9 @@ func instanceMatchesListFilters(inst *apitypes.Instance, group *apitypes.Instanc
 		if group == nil || group.Category != categoryFilter {
 			return false
 		}
+	}
+	if !groupMatchesLabels(group, labelSelector) {
+		return false
 	}
 	return true
 }
@@ -254,6 +262,16 @@ func (s *Server) instanceCreate(c *gin.Context) {
 	if req.ReplicaOf != "" {
 		role = "replica"
 	}
+	labels, err := normalizeGroupLabels(req.Labels)
+	if err != nil {
+		fail(c, http.StatusBadRequest, err.Error())
+		return
+	}
+	if role == "replica" && len(labels) > 0 {
+		fail(c, http.StatusBadRequest, "labels can only be set when creating a new instance group")
+		return
+	}
+	req.Labels = labels
 	req.Group = strings.TrimSpace(req.Group)
 
 	var inst *apitypes.Instance
@@ -363,6 +381,7 @@ func (s *Server) instanceCreate(c *gin.Context) {
 				EngineVersion:  req.EngineVersion,
 				Category:       req.Category,
 				AccessMode:     accessMode,
+				Labels:         req.Labels,
 				Password:       req.Password,
 				CurrentMaster:  req.Name,
 				TopologyStatus: "degraded",

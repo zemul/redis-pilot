@@ -16,7 +16,7 @@ import { topologyLabel, engineLabel, powerActionFor } from '../lib/instance.js';
 // 实例列表统一的网格列模板：实例组/节点 | 类型 | 接入/拓扑 | 架构/版本 | 节点/接入点 | 内存使用 | 状态 | 操作
 const INST_GRID = 'grid items-center gap-4 grid-cols-[280px_84px_120px_130px_minmax(220px,1fr)_90px_92px_112px] px-4';
 
-export function InstancesView({ groups, publicHost, sentinelPort, query, setQuery, expandedGroups, setExpandedGroups, onOpenDetail, onOpenBackups, onPowerAction, onDelete, onSlowlog, onBigkeys, onConfig, onResize, onToggleAccessMode, onCreate, pendingAction }) {
+export function InstancesView({ groups, publicHost, sentinelPort, query, setQuery, expandedGroups, setExpandedGroups, onOpenDetail, onOpenBackups, onPowerAction, onDelete, onSlowlog, onBigkeys, onConfig, onResize, onToggleAccessMode, onEditLabels, onCreate, pendingAction }) {
   const filtered = groups.filter((group) => {
     const text = [
       group.groupName,
@@ -25,6 +25,7 @@ export function InstancesView({ groups, publicHost, sentinelPort, query, setQuer
       group.category,
       group.type,
       group.status,
+      ...Object.entries(group.labels || {}).flatMap(([key, value]) => [key, value, `${key}=${value}`]),
       ...group.instances.flatMap((item) => [
         item.name,
         getField(item, 'server', 'Server'),
@@ -43,7 +44,7 @@ export function InstancesView({ groups, publicHost, sentinelPort, query, setQuer
       <div className="border border-gray-200 rounded-lg bg-white min-h-[52px] px-4 py-2.5 flex items-center justify-between gap-3 max-md:flex-col max-md:items-stretch">
         <div className="min-w-[240px] w-[min(380px,100%)] h-[34px] border border-gray-200 rounded-md flex items-center gap-2 px-2.5 bg-white text-gray-400 focus-within:border-gray-900 focus-within:shadow-[0_0_0_3px_rgba(0,0,0,0.08)] transition-all max-md:w-full max-md:min-w-0">
           <Search size={15} />
-          <input className="w-full border-0 outline-0 bg-transparent text-[13px] text-gray-900 placeholder:text-gray-400" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索实例组、节点..." />
+          <input className="w-full border-0 outline-0 bg-transparent text-[13px] text-gray-900 placeholder:text-gray-400" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索实例组、节点或标签..." />
         </div>
         <button className="h-[32px] rounded-md px-3 bg-gray-900 text-white font-medium text-[12px] inline-flex items-center gap-1.5 hover:bg-gray-700 transition-colors border-0 cursor-pointer" onClick={onCreate}>
           <Plus size={14} /> 创建实例
@@ -82,6 +83,7 @@ export function InstancesView({ groups, publicHost, sentinelPort, query, setQuer
               onConfig={onConfig}
               onResize={onResize}
               onToggleAccessMode={onToggleAccessMode}
+              onEditLabels={onEditLabels}
               pendingAction={pendingAction}
             />
           ))}
@@ -91,7 +93,7 @@ export function InstancesView({ groups, publicHost, sentinelPort, query, setQuer
   );
 }
 
-function InstanceGroupCard({ group, expanded, onToggle, publicHost, sentinelPort, onOpenDetail, onOpenBackups, onPowerAction, onDelete, onSlowlog, onBigkeys, onConfig, onResize, onToggleAccessMode, pendingAction }) {
+function InstanceGroupCard({ group, expanded, onToggle, publicHost, sentinelPort, onOpenDetail, onOpenBackups, onPowerAction, onDelete, onSlowlog, onBigkeys, onConfig, onResize, onToggleAccessMode, onEditLabels, pendingAction }) {
   const master = group.master;
   const hasReplicas = group.replicas.length > 0;
   const topology = topologyLabel(group, master);
@@ -104,6 +106,7 @@ function InstanceGroupCard({ group, expanded, onToggle, publicHost, sentinelPort
     { label: '接入信息', onClick: () => onToggleAccessMode(group, null) },
     { label: '修改配置', onClick: () => onConfig(master) },
     { label: '调整规格', onClick: () => onResize(master) },
+    { label: '编辑标签', onClick: () => onEditLabels(group) },
     { label: '慢查询', onClick: () => onSlowlog(master) },
     { label: '大 Key 分析', onClick: () => onBigkeys(master) },
     powerAction && {
@@ -137,6 +140,14 @@ function InstanceGroupCard({ group, expanded, onToggle, publicHost, sentinelPort
               <span className="text-[11px] text-gray-400 block mt-0.5 truncate">主库: {master.name}</span>
             ) : (
               <span className="text-[11px] text-red-500 block mt-0.5">主库状态异常</span>
+            )}
+            {Object.keys(group.labels || {}).length > 0 && (
+              <div className="flex flex-wrap gap-1 mt-1">
+                {Object.entries(group.labels).sort(([a], [b]) => a.localeCompare(b)).slice(0, 3).map(([key, value]) => (
+                  <span key={key} title={`${key}=${value}`} className="max-w-[88px] truncate rounded border border-gray-200 bg-gray-50 px-1.5 py-0.5 text-[10px] text-gray-500">{key}={value}</span>
+                ))}
+                {Object.keys(group.labels).length > 3 && <span className="text-[10px] text-gray-400">+{Object.keys(group.labels).length - 3}</span>}
+              </div>
             )}
           </div>
         </div>

@@ -126,11 +126,12 @@ type Persistence struct {
 
 // InstanceGroupState 实例组权威状态。
 type InstanceGroupState struct {
-	Type          string `yaml:"type" json:"type"` // standalone | replication
-	Engine        string `yaml:"engine" json:"engine"`
-	EngineVersion string `yaml:"engine_version,omitempty" json:"engine_version,omitempty"`
-	Category      string `yaml:"category" json:"category"`
-	AccessMode    string `yaml:"access_mode,omitempty" json:"access_mode,omitempty"` // rw-split | standard（空视为 rw-split）
+	Type          string            `yaml:"type" json:"type"` // standalone | replication
+	Engine        string            `yaml:"engine" json:"engine"`
+	EngineVersion string            `yaml:"engine_version,omitempty" json:"engine_version,omitempty"`
+	Category      string            `yaml:"category" json:"category"`
+	AccessMode    string            `yaml:"access_mode,omitempty" json:"access_mode,omitempty"` // rw-split | standard（空视为 rw-split）
+	Labels        map[string]string `yaml:"labels,omitempty" json:"labels,omitempty"`
 	// Password 是 Proxy 前端密码（客户端 → Proxy 鉴权）。
 	// 实例本身不设 requirepass，鉴权只在 Proxy 前端终结；空串表示不鉴权。
 	Password         string       `yaml:"password,omitempty" json:"password,omitempty"`
@@ -145,17 +146,18 @@ type InstanceGroupState struct {
 // InstanceGroupView 是实例组面向用户 API 的安全投影。
 // Password 只供 Server 生成 Proxy 内部快照，不通过实例查询接口返回。
 type InstanceGroupView struct {
-	Type             string       `json:"type"`
-	Engine           string       `json:"engine"`
-	EngineVersion    string       `json:"engine_version,omitempty"`
-	Category         string       `json:"category"`
-	AccessMode       string       `json:"access_mode,omitempty"`
-	CurrentMaster    string       `json:"current_master"`
-	TopologyStatus   string       `json:"topology_status"`
-	FailoverConflict bool         `json:"failover_conflict"`
-	Proxy            *ProxyConfig `json:"proxy,omitempty"`
-	CreatedAt        string       `json:"created_at"`
-	UpdatedAt        string       `json:"updated_at"`
+	Type             string            `json:"type"`
+	Engine           string            `json:"engine"`
+	EngineVersion    string            `json:"engine_version,omitempty"`
+	Category         string            `json:"category"`
+	AccessMode       string            `json:"access_mode,omitempty"`
+	Labels           map[string]string `json:"labels,omitempty"`
+	CurrentMaster    string            `json:"current_master"`
+	TopologyStatus   string            `json:"topology_status"`
+	FailoverConflict bool              `json:"failover_conflict"`
+	Proxy            *ProxyConfig      `json:"proxy,omitempty"`
+	CreatedAt        string            `json:"created_at"`
+	UpdatedAt        string            `json:"updated_at"`
 }
 
 func (g *InstanceGroupState) ToView() *InstanceGroupView {
@@ -164,7 +166,7 @@ func (g *InstanceGroupState) ToView() *InstanceGroupView {
 	}
 	return &InstanceGroupView{
 		Type: g.Type, Engine: g.Engine, EngineVersion: g.EngineVersion,
-		Category: g.Category, AccessMode: g.AccessMode, CurrentMaster: g.CurrentMaster,
+		Category: g.Category, AccessMode: g.AccessMode, Labels: g.Labels, CurrentMaster: g.CurrentMaster,
 		TopologyStatus: g.TopologyStatus, FailoverConflict: g.FailoverConflict,
 		Proxy: g.Proxy, CreatedAt: g.CreatedAt, UpdatedAt: g.UpdatedAt,
 	}
@@ -383,6 +385,7 @@ type CreateInstanceRequest struct {
 	ReplicaOf       string            `json:"replica_of,omitempty"`
 	ConfigOverrides map[string]string `json:"config_overrides,omitempty"`
 	NodeSelector    map[string]string `json:"node_selector,omitempty"` // 标签亲和：只调度到 labels 包含所有 kv 的节点
+	Labels          map[string]string `json:"labels,omitempty"`        // 实例组分类标签；仅创建新组时可设置
 }
 
 // ResizeInstanceRequest 变配实例请求。

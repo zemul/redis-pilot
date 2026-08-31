@@ -162,6 +162,7 @@ func (d *DB) migrate() error {
 			engine_version    TEXT NOT NULL DEFAULT '',
 			category          TEXT NOT NULL DEFAULT '',
 			access_mode       TEXT NOT NULL DEFAULT '',
+			labels            TEXT NOT NULL DEFAULT '{}', -- JSON: map[string]string
 			password          TEXT NOT NULL DEFAULT '',
 			current_master    TEXT NOT NULL DEFAULT '',
 			topology_status   TEXT NOT NULL DEFAULT 'degraded',
@@ -345,6 +346,9 @@ func (d *DB) migrate() error {
 		},
 		{
 			sql: `ALTER TABLE instance_groups ADD COLUMN access_mode TEXT NOT NULL DEFAULT ''`,
+		},
+		{
+			sql: `ALTER TABLE instance_groups ADD COLUMN labels TEXT NOT NULL DEFAULT '{}'`,
 		},
 		{
 			sql:     `ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'admin'`,

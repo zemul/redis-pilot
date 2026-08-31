@@ -71,6 +71,37 @@ func TestInstanceRoundTrip_StateFields(t *testing.T) {
 	}
 }
 
+func TestGroupRoundTrip_Labels(t *testing.T) {
+	db := openTestDB(t)
+	group := &apitypes.InstanceGroupState{
+		Type: "standalone", Engine: "redis", Category: "cache",
+		Labels: map[string]string{"team": "trade", "env": "prod"},
+	}
+	if err := db.UpsertGroup("order", group); err != nil {
+		t.Fatalf("UpsertGroup: %v", err)
+	}
+	groups, err := db.GetAllGroups()
+	if err != nil {
+		t.Fatalf("GetAllGroups: %v", err)
+	}
+	got := groups["order"]
+	if got == nil || got.Labels["team"] != "trade" || got.Labels["env"] != "prod" {
+		t.Fatalf("labels did not round trip: %#v", got)
+	}
+
+	group.Labels = map[string]string{}
+	if err := db.UpsertGroup("order", group); err != nil {
+		t.Fatalf("clear labels: %v", err)
+	}
+	groups, err = db.GetAllGroups()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(groups["order"].Labels) != 0 {
+		t.Fatalf("labels were not cleared: %#v", groups["order"].Labels)
+	}
+}
+
 // TestInstanceUpsert_UpdatesStateFieldsIndependently 验证 UPSERT 能分别更新两个字段。
 // excluded 子句漏掉任意一列，都会表现为"改了没生效"。
 func TestInstanceUpsert_UpdatesStateFieldsIndependently(t *testing.T) {

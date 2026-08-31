@@ -31,6 +31,11 @@ var instanceListCmd = &cobra.Command{
 		if node, _ := cmd.Flags().GetString("node"); node != "" {
 			q.Set("server", node)
 		}
+		if labels, _ := cmd.Flags().GetStringArray("label"); len(labels) > 0 {
+			for _, label := range labels {
+				q.Add("label", label)
+			}
+		}
 		if encoded := q.Encode(); encoded != "" {
 			path += "?" + encoded
 		}
@@ -71,10 +76,10 @@ var instanceDiagnoseCmd = &cobra.Command{
 	},
 }
 
-	var instanceCreateCmd = &cobra.Command{
-		Use:   "create <name>",
-		Short: "Create an instance",
-		Long: `Create a new Redis or Kvrocks instance on the specified server.
+var instanceCreateCmd = &cobra.Command{
+	Use:   "create <name>",
+	Short: "Create an instance",
+	Long: `Create a new Redis or Kvrocks instance on the specified server.
 
 --category controls the eviction and persistence defaults:
   cache       maxmemory-policy=allkeys-lru, AOF disabled
@@ -91,7 +96,7 @@ Choosing the wrong category has real consequences:
 Naming: do NOT encode role or node info in instance names (e.g. master, replica,
 node1, redis01). Roles swap during failover, instances may migrate to other nodes.
 Use ordinal names like order-1, order-2, cache-a, cache-b.`,
-		Example: `  # Cache instance (auto-schedule node)
+	Example: `  # Cache instance (auto-schedule node)
   redis-pilot-cli instance create session-cache --group session --memory 4Gi
 
   # Persistent instance on specific node
@@ -125,6 +130,7 @@ Use ordinal names like order-1, order-2, cache-a, cache-b.`,
 		overrides, _ := cmd.Flags().GetString("config")
 		accessMode, _ := cmd.Flags().GetString("access-mode")
 		nodeSelector, _ := cmd.Flags().GetString("node-selector")
+		labels, _ := cmd.Flags().GetString("labels")
 		if replicaOf == "" && strings.TrimSpace(group) == "" {
 			group = args[0]
 		}
@@ -153,6 +159,13 @@ Use ordinal names like order-1, order-2, cache-a, cache-b.`,
 		}
 		if nodeSelector != "" {
 			req["node_selector"] = parseKV(nodeSelector)
+		}
+		if labels != "" {
+			parsed, err := parseStrictKV(labels)
+			if err != nil {
+				return fmt.Errorf("labels: %w", err)
+			}
+			req["labels"] = parsed
 		}
 		return checkResp(client.Post("/instance/create", req))
 	},
@@ -312,6 +325,30 @@ Takes effect on next proxy snapshot poll (within seconds).`,
 	},
 }
 
+var instanceSetLabelsCmd = &cobra.Command{
+	Use:   "set-labels <group> [key=value,...]",
+	Short: "Replace an instance group's classification labels",
+	Long: `Replace all labels on an instance group. Labels are classification metadata only;
+they do not affect permissions, scheduling, or runtime behavior. Omit the second
+argument to clear all labels.`,
+	Example: `  redis-pilot-cli instance set-labels order 'team=trade,env=prod'
+  redis-pilot-cli instance set-labels order`,
+	Args: cobra.RangeArgs(1, 2),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		labels := map[string]string{}
+		if len(args) == 2 {
+			var err error
+			labels, err = parseStrictKV(args[1])
+			if err != nil {
+				return err
+			}
+		}
+		return checkResp(client.Post("/instance/labels", map[string]interface{}{
+			"group": args[0], "labels": labels,
+		}))
+	},
+}
+
 var instanceFailoverCmd = &cobra.Command{
 	Use:   "failover <name>",
 	Short: "Trigger failover for the replication group",
@@ -344,6 +381,7 @@ func init() {
 		instanceConfigCmd,
 		instanceResizeCmd,
 		instanceSetAccessModeCmd,
+		instanceSetLabelsCmd,
 		instanceStartCmd,
 		instanceStopCmd,
 		instanceFailoverCmd,
@@ -357,6 +395,7 @@ func init() {
 	instanceListCmd.Flags().String("role", "", "Filter by role: master | replica")
 	instanceListCmd.Flags().String("status", "", "Filter by instance status")
 	instanceListCmd.Flags().String("category", "", "Filter by category: cache | persistent")
+	instanceListCmd.Flags().StringArray("label", nil, "Filter by group label key=value (repeatable)")
 
 	instanceCreateCmd.Flags().String("category", "cache", "Category: cache | persistent")
 	instanceCreateCmd.Flags().String("engine", "redis", "Engine: redis | kvrocks")
@@ -372,6 +411,7 @@ func init() {
 	instanceCreateCmd.Flags().String("config", "", "Config overrides (k=v,k=v)")
 	instanceCreateCmd.Flags().String("access-mode", "", "Access mode: rw-split | standard (default: rw-split for replication, standard for standalone)")
 	instanceCreateCmd.Flags().String("node-selector", "", "Node label selector for scheduling affinity (k=v,k=v, e.g. disk=ssd,zone=az-1)")
+	instanceCreateCmd.Flags().String("labels", "", "Group classification labels (k=v,k=v, e.g. team=trade,env=prod)")
 
 	instanceDeleteCmd.Flags().Bool("clean-data", false, "Also remove data directory")
 
@@ -395,4 +435,20 @@ func parseKV(s string) map[string]string {
 		}
 	}
 	return m
+}
+
+func parseStrictKV(s string) (map[string]string, error) {
+	m := map[string]string{}
+	for _, pair := range strings.Split(s, ",") {
+		key, value, ok := strings.Cut(strings.TrimSpace(pair), "=")
+		key = strings.TrimSpace(key)
+		if !ok || key == "" {
+			return nil, fmt.Errorf("expected key=value, got %q", pair)
+		}
+		if _, exists := m[key]; exists {
+			return nil, fmt.Errorf("duplicate key %q", key)
+		}
+		m[key] = strings.TrimSpace(value)
+	}
+	return m, nil
 }

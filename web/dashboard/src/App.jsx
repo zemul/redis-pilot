@@ -32,6 +32,7 @@ import {
   DeleteConfirmModal,
   ConfirmPowerModal,
   CreateInstanceModal,
+  GroupLabelsModal,
 } from './modals/index.jsx';
 import AiChatPanel from './components/AiChatPanel.jsx';
 import { normalizeMap, backupRows, auditQuery, getField } from './lib/format.js';
@@ -79,6 +80,7 @@ function AppShell() {
   const [configTarget, setConfigTarget] = useState(null);
   const [resizeTarget, setResizeTarget] = useState(null);
   const [accessModeTarget, setAccessModeTarget] = useState(null);
+  const [labelsTarget, setLabelsTarget] = useState(null);
   const [createOpen, setCreateOpen] = useState(false);
   const [pendingAction, setPendingAction] = useState('');
   const [activeTaskCount, setActiveTaskCount] = useState(0);
@@ -366,6 +368,7 @@ function AppShell() {
                   onConfig={(item) => setConfigTarget(item.name)}
                   onResize={(item) => setResizeTarget({ name: item.name, memory: getField(item, 'memory', 'Memory', ''), cpus: String(getField(item, 'cpus', 'CPUs', '') || ''), disk: getField(item, 'disk', 'Disk', '') })}
                   onToggleAccessMode={toggleAccessMode}
+                  onEditLabels={setLabelsTarget}
                   onCreate={() => setCreateOpen(true)}
                   servers={servers}
                   pendingAction={pendingAction}
@@ -397,6 +400,7 @@ function AppShell() {
       {configTarget && <ConfigModal instanceName={configTarget} requestFn={request} onClose={() => setConfigTarget(null)} />}
       {resizeTarget && <ResizeModal instanceName={resizeTarget.name} currentSpecs={{ memory: resizeTarget.memory, cpus: resizeTarget.cpus, disk: resizeTarget.disk }} requestFn={request} onClose={() => { setResizeTarget(null); refresh(); }} />}
       {accessModeTarget && <AccessModeModal group={accessModeTarget} publicHost={serverInfo?.proxy_public_endpoint} sentinelPort={serverInfo?.proxy_sentinel_port} onConfirm={(mode) => toggleAccessMode(accessModeTarget, mode)} onClose={() => setAccessModeTarget(null)} />}
+      {labelsTarget && <GroupLabelsModal group={labelsTarget} requestFn={request} onSaved={refresh} onClose={() => setLabelsTarget(null)} />}
       {backupDetail && <BackupListModal detail={backupDetail} requestFn={request} onReload={() => openBackupList(backupDetail.item, backupDetail.group)} onViewTasks={() => { setBackupDetail(null); setActiveTab('tasks'); }} onClose={() => setBackupDetail(null)} />}
       {confirmAction && (
         <ConfirmPowerModal
