@@ -67,16 +67,20 @@ CREATE UNIQUE INDEX idx_incidents_active_fingerprint
 |---------------|------|------|------|------|------|
 | `instance_unexpected_down` | instance | reconcile | 期望 running，实际 stopped/missing，连续 3 轮 | 连续 2 轮 running | critical |
 | `node_agent_unreachable` | node | reconcile | Agent 连接失败/超时/响应不可解析，连续 3 轮 | 连续 2 轮成功 | critical |
-| `replica_wrong_target` | instance | reconcile | 运行时复制地址与期望 Master 不一致，连续 3 轮 | 连续 2 轮一致 | critical |
-| `no_running_replica` | group | reconcile | replication 组运行中的副本数为 0，连续 3 轮 | 连续 2 轮至少 1 个运行 | warning |
+| `no_running_replica` | group | reconcile | replication 组内"应运行"的从节点全部 down，连续 3 轮 | 连续 2 轮至少 1 个 running | critical |
 | `master_mismatch` | group | topology | 平台/Sentinel/运行时已知视角与 current_master 不一致，连续 3 次评估 | 连续 2 次评估一致 | critical |
 | `failover_conflict` | group | topology | `failover_conflict` 标记为 true | 标记清除且连续 2 次评估一致 | critical |
 | `backup_task_failed` | instance | task | `backup.create` 进入 failed/interrupted | 下次同类备份成功 | warning |
 | `restore_task_failed` | instance | task | `backup.restore` 进入 failed/interrupted | 下次同类恢复成功 | critical |
 
+> `replica_wrong_target`(运行时复制地址指向错误 Master)暂缓：reconcile 的
+> replica-drift 逻辑会主动纠正它，恢复信号与自愈相互干扰，信号不够干净，留待后续。
+
 规则说明：
 
-- 用户主动停止实例(期望 stopped)不算异常。
+- 用户主动停止实例(期望 stopped)不算异常；`no_running_replica` 也只统计"应运行"的从(排除主动 stop 的从)。
+- `no_running_replica` 判为 critical：组内一个可用从都没有时，读流量无处分担，且 master 再挂将无从可提升(故障转移无目标)。级别不低于单个从 down 的 `instance_unexpected_down`。
+- `no_running_replica` 观测不完整时(有从节点所在 server 不可达/未观测)本轮跳过，不判定也不恢复——该情形由 `node_agent_unreachable` 覆盖，避免重复与误判。
 - Agent 不可达只记一条节点级异常，evidence 里列受影响实例，不给每个实例各记一条。
 - Sentinel 未启用或某视角尚未观测时该视角为“未知”，不单独判定 master_mismatch。
 - 备份/恢复失败是一次性事件，立即记 open，不走 3 轮去抖；`canceled`(用户主动取消)不记。

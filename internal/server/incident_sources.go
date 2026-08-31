@@ -74,6 +74,92 @@ func (s *Server) emitReconcileIncidents(results []ReconcileResult, serverReachab
 	}
 }
 
+// replicaAvailabilityStatus 判断一个 replication 组的从节点可用性(纯函数，便于测试)。
+// 返回值：
+//   - "serving"     ：至少一个"应运行"的从节点观测为 running。
+//   - "all-down"    ：有应运行的从节点，但全部观测为确定性的 stopped/missing。
+//   - "unknown"     ：存在无法确信的观测(unreachable/unknown/未观测)，本轮不下结论。
+//   - "no-replicas" ：该组没有"应运行"的从节点(无从节点，或全部被主动 stop)。
+//
+// 只统计"应当运行"的从：master 与 DesiredState=stopped 的实例排除在外——
+// 用户主动停掉从节点不是异常。
+func replicaAvailabilityStatus(groupName, currentMaster string, instances *apitypes.InstancesState, observed map[string]string) string {
+	running, unknown, total := 0, 0, 0
+	for name, inst := range instances.Instances {
+		if inst == nil || inst.Group != groupName {
+			continue
+		}
+		if name == currentMaster || inst.Role == "master" {
+			continue // master 不算从
+		}
+		if inst.DesiredState == apitypes.DesiredStopped {
+			continue // 用户主动停止，不计入
+		}
+		total++
+		switch observed[name] {
+		case apitypes.ObservedRunning:
+			running++
+		case apitypes.ObservedStopped, apitypes.ObservedMissing:
+			// 确定性 down
+		default:
+			unknown++ // unreachable/unknown/空：本轮无可信观测
+		}
+	}
+	switch {
+	case total == 0:
+		return "no-replicas"
+	case running > 0:
+		return "serving"
+	case unknown > 0:
+		return "unknown"
+	default:
+		return "all-down"
+	}
+}
+
+// emitReplicaAvailability 组级：replication 组是否还有可用从节点(去抖)。
+// no_running_replica：组内应运行的从节点全部不可用——此时读扩展与故障转移目标同时
+// 丢失(master 若再挂将无从可提升)，故记为 critical。观测不完整时(节点不可达)跳过，
+// 交给节点级异常，避免与 node_agent_unreachable 重复且避免误判。
+func (s *Server) emitReplicaAvailability(results []ReconcileResult, instances *apitypes.InstancesState) {
+	if s.incidents == nil {
+		return
+	}
+	observed := make(map[string]string, len(results))
+	for _, r := range results {
+		observed[r.Instance] = r.Actual
+	}
+	for groupName, group := range instances.Groups {
+		if group == nil || group.Type != "replication" {
+			continue
+		}
+		switch replicaAvailabilityStatus(groupName, group.CurrentMaster, instances, observed) {
+		case "serving":
+			s.incidents.Observe(noRunningReplicaObs(groupName, false))
+		case "all-down":
+			s.incidents.Observe(noRunningReplicaObs(groupName, true))
+		case "no-replicas":
+			// 组内已无应运行的从(全部删除或主动停止)：结束可能存在的 open 记录。
+			s.incidents.Resolve("no_running_replica", "group", groupName)
+		}
+		// "unknown"：本轮观测不完整，跳过，既不确认也不恢复。
+	}
+}
+
+func noRunningReplicaObs(group string, active bool) Observation {
+	return Observation{
+		Type:       "no_running_replica",
+		Active:     active,
+		Severity:   "critical",
+		Source:     "reconcile",
+		ObjectType: "group",
+		ObjectID:   group,
+		GroupName:  group,
+		Summary:    fmt.Sprintf("实例组 %s 没有可用的从节点", group),
+		Reason:     "组内应运行的从节点全部观测为已停止或容器不存在",
+	}
+}
+
 // emitMasterMismatch 提交组级 Master 视角一致性观测(去抖)。
 //
 //   - masterName：平台记录的当前 master 实例名(用于展示)。

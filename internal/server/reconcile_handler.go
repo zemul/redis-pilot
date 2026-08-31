@@ -269,6 +269,8 @@ func (s *Server) runReconcile() ([]ReconcileResult, error) {
 
 	// 把本轮观测转成异常记录(去抖由 IncidentService 负责)。
 	s.emitReconcileIncidents(results, serverReachable, instances)
+	// 组级：replication 组是否还有可用从节点。
+	s.emitReplicaAvailability(results, instances)
 
 	return results, nil
 }
