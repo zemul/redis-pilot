@@ -354,12 +354,9 @@ function AccessInfoTab({ group, publicHost, sentinelPort, requestFn, onRefresh }
   const [sel, setSel] = useState(group.access_mode === 'rw-split' ? 'rw-split' : 'standard');
   const [saving, setSaving] = useState(false);
   const [switchErr, setSwitchErr] = useState('');
-  const isRwSplit = current === 'rw-split';
-  const activePort = isRwSplit ? (autoPort || masterPort) : (masterPort || autoPort);
-  const directEndpoint = publicHost && activePort ? `${publicHost}:${activePort}` : (activePort || '-');
+  const masterEndpoint = publicHost && masterPort ? `${publicHost}:${masterPort}` : (masterPort ? String(masterPort) : null);
+  const autoEndpoint = publicHost && autoPort ? `${publicHost}:${autoPort}` : (autoPort ? String(autoPort) : null);
   const sentinelEndpoint = publicHost && sentinelPort ? `${publicHost}:${sentinelPort}` : null;
-  const pendingPort = sel === 'rw-split' ? (autoPort || masterPort) : (masterPort || autoPort);
-  const pendingEndpoint = publicHost && pendingPort ? `${publicHost}:${pendingPort}` : pendingPort;
 
   async function applySwitch() {
     if (sel === current || saving) return;
@@ -380,10 +377,18 @@ function AccessInfoTab({ group, publicHost, sentinelPort, requestFn, onRefresh }
       <section className="space-y-2.5">
         <h4 className="m-0 text-[13px] font-semibold text-gray-500">Redis 直连</h4>
         <div className="bg-gray-50 rounded-md border border-gray-200 px-3 py-2.5 space-y-2">
-          <div>
-            <span className="text-[11px] text-gray-400 block mb-0.5">地址</span>
-            <CopyableText text={directEndpoint} className="text-[13px] font-mono text-gray-900" />
-          </div>
+          {masterEndpoint && (
+            <div>
+              <span className="text-[11px] text-gray-400 block mb-0.5">全走主库</span>
+              <CopyableText text={masterEndpoint} className="text-[13px] font-mono text-gray-900" />
+            </div>
+          )}
+          {autoEndpoint && (
+            <div>
+              <span className="text-[11px] text-gray-400 block mb-0.5">读写分离</span>
+              <CopyableText text={autoEndpoint} className="text-[13px] font-mono text-gray-900" />
+            </div>
+          )}
           {password && (
             <div>
               <span className="text-[11px] text-gray-400 block mb-0.5">密码</span>
@@ -409,18 +414,9 @@ function AccessInfoTab({ group, publicHost, sentinelPort, requestFn, onRefresh }
         </section>
       )}
 
-      {masterPort && autoPort && (
-        <section className="space-y-2.5">
-          <h4 className="m-0 text-[13px] font-semibold text-gray-500">全部端口</h4>
-          <div className="bg-gray-50 rounded-md border border-gray-200 px-3 py-2.5 space-y-1.5 text-[13px]">
-            <div className="flex justify-between"><span className="text-gray-500">Master 端口</span><span className="font-mono text-gray-900">{masterPort}</span></div>
-            <div className="flex justify-between"><span className="text-gray-500">Auto 端口（读写分离）</span><span className="font-mono text-gray-900">{autoPort}</span></div>
-          </div>
-        </section>
-      )}
-
       <section className="space-y-2.5">
-        <h4 className="m-0 text-[13px] font-semibold text-gray-500">接入方式</h4>
+        <h4 className="m-0 text-[13px] font-semibold text-gray-500">Sentinel 接入方式</h4>
+        <p className="m-0 -mt-1 text-[11px] text-gray-400">仅影响 Sentinel 模式下伪 Sentinel 返回给客户端的端口；直连不受此设置影响。</p>
         {switchErr && <div className="border border-red-200 rounded-md px-3 py-2 flex items-center gap-2 bg-red-50 text-red-700 text-[13px]"><AlertCircle size={16} /> {switchErr}</div>}
         <div className="border border-gray-200 rounded-md px-3 py-2.5 space-y-2">
           <label className="flex items-center gap-2 cursor-pointer">
@@ -431,11 +427,6 @@ function AccessInfoTab({ group, publicHost, sentinelPort, requestFn, onRefresh }
             <input type="radio" name="access_mode" value="rw-split" checked={sel === 'rw-split'} onChange={() => setSel('rw-split')} disabled={saving} />
             <span className="text-[13px]"><strong className="font-medium">读写分离</strong> — 读请求分发到从库{current === 'rw-split' && <span className="ml-1 text-[11px] text-gray-400">（当前）</span>}</span>
           </label>
-          {sel !== current && pendingEndpoint && (
-            <p className="text-[12px] text-amber-600 bg-amber-50 border border-amber-200 rounded px-2.5 py-1.5 m-0">
-              切换后接入端口将变更为 <span className="font-mono font-medium">{pendingEndpoint}</span>
-            </p>
-          )}
           <div className="flex justify-end pt-1">
             <button type="button" disabled={sel === current || saving}
               className="h-8 px-3 rounded-md bg-gray-900 text-white text-xs font-medium hover:bg-gray-700 disabled:opacity-50 disabled:cursor-not-allowed inline-flex items-center gap-1"
