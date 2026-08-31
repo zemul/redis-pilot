@@ -1,7 +1,7 @@
 // 大盘看板视图：平台汇总 + 实例组态势 + 基础设施/最近操作。
-import { ChevronRight, Database, Server, ShieldCheck, Clock, GitMerge, MemoryStick } from 'lucide-react';
+import { ChevronRight, Database, Server, ShieldCheck, ShieldAlert, Clock, GitMerge, MemoryStick } from 'lucide-react';
 import { EmptyState, EngineIcon, MemoryUsage, StatusBadge, SummaryCell } from '../components/common.jsx';
-import { formatBytes, getField } from '../lib/format.js';
+import { formatBytes, formatDuration, getField } from '../lib/format.js';
 import { engineLabel, topologyLabel, instanceStatusTone, topologyReason } from '../lib/instance.js';
 import { AuditCard } from './AuditView.jsx';
 
@@ -82,7 +82,66 @@ function DashboardInstanceOverview({ groups, onOpenDetail }) {
   );
 }
 
-export function DashboardView({ groups, servers, audits, sentinel, publicHost, onOpenDetail }) {
+// 当前异常卡片：只展示未恢复(open)异常，严重优先、持续时间倒序，最多 5 条。
+// 数据来自 /incidents/summary，不在前端自行聚合全量列表。
+const INCIDENT_TYPE_LABELS = {
+  instance_unexpected_down: '实例意外停止',
+  node_agent_unreachable: '节点 Agent 不可达',
+  master_mismatch: 'Master 视角不一致',
+  failover_conflict: '故障转移冲突',
+  backup_task_failed: '备份失败',
+  restore_task_failed: '恢复失败',
+};
+
+function CurrentIncidentsCard({ summary, onOpenIncidents }) {
+  const total = summary?.total || 0;
+  const top = summary?.top || [];
+  return (
+    <section className="border border-gray-200 rounded-lg bg-white overflow-hidden">
+      <div className="min-h-[54px] px-4 py-3 border-b border-gray-200 flex items-center justify-between gap-3">
+        <h3 className="m-0 text-[15px] font-semibold">当前异常</h3>
+        <span className={`inline-flex items-center gap-1.5 text-[13px] font-semibold ${total > 0 ? 'text-red-600' : 'text-emerald-600'}`}>
+          <ShieldAlert size={18} className={total > 0 ? 'text-red-500' : 'text-emerald-500'} />
+          {total}
+        </span>
+      </div>
+      {total === 0 ? (
+        <div className="px-4 py-3 text-[13px] text-gray-400">当前无异常</div>
+      ) : (
+        <div>
+          {top.map((inc) => {
+            const critical = inc.severity === 'critical';
+            return (
+              <button
+                key={inc.id}
+                type="button"
+                onClick={() => onOpenIncidents && onOpenIncidents(inc.instance_name || '')}
+                className="w-full flex items-center gap-3 px-4 py-3 border-0 border-b border-gray-100 last:border-b-0 text-left bg-white hover:bg-gray-50 cursor-pointer transition-colors"
+              >
+                <span className={`w-2 h-2 rounded-full shrink-0 ${critical ? 'bg-red-500' : 'bg-amber-500'}`} />
+                <span className="flex-1 min-w-0">
+                  <strong className="block text-[13px] font-medium truncate">{inc.object_id} · {INCIDENT_TYPE_LABELS[inc.incident_type] || inc.incident_type}</strong>
+                  <span className={`block mt-0.5 text-[11px] ${critical ? 'text-red-500' : 'text-amber-600'}`}>{critical ? '严重' : '警告'}</span>
+                </span>
+                <span className="text-[12px] text-gray-400 tabular-nums shrink-0">{inc.duration_ms > 0 ? formatDuration(Math.round(inc.duration_ms / 1000)) : '-'}</span>
+                <ChevronRight size={15} className="text-gray-300 shrink-0" />
+              </button>
+            );
+          })}
+          <button
+            type="button"
+            onClick={() => onOpenIncidents && onOpenIncidents('')}
+            className="w-full px-4 py-2.5 border-0 border-t border-gray-100 text-right text-[12px] font-medium text-gray-500 bg-white hover:bg-gray-50 hover:text-gray-900 cursor-pointer"
+          >
+            查看全部
+          </button>
+        </div>
+      )}
+    </section>
+  );
+}
+
+export function DashboardView({ groups, servers, audits, sentinel, incidentSummary, publicHost, onOpenDetail, onOpenIncidents }) {
   const allInstances = groups.flatMap((g) => g.instances);
   const totalInstances = allInstances.length;
   const runningInstances = allInstances.filter((inst) => getField(inst, 'status', 'Status') === 'running').length;
@@ -193,6 +252,9 @@ export function DashboardView({ groups, servers, audits, sentinel, publicHost, o
               ))}
             </section>
           )}
+
+          {/* Current incidents */}
+          <CurrentIncidentsCard summary={incidentSummary} onOpenIncidents={onOpenIncidents} />
 
           {/* Recent audit */}
           <section className="border border-gray-200 rounded-lg bg-white overflow-hidden">

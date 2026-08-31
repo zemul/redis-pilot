@@ -73,7 +73,7 @@ function LabelInput({ labels, onChange, suggestions = [], disabled = false }) {
   );
 }
 
-export function InstanceDetailModal({ detail, publicHost, sentinelPort, requestFn, onRefresh, onNavigateAudit, onNavigateTasks, onClose }) {
+export function InstanceDetailModal({ detail, publicHost, sentinelPort, requestFn, onRefresh, onNavigateAudit, onNavigateTasks, onNavigateIncidents, onClose }) {
   const { item, group, loading, error, metrics } = detail;
   const payload = extractMetricsPayload(metrics);
   const info = payload.info || payload.Info || '';
@@ -143,6 +143,7 @@ export function InstanceDetailModal({ detail, publicHost, sentinelPort, requestF
             <button className={`px-4 py-2.5 text-[13px] border-0 bg-transparent cursor-pointer border-b-2 mb-[-1px] ${activeTab === 'access' ? 'text-gray-900 border-gray-900 font-medium' : 'text-gray-400 border-transparent hover:text-gray-700'}`} onClick={() => setActiveTab('access')}>接入</button>
             <button className={`px-4 py-2.5 text-[13px] border-0 bg-transparent cursor-pointer border-b-2 mb-[-1px] ${activeTab === 'audit' ? 'text-gray-900 border-gray-900 font-medium' : 'text-gray-400 border-transparent hover:text-gray-700'}`} onClick={() => setActiveTab('audit')}>操作审计</button>
             <button className={`px-4 py-2.5 text-[13px] border-0 bg-transparent cursor-pointer border-b-2 mb-[-1px] ${activeTab === 'tasks' ? 'text-gray-900 border-gray-900 font-medium' : 'text-gray-400 border-transparent hover:text-gray-700'}`} onClick={() => setActiveTab('tasks')}>运维任务</button>
+            <button className={`px-4 py-2.5 text-[13px] border-0 bg-transparent cursor-pointer border-b-2 mb-[-1px] ${activeTab === 'incidents' ? 'text-gray-900 border-gray-900 font-medium' : 'text-gray-400 border-transparent hover:text-gray-700'}`} onClick={() => setActiveTab('incidents')}>异常</button>
           </div>
           {activeTab === 'detail' && (
             <>
@@ -196,6 +197,9 @@ export function InstanceDetailModal({ detail, publicHost, sentinelPort, requestF
           )}
           {activeTab === 'tasks' && (
             <InstanceTasksTab instanceName={item.name} requestFn={requestFn} onViewAll={onNavigateTasks ? () => onNavigateTasks(item.name) : null} />
+          )}
+          {activeTab === 'incidents' && (
+            <InstanceIncidentsTab groupName={group.groupName} instanceName={item.name} requestFn={requestFn} onViewAll={onNavigateIncidents ? () => onNavigateIncidents(item.name) : null} />
           )}
         </div>
       </section>
@@ -314,6 +318,81 @@ function InstanceTasksTab({ instanceName, requestFn, onViewAll }) {
                 <td className="px-3 py-2.5 text-[12px] text-gray-500 tabular-nums">{taskDuration(task)}</td>
               </tr>
             ))}
+          </tbody>
+        </table>
+      </div>
+      {onViewAll && (
+        <div className="mt-3 text-right">
+          <button type="button" onClick={onViewAll} className="inline-flex items-center gap-1 bg-transparent border-0 text-[12px] font-medium text-gray-500 hover:text-gray-900 cursor-pointer">查看全部 →</button>
+        </div>
+      )}
+    </section>
+  );
+}
+
+// 实例作用域的异常记录：按所属 group 过滤，覆盖实例级(实例挂)与组级(主从乱)异常。
+const INCIDENT_TYPE_LABELS_TAB = {
+  instance_unexpected_down: '实例意外停止',
+  node_agent_unreachable: '节点 Agent 不可达',
+  master_mismatch: 'Master 视角不一致',
+  failover_conflict: '故障转移冲突',
+  backup_task_failed: '备份失败',
+  restore_task_failed: '恢复失败',
+};
+
+function InstanceIncidentsTab({ groupName, instanceName, requestFn, onViewAll }) {
+  const [records, setRecords] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    let ignore = false;
+    async function load(quiet) {
+      if (!quiet) setLoading(true);
+      try {
+        // 按 group 过滤：实例级异常也带 group_name，组级异常(主从乱)同样命中。
+        const key = groupName ? `group=${encodeURIComponent(groupName)}` : `instance=${encodeURIComponent(instanceName)}`;
+        const data = await requestFn(`/incidents?${key}&page=1&page_size=30`);
+        if (!ignore) { setRecords(data?.records || []); setError(''); }
+      } catch (err) {
+        if (!ignore && !quiet) { setError(err.message || String(err)); setRecords([]); }
+      } finally {
+        if (!ignore && !quiet) setLoading(false);
+      }
+    }
+    load(false);
+    const timer = setInterval(() => load(true), 10000);
+    return () => { ignore = true; clearInterval(timer); };
+  }, [groupName, instanceName]);
+
+  if (loading) return <div className="min-h-[150px] border border-dashed border-gray-200 rounded-md grid place-items-center text-gray-400 text-[13px]">正在读取异常记录...</div>;
+  if (error) return <div className="border border-red-200 rounded-md px-3 py-2.5 flex items-center gap-2 bg-red-50 text-red-700 text-[13px]"><AlertCircle size={16} /> {error}</div>;
+  if (records.length === 0) return <EmptyState icon={AlertTriangle} title="暂无异常记录" detail="该实例组的异常发生与恢复历史会显示在这里。" />;
+
+  return (
+    <section>
+      <div className="mb-3 flex items-center justify-between">
+        <h4 className="m-0 inline-flex items-center gap-1.5 text-[13px] font-semibold text-gray-500"><AlertTriangle size={16} className="text-gray-400" /> 异常记录</h4>
+        <span className="text-xs text-gray-400">最近 {records.length} 条</span>
+      </div>
+      <div className="border border-gray-200 rounded-md overflow-hidden overflow-x-auto">
+        <table className="w-full min-w-[680px] border-collapse">
+          <thead><tr>{['状态', '级别', '异常', '对象', '发生时间', '恢复时间'].map((label) => <th key={label} className="px-3 py-2.5 border-b border-gray-200 text-left text-xs font-medium text-gray-400 bg-gray-50">{label}</th>)}</tr></thead>
+          <tbody>
+            {records.map((inc) => {
+              const open = inc.status === 'open';
+              const critical = inc.severity === 'critical';
+              return (
+                <tr key={inc.id} className="border-b border-gray-200 last:border-b-0">
+                  <td className="px-3 py-2.5"><span className={`inline-flex items-center gap-1.5 text-[12px] font-medium ${open ? 'text-red-600' : 'text-gray-400'}`}><span className={`w-2 h-2 rounded-full ${open ? 'bg-red-500' : 'bg-gray-300'}`} />{open ? '未恢复' : '已恢复'}</span></td>
+                  <td className="px-3 py-2.5 text-[12px]"><span className={critical ? 'text-red-600' : 'text-amber-600'}>{critical ? '严重' : '警告'}</span></td>
+                  <td className="px-3 py-2.5"><strong className="block text-[12px] font-medium">{INCIDENT_TYPE_LABELS_TAB[inc.incident_type] || inc.incident_type}</strong><span className="block max-w-52 truncate text-[11px] text-gray-400">{inc.reason || ''}</span></td>
+                  <td className="px-3 py-2.5 text-[12px] font-mono">{inc.object_id}</td>
+                  <td className="px-3 py-2.5 text-[12px] font-mono whitespace-nowrap">{formatDateTime(inc.first_observed_at)}</td>
+                  <td className="px-3 py-2.5 text-[12px] font-mono whitespace-nowrap text-gray-500">{inc.resolved_at ? formatDateTime(inc.resolved_at) : '-'}</td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       </div>

@@ -275,6 +275,8 @@ func (s *Server) reconcileSentinelOnce() error {
 		if group == nil || group.Type != "replication" || group.CurrentMaster == "" {
 			continue
 		}
+		// 异常记录：failover_conflict 标记(立即记/清除即恢复，不依赖网络查询)。
+		s.emitFailoverConflict(groupName, group.FailoverConflict)
 		inst := instances.Instances[group.CurrentMaster]
 		if inst == nil {
 			continue
@@ -296,6 +298,8 @@ func (s *Server) reconcileSentinelOnce() error {
 			resolved = current
 		}
 		s.setSentinelMaster(groupName, resolved)
+		// 异常记录：Sentinel 共识与平台记录不一致 → master_mismatch(去抖)。
+		s.emitMasterMismatch(groupName, group.CurrentMaster, expected, current, resolved)
 		if current != "" && current != expected {
 			pending = append(pending, pendingFailover{group: groupName, addr: current})
 		}

@@ -315,6 +315,36 @@ func (d *DB) migrate() error {
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_ai_msg_conv  ON ai_messages(conv_id, seq)`,
 		`CREATE INDEX IF NOT EXISTS idx_ai_conv_user ON ai_conversations(user, updated_at)`,
+
+		// ── 异常记录（一行=一次异常的完整生命周期，见 docs/architecture/health-incidents.md） ──
+		// 只有 open/resolved 两态；observing 候选去抖计数放 Server 内存，不落库。
+		`CREATE TABLE IF NOT EXISTS health_incidents (
+			id                 TEXT PRIMARY KEY,
+			fingerprint        TEXT NOT NULL,            -- type:object_type:object_id，同一活动异常唯一
+			incident_type      TEXT NOT NULL,
+			status             TEXT NOT NULL,            -- open|resolved
+			severity           TEXT NOT NULL,            -- warning|critical
+			source             TEXT NOT NULL,            -- reconcile|topology|task
+			object_type        TEXT NOT NULL,            -- instance|group|node
+			object_id          TEXT NOT NULL,
+			group_name         TEXT NOT NULL DEFAULT '',
+			instance_name      TEXT NOT NULL DEFAULT '',
+			node_name          TEXT NOT NULL DEFAULT '',
+			summary            TEXT NOT NULL DEFAULT '',
+			reason             TEXT NOT NULL DEFAULT '',
+			evidence           TEXT NOT NULL DEFAULT '{}', -- JSON
+			first_observed_at  TEXT NOT NULL,
+			resolved_at        TEXT NOT NULL DEFAULT '',   -- 空=仍未恢复
+			last_seen_at       TEXT NOT NULL,
+			created_at         TEXT NOT NULL,
+			updated_at         TEXT NOT NULL
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_incidents_status ON health_incidents(status, first_observed_at DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_incidents_instance ON health_incidents(instance_name, first_observed_at DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_incidents_group ON health_incidents(group_name, first_observed_at DESC)`,
+		// 同一对象同一类异常同一时刻只允许一条未恢复记录，靠它兜底幂等。
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_incidents_active_fingerprint
+			ON health_incidents(fingerprint) WHERE status = 'open'`,
 	}
 
 	tx, err := d.sql.Begin()

@@ -159,6 +159,8 @@ func (s *Server) finishOperationTask(task store.Task, p operationTaskPayload, st
 	if err != nil || !changed {
 		return
 	}
+	// 异常记录：备份/恢复失败立即记 open，后续同类任务成功则结束对应异常。
+	s.emitTaskIncident(task.Kind, p.Instance, p.Group, p.Server, status, errMsg, task.ID)
 	if p.LockSessionID != "" {
 		s.releaseLockGroup(p.LockInstances, p.LockSessionID)
 	}

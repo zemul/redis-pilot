@@ -65,6 +65,9 @@ type Server struct {
 
 	// aiAgent 内嵌式 AI 运维助手；仅在 cfg.AI.Enabled 时构造，否则为 nil。
 	aiAgent *ai.Agent
+
+	// incidents 异常记录服务：把 reconcile/topology/task 观测转成可查询的异常生命周期。
+	incidents *IncidentService
 }
 
 func New(cfg *Config) (*Server, error) {
@@ -95,6 +98,7 @@ func New(cfg *Config) (*Server, error) {
 		runtimeReplicaOf: make(map[string]string),
 	}
 	s.scheduler = newBackupScheduler(s)
+	s.incidents = newIncidentService(db, s.log)
 	s.initAIAgent()
 	return s, nil
 }
@@ -113,6 +117,9 @@ func (s *Server) initAIAgent() {
 		MaxTokens: s.cfg.AI.MaxTokens,
 		Timeout:   timeout,
 		SkillsDir: s.cfg.AI.SkillsDir,
+
+		HistorySummaryThreshold: s.cfg.AI.HistorySummaryThreshold,
+		HistorySummaryKeep:      s.cfg.AI.HistorySummaryKeep,
 	})
 	if err != nil {
 		s.log.Errorf("ai assistant init failed: %v", err)
@@ -134,6 +141,16 @@ func (s *Server) StartWALCheckpointLoop() {
 			if err := s.db.Checkpoint(); err != nil {
 				s.log.Errorf("wal checkpoint failed: %v", err)
 			}
+		}
+	}()
+}
+
+// StartIncidentCleanupLoop 每 24 小时清理一次超过保留期(默认 180 天)的历史异常记录。
+func (s *Server) StartIncidentCleanupLoop() {
+	go func() {
+		s.incidents.CleanupResolved(0)
+		for range time.Tick(24 * time.Hour) {
+			s.incidents.CleanupResolved(0)
 		}
 	}()
 }
@@ -254,6 +271,10 @@ func (s *Server) Router() *gin.Engine {
 	authed.GET("/tasks", s.taskQuery)
 	authed.GET("/tasks/:id", s.taskDetail)
 	authed.POST("/tasks/:id/cancel", s.adminOnly(), s.taskCancel)
+	// 异常记录（只读，所有登录用户可查）
+	authed.GET("/incidents", s.incidentQuery)
+	authed.GET("/incidents/summary", s.incidentSummary)
+	authed.GET("/incidents/:id", s.incidentDetail)
 	authed.GET("/server/info", s.serverInfo)
 	authed.GET("/metrics", s.metricsCollect)
 

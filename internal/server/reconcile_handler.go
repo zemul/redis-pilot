@@ -79,6 +79,7 @@ func (s *Server) runReconcile() ([]ReconcileResult, error) {
 		srv := node.Servers[serverName]
 		if srv == nil {
 			// 服务器不在 node 中，所有实例标记异常
+			serverReachable[serverName] = false
 			for _, name := range instNames {
 				results = append(results, ReconcileResult{
 					Instance: name, Server: serverName,
@@ -266,10 +267,11 @@ func (s *Server) runReconcile() ([]ReconcileResult, error) {
 		}
 	}
 
+	// 把本轮观测转成异常记录(去抖由 IncidentService 负责)。
+	s.emitReconcileIncidents(results, serverReachable, instances)
+
 	return results, nil
 }
-
-// parseContainerMap 从 Agent 返回的 data 中提取容器名→运行状态映射
 // parseConfiguredReplicaOf 从 Agent /instance/list 的响应里取出各实例磁盘配置文件中的
 // replicaof（归一化为 ip:port，空串表示配置为 master）。
 //

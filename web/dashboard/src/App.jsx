@@ -9,6 +9,7 @@ import {
   ClipboardList,
   Menu,
   Server,
+  ShieldAlert,
   Sparkles,
   Users,
   X
@@ -21,6 +22,7 @@ import { InstancesView } from './views/InstancesView.jsx';
 import { ServersView } from './views/ServersView.jsx';
 import { AuditView } from './views/AuditView.jsx';
 import { TasksView } from './views/TasksView.jsx';
+import { IncidentsView } from './views/IncidentsView.jsx';
 import {
   InstanceDetailModal,
   SlowlogModal,
@@ -44,6 +46,7 @@ const TABS = [
   { id: 'ai', label: 'AI 助手', icon: Sparkles },
   { id: 'servers', label: '服务器节点', icon: Server },
   { id: 'tasks', label: '运维任务', icon: ClipboardList },
+  { id: 'incidents', label: '异常记录', icon: ShieldAlert },
   { id: 'audit', label: '操作审计', icon: List },
   { id: 'users', label: '用户管理', icon: Users },
   { id: 'tokens', label: '密钥管理', icon: Key }
@@ -83,6 +86,8 @@ function AppShell() {
   const [keyBrowserTarget, setKeyBrowserTarget] = useState(null);
   const [createOpen, setCreateOpen] = useState(false);
   const [taskInstanceFilter, setTaskInstanceFilter] = useState('');
+  const [incidentInstanceFilter, setIncidentInstanceFilter] = useState('');
+  const [incidentSummary, setIncidentSummary] = useState(null);
   const [pendingAction, setPendingAction] = useState('');
   const [activeTaskCount, setActiveTaskCount] = useState(0);
   const [data, setData] = useState({ instances: {}, servers: {}, audits: [], sentinel: null });
@@ -152,6 +157,22 @@ function AppShell() {
   }, [auth, request]);
 
   useEffect(() => {
+    if (!auth) return undefined;
+    let ignore = false;
+    async function loadSummary() {
+      try {
+        const result = await request('/incidents/summary');
+        if (!ignore) setIncidentSummary(result || null);
+      } catch {
+        if (!ignore) setIncidentSummary(null);
+      }
+    }
+    loadSummary();
+    const timer = setInterval(loadSummary, 15000);
+    return () => { ignore = true; clearInterval(timer); };
+  }, [auth, request]);
+
+  useEffect(() => {
     let ignore = false;
     async function load() {
       setLoading(true);
@@ -200,6 +221,12 @@ function AppShell() {
     setTaskInstanceFilter(name);
     setDetail(null);
     setActiveTab('tasks');
+  }
+
+  function openIncidents(instance = '') {
+    setIncidentInstanceFilter(instance);
+    setDetail(null);
+    setActiveTab('incidents');
   }
 
   async function openInstanceDetail(item, group) {
@@ -353,7 +380,7 @@ function AppShell() {
             <div className="border border-gray-200 rounded-lg bg-white min-h-[260px] grid place-items-center text-gray-400">正在读取服务状态...</div>
           ) : (
             <>
-              {activeTab === 'dashboard' && <DashboardView groups={instanceGroups} servers={servers} audits={data.audits} sentinel={data.sentinel} publicHost={serverInfo?.proxy_public_endpoint} onOpenDetail={openInstanceDetail} />}
+              {activeTab === 'dashboard' && <DashboardView groups={instanceGroups} servers={servers} audits={data.audits} sentinel={data.sentinel} incidentSummary={incidentSummary} publicHost={serverInfo?.proxy_public_endpoint} onOpenDetail={openInstanceDetail} onOpenIncidents={openIncidents} />}
               {activeTab === 'instances' && (
                 <InstancesView
                   groups={instanceGroups}
@@ -382,6 +409,7 @@ function AppShell() {
               {activeTab === 'ai' && <AiChatPanel />}
               {activeTab === 'servers' && <ServersView servers={servers} groups={instanceGroups} />}
               {activeTab === 'tasks' && <TasksView request={request} initialInstance={taskInstanceFilter} />}
+              {activeTab === 'incidents' && <IncidentsView request={request} initialInstance={incidentInstanceFilter} />}
               {activeTab === 'audit' && (
                 <AuditView
                   filters={auditFilters}
@@ -399,7 +427,7 @@ function AppShell() {
           )}
         </section>
       </main>
-      {detail && <InstanceDetailModal detail={detail} publicHost={serverInfo?.proxy_public_endpoint} sentinelPort={serverInfo?.proxy_sentinel_port} requestFn={request} onRefresh={refresh} onNavigateAudit={openInstanceAudit} onNavigateTasks={openInstanceTasks} onClose={() => setDetail(null)} />}
+      {detail && <InstanceDetailModal detail={detail} publicHost={serverInfo?.proxy_public_endpoint} sentinelPort={serverInfo?.proxy_sentinel_port} requestFn={request} onRefresh={refresh} onNavigateAudit={openInstanceAudit} onNavigateTasks={openInstanceTasks} onNavigateIncidents={openIncidents} onClose={() => setDetail(null)} />}
       {slowlogTarget && <SlowlogModal instanceName={slowlogTarget} requestFn={request} onClose={() => setSlowlogTarget(null)} />}
       {bigkeysTarget && <BigkeysModal instanceName={bigkeysTarget} requestFn={request} onViewTasks={() => { setTaskInstanceFilter(bigkeysTarget); setBigkeysTarget(null); setActiveTab('tasks'); }} onClose={() => setBigkeysTarget(null)} />}
       {configTarget && <ConfigModal instanceName={configTarget} requestFn={request} onClose={() => setConfigTarget(null)} />}
