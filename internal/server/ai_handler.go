@@ -51,6 +51,9 @@ func (p aiPlatform) QueryAudit(_ context.Context, limit int) (json.RawMessage, e
 func (p aiPlatform) QueryTasks(_ context.Context, status, kind string, limit int) (json.RawMessage, error) {
 	return p.s.aiQueryTasks(status, kind, limit)
 }
+func (p aiPlatform) QueryIncidents(_ context.Context, status, severity, instance, group, node string, limit int) (json.RawMessage, error) {
+	return p.s.aiQueryIncidents(status, severity, instance, group, node, limit)
+}
 func (p aiPlatform) GetTaskDetail(_ context.Context, taskID string) (json.RawMessage, error) {
 	return p.s.aiGetTaskDetail(taskID)
 }

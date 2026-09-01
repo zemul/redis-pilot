@@ -305,6 +305,15 @@ func (r *toolRegistry) schemas() []openai.ChatCompletionToolParam {
 				"kind":   map[string]string{"type": "string", "description": "按类型筛选：backup.create / backup.restore / diagnostic.bigkeys，可选"},
 				"limit":  map[string]string{"type": "integer", "description": "返回条数，可选，默认 20，最大 50"},
 			}, nil),
+		makeTool("query_incidents", "查询健康异常记录（实例宕机、主从断链、备份失败、未配置备份等健康事件；open 表示仍在持续，resolved 表示已恢复）",
+			map[string]any{
+				"status":   map[string]string{"type": "string", "description": "按状态筛选：open（进行中）/ resolved（已恢复），可选，留空返回全部（open 优先）"},
+				"severity": map[string]string{"type": "string", "description": "按级别筛选：critical / warning，可选"},
+				"instance": map[string]string{"type": "string", "description": "按实例名精确筛选，可选"},
+				"group":    map[string]string{"type": "string", "description": "按实例组名精确筛选，可选"},
+				"node":     map[string]string{"type": "string", "description": "按节点名精确筛选，可选"},
+				"limit":    map[string]string{"type": "integer", "description": "返回条数，可选，默认 20，最大 100"},
+			}, nil),
 		makeTool("get_task_detail", "查询单个运维任务的详情（含结果、错误原因、进度、目标实例/节点）",
 			map[string]any{
 				"task_id": map[string]string{"type": "string", "description": "任务 ID"},
@@ -415,16 +424,20 @@ func (r *toolRegistry) schemas() []openai.ChatCompletionToolParam {
 // exec 执行一个工具调用，返回其结果 JSON（回填给模型）。
 func (r *toolRegistry) exec(ctx context.Context, name, argsJSON string) (json.RawMessage, error) {
 	var args struct {
-		Name   string `json:"name"`
-		Count  int    `json:"count"`
-		Range  string `json:"range"`
-		Limit  int    `json:"limit"`
-		Status string `json:"status"`
-		Kind   string `json:"kind"`
-		TaskID string `json:"task_id"`
-		Key    string `json:"key"`
-		Cursor string `json:"cursor"`
-		Offset int    `json:"offset"`
+		Name     string `json:"name"`
+		Count    int    `json:"count"`
+		Range    string `json:"range"`
+		Limit    int    `json:"limit"`
+		Status   string `json:"status"`
+		Kind     string `json:"kind"`
+		TaskID   string `json:"task_id"`
+		Key      string `json:"key"`
+		Cursor   string `json:"cursor"`
+		Offset   int    `json:"offset"`
+		Severity string `json:"severity"`
+		Instance string `json:"instance"`
+		Group    string `json:"group"`
+		Node     string `json:"node"`
 	}
 	if argsJSON != "" {
 		_ = json.Unmarshal([]byte(argsJSON), &args)
@@ -479,6 +492,8 @@ func (r *toolRegistry) exec(ctx context.Context, name, argsJSON string) (json.Ra
 		return r.api.QueryAudit(ctx, args.Limit)
 	case "query_tasks":
 		return r.api.QueryTasks(ctx, args.Status, args.Kind, args.Limit)
+	case "query_incidents":
+		return r.api.QueryIncidents(ctx, args.Status, args.Severity, args.Instance, args.Group, args.Node, args.Limit)
 	case "get_task_detail":
 		if args.TaskID == "" {
 			return nil, fmt.Errorf("missing arg: task_id")

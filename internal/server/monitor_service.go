@@ -154,6 +154,29 @@ func (s *Server) aiQueryAudit(limit int) (json.RawMessage, error) {
 	return json.Marshal(map[string]any{"records": records, "total": total})
 }
 
+// aiQueryIncidents 查询健康异常（incidents）列表，供 AI 了解当前/历史异常。
+// 只读；默认按 open 优先、发生时间倒序。支持按状态/级别/实例/组/节点筛选。
+func (s *Server) aiQueryIncidents(status, severity, instance, group, node string, limit int) (json.RawMessage, error) {
+	if limit <= 0 || limit > 100 {
+		limit = 20
+	}
+	records, total, err := s.db.QueryIncidents(store.IncidentFilter{
+		Status:   status,
+		Severity: severity,
+		Instance: instance,
+		Group:    group,
+		Node:     node,
+		Limit:    limit,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if records == nil {
+		records = []store.Incident{}
+	}
+	return json.Marshal(map[string]any{"records": records, "total": total})
+}
+
 // aiListInstances 返回全部实例的精简清单，供 AI 了解拓扑（不含敏感/冗余字段）。
 func (s *Server) aiListInstances() (json.RawMessage, error) {
 	instances, err := s.db.ReadInstances()

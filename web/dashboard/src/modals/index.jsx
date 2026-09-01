@@ -141,9 +141,9 @@ export function InstanceDetailModal({ detail, publicHost, sentinelPort, requestF
               <button className={`px-4 py-2.5 text-[13px] border-0 bg-transparent cursor-pointer border-b-2 mb-[-1px] ${activeTab === 'group' ? 'text-gray-900 border-gray-900 font-medium' : 'text-gray-400 border-transparent hover:text-gray-700'}`} onClick={() => setActiveTab('group')}>实例组</button>
             )}
             <button className={`px-4 py-2.5 text-[13px] border-0 bg-transparent cursor-pointer border-b-2 mb-[-1px] ${activeTab === 'access' ? 'text-gray-900 border-gray-900 font-medium' : 'text-gray-400 border-transparent hover:text-gray-700'}`} onClick={() => setActiveTab('access')}>接入</button>
-            <button className={`px-4 py-2.5 text-[13px] border-0 bg-transparent cursor-pointer border-b-2 mb-[-1px] ${activeTab === 'audit' ? 'text-gray-900 border-gray-900 font-medium' : 'text-gray-400 border-transparent hover:text-gray-700'}`} onClick={() => setActiveTab('audit')}>操作审计</button>
-            <button className={`px-4 py-2.5 text-[13px] border-0 bg-transparent cursor-pointer border-b-2 mb-[-1px] ${activeTab === 'tasks' ? 'text-gray-900 border-gray-900 font-medium' : 'text-gray-400 border-transparent hover:text-gray-700'}`} onClick={() => setActiveTab('tasks')}>运维任务</button>
             <button className={`px-4 py-2.5 text-[13px] border-0 bg-transparent cursor-pointer border-b-2 mb-[-1px] ${activeTab === 'incidents' ? 'text-gray-900 border-gray-900 font-medium' : 'text-gray-400 border-transparent hover:text-gray-700'}`} onClick={() => setActiveTab('incidents')}>异常</button>
+            <button className={`px-4 py-2.5 text-[13px] border-0 bg-transparent cursor-pointer border-b-2 mb-[-1px] ${activeTab === 'tasks' ? 'text-gray-900 border-gray-900 font-medium' : 'text-gray-400 border-transparent hover:text-gray-700'}`} onClick={() => setActiveTab('tasks')}>运维任务</button>
+            <button className={`px-4 py-2.5 text-[13px] border-0 bg-transparent cursor-pointer border-b-2 mb-[-1px] ${activeTab === 'audit' ? 'text-gray-900 border-gray-900 font-medium' : 'text-gray-400 border-transparent hover:text-gray-700'}`} onClick={() => setActiveTab('audit')}>操作审计</button>
           </div>
           {activeTab === 'detail' && (
             <>
@@ -192,14 +192,14 @@ export function InstanceDetailModal({ detail, publicHost, sentinelPort, requestF
           {activeTab === 'access' && (
             <AccessInfoTab group={group} publicHost={publicHost} sentinelPort={sentinelPort} requestFn={requestFn} onRefresh={onRefresh} />
           )}
-          {activeTab === 'audit' && (
-            <InstanceAuditTab instanceName={item.name} requestFn={requestFn} onViewAll={onNavigateAudit ? () => onNavigateAudit(item.name) : null} />
+          {activeTab === 'incidents' && (
+            <InstanceIncidentsTab groupName={group.groupName} instanceName={item.name} requestFn={requestFn} onViewAll={onNavigateIncidents ? () => onNavigateIncidents(item.name) : null} />
           )}
           {activeTab === 'tasks' && (
             <InstanceTasksTab instanceName={item.name} requestFn={requestFn} onViewAll={onNavigateTasks ? () => onNavigateTasks(item.name) : null} />
           )}
-          {activeTab === 'incidents' && (
-            <InstanceIncidentsTab groupName={group.groupName} instanceName={item.name} requestFn={requestFn} onViewAll={onNavigateIncidents ? () => onNavigateIncidents(item.name) : null} />
+          {activeTab === 'audit' && (
+            <InstanceAuditTab instanceName={item.name} requestFn={requestFn} onViewAll={onNavigateAudit ? () => onNavigateAudit(item.name) : null} />
           )}
         </div>
       </section>

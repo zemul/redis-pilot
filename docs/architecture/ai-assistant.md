@@ -241,6 +241,9 @@ ai:
 | `get_metrics_history` | `/instance/metrics/history`（range 参数） | 读 | ✅ M3 |
 | `list_nodes` | 节点清单（读 store，脱敏 agent_token） | 读 | ✅ M3 |
 | `query_audit` | 审计查询（`s.audit.Query`） | 读 | ✅ M3 |
+| `query_tasks` | 运维任务列表查询（`s.db.QueryTasks`，备份/恢复/大 Key 扫描等异步任务的状态与进度） | 读 | ✅ |
+| `get_task_detail` | 单个运维任务详情（`s.db.GetTask`，含 result/error/进度/目标实例节点） | 读 | ✅ |
+| `query_incidents` | 健康异常查询（`s.db.QueryIncidents`，实例宕机/主从断链/备份失败等；支持 status/severity/instance/group/node 筛选，open 优先） | 读 | ✅ |
 | `describe_key` | `keyMeta`（受限 K/V 浏览器，只取 type/size/ttl）；**仅 admin 暴露** | 读 | ✅ |
 | `get_key` | `keyGet`（受限 K/V 浏览器，带大 value 保护+分页）；**仅 admin 暴露** | 读 | ✅ |
 | `start_instance` / `stop_instance` | `instanceStart` / `instanceStop`（re-dispatch） | 写 | ✅ M5 |

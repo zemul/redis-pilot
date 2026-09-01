@@ -43,11 +43,11 @@ import { buildInstanceGroups } from './lib/instance.js';
 const TABS = [
   { id: 'dashboard', label: '大盘看板', icon: LayoutDashboard },
   { id: 'instances', label: '实例管理', icon: Database },
-  { id: 'ai', label: 'AI 助手', icon: Sparkles },
   { id: 'servers', label: '服务器节点', icon: Server },
-  { id: 'tasks', label: '运维任务', icon: ClipboardList },
   { id: 'incidents', label: '异常记录', icon: ShieldAlert },
+  { id: 'tasks', label: '运维任务', icon: ClipboardList },
   { id: 'audit', label: '操作审计', icon: List },
+  { id: 'ai', label: 'AI 助手', icon: Sparkles },
   { id: 'users', label: '用户管理', icon: Users },
   { id: 'tokens', label: '密钥管理', icon: Key }
 ];

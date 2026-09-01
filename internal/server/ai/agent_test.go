@@ -52,6 +52,10 @@ func (m *mockPlatform) QueryTasks(_ context.Context, status, kind string, limit 
 	m.calls = append(m.calls, "tasks")
 	return json.RawMessage(`[]`), nil
 }
+func (m *mockPlatform) QueryIncidents(_ context.Context, status, severity, instance, group, node string, limit int) (json.RawMessage, error) {
+	m.calls = append(m.calls, "incidents")
+	return json.RawMessage(`{"records":[],"total":0}`), nil
+}
 func (m *mockPlatform) GetTaskDetail(_ context.Context, taskID string) (json.RawMessage, error) {
 	m.calls = append(m.calls, "task_detail:"+taskID)
 	return json.RawMessage(`{"id":"` + taskID + `","status":"success"}`), nil
