@@ -1017,6 +1017,7 @@ export function BackupListModal({ detail, requestFn, onReload, onViewTasks, onCl
   const [execTaskId, setExecTaskId] = useState('');
   const [execTask, setExecTask] = useState(null);
   const [scheduleLoading, setScheduleLoading] = useState(true);
+  const [scheduleEnabled, setScheduleEnabled] = useState(false);
   const [schedule, setSchedule] = useState('');
   const [retention, setRetention] = useState(7);
   const [scheduleError, setScheduleError] = useState('');
@@ -1029,7 +1030,9 @@ export function BackupListModal({ detail, requestFn, onReload, onViewTasks, onCl
       try {
         const data = await requestFn(`/backup/schedule?group=${encodeURIComponent(group.groupName)}`);
         if (!ignore) {
-          setSchedule(data?.schedule || '');
+          const loaded = data?.schedule || '';
+          setSchedule(loaded);
+          setScheduleEnabled(loaded.trim() !== '');
           setRetention(data?.retention || 7);
         }
       } catch (err) {
@@ -1114,7 +1117,7 @@ export function BackupListModal({ detail, requestFn, onReload, onViewTasks, onCl
     try {
       await requestFn('/backup/schedule', {
         method: 'POST',
-        body: JSON.stringify({ group: group.groupName, schedule, retention: Number(retention) || 7 })
+        body: JSON.stringify({ group: group.groupName, schedule: scheduleEnabled ? schedule : '', retention: Number(retention) || 7 })
       });
       setScheduleSaved(true);
     } catch (err) {
@@ -1184,6 +1187,23 @@ export function BackupListModal({ detail, requestFn, onReload, onViewTasks, onCl
               <div className="grid gap-3">
                 {scheduleError && <div className="border border-red-200 rounded-md px-3 py-2.5 flex items-center gap-2 bg-red-50 text-red-700 text-[13px]"><AlertCircle size={16} /> {scheduleError}</div>}
                 {scheduleSaved && <div className="border border-emerald-200 rounded-md px-3 py-2 flex items-center gap-2 bg-emerald-50 text-emerald-700 text-[13px]"><CheckCircle2 size={16} /> 策略已保存</div>}
+                <div className="flex items-center justify-between gap-3 border border-gray-200 rounded-md px-3 py-2.5 bg-gray-50">
+                  <div>
+                    <div className="text-[13px] font-medium text-gray-900">启用定时备份</div>
+                    <div className="text-xs text-gray-400 mt-0.5">{scheduleEnabled ? '按 Cron 表达式自动执行备份' : '当前未启用，不会自动备份'}</div>
+                  </div>
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={scheduleEnabled}
+                    aria-label="启用定时备份"
+                    onClick={() => { setScheduleEnabled((v) => !v); setScheduleSaved(false); }}
+                    className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors ${scheduleEnabled ? 'bg-gray-900' : 'bg-gray-300'}`}
+                  >
+                    <span className={`inline-block h-4 w-4 rounded-full bg-white shadow transform transition-transform ${scheduleEnabled ? 'translate-x-4' : 'translate-x-0.5'}`} />
+                  </button>
+                </div>
+                {scheduleEnabled && (
                 <div className="grid grid-cols-2 gap-3">
                   <label className="block text-xs font-medium text-gray-400">Cron 表达式
                     <input
@@ -1203,9 +1223,12 @@ export function BackupListModal({ detail, requestFn, onReload, onViewTasks, onCl
                     />
                   </label>
                 </div>
+                )}
+                {scheduleEnabled && (
                 <div className="text-xs text-gray-400">
-                  留空 Cron 表达式则关闭定时备份。常用: <code className="bg-gray-100 px-1 py-0.5 rounded text-[11px] font-mono">0 2 * * *</code>(每天2:00)、<code className="bg-gray-100 px-1 py-0.5 rounded text-[11px] font-mono">0 */6 * * *</code>(每6小时)
+                  常用: <code className="bg-gray-100 px-1 py-0.5 rounded text-[11px] font-mono">0 2 * * *</code>(每天2:00)、<code className="bg-gray-100 px-1 py-0.5 rounded text-[11px] font-mono">0 */6 * * *</code>(每6小时)
                 </div>
+                )}
                 <div className="flex justify-end">
                   <button
                     className="h-7 px-2.5 rounded-md bg-gray-900 text-white text-xs font-medium inline-flex items-center gap-1 hover:bg-gray-700 border-0 cursor-pointer transition-colors disabled:opacity-50"
