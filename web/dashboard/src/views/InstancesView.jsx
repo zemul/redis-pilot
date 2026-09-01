@@ -1,4 +1,8 @@
-// 实例管理视图：搜索栏 + 实例组卡片列表；组卡片可展开显示主/从节点行。
+// 实例管理视图：搜索栏 + 实例组卡片列表。
+// 作用域分层（见 docs/architecture/instance-management-ui.md）：
+//   standalone 组 → 单行、平铺菜单（组即节点，不分区）；
+//   replication 组 → 父行只放组级操作，可展开显示主/从节点行，节点行只放高频运维项。
+// 主按钮统一为「详情」，层级靠角色徽标区分。
 import { Search, Plus, ChevronDown, ChevronRight } from 'lucide-react';
 import {
   EmptyState,
@@ -11,12 +15,20 @@ import {
   MoreMenu,
 } from '../components/common.jsx';
 import { getField, parseGi } from '../lib/format.js';
-import { topologyLabel, engineLabel, powerActionFor } from '../lib/instance.js';
+import {
+  topologyLabel,
+  engineLabel,
+  isStandaloneGroup,
+  canExpandGroup,
+  groupActionsFor,
+  nodeRowActionsFor,
+  standaloneActionsFor,
+} from '../lib/instance.js';
 
 // 实例列表统一的网格列模板：实例组/节点 | 类型 | 接入/拓扑 | 架构/版本 | 节点/接入点 | 内存使用 | 状态 | 操作
 const INST_GRID = 'grid items-center gap-4 grid-cols-[280px_84px_120px_130px_minmax(220px,1fr)_90px_92px_112px] px-4';
 
-export function InstancesView({ groups, publicHost, sentinelPort, query, setQuery, expandedGroups, setExpandedGroups, onOpenDetail, onOpenBackups, onPowerAction, onDelete, onConfig, onResize, onToggleAccessMode, onEditLabels, onCreate, pendingAction }) {
+export function InstancesView({ groups, publicHost, sentinelPort, query, setQuery, expandedGroups, setExpandedGroups, callbacks, onCreate, pendingAction }) {
   const filtered = groups.filter((group) => {
     const text = [
       group.groupName,
@@ -74,14 +86,7 @@ export function InstancesView({ groups, publicHost, sentinelPort, query, setQuer
               onToggle={() => toggleGroup(group.groupName)}
               publicHost={publicHost}
               sentinelPort={sentinelPort}
-              onOpenDetail={onOpenDetail}
-              onOpenBackups={onOpenBackups}
-              onPowerAction={onPowerAction}
-              onDelete={onDelete}
-              onConfig={onConfig}
-              onResize={onResize}
-              onToggleAccessMode={onToggleAccessMode}
-              onEditLabels={onEditLabels}
+              callbacks={callbacks}
               pendingAction={pendingAction}
             />
           ))}
@@ -91,48 +96,51 @@ export function InstancesView({ groups, publicHost, sentinelPort, query, setQuer
   );
 }
 
-function InstanceGroupCard({ group, expanded, onToggle, publicHost, sentinelPort, onOpenDetail, onOpenBackups, onPowerAction, onDelete, onConfig, onResize, onToggleAccessMode, onEditLabels, pendingAction }) {
+function InstanceGroupCard({ group, expanded, onToggle, publicHost, sentinelPort, callbacks, pendingAction }) {
   const master = group.master;
-  const hasReplicas = group.replicas.length > 0;
+  const standalone = isStandaloneGroup(group);
+  const expandable = canExpandGroup(group);
   const topology = topologyLabel(group, master);
   const accessLabel = group.access_mode === 'rw-split' ? '读写分离' : '标准';
   const isRwSplit = group.access_mode === 'rw-split';
-  const powerAction = master ? powerActionFor(master, group) : null;
 
-  const menuItems = master ? [
-    { label: '编辑标签', onClick: () => onEditLabels(group) },
-    { label: '备份列表', onClick: () => onOpenBackups(master, group) },
-    { label: '修改配置', onClick: () => onConfig(master) },
-    { label: '调整规格', onClick: () => onResize(master) },
-    powerAction && {
-      label: powerAction.label,
-      disabled: powerAction.disabledReason || pendingAction === `${powerAction.action}:${master.name}`,
-      onClick: () => { if (!powerAction.disabledReason) onPowerAction(master, group, powerAction.action); }
-    },
-    {
-      label: '删除',
-      danger: true,
-      disabled: hasReplicas ? '主库存在从库时不可删除，请先删除从库' : pendingAction === `delete:${master.name}`,
-      onClick: () => { if (!hasReplicas) onDelete(master, group); }
-    }
-  ] : [];
+  // standalone：平铺菜单（组+节点操作合并，不分区）；主按钮打开节点详情。
+  // replication：父行只放组级操作；主按钮打开组详情。
+  const menuItems = standalone
+    ? standaloneActionsFor(group, callbacks, { pendingAction })
+    : groupActionsFor(group, callbacks, { pendingAction });
+  const ariaLabel = standalone
+    ? `${group.groupName} 更多操作`
+    : `实例组 ${group.groupName} 更多操作`;
+  const openDetail = standalone
+    ? () => master && callbacks.onOpenNodeDetail(master, group)
+    : () => callbacks.onOpenGroupDetail(group);
+  const detailAria = standalone ? `${group.groupName} 详情` : `实例组 ${group.groupName} 详情`;
 
   return (
     <div className={`border rounded-xl bg-white transition-all ${expanded ? 'border-blue-200 shadow-sm' : 'border-gray-200 hover:border-gray-300 hover:shadow-sm'}`}>
-      <div className={`${INST_GRID} py-3.5 ${hasReplicas ? 'cursor-pointer' : ''}`} onClick={hasReplicas ? onToggle : undefined}>
+      <div className={`${INST_GRID} py-3.5 ${expandable ? 'cursor-pointer' : ''}`} onClick={expandable ? onToggle : undefined}>
         <div className="flex items-center gap-2.5 min-w-0">
-          {hasReplicas ? (
-            <span className={`w-5 h-5 rounded inline-flex items-center justify-center shrink-0 transition-colors ${expanded ? 'text-blue-500 bg-blue-50' : 'text-gray-400'}`}>
+          {expandable ? (
+            <button
+              type="button"
+              className={`w-5 h-5 rounded inline-flex items-center justify-center shrink-0 transition-colors border-0 bg-transparent cursor-pointer ${expanded ? 'text-blue-500 bg-blue-50' : 'text-gray-400'}`}
+              aria-expanded={expanded}
+              aria-label={`${expanded ? '收起' : '展开'}实例组 ${group.groupName}`}
+              onClick={(e) => { e.stopPropagation(); onToggle(); }}
+            >
               {expanded ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
-            </span>
+            </button>
           ) : (
             <span className="w-5 shrink-0" />
           )}
           <EngineIcon engine={group.engine} size={32} />
           <div className="min-w-0">
             <CopyableText text={group.groupName} className="font-semibold text-gray-900 text-[14px]" />
-            {master ? (
-              <span className="text-[11px] text-gray-400 block mt-0.5 truncate">主库: {master.name}</span>
+            {standalone ? (
+              <span className="text-[11px] text-gray-400 block mt-0.5 truncate">节点: {master ? master.name : '-'}</span>
+            ) : master ? (
+              <span className="text-[11px] text-gray-400 block mt-0.5 truncate">{topology}</span>
             ) : (
               <span className="text-[11px] text-red-500 block mt-0.5">主库状态异常</span>
             )}
@@ -160,14 +168,12 @@ function InstanceGroupCard({ group, expanded, onToggle, publicHost, sentinelPort
         <div>{master ? <MemoryUsage memory={group.resource.memory} memoryUsed={group.resource.memoryUsed} /> : <span className="text-gray-300">-</span>}</div>
         <div><StatusBadge status={group.status} /></div>
         <div className="flex justify-end items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
-          {master && (
-            <button type="button" className="h-7 px-3 rounded-md border border-gray-200 bg-white text-[12px] text-gray-700 hover:bg-gray-50 hover:border-gray-300 transition-colors cursor-pointer" onClick={() => onOpenDetail(master, group)}>查看</button>
-          )}
-          <MoreMenu items={menuItems} />
+          <button type="button" className="h-7 px-3 rounded-md border border-gray-200 bg-white text-[12px] text-gray-700 hover:bg-gray-50 hover:border-gray-300 transition-colors cursor-pointer" aria-label={detailAria} onClick={openDetail}>详情</button>
+          <MoreMenu items={menuItems} ariaLabel={ariaLabel} />
         </div>
       </div>
 
-      {expanded && (
+      {expanded && expandable && (
         <div className="relative border-t border-blue-100 rounded-b-xl overflow-hidden bg-slate-50/80">
           <span className="absolute left-[26px] top-0 bottom-6 w-px bg-blue-200/80 pointer-events-none" aria-hidden="true" />
           {master && (
@@ -176,13 +182,7 @@ function InstanceGroupCard({ group, expanded, onToggle, publicHost, sentinelPort
               group={group}
               role="主库"
               first
-              onOpenDetail={onOpenDetail}
-              onOpenBackups={onOpenBackups}
-              onPowerAction={onPowerAction}
-              onDelete={onDelete}
-              onConfig={onConfig}
-              onResize={onResize}
-              onToggleAccessMode={onToggleAccessMode}
+              callbacks={callbacks}
               pendingAction={pendingAction}
             />
           )}
@@ -192,16 +192,23 @@ function InstanceGroupCard({ group, expanded, onToggle, publicHost, sentinelPort
               item={replica}
               group={group}
               role="从库"
-              onOpenDetail={onOpenDetail}
-              onOpenBackups={onOpenBackups}
-              onPowerAction={onPowerAction}
-              onDelete={onDelete}
-              onConfig={onConfig}
-              onResize={onResize}
-              onToggleAccessMode={onToggleAccessMode}
+              callbacks={callbacks}
               pendingAction={pendingAction}
             />
           ))}
+          {group.replicas.length === 0 && (
+            <div className={`${INST_GRID} py-3 ${master ? 'border-t border-slate-200/70' : ''}`}>
+              <div className="pl-[30px] text-[12px] text-slate-400">当前没有从库</div>
+              <div /><div /><div /><div /><div /><div />
+              <div className="flex justify-end">
+                <button
+                  type="button"
+                  className="h-7 px-3 rounded-md border border-blue-200 bg-white text-[12px] text-blue-600 hover:bg-blue-50 transition-colors cursor-pointer"
+                  onClick={() => callbacks.onAddReplica(group)}
+                >添加从库</button>
+              </div>
+            </div>
+          )}
         </div>
       )}
     </div>
@@ -219,10 +226,8 @@ function ProxyPorts({ group, publicHost }) {
   return <CopyableEndpoint host={publicHost} port={port} className="text-gray-700 text-[13px]" />;
 }
 
-function InstanceNodeRow({ item, group, role, first, onOpenDetail, onOpenBackups, onPowerAction, onDelete, onConfig, onResize, onToggleAccessMode, pendingAction }) {
-  const powerAction = powerActionFor(item, group);
+function InstanceNodeRow({ item, group, role, first, callbacks, pendingAction }) {
   const isReplica = role === '从库';
-  const isMasterWithReplicas = role === '主库' && group.replicas.length > 0;
   const server = getField(item, 'server', 'Server', '');
   const port = getField(item, 'port', 'Port', '');
   const cpus = Number(getField(item, 'cpus', 'CPUs', 0) || 0);
@@ -233,22 +238,8 @@ function InstanceNodeRow({ item, group, role, first, onOpenDetail, onOpenBackups
     totalGi > 0 ? `${Number.isInteger(totalGi) ? totalGi : totalGi.toFixed(1)}G` : '',
   ].filter(Boolean).join(' · ');
 
-  const menuItems = [
-    { label: '备份列表', onClick: () => onOpenBackups(item, group) },
-    { label: '修改配置', onClick: () => onConfig(item) },
-    { label: '调整规格', onClick: () => onResize(item) },
-    powerAction && {
-      label: powerAction.label,
-      disabled: powerAction.disabledReason || pendingAction === `${powerAction.action}:${item.name}`,
-      onClick: () => { if (!powerAction.disabledReason) onPowerAction(item, group, powerAction.action); }
-    },
-    {
-      label: '删除',
-      danger: true,
-      disabled: isMasterWithReplicas ? '主库存在从库时不可删除，请先删除从库' : pendingAction === `delete:${item.name}`,
-      onClick: () => { if (!isMasterWithReplicas) onDelete(item, group); }
-    }
-  ];
+  // 节点行只放高频运维项（启停 + 删除）；修改配置/调整规格下沉到详情弹窗。
+  const menuItems = nodeRowActionsFor(item, group, role, callbacks, { pendingAction });
 
   return (
     <div className={`${INST_GRID} py-3 bg-transparent hover:bg-blue-50/60 transition-colors ${first ? '' : 'border-t border-slate-200/70'}`}>
@@ -269,8 +260,8 @@ function InstanceNodeRow({ item, group, role, first, onOpenDetail, onOpenBackups
       <div><MemoryUsage memory={totalGi} memoryUsed={used} /></div>
       <div><StatusBadge status={getField(item, 'status', 'Status')} /></div>
       <div className="flex justify-end items-center gap-1.5">
-        <button type="button" className="h-7 px-3 rounded-md border border-gray-200 bg-white text-[12px] text-gray-700 hover:bg-gray-50 hover:border-gray-300 transition-colors cursor-pointer" onClick={() => onOpenDetail(item, group)}>查看</button>
-        <MoreMenu items={menuItems} />
+        <button type="button" className="h-7 px-3 rounded-md border border-gray-200 bg-white text-[12px] text-gray-700 hover:bg-gray-50 hover:border-gray-300 transition-colors cursor-pointer" aria-label={`${role} ${item.name} 详情`} onClick={() => callbacks.onOpenNodeDetail(item, group)}>详情</button>
+        <MoreMenu items={menuItems} ariaLabel={`${role} ${item.name} 更多操作`} />
       </div>
     </div>
   );

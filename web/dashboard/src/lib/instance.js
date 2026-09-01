@@ -266,3 +266,142 @@ export function powerActionFor(item, group) {
   }
   return null;
 }
+
+// ── 作用域与展开判定 ─────────────────────────────────────────────
+// standalone 组：无主从拓扑，只有一个节点，组即节点。
+export function isStandaloneGroup(group) {
+  const type = getField(group, 'type', 'Type', '');
+  if (type) return type === 'standalone';
+  // 老数据可能缺 type：以是否有从库 + master 角色近似判断
+  const role = group.master ? getField(group.master, 'role', 'Role', '') : '';
+  if (role === 'standalone') return true;
+  return group.replicas.length === 0 && role !== 'master';
+}
+
+export function isReplicationGroup(group) {
+  return !isStandaloneGroup(group);
+}
+
+// 展开由"是否主从组"决定，不再依赖从库数量。standalone 不展开；
+// replication（含 1主0从、master 异常）都可展开以暴露节点层级。
+export function canExpandGroup(group) {
+  return isReplicationGroup(group);
+}
+
+// 一个节点是否处于运行/健康态。
+function nodeRunning(item) {
+  const status = getField(item, 'status', 'Status', '');
+  return status === 'running' || status === 'healthy';
+}
+
+// 组是否存在至少一个健康运行的从库（故障转移前提）。
+export function hasHealthyReplica(group) {
+  return group.replicas.some(nodeRunning);
+}
+
+// ── 组级操作 builder ─────────────────────────────────────────────
+// 返回组父行「更多」菜单项（不含主按钮"详情"）。
+// callbacks: { onEditLabels, onOpenBackups, onOpenAccess, onAddReplica, onFailover }
+// context: { pendingAction }
+export function groupActionsFor(group, callbacks = {}, context = {}) {
+  const { onEditLabels, onOpenBackups, onOpenAccess, onAddReplica, onFailover } = callbacks;
+  const items = [
+    { label: '编辑标签', onClick: () => onEditLabels?.(group) },
+    { label: '备份管理', onClick: () => onOpenBackups?.(group) },
+  ];
+  if (isReplicationGroup(group)) {
+    const groupBusy = context.pendingAction && String(context.pendingAction).endsWith(`:${group.groupName}`);
+    items.push({ label: '接入设置', onClick: () => onOpenAccess?.(group) });
+    items.push({
+      label: '添加从库',
+      disabled: groupBusy ? '实例组正在执行其他操作，请稍后再试' : false,
+      onClick: () => { if (!groupBusy) onAddReplica?.(group); },
+    });
+    const canFailover = hasHealthyReplica(group);
+    items.push({
+      label: '故障转移',
+      disabled: canFailover ? false : '没有可用从库，无法故障转移',
+      onClick: () => { if (canFailover) onFailover?.(group); },
+    });
+  }
+  return items;
+}
+
+// ── 节点级操作 builder ───────────────────────────────────────────
+// 节点行「更多」菜单只放高频运维项：启停 + 删除。低频（配置/规格）下沉到详情弹窗。
+// callbacks: { onPowerAction, onDelete }
+// context: { pendingAction }
+export function nodeRowActionsFor(item, group, role, callbacks = {}, context = {}) {
+  const { onPowerAction, onDelete } = callbacks;
+  const power = powerActionFor(item, group);
+  const items = [];
+  if (power) {
+    const pendingKey = `${power.action}:${item.name}`;
+    items.push({
+      label: power.label,
+      disabled: power.disabledReason || context.pendingAction === pendingKey,
+      onClick: () => { if (!power.disabledReason) onPowerAction?.(item, group, power.action); },
+    });
+  }
+  const deleteReason = nodeDeleteDisabledReason(item, group, role);
+  const delPending = context.pendingAction === `delete:${item.name}`;
+  items.push({
+    label: role === '主库' ? '删除节点' : role === '从库' ? '删除从库' : '删除实例',
+    danger: true,
+    separatorBefore: true,
+    disabled: deleteReason || delPending,
+    onClick: () => { if (!deleteReason) onDelete?.(item, group, role); },
+  });
+  return items;
+}
+
+// 主库存在从库时不可删除；其余可删。standalone 删除即删组，交由确认弹窗提示。
+export function nodeDeleteDisabledReason(item, group, role) {
+  if (role === '主库' && group.replicas.length > 0) {
+    return '主库存在从库，请先删除从库或完成拓扑调整';
+  }
+  return false;
+}
+
+// 详情弹窗内「操作区」承载的低频节点操作：修改配置、调整规格。
+// callbacks: { onConfig, onResize }
+export function nodeDetailActionsFor(item, group, callbacks = {}) {
+  const { onConfig, onResize } = callbacks;
+  return [
+    { label: '修改配置', onClick: () => onConfig?.(item) },
+    { label: '调整规格', onClick: () => onResize?.(item) },
+  ];
+}
+
+// standalone 平铺菜单：组操作 + 节点操作合并，不分区；删除置末。
+// callbacks 合并 group 与 node 两类：{ onEditLabels, onOpenBackups, onConfig, onResize, onPowerAction, onDelete }
+export function standaloneActionsFor(group, callbacks = {}, context = {}) {
+  const item = group.master;
+  const { onEditLabels, onOpenBackups, onConfig, onResize, onPowerAction, onDelete } = callbacks;
+  const items = [
+    { label: '编辑标签', onClick: () => onEditLabels?.(group) },
+    { label: '备份管理', onClick: () => onOpenBackups?.(group) },
+    { label: '修改配置', onClick: () => onConfig?.(item) },
+    { label: '调整规格', onClick: () => onResize?.(item) },
+  ];
+  const power = item ? powerActionFor(item, group) : null;
+  if (power) {
+    const pendingKey = `${power.action}:${item.name}`;
+    items.push({
+      label: power.label,
+      disabled: power.disabledReason || context.pendingAction === pendingKey,
+      onClick: () => { if (!power.disabledReason) onPowerAction?.(item, group, power.action); },
+    });
+  }
+  if (item) {
+    const delPending = context.pendingAction === `delete:${item.name}`;
+    items.push({
+      label: '删除实例',
+      danger: true,
+      separatorBefore: true,
+      disabled: delPending,
+      onClick: () => onDelete?.(item, group, 'standalone'),
+    });
+  }
+  return items;
+}

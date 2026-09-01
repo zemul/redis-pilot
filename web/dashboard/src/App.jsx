@@ -30,6 +30,7 @@ import {
   BackupListModal,
   DeleteConfirmModal,
   ConfirmPowerModal,
+  FailoverConfirmModal,
   CreateInstanceModal,
   GroupLabelsModal,
 } from './modals/index.jsx';
@@ -75,10 +76,12 @@ function AppShell() {
   const [backupDetail, setBackupDetail] = useState(null);
   const [confirmAction, setConfirmAction] = useState(null);
   const [deleteConfirm, setDeleteConfirm] = useState(null);
+  const [failoverConfirm, setFailoverConfirm] = useState(null);
   const [configTarget, setConfigTarget] = useState(null);
   const [resizeTarget, setResizeTarget] = useState(null);
   const [labelsTarget, setLabelsTarget] = useState(null);
   const [createOpen, setCreateOpen] = useState(false);
+  const [createInitialGroup, setCreateInitialGroup] = useState(null);
   const [taskInstanceFilter, setTaskInstanceFilter] = useState('');
   const [incidentInstanceFilter, setIncidentInstanceFilter] = useState('');
   const [incidentSummary, setIncidentSummary] = useState(null);
@@ -223,23 +226,76 @@ function AppShell() {
     setActiveTab('incidents');
   }
 
-  async function openInstanceDetail(item, group) {
-    setDetail({ item, group, loading: true, error: '', metrics: null });
+  async function openInstanceDetail(item, group, opts = {}) {
+    const base = { item, group, mode: opts.mode || 'node', initialTab: opts.initialTab || 'trend' };
+    setDetail({ ...base, loading: true, error: '', metrics: null });
     try {
       const metrics = await request(`/instance/metrics?name=${encodeURIComponent(item.name)}`);
-      setDetail({ item, group, loading: false, error: '', metrics });
+      setDetail({ ...base, loading: false, error: '', metrics });
     } catch (err) {
-      setDetail({ item, group, loading: false, error: err.message || String(err), metrics: null });
+      setDetail({ ...base, loading: false, error: err.message || String(err), metrics: null });
     }
   }
 
-  async function openBackupList(item, group) {
-    setBackupDetail({ item, group, loading: true, error: '', backups: [] });
+  // 组详情：以组主库为观测节点，mode=group，默认打开「实例组」页签。
+  function openGroupDetail(group) {
+    const anchor = group.master || group.instances[0];
+    if (!anchor) return;
+    openInstanceDetail(anchor, group, { mode: 'group', initialTab: 'group' });
+  }
+
+  // 节点详情：mode=node，默认「趋势」页签。
+  function openNodeDetail(item, group) {
+    openInstanceDetail(item, group, { mode: 'node', initialTab: 'trend' });
+  }
+
+  // 接入设置：打开组详情的「接入」页签。
+  function openGroupAccess(group) {
+    const anchor = group.master || group.instances[0];
+    if (!anchor) return;
+    openInstanceDetail(anchor, group, { mode: 'group', initialTab: 'access' });
+  }
+
+  // 添加从库：打开创建实例弹窗，预选「加入已有实例组」+ 当前组。
+  function openAddReplica(group) {
+    setCreateInitialGroup(group.groupName);
+    setCreateOpen(true);
+  }
+
+  // 故障转移：二次确认后调用 /instance/failover。
+  function openFailover(group) {
+    setFailoverConfirm({ group });
+  }
+
+  async function executeFailover() {
+    if (!failoverConfirm) return;
+    const { group } = failoverConfirm;
+    const target = group.master || group.instances[0];
+    if (!target) return;
+    const actionKey = `failover:${group.groupName}`;
+    setPendingAction(actionKey);
+    setError('');
+    try {
+      await request('/instance/failover', {
+        method: 'POST',
+        body: JSON.stringify({ name: target.name })
+      });
+      setFailoverConfirm(null);
+      await refresh();
+    } catch (err) {
+      setError(err.message || String(err));
+    } finally {
+      setPendingAction('');
+    }
+  }
+
+  async function openBackupList(group) {
+    setBackupDetail({ group, loading: true, error: '', backups: [] });
     try {
       const payload = await request(`/backup/list?group=${encodeURIComponent(group.groupName)}`);
-      setBackupDetail({ item, group, loading: false, error: '', backups: backupRows(payload) });
+      setBackupDetail({ group, loading: false, error: '', backups: backupRows(payload) });
     } catch (err) {
-      setBackupDetail({ item, group, loading: false, error: err.message || String(err), backups: [] });
+      setBackupDetail({ group, loading: false, error: err.message || String(err), backups: [] });
     }
   }
 
@@ -384,15 +440,20 @@ function AppShell() {
                   setQuery={setQuery}
                   expandedGroups={expandedGroups}
                   setExpandedGroups={setExpandedGroups}
-                  onOpenDetail={openInstanceDetail}
-                  onOpenBackups={openBackupList}
-                  onPowerAction={changeInstancePower}
-                  onDelete={(item, group) => setDeleteConfirm({ item, group, cleanData: true })}
-                  onConfig={(item) => setConfigTarget(item.name)}
-                  onResize={(item) => setResizeTarget({ name: item.name, memory: getField(item, 'memory', 'Memory', ''), cpus: String(getField(item, 'cpus', 'CPUs', '') || ''), disk: getField(item, 'disk', 'Disk', '') })}
-                  onEditLabels={setLabelsTarget}
-                  onCreate={() => setCreateOpen(true)}
-                  servers={servers}
+                  callbacks={{
+                    onOpenGroupDetail: openGroupDetail,
+                    onOpenNodeDetail: openNodeDetail,
+                    onOpenBackups: openBackupList,
+                    onOpenAccess: openGroupAccess,
+                    onAddReplica: openAddReplica,
+                    onFailover: openFailover,
+                    onEditLabels: setLabelsTarget,
+                    onPowerAction: changeInstancePower,
+                    onDelete: (item, group, role) => setDeleteConfirm({ item, group, role, cleanData: true }),
+                    onConfig: (item) => setConfigTarget(item.name),
+                    onResize: (item) => setResizeTarget({ name: item.name, memory: getField(item, 'memory', 'Memory', ''), cpus: String(getField(item, 'cpus', 'CPUs', '') || ''), disk: getField(item, 'disk', 'Disk', '') }),
+                  }}
+                  onCreate={() => { setCreateInitialGroup(null); setCreateOpen(true); }}
                   pendingAction={pendingAction}
                 />
               )}
@@ -417,11 +478,11 @@ function AppShell() {
           )}
         </section>
       </main>
-      {detail && <InstanceDetailModal detail={detail} publicHost={serverInfo?.proxy_public_endpoint} sentinelPort={serverInfo?.proxy_sentinel_port} requestFn={request} onRefresh={refresh} onNavigateAudit={openInstanceAudit} onNavigateTasks={openInstanceTasks} onNavigateIncidents={openIncidents} isAdmin={isAdmin} onClose={() => setDetail(null)} />}
+      {detail && <InstanceDetailModal detail={detail} publicHost={serverInfo?.proxy_public_endpoint} sentinelPort={serverInfo?.proxy_sentinel_port} requestFn={request} onRefresh={refresh} onNavigateAudit={openInstanceAudit} onNavigateTasks={openInstanceTasks} onNavigateIncidents={openIncidents} onConfig={(item) => setConfigTarget(item.name)} onResize={(item) => setResizeTarget({ name: item.name, memory: getField(item, 'memory', 'Memory', ''), cpus: String(getField(item, 'cpus', 'CPUs', '') || ''), disk: getField(item, 'disk', 'Disk', '') })} isAdmin={isAdmin} onClose={() => setDetail(null)} />}
       {configTarget && <ConfigModal instanceName={configTarget} requestFn={request} onClose={() => setConfigTarget(null)} />}
       {resizeTarget && <ResizeModal instanceName={resizeTarget.name} currentSpecs={{ memory: resizeTarget.memory, cpus: resizeTarget.cpus, disk: resizeTarget.disk }} requestFn={request} onClose={() => { setResizeTarget(null); refresh(); }} />}
       {labelsTarget && <GroupLabelsModal group={labelsTarget} suggestions={labelSuggestions} requestFn={request} onSaved={refresh} onClose={() => setLabelsTarget(null)} />}
-      {backupDetail && <BackupListModal detail={backupDetail} requestFn={request} onReload={() => openBackupList(backupDetail.item, backupDetail.group)} onViewTasks={() => { setTaskInstanceFilter(backupDetail.item.name); setBackupDetail(null); setActiveTab('tasks'); }} onClose={() => setBackupDetail(null)} />}
+      {backupDetail && <BackupListModal detail={backupDetail} requestFn={request} onReload={() => openBackupList(backupDetail.group)} onViewTasks={() => { setTaskInstanceFilter(backupDetail.group.groupName); setBackupDetail(null); setActiveTab('tasks'); }} onClose={() => setBackupDetail(null)} />}
       {confirmAction && (
         <ConfirmPowerModal
           detail={confirmAction}
@@ -439,13 +500,22 @@ function AppShell() {
           onToggleClean={(v) => setDeleteConfirm((prev) => ({ ...prev, cleanData: v }))}
         />
       )}
+      {failoverConfirm && (
+        <FailoverConfirmModal
+          detail={failoverConfirm}
+          loading={pendingAction === `failover:${failoverConfirm.group.groupName}`}
+          onCancel={() => setFailoverConfirm(null)}
+          onConfirm={executeFailover}
+        />
+      )}
       {createOpen && (
         <CreateInstanceModal
           servers={servers}
           groups={instanceGroups}
+          initialGroup={createInitialGroup}
           requestFn={request}
           onRefresh={refresh}
-          onClose={() => setCreateOpen(false)}
+          onClose={() => { setCreateOpen(false); setCreateInitialGroup(null); }}
         />
       )}
     </div>

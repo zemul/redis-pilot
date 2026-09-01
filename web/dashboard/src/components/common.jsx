@@ -1,7 +1,7 @@
 // 共享 UI 原子组件：状态徽标、图标按钮、下拉菜单、进度条、空态、可复制文本等，
 // 被多个页面和弹窗复用。业务/格式化逻辑从 lib/ 引入，保持组件层无重复计算。
 import { useState, useEffect, useRef } from 'react';
-import { ChevronDown, Key, LogOut, MoreVertical, Database, Check, Copy } from 'lucide-react';
+import { ChevronDown, Key, LogOut, MoreVertical, Database, Check, Copy, HelpCircle } from 'lucide-react';
 import { statusMeta, formatBytes } from '../lib/format.js';
 import { categoryLabel } from '../lib/instance.js';
 
@@ -85,8 +85,10 @@ export function UserMenu({ username, onLogout, onNavigate }) {
   );
 }
 
-export function MoreMenu({ items }) {
+export function MoreMenu({ items, ariaLabel = '更多操作' }) {
   const [open, setOpen] = useState(false);
+  // 记录哪一项的禁用原因被展开（按需显示，不常驻整行）
+  const [reasonIdx, setReasonIdx] = useState(null);
   const ref = useRef(null);
   const btnRef = useRef(null);
   const [pos, setPos] = useState({ top: 0, right: 0 });
@@ -96,8 +98,18 @@ export function MoreMenu({ items }) {
     function handleClick(e) {
       if (ref.current && !ref.current.contains(e.target)) setOpen(false);
     }
+    function handleKey(e) {
+      if (e.key === 'Escape') {
+        setOpen(false);
+        btnRef.current?.focus();
+      }
+    }
     document.addEventListener('mousedown', handleClick);
-    return () => document.removeEventListener('mousedown', handleClick);
+    document.addEventListener('keydown', handleKey);
+    return () => {
+      document.removeEventListener('mousedown', handleClick);
+      document.removeEventListener('keydown', handleKey);
+    };
   }, [open]);
 
   function toggle() {
@@ -105,6 +117,7 @@ export function MoreMenu({ items }) {
       const rect = btnRef.current.getBoundingClientRect();
       setPos({ top: rect.bottom + 4, right: window.innerWidth - rect.right });
     }
+    setReasonIdx(null);
     setOpen(!open);
   }
 
@@ -113,21 +126,64 @@ export function MoreMenu({ items }) {
 
   return (
     <div className="relative inline-flex" ref={ref}>
-      <button ref={btnRef} className="w-8 h-8 rounded-md border border-gray-200 bg-white text-gray-500 inline-flex items-center justify-center hover:bg-gray-50 hover:border-gray-300 hover:text-gray-900 transition-colors" title="更多操作" aria-label="更多操作" type="button" onClick={toggle}>
+      <button ref={btnRef} className="w-8 h-8 rounded-md border border-gray-200 bg-white text-gray-500 inline-flex items-center justify-center hover:bg-gray-50 hover:border-gray-300 hover:text-gray-900 transition-colors" title={ariaLabel} aria-label={ariaLabel} aria-haspopup="menu" aria-expanded={open} type="button" onClick={toggle}>
         <MoreVertical size={16} />
       </button>
       {open && (
-        <div className="fixed z-50 min-w-[100px] bg-white border border-gray-200 rounded-md shadow-lg py-1" style={{ top: pos.top, right: pos.right }}>
-          {visibleItems.map((mi, i) => (
-            <button
-              key={i}
-              className={`block w-full px-3.5 py-1.5 text-left text-[13px] whitespace-nowrap border-0 bg-transparent cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed ${mi.danger ? 'text-red-600 hover:bg-red-50' : 'text-gray-700 hover:bg-gray-100'}`}
-              disabled={mi.disabled}
-              onClick={() => { setOpen(false); mi.onClick(); }}
-            >
-              {mi.label}
-            </button>
-          ))}
+        <div role="menu" className="fixed z-50 min-w-[132px] bg-white border border-gray-200 rounded-md shadow-lg py-1" style={{ top: pos.top, right: pos.right }}>
+          {visibleItems.map((mi, i) => {
+            // disabled 可为 string（原因）或 boolean。string 走"按需展开原因"路径。
+            const reason = typeof mi.disabled === 'string' ? mi.disabled : '';
+            const isDisabled = Boolean(mi.disabled);
+            const showReason = reasonIdx === i;
+            return (
+              <div key={i}>
+                {mi.separatorBefore && <div className="my-1 border-t border-gray-100" role="separator" />}
+                <div
+                  role="menuitem"
+                  tabIndex={0}
+                  aria-disabled={isDisabled || undefined}
+                  aria-label={mi.label}
+                  title={reason || undefined}
+                  className={`flex items-center justify-between gap-2 w-full px-3.5 py-1.5 text-left text-[13px] whitespace-nowrap select-none ${
+                    isDisabled
+                      ? 'text-gray-400 cursor-not-allowed'
+                      : mi.danger
+                        ? 'text-red-600 hover:bg-red-50 cursor-pointer'
+                        : 'text-gray-700 hover:bg-gray-100 cursor-pointer'
+                  }`}
+                  onClick={() => {
+                    if (isDisabled) {
+                      // 点击禁用项不关闭菜单，仅切换原因展开，便于看清原因
+                      if (reason) setReasonIdx(showReason ? null : i);
+                      return;
+                    }
+                    setOpen(false);
+                    mi.onClick?.();
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault();
+                      if (isDisabled) {
+                        if (reason) setReasonIdx(showReason ? null : i);
+                        return;
+                      }
+                      setOpen(false);
+                      mi.onClick?.();
+                    }
+                  }}
+                >
+                  <span>{mi.label}</span>
+                  {reason && (
+                    <HelpCircle size={13} className="shrink-0 text-gray-400" aria-hidden="true" />
+                  )}
+                </div>
+                {showReason && reason && (
+                  <p className="mx-3.5 mb-1.5 mt-0.5 max-w-[220px] whitespace-normal text-[11px] leading-snug text-gray-500">{reason}</p>
+                )}
+              </div>
+            );
+          })}
         </div>
       )}
     </div>

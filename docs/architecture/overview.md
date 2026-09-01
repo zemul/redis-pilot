@@ -11,6 +11,7 @@
 - [部署与运维](deployment-ops.md) — 持久化目录结构、Podman 规范、安全设计、可观测性、约束与限制
 - [可观测性架构](observability.md) — P1 指标、慢查询、告警的数据边界和查询链路
 - [异常记录功能](health-incidents.md) — 异常检测、持续/恢复状态机、关键时间线、数据模型与页面设计
+- [实例管理页操作设计](instance-management-ui.md) — standalone、主从实例组与节点的展示层级、操作归属和验收标准
 - [产品优化路线图](../ROADMAP.md) — Web/H5 信息架构与 P1～P5 优先级
 
 ---

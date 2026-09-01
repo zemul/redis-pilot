@@ -73,14 +73,15 @@ function LabelInput({ labels, onChange, suggestions = [], disabled = false }) {
   );
 }
 
-export function InstanceDetailModal({ detail, publicHost, sentinelPort, requestFn, onRefresh, onNavigateAudit, onNavigateTasks, onNavigateIncidents, isAdmin, onClose }) {
-  const { item, group, loading, error, metrics } = detail;
+export function InstanceDetailModal({ detail, publicHost, sentinelPort, requestFn, onRefresh, onNavigateAudit, onNavigateTasks, onNavigateIncidents, onConfig, onResize, isAdmin, onClose }) {
+  const { item, group, loading, error, metrics, mode = 'node', initialTab } = detail;
   const payload = extractMetricsPayload(metrics);
   const info = payload.info || payload.Info || '';
   const sections = parseRedisInfo(info);
   const reason = topologyReason(group);
   const isReplication = group.type === 'replication' || group.replicas.length > 0;
-  const [activeTab, setActiveTab] = useState('trend');
+  const isGroupMode = mode === 'group';
+  const [activeTab, setActiveTab] = useState(initialTab || (isGroupMode ? 'group' : 'trend'));
   const metricsSummary = [
     ['Redis 版本', metricValue(sections, 'redis_version')],
     ['角色', metricValue(sections, 'role', getField(item, 'role', 'Role', '-'))],
@@ -119,8 +120,8 @@ export function InstanceDetailModal({ detail, publicHost, sentinelPort, requestF
       <section className="w-[min(980px,100%)] max-h-[min(860px,calc(100vh-56px))] rounded-xl border border-gray-200 overflow-hidden grid grid-rows-[auto_minmax(0,1fr)] bg-white shadow-lg animate-[slideUp_0.18s_cubic-bezier(0.16,1,0.3,1)]" role="dialog" aria-modal="true" onMouseDown={(event) => event.stopPropagation()}>
         <div className="min-h-[62px] px-4 py-4 border-b border-gray-200 flex items-center justify-between gap-3">
           <div>
-            <h3 className="m-0 text-base font-semibold">{item.name}</h3>
-            <span className="block mt-0.5 text-xs text-gray-400">{group.groupName} · {engineLabel(group)}</span>
+            <h3 className="m-0 text-base font-semibold">{isGroupMode ? group.groupName : item.name}</h3>
+            <span className="block mt-0.5 text-xs text-gray-400">{isGroupMode ? `实例组 · ${engineLabel(group)}` : `${group.groupName} · ${engineLabel(group)}`}</span>
           </div>
           <button className="w-8 h-8 rounded-md border border-gray-200 bg-white text-gray-500 inline-flex items-center justify-center hover:bg-gray-50 transition-colors" onClick={onClose} aria-label="关闭" type="button"><X size={18} /></button>
         </div>
@@ -156,6 +157,21 @@ export function InstanceDetailModal({ detail, publicHost, sentinelPort, requestF
           </div>
           {activeTab === 'detail' && (
             <>
+              {!isGroupMode && (onConfig || onResize) && (
+                <section className="flex flex-wrap items-center gap-2">
+                  <span className="text-[12px] font-medium text-gray-400 mr-1">节点操作</span>
+                  {onConfig && (
+                    <button type="button" className="h-8 px-3 rounded-md border border-gray-200 bg-white text-[13px] text-gray-700 hover:bg-gray-50 hover:border-gray-300 transition-colors cursor-pointer inline-flex items-center gap-1.5" onClick={() => onConfig(item)}>
+                      <SlidersHorizontal size={14} /> 修改配置
+                    </button>
+                  )}
+                  {onResize && (
+                    <button type="button" className="h-8 px-3 rounded-md border border-gray-200 bg-white text-[13px] text-gray-700 hover:bg-gray-50 hover:border-gray-300 transition-colors cursor-pointer inline-flex items-center gap-1.5" onClick={() => onResize(item)}>
+                      <HardDrive size={14} /> 调整规格
+                    </button>
+                  )}
+                </section>
+              )}
               <section>
                 <h4 className="m-0 mb-3 inline-flex items-center gap-1.5 text-[13px] font-semibold text-gray-500"><Info size={16} className="text-gray-400" /> 实例详情</h4>
                 <div className="grid grid-cols-3 gap-2.5 max-lg:grid-cols-2 max-md:grid-cols-1">
@@ -1049,7 +1065,7 @@ export function ConfigModal({ instanceName, requestFn, onClose }) {
 }
 
 export function BackupListModal({ detail, requestFn, onReload, onViewTasks, onClose }) {
-  const { item, group, loading, error, backups } = detail;
+  const { group, loading, error, backups } = detail;
   const [execLoading, setExecLoading] = useState(false);
   const [execMsg, setExecMsg] = useState('');
   const [execTaskId, setExecTaskId] = useState('');
@@ -1286,9 +1302,28 @@ export function BackupListModal({ detail, requestFn, onReload, onViewTasks, onCl
 }
 
 export function DeleteConfirmModal({ detail, loading, onCancel, onConfirm, onToggleClean }) {
-  const { item, group, cleanData } = detail;
-  const role = getField(item, 'role', 'Role', '-');
+  const { item, group, cleanData, role } = detail;
   const status = getField(item, 'status', 'Status', '-');
+  const roleLabel = getField(item, 'role', 'Role', '-');
+
+  // 对象类型与拓扑影响文案（按删除对象角色区分）。
+  const objectType = role === '从库' ? '从库节点'
+    : role === '主库' ? '主库节点'
+    : role === 'standalone' ? 'standalone 实例'
+    : '实例';
+  const replicaCount = group.replicas.length;
+  let topologyImpact = '';
+  let groupRemoved = false;
+  if (role === '从库') {
+    topologyImpact = `删除后拓扑：1主${replicaCount}从 → 1主${Math.max(0, replicaCount - 1)}从`;
+  } else if (role === '主库') {
+    // 主库可删仅在 1主0从 时（有从库会被禁用），删除即移除整个实例组。
+    topologyImpact = `实例组 ${group.groupName} 仅剩此主库，删除后实例组将被一并移除`;
+    groupRemoved = true;
+  } else if (role === 'standalone') {
+    topologyImpact = `standalone 实例组 ${group.groupName} 仅含此节点，删除后实例组将被一并移除`;
+    groupRemoved = true;
+  }
 
   return (
     <div className="fixed inset-0 z-40 p-7 grid place-items-center bg-black/40 animate-[fadeIn_0.15s_ease-out]" role="presentation" onMouseDown={onCancel}>
@@ -1298,19 +1333,27 @@ export function DeleteConfirmModal({ detail, loading, onCancel, onConfirm, onTog
             <Trash2 size={20} />
           </div>
           <div>
-            <h3 className="m-0 text-base font-semibold">确认删除实例</h3>
+            <h3 className="m-0 text-base font-semibold">删除{objectType}</h3>
             <span className="block mt-0.5 text-xs text-gray-400">{item.name} · {group.groupName}</span>
           </div>
         </div>
         <div className="p-4">
           <p className="m-0 text-[13px] text-gray-900 leading-relaxed">
-            将要删除实例 <strong className="font-semibold">{item.name}</strong>。此操作不可恢复，实例容器将被停止并移除。
+            将要删除{objectType} <strong className="font-semibold">{item.name}</strong>。此操作不可恢复，实例容器将被停止并移除。
           </p>
           <div className="mt-3 grid gap-1.5 text-[13px] text-gray-500">
-            <span>角色: {displayValue(role)}</span>
+            <span>对象类型: {objectType}</span>
+            <span>实例组: {group.groupName}</span>
+            <span>角色: {displayValue(roleLabel)}</span>
             <span>当前状态: {statusMeta(status).label}</span>
             <span>节点: {displayValue(getField(item, 'server', 'Server'))}</span>
           </div>
+          {topologyImpact && (
+            <div className={`mt-3 flex items-start gap-2 rounded-md border px-3 py-2.5 text-[12px] leading-relaxed ${groupRemoved ? 'border-amber-200 bg-amber-50 text-amber-800' : 'border-slate-200 bg-slate-50 text-slate-600'}`}>
+              <AlertTriangle size={14} className="mt-0.5 shrink-0" />
+              <span>{topologyImpact}</span>
+            </div>
+          )}
           <label className="flex items-center gap-2 mt-3.5 p-2.5 border border-gray-200 rounded-md bg-gray-50 text-[13px] text-gray-600 cursor-pointer">
             <input type="checkbox" checked={cleanData} onChange={(e) => onToggleClean(e.target.checked)} />
             同时删除数据文件（备份 + 数据目录）
@@ -1362,6 +1405,50 @@ export function ConfirmPowerModal({ detail, loading, onCancel, onConfirm }) {
           <button className="h-[34px] rounded-md border border-gray-200 px-3 bg-white text-gray-900 font-medium text-[13px] hover:bg-gray-50 cursor-pointer transition-colors" onClick={onCancel} disabled={loading}>取消</button>
           <button className={`h-[34px] rounded-md px-3 font-medium text-[13px] border-0 cursor-pointer transition-colors disabled:opacity-50 ${isStop ? 'bg-red-600 text-white hover:bg-red-700' : 'bg-gray-900 text-white hover:bg-gray-700'}`} onClick={onConfirm} disabled={loading}>
             {loading ? '处理中...' : `确认${actionText}`}
+          </button>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+export function FailoverConfirmModal({ detail, loading, onCancel, onConfirm }) {
+  const { group } = detail;
+  const master = group.master;
+  const runningReplicas = group.replicas.filter((r) => {
+    const s = getField(r, 'status', 'Status', '');
+    return s === 'running' || s === 'healthy';
+  });
+
+  return (
+    <div className="fixed inset-0 z-40 p-7 grid place-items-center bg-black/40 animate-[fadeIn_0.15s_ease-out]" role="presentation" onMouseDown={onCancel}>
+      <section className="w-[min(480px,100%)] border border-gray-200 rounded-xl bg-white shadow-lg overflow-hidden animate-[slideUp_0.18s_cubic-bezier(0.16,1,0.3,1)]" role="dialog" aria-modal="true" onMouseDown={(event) => event.stopPropagation()}>
+        <div className="px-4 py-4 border-b border-gray-200 flex items-center gap-3">
+          <div className="w-10 h-10 rounded-md grid place-items-center bg-amber-50 text-amber-600 shrink-0">
+            <RefreshCw size={20} />
+          </div>
+          <div>
+            <h3 className="m-0 text-base font-semibold">确认故障转移</h3>
+            <span className="block mt-0.5 text-xs text-gray-400">实例组 {group.groupName}</span>
+          </div>
+        </div>
+        <div className="p-4">
+          <p className="m-0 text-[13px] text-gray-900 leading-relaxed">
+            将对实例组 <strong className="font-semibold">{group.groupName}</strong> 发起一次故障转移（切换主库）。
+          </p>
+          <div className="mt-3 flex items-start gap-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2.5 text-[12px] leading-relaxed text-amber-800">
+            <AlertTriangle size={14} className="mt-0.5 shrink-0" />
+            <span>由 Sentinel 选举决定提升哪个从库，<strong>不保证提升指定节点</strong>；转移期间可能有短暂写中断，业务侧经 Proxy 基本无感。</span>
+          </div>
+          <div className="mt-3 grid gap-1.5 text-[13px] text-gray-500">
+            <span>当前主库: {master ? master.name : '-'}</span>
+            <span>可用从库: {runningReplicas.length} / {group.replicas.length}</span>
+          </div>
+        </div>
+        <div className="px-4 pb-4 pt-2 flex justify-end gap-2">
+          <button className="h-[34px] rounded-md border border-gray-200 px-3 bg-white text-gray-900 font-medium text-[13px] hover:bg-gray-50 cursor-pointer transition-colors" onClick={onCancel} disabled={loading}>取消</button>
+          <button className="h-[34px] rounded-md px-3 bg-amber-600 text-white font-medium text-[13px] hover:bg-amber-700 border-0 cursor-pointer transition-colors disabled:opacity-50" onClick={onConfirm} disabled={loading}>
+            {loading ? '转移中...' : '确认故障转移'}
           </button>
         </div>
       </section>
@@ -1437,10 +1524,10 @@ export function ResizeModal({ instanceName, currentSpecs, requestFn, onClose }) 
   );
 }
 
-export function CreateInstanceModal({ servers, groups, requestFn, onRefresh, onClose }) {
+export function CreateInstanceModal({ servers, groups, initialGroup, requestFn, onRefresh, onClose }) {
   const [form, setForm] = useState({
-    group: '', engine: 'redis', engine_version: '', category: 'cache',
-    joinExisting: false, replicaCount: 1, access_mode: 'standard',
+    group: initialGroup || '', engine: 'redis', engine_version: '', category: 'cache',
+    joinExisting: Boolean(initialGroup), replicaCount: 1, access_mode: 'standard',
     memory: '', memory_unit: 'Gi', cpus: '', disk: '', disk_unit: 'Gi',
     server: '', password: '', labels: [], config_overrides: ''
   });
@@ -1457,6 +1544,12 @@ export function CreateInstanceModal({ servers, groups, requestFn, onRefresh, onC
   const defaultVersion = engines && engines[form.engine] ? engines[form.engine].default || '' : '';
 
   const replicaGroups = groups.filter((g) => g.master);
+  // 从「添加从库」入口进入时预选了组，继承其 engine/category（与 update('group') 一致）。
+  useEffect(() => {
+    if (!initialGroup) return;
+    const g = replicaGroups.find((x) => x.groupName === initialGroup);
+    if (g) setForm((prev) => ({ ...prev, category: g.category || prev.category, engine: g.engine || prev.engine }));
+  }, [initialGroup]);
   const labelSuggestions = [...new Set(groups.flatMap((group) => group.labels || []))].sort((a, b) => a.localeCompare(b));
   const isReplica = form.joinExisting;
 
