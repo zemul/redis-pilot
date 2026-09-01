@@ -1,14 +1,13 @@
 // 操作审计视图：按来源/结果快速分类，主表展示变更摘要，详情抽屉保留完整上下文。
 import { useState, useEffect } from 'react';
 import { SlidersHorizontal, List, AlertCircle, CheckCircle2, ChevronRight, X, CalendarDays } from 'lucide-react';
-import { EmptyState, StatusBadge } from '../components/common.jsx';
+import { EmptyState, StatusBadge, Filter, FilterSelect } from '../components/common.jsx';
 import {
   auditQuery, displayValue, formatDateTime, auditOperator, auditActionLabel,
   auditTargetDisplay, auditLevelLabel, auditResultMeta, auditSourceLabel,
   auditTriggerLabel, auditPhaseLabel, collapseAuditRecords,
 } from '../lib/format.js';
 import { Input } from '../components/ui/input.jsx';
-import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from '../components/ui/select.jsx';
 import { Button } from '../components/ui/button.jsx';
 import { Popover, PopoverTrigger, PopoverContent } from '../components/ui/popover.jsx';
 import { Calendar } from '../components/ui/calendar.jsx';
@@ -112,43 +111,34 @@ export function AuditView({ filters, setFilters, request }) {
             <Filter label="结束日期"><DatePickerInput value={filters.to} onChange={(v) => updateFilter('to', v)} placeholder="选择结束日期" /></Filter>
             <Filter label="目标或操作者"><Input value={filters.q} onChange={(e) => updateFilter('q', e.target.value)} placeholder="实例、组、节点或用户" /></Filter>
             <Filter label="来源">
-              <Select value={filters.source} onValueChange={(v) => updateFilter('source', v)}>
-                <SelectTrigger><SelectValue placeholder="全部来源" /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="">全部来源</SelectItem>
-                  <SelectItem value="manual">人工操作</SelectItem>
-                  <SelectItem value="ai">AI 助手</SelectItem>
-                  <SelectItem value="sentinel">Sentinel</SelectItem>
-                  <SelectItem value="reconcile">状态协调</SelectItem>
-                  <SelectItem value="scheduler">定时任务</SelectItem>
-                  <SelectItem value="system">系统</SelectItem>
-                </SelectContent>
-              </Select>
+              <FilterSelect value={filters.source} onChange={(v) => updateFilter('source', v)} placeholder="全部来源"
+                options={[
+                  { value: '', label: '全部来源' },
+                  { value: 'manual', label: '人工操作' },
+                  { value: 'ai', label: 'AI 助手' },
+                  { value: 'sentinel', label: 'Sentinel' },
+                  { value: 'reconcile', label: '状态协调' },
+                  { value: 'scheduler', label: '定时任务' },
+                  { value: 'system', label: '系统' },
+                ]} />
             </Filter>
             <Filter label="动作">
-              <Select value={filters.action} onValueChange={(v) => updateFilter('action', v)}>
-                <SelectTrigger><SelectValue placeholder="全部动作" /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="">全部动作</SelectItem>
-                  {ACTIONS.map((action) => <SelectItem key={action} value={action}>{auditActionLabel(action)}</SelectItem>)}
-                </SelectContent>
-              </Select>
+              <FilterSelect value={filters.action} onChange={(v) => updateFilter('action', v)} placeholder="全部动作"
+                options={[{ value: '', label: '全部动作' }, ...ACTIONS.map((action) => ({ value: action, label: auditActionLabel(action) }))]} />
             </Filter>
             <Filter label="结果">
-              <Select value={filters.result} onValueChange={(v) => updateFilter('result', v)}>
-                <SelectTrigger><SelectValue placeholder="全部结果" /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="">全部结果</SelectItem>
-                  <SelectItem value="accepted">已受理</SelectItem>
-                  <SelectItem value="running">执行中</SelectItem>
-                  <SelectItem value="success">成功</SelectItem>
-                  <SelectItem value="corrected">已修正</SelectItem>
-                  <SelectItem value="failed">失败</SelectItem>
-                  <SelectItem value="interrupted">已中断</SelectItem>
-                  <SelectItem value="canceled">已取消</SelectItem>
-                  <SelectItem value="skipped">已跳过</SelectItem>
-                </SelectContent>
-              </Select>
+              <FilterSelect value={filters.result} onChange={(v) => updateFilter('result', v)} placeholder="全部结果"
+                options={[
+                  { value: '', label: '全部结果' },
+                  { value: 'accepted', label: '已受理' },
+                  { value: 'running', label: '执行中' },
+                  { value: 'success', label: '成功' },
+                  { value: 'corrected', label: '已修正' },
+                  { value: 'failed', label: '失败' },
+                  { value: 'interrupted', label: '已中断' },
+                  { value: 'canceled', label: '已取消' },
+                  { value: 'skipped', label: '已跳过' },
+                ]} />
             </Filter>
           </div>
           <div className="mt-3.5 flex justify-end gap-2">
@@ -235,10 +225,6 @@ function DatePickerInput({ value, onChange, placeholder = '选择日期' }) {
       </PopoverContent>
     </Popover>
   );
-}
-
-function Filter({ label, children }) {
-  return <label className="grid gap-1.5 text-xs font-medium text-gray-400"><span>{label}</span>{children}</label>;
 }
 
 function AuditDetail({ log, onClose }) {

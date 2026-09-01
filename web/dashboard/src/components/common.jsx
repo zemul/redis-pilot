@@ -4,6 +4,7 @@ import { useState, useEffect, useRef } from 'react';
 import { ChevronDown, Key, LogOut, MoreVertical, Database, Check, Copy, HelpCircle } from 'lucide-react';
 import { statusMeta, formatBytes } from '../lib/format.js';
 import { categoryLabel } from '../lib/instance.js';
+import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from './ui/select.jsx';
 
 // 状态色板：ok/warn/bad/neutral 四档，供状态徽标与圆点统一取色。
 export const dotColor = { ok: 'bg-emerald-400', warn: 'bg-amber-500', bad: 'bg-red-500', neutral: 'bg-gray-300' };
@@ -368,5 +369,28 @@ export function ResourceValue({ memory, memoryUsed }) {
       </div>
       <span className="font-mono tabular-nums text-[11px] text-gray-500">{usedLabel} / {totalLabel}</span>
     </div>
+  );
+}
+
+// Filter：筛选项的统一标签包裹（label 在上、控件在下），供各页面筛选栏复用。
+export function Filter({ label, children }) {
+  return <label className="grid gap-1.5 text-xs font-medium text-gray-400"><span>{label}</span>{children}</label>;
+}
+
+// FilterSelect：统一风格的下拉筛选控件，封装 shadcn Select。
+// options: [{ value, label }]；value="" 约定为「全部」占位（沿用仓库既有用法）。
+// placeholder 为未选中时的占位文案（通常与「全部」项文案一致）。
+export function FilterSelect({ value, onChange, options, placeholder, className, ariaLabel }) {
+  return (
+    <Select value={value} onValueChange={onChange}>
+      <SelectTrigger className={className} aria-label={ariaLabel}>
+        <SelectValue placeholder={placeholder} />
+      </SelectTrigger>
+      <SelectContent>
+        {options.map((opt) => (
+          <SelectItem key={opt.value} value={opt.value}>{opt.label}</SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
   );
 }

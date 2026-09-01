@@ -1,7 +1,7 @@
 // 运维任务视图：任务只回答执行状态与结果，操作责任归属仍由审计页承载。
 import { useEffect, useState } from 'react';
 import { AlertCircle, ChevronRight, ClipboardList, RefreshCw, Search, X } from 'lucide-react';
-import { EmptyState, StatusBadge } from '../components/common.jsx';
+import { EmptyState, StatusBadge, Filter, FilterSelect } from '../components/common.jsx';
 import {
   auditSourceLabel, auditTriggerLabel, displayValue, formatDateTime,
   taskDuration, taskKindLabel, taskStatusMeta, taskTargetDisplay,
@@ -132,15 +132,17 @@ export function TasksView({ request, initialInstance = '' }) {
                 onKeyDown={(event) => { if (event.key === 'Enter') applyFilters(); }} placeholder="输入关键词" />
             </div>
           </label>
-          <label className="w-48 text-xs font-medium text-gray-400 max-md:w-full">任务类型
-            <select className="mt-1.5 w-full h-9 border border-gray-200 rounded-md px-2.5 bg-white text-gray-900 outline-0 text-[13px]"
-              value={filters.kind} onChange={(event) => setFilters((current) => ({ ...current, kind: event.target.value }))}>
-              <option value="">全部类型</option>
-              <option value="backup.create">创建备份</option>
-              <option value="backup.restore">恢复备份</option>
-              <option value="diagnostic.bigkeys">大 Key 扫描</option>
-            </select>
-          </label>
+          <div className="w-48 max-md:w-full">
+            <Filter label="任务类型">
+              <FilterSelect value={filters.kind} onChange={(v) => setFilters((current) => ({ ...current, kind: v }))} placeholder="全部类型"
+                options={[
+                  { value: '', label: '全部类型' },
+                  { value: 'backup.create', label: '创建备份' },
+                  { value: 'backup.restore', label: '恢复备份' },
+                  { value: 'diagnostic.bigkeys', label: '大 Key 扫描' },
+                ]} />
+            </Filter>
+          </div>
           <button type="button" onClick={applyFilters} className="h-9 px-3 rounded-md bg-gray-900 text-white text-[13px] font-medium border-0 cursor-pointer hover:bg-gray-700">应用筛选</button>
         </div>
         {appliedFilters.instance && (

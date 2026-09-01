@@ -1,7 +1,7 @@
 // 异常记录视图：只读展示 reconcile/topology/task 三类来源的异常生命周期。
 import { useEffect, useState } from 'react';
 import { AlertCircle, AlertTriangle, ChevronRight, RefreshCw, ShieldAlert, X } from 'lucide-react';
-import { EmptyState } from '../components/common.jsx';
+import { EmptyState, Filter, FilterSelect } from '../components/common.jsx';
 import { formatDateTime, formatDuration } from '../lib/format.js';
 
 // incident_type → 中文标签。
@@ -127,21 +127,22 @@ export function IncidentsView({ request, initialInstance = '' }) {
           ))}
         </div>
         <div className="p-4 flex items-end gap-3 max-md:flex-col max-md:items-stretch">
-          <label className="w-52 text-xs font-medium text-gray-400 max-md:w-full">异常类型
-            <select className="mt-1.5 w-full h-9 border border-gray-200 rounded-md px-2.5 bg-white text-gray-900 outline-0 text-[13px]"
-              value={filters.type} onChange={(e) => setFilters((c) => ({ ...c, type: e.target.value }))}>
-              <option value="">全部类型</option>
-              {Object.entries(TYPE_LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
-            </select>
-          </label>
-          <label className="w-40 text-xs font-medium text-gray-400 max-md:w-full">严重级别
-            <select className="mt-1.5 w-full h-9 border border-gray-200 rounded-md px-2.5 bg-white text-gray-900 outline-0 text-[13px]"
-              value={filters.severity} onChange={(e) => setFilters((c) => ({ ...c, severity: e.target.value }))}>
-              <option value="">全部级别</option>
-              <option value="critical">严重</option>
-              <option value="warning">警告</option>
-            </select>
-          </label>
+          <div className="w-52 max-md:w-full">
+            <Filter label="异常类型">
+              <FilterSelect value={filters.type} onChange={(v) => setFilters((c) => ({ ...c, type: v }))} placeholder="全部类型"
+                options={[{ value: '', label: '全部类型' }, ...Object.entries(TYPE_LABELS).map(([value, label]) => ({ value, label }))]} />
+            </Filter>
+          </div>
+          <div className="w-40 max-md:w-full">
+            <Filter label="严重级别">
+              <FilterSelect value={filters.severity} onChange={(v) => setFilters((c) => ({ ...c, severity: v }))} placeholder="全部级别"
+                options={[
+                  { value: '', label: '全部级别' },
+                  { value: 'critical', label: '严重' },
+                  { value: 'warning', label: '警告' },
+                ]} />
+            </Filter>
+          </div>
           <button type="button" onClick={applyFilters} className="h-9 px-3 rounded-md bg-gray-900 text-white text-[13px] font-medium border-0 cursor-pointer hover:bg-gray-700">应用筛选</button>
         </div>
         {applied.instance && (
