@@ -25,8 +25,6 @@ import { TasksView } from './views/TasksView.jsx';
 import { IncidentsView } from './views/IncidentsView.jsx';
 import {
   InstanceDetailModal,
-  SlowlogModal,
-  BigkeysModal,
   ConfigModal,
   ResizeModal,
   BackupListModal,
@@ -34,7 +32,6 @@ import {
   ConfirmPowerModal,
   CreateInstanceModal,
   GroupLabelsModal,
-  KeyBrowserModal,
 } from './modals/index.jsx';
 import AiChatPanel from './components/AiChatPanel.jsx';
 import { normalizeMap, backupRows, auditQuery, getField } from './lib/format.js';
@@ -78,12 +75,9 @@ function AppShell() {
   const [backupDetail, setBackupDetail] = useState(null);
   const [confirmAction, setConfirmAction] = useState(null);
   const [deleteConfirm, setDeleteConfirm] = useState(null);
-  const [slowlogTarget, setSlowlogTarget] = useState(null);
-  const [bigkeysTarget, setBigkeysTarget] = useState(null);
   const [configTarget, setConfigTarget] = useState(null);
   const [resizeTarget, setResizeTarget] = useState(null);
   const [labelsTarget, setLabelsTarget] = useState(null);
-  const [keyBrowserTarget, setKeyBrowserTarget] = useState(null);
   const [createOpen, setCreateOpen] = useState(false);
   const [taskInstanceFilter, setTaskInstanceFilter] = useState('');
   const [incidentInstanceFilter, setIncidentInstanceFilter] = useState('');
@@ -394,11 +388,7 @@ function AppShell() {
                   onOpenBackups={openBackupList}
                   onPowerAction={changeInstancePower}
                   onDelete={(item, group) => setDeleteConfirm({ item, group, cleanData: true })}
-                  onSlowlog={(item) => setSlowlogTarget(item.name)}
-                  onBigkeys={(item) => setBigkeysTarget(item.name)}
                   onConfig={(item) => setConfigTarget(item.name)}
-                  onKeyBrowser={(item) => setKeyBrowserTarget(item.name)}
-                  canKeyBrowser={isAdmin}
                   onResize={(item) => setResizeTarget({ name: item.name, memory: getField(item, 'memory', 'Memory', ''), cpus: String(getField(item, 'cpus', 'CPUs', '') || ''), disk: getField(item, 'disk', 'Disk', '') })}
                   onEditLabels={setLabelsTarget}
                   onCreate={() => setCreateOpen(true)}
@@ -427,11 +417,8 @@ function AppShell() {
           )}
         </section>
       </main>
-      {detail && <InstanceDetailModal detail={detail} publicHost={serverInfo?.proxy_public_endpoint} sentinelPort={serverInfo?.proxy_sentinel_port} requestFn={request} onRefresh={refresh} onNavigateAudit={openInstanceAudit} onNavigateTasks={openInstanceTasks} onNavigateIncidents={openIncidents} onClose={() => setDetail(null)} />}
-      {slowlogTarget && <SlowlogModal instanceName={slowlogTarget} requestFn={request} onClose={() => setSlowlogTarget(null)} />}
-      {bigkeysTarget && <BigkeysModal instanceName={bigkeysTarget} requestFn={request} onViewTasks={() => { setTaskInstanceFilter(bigkeysTarget); setBigkeysTarget(null); setActiveTab('tasks'); }} onClose={() => setBigkeysTarget(null)} />}
+      {detail && <InstanceDetailModal detail={detail} publicHost={serverInfo?.proxy_public_endpoint} sentinelPort={serverInfo?.proxy_sentinel_port} requestFn={request} onRefresh={refresh} onNavigateAudit={openInstanceAudit} onNavigateTasks={openInstanceTasks} onNavigateIncidents={openIncidents} isAdmin={isAdmin} onClose={() => setDetail(null)} />}
       {configTarget && <ConfigModal instanceName={configTarget} requestFn={request} onClose={() => setConfigTarget(null)} />}
-      {keyBrowserTarget && <KeyBrowserModal instanceName={keyBrowserTarget} requestFn={request} onClose={() => setKeyBrowserTarget(null)} />}
       {resizeTarget && <ResizeModal instanceName={resizeTarget.name} currentSpecs={{ memory: resizeTarget.memory, cpus: resizeTarget.cpus, disk: resizeTarget.disk }} requestFn={request} onClose={() => { setResizeTarget(null); refresh(); }} />}
       {labelsTarget && <GroupLabelsModal group={labelsTarget} suggestions={labelSuggestions} requestFn={request} onSaved={refresh} onClose={() => setLabelsTarget(null)} />}
       {backupDetail && <BackupListModal detail={backupDetail} requestFn={request} onReload={() => openBackupList(backupDetail.item, backupDetail.group)} onViewTasks={() => { setTaskInstanceFilter(backupDetail.item.name); setBackupDetail(null); setActiveTab('tasks'); }} onClose={() => setBackupDetail(null)} />}

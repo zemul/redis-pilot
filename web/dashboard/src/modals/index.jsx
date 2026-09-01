@@ -4,7 +4,7 @@ import { useState, useEffect } from 'react';
 import {
   X, Info, BarChart3, AlertCircle, RefreshCw, Play, HardDrive,
   Calendar, Save, CheckCircle2, Trash2, Power, Database, Server, SlidersHorizontal,
-  AlertTriangle, Search, Pencil, Check, ShieldCheck,
+  AlertTriangle, Search, Pencil, Check, ShieldCheck, MoreHorizontal,
 } from 'lucide-react';
 import { StatusBadge, EmptyState, CopyableText } from '../components/common.jsx';
 import { getField, displayValue, formatDateTime, statusMeta, formatBytes, formatDuration, auditQuery, auditActionLabel, auditSourceLabel, auditOperator, auditResultMeta, auditTargetDisplay, auditTriggerLabel, taskKindLabel, taskStatusMeta, taskDuration, collapseAuditRecords } from '../lib/format.js';
@@ -73,7 +73,7 @@ function LabelInput({ labels, onChange, suggestions = [], disabled = false }) {
   );
 }
 
-export function InstanceDetailModal({ detail, publicHost, sentinelPort, requestFn, onRefresh, onNavigateAudit, onNavigateTasks, onNavigateIncidents, onClose }) {
+export function InstanceDetailModal({ detail, publicHost, sentinelPort, requestFn, onRefresh, onNavigateAudit, onNavigateTasks, onNavigateIncidents, isAdmin, onClose }) {
   const { item, group, loading, error, metrics } = detail;
   const payload = extractMetricsPayload(metrics);
   const info = payload.info || payload.Info || '';
@@ -134,16 +134,25 @@ export function InstanceDetailModal({ detail, publicHost, sentinelPort, requestF
               </div>
             </div>
           )}
-          <div className={`flex gap-0 border-b border-gray-200 -mx-4 px-4 ${reason ? '' : '-mt-4'}`}>
-            <button className={`px-4 py-2.5 text-[13px] border-0 bg-transparent cursor-pointer border-b-2 mb-[-1px] ${activeTab === 'trend' ? 'text-gray-900 border-gray-900 font-medium' : 'text-gray-400 border-transparent hover:text-gray-700'}`} onClick={() => setActiveTab('trend')}>趋势</button>
-            <button className={`px-4 py-2.5 text-[13px] border-0 bg-transparent cursor-pointer border-b-2 mb-[-1px] ${activeTab === 'detail' ? 'text-gray-900 border-gray-900 font-medium' : 'text-gray-400 border-transparent hover:text-gray-700'}`} onClick={() => setActiveTab('detail')}>详情</button>
-            {isReplication && (
-              <button className={`px-4 py-2.5 text-[13px] border-0 bg-transparent cursor-pointer border-b-2 mb-[-1px] ${activeTab === 'group' ? 'text-gray-900 border-gray-900 font-medium' : 'text-gray-400 border-transparent hover:text-gray-700'}`} onClick={() => setActiveTab('group')}>实例组</button>
-            )}
-            <button className={`px-4 py-2.5 text-[13px] border-0 bg-transparent cursor-pointer border-b-2 mb-[-1px] ${activeTab === 'access' ? 'text-gray-900 border-gray-900 font-medium' : 'text-gray-400 border-transparent hover:text-gray-700'}`} onClick={() => setActiveTab('access')}>接入</button>
-            <button className={`px-4 py-2.5 text-[13px] border-0 bg-transparent cursor-pointer border-b-2 mb-[-1px] ${activeTab === 'incidents' ? 'text-gray-900 border-gray-900 font-medium' : 'text-gray-400 border-transparent hover:text-gray-700'}`} onClick={() => setActiveTab('incidents')}>异常</button>
-            <button className={`px-4 py-2.5 text-[13px] border-0 bg-transparent cursor-pointer border-b-2 mb-[-1px] ${activeTab === 'tasks' ? 'text-gray-900 border-gray-900 font-medium' : 'text-gray-400 border-transparent hover:text-gray-700'}`} onClick={() => setActiveTab('tasks')}>运维任务</button>
-            <button className={`px-4 py-2.5 text-[13px] border-0 bg-transparent cursor-pointer border-b-2 mb-[-1px] ${activeTab === 'audit' ? 'text-gray-900 border-gray-900 font-medium' : 'text-gray-400 border-transparent hover:text-gray-700'}`} onClick={() => setActiveTab('audit')}>操作审计</button>
+          <div className={`flex flex-wrap gap-x-0 gap-y-1 border-b border-gray-200 -mx-4 px-4 ${reason ? '' : '-mt-4'}`}>
+            {[
+              { id: 'trend', label: '趋势' },
+              { id: 'detail', label: '详情' },
+              isReplication && { id: 'group', label: '实例组' },
+              { id: 'access', label: '接入' },
+              { id: 'slowlog', label: '慢查询' },
+              { id: 'bigkeys', label: '大 Key' },
+              isAdmin && { id: 'keys', label: 'Key 浏览器' },
+              { id: 'incidents', label: '异常' },
+              { id: 'tasks', label: '运维任务' },
+              { id: 'audit', label: '操作审计' },
+            ].filter(Boolean).map((tab) => (
+              <button
+                key={tab.id}
+                className={`px-4 py-2.5 text-[13px] border-0 bg-transparent cursor-pointer border-b-2 mb-[-1px] whitespace-nowrap ${activeTab === tab.id ? 'text-gray-900 border-gray-900 font-medium' : 'text-gray-400 border-transparent hover:text-gray-700'}`}
+                onClick={() => setActiveTab(tab.id)}
+              >{tab.label}</button>
+            ))}
           </div>
           {activeTab === 'detail' && (
             <>
@@ -191,6 +200,15 @@ export function InstanceDetailModal({ detail, publicHost, sentinelPort, requestF
           )}
           {activeTab === 'access' && (
             <AccessInfoTab group={group} publicHost={publicHost} sentinelPort={sentinelPort} requestFn={requestFn} onRefresh={onRefresh} />
+          )}
+          {activeTab === 'slowlog' && (
+            <SlowlogPanel instanceName={item.name} requestFn={requestFn} />
+          )}
+          {activeTab === 'bigkeys' && (
+            <BigkeysPanel instanceName={item.name} requestFn={requestFn} onViewTasks={onNavigateTasks ? () => onNavigateTasks(item.name) : null} />
+          )}
+          {activeTab === 'keys' && isAdmin && (
+            <KeyBrowserPanel instanceName={item.name} requestFn={requestFn} />
           )}
           {activeTab === 'incidents' && (
             <InstanceIncidentsTab groupName={group.groupName} instanceName={item.name} requestFn={requestFn} onViewAll={onNavigateIncidents ? () => onNavigateIncidents(item.name) : null} />
@@ -652,7 +670,7 @@ function AccessInfoTab({ group, publicHost, sentinelPort, requestFn, onRefresh }
   );
 }
 
-export function SlowlogModal({ instanceName, requestFn, onClose }) {
+export function SlowlogPanel({ instanceName, requestFn }) {
   const [entries, setEntries] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -677,6 +695,40 @@ export function SlowlogModal({ instanceName, requestFn, onClose }) {
       .finally(() => setLoading(false));
   }
 
+  if (loading) return <div className="min-h-[110px] border border-dashed border-gray-200 rounded-md grid place-items-center text-gray-400">正在加载慢查询...</div>;
+  if (error) return <div className="border border-red-200 rounded-md px-3 py-2.5 flex items-center gap-2 bg-red-50 text-red-700 text-[13px]"><AlertCircle size={16} /> {error}</div>;
+  if (!entries || entries.length === 0) return <div className="text-center p-8 text-gray-400 text-sm">无慢查询记录</div>;
+  return (
+    <section>
+      <div className="flex items-center justify-between mb-3">
+        <span className="text-xs text-gray-400">{entries.length} 条记录</span>
+        <button className="h-7 px-2.5 rounded-md border border-gray-200 bg-white text-gray-700 text-xs font-medium inline-flex items-center gap-1 hover:bg-gray-50 cursor-pointer transition-colors" onClick={reload}><RefreshCw size={14} /> 刷新</button>
+      </div>
+      <table className="w-full border-collapse text-[13px]">
+        <thead>
+          <tr>
+            <th className="text-left px-2.5 py-1.5 font-medium text-gray-400 border-b border-gray-200 text-xs">时间</th>
+            <th className="text-left px-2.5 py-1.5 font-medium text-gray-400 border-b border-gray-200 text-xs">耗时</th>
+            <th className="text-left px-2.5 py-1.5 font-medium text-gray-400 border-b border-gray-200 text-xs">命令</th>
+            <th className="text-left px-2.5 py-1.5 font-medium text-gray-400 border-b border-gray-200 text-xs">客户端</th>
+          </tr>
+        </thead>
+        <tbody>
+          {entries.map((e, i) => (
+            <tr key={i} className="hover:bg-gray-50">
+              <td className="px-2.5 py-1.5 font-mono border-b border-gray-100 align-top">{e.timestamp ? new Date(e.timestamp * 1000).toLocaleString() : '-'}</td>
+              <td className="px-2.5 py-1.5 font-mono border-b border-gray-100 align-top">{e.duration_us >= 1000 ? `${(e.duration_us / 1000).toFixed(1)}ms` : `${e.duration_us}µs`}</td>
+              <td className="px-2.5 py-1.5 font-mono border-b border-gray-100 align-top max-w-[320px] overflow-hidden text-ellipsis whitespace-nowrap">{e.command || '-'}</td>
+              <td className="px-2.5 py-1.5 font-mono border-b border-gray-100 align-top">{e.client || '-'}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </section>
+  );
+}
+
+export function SlowlogModal({ instanceName, requestFn, onClose }) {
   return (
     <div className="fixed inset-0 z-40 p-7 grid place-items-center bg-black/40 animate-[fadeIn_0.15s_ease-out]" role="presentation" onMouseDown={onClose}>
       <section className="w-[min(980px,100%)] max-h-[min(860px,calc(100vh-56px))] rounded-xl border border-gray-200 overflow-hidden grid grid-rows-[auto_minmax(0,1fr)] bg-white shadow-lg animate-[slideUp_0.18s_cubic-bezier(0.16,1,0.3,1)]" role="dialog" aria-modal="true" onMouseDown={(e) => e.stopPropagation()}>
@@ -685,43 +737,14 @@ export function SlowlogModal({ instanceName, requestFn, onClose }) {
           <button className="w-8 h-8 rounded-md border border-gray-200 bg-white text-gray-500 inline-flex items-center justify-center hover:bg-gray-50 transition-colors" onClick={onClose} aria-label="关闭" type="button"><X size={18} /></button>
         </div>
         <div className="min-h-0 overflow-auto p-4 grid gap-4">
-          {loading ? <div className="min-h-[110px] border border-dashed border-gray-200 rounded-md grid place-items-center text-gray-400">正在加载慢查询...</div> :
-           error ? <div className="border border-red-200 rounded-md px-3 py-2.5 flex items-center gap-2 bg-red-50 text-red-700 text-[13px]"><AlertCircle size={16} /> {error}</div> :
-           (!entries || entries.length === 0) ? <div className="text-center p-8 text-gray-400 text-sm">无慢查询记录</div> : (
-            <section>
-              <div className="flex items-center justify-between mb-3">
-                <span className="text-xs text-gray-400">{entries.length} 条记录</span>
-                <button className="h-7 px-2.5 rounded-md border border-gray-200 bg-white text-gray-700 text-xs font-medium inline-flex items-center gap-1 hover:bg-gray-50 cursor-pointer transition-colors" onClick={reload}><RefreshCw size={14} /> 刷新</button>
-              </div>
-              <table className="w-full border-collapse text-[13px]">
-                <thead>
-                  <tr>
-                    <th className="text-left px-2.5 py-1.5 font-medium text-gray-400 border-b border-gray-200 text-xs">时间</th>
-                    <th className="text-left px-2.5 py-1.5 font-medium text-gray-400 border-b border-gray-200 text-xs">耗时</th>
-                    <th className="text-left px-2.5 py-1.5 font-medium text-gray-400 border-b border-gray-200 text-xs">命令</th>
-                    <th className="text-left px-2.5 py-1.5 font-medium text-gray-400 border-b border-gray-200 text-xs">客户端</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {entries.map((e, i) => (
-                    <tr key={i} className="hover:bg-gray-50">
-                      <td className="px-2.5 py-1.5 font-mono border-b border-gray-100 align-top">{e.timestamp ? new Date(e.timestamp * 1000).toLocaleString() : '-'}</td>
-                      <td className="px-2.5 py-1.5 font-mono border-b border-gray-100 align-top">{e.duration_us >= 1000 ? `${(e.duration_us / 1000).toFixed(1)}ms` : `${e.duration_us}µs`}</td>
-                      <td className="px-2.5 py-1.5 font-mono border-b border-gray-100 align-top max-w-[320px] overflow-hidden text-ellipsis whitespace-nowrap">{e.command || '-'}</td>
-                      <td className="px-2.5 py-1.5 font-mono border-b border-gray-100 align-top">{e.client || '-'}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </section>
-          )}
+          <SlowlogPanel instanceName={instanceName} requestFn={requestFn} />
         </div>
       </section>
     </div>
   );
 }
 
-export function BigkeysModal({ instanceName, requestFn, onViewTasks, onClose }) {
+export function BigkeysPanel({ instanceName, requestFn, onViewTasks }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [taskId, setTaskId] = useState('');
@@ -774,6 +797,24 @@ export function BigkeysModal({ instanceName, requestFn, onViewTasks, onClose }) 
   const active = task && ['pending', 'accepted', 'running'].includes(task.status);
 
   return (
+    <>
+      <div className="flex items-center justify-between">
+        <span className="text-xs text-gray-400">阈值: string &gt; 100KB，集合类 &gt; 10000 元素</span>
+        <button className="h-7 px-2.5 rounded-md border border-gray-200 bg-white text-gray-700 text-xs font-medium inline-flex items-center gap-1 hover:bg-gray-50 cursor-pointer transition-colors disabled:opacity-50" onClick={run} disabled={loading || active}>
+          {loading ? <><RefreshCw size={14} className="animate-spin" /> 提交中...</> : active ? <><RefreshCw size={14} className="animate-spin" /> 扫描中...</> : taskId ? <><Play size={14} /> 再次扫描</> : <><Play size={14} /> 开始扫描</>}
+        </button>
+      </div>
+      {error && <div className="border border-red-200 rounded-md px-3 py-2.5 flex items-center gap-2 bg-red-50 text-red-700 text-[13px]"><AlertCircle size={16} /> {error}</div>}
+      {taskId ? <>
+        <div className="border border-gray-200 rounded-md px-3 py-3 flex items-center gap-3 text-[13px]"><span className={`w-2 h-2 rounded-full ${task?.status === 'success' ? 'bg-emerald-500' : ['failed', 'interrupted'].includes(task?.status) ? 'bg-red-500' : task?.status === 'canceled' ? 'bg-gray-400' : 'bg-amber-500'}`} /><div className="flex-1"><strong className="block font-medium">{operationTaskStatusLabel(task?.status)}</strong><span className="block mt-0.5 text-xs text-gray-400">{task?.message || '正在读取任务状态'}{task?.progress > 0 ? ` · 已扫描 ${task.progress} 个 Key` : ''}</span></div>{active && task?.cancelable && <button type="button" onClick={cancelTask} disabled={canceling || task?.cancel_requested} className="h-7 px-2.5 rounded-md border border-red-200 bg-white text-red-600 text-xs font-medium cursor-pointer hover:bg-red-50 disabled:opacity-50">{canceling || task?.cancel_requested ? '正在取消…' : '取消扫描'}</button>}{onViewTasks && <button type="button" onClick={onViewTasks} className="h-7 px-2.5 rounded-md border border-gray-200 bg-white text-gray-600 text-xs font-medium cursor-pointer hover:bg-gray-50">任务详情</button>}</div>
+        {result && <div className="border border-gray-200 rounded-md overflow-hidden"><div className="px-3 py-2.5 border-b border-gray-200 text-xs text-gray-500">已扫描 {result.scanned || 0} 个 Key，命中 {keys.length} 个{result.incomplete ? '，结果不完整' : ''}</div>{keys.length === 0 ? <div className="p-8 text-center text-sm text-gray-400">{active ? '扫描中，暂未发现大 Key' : '未发现超过阈值的大 Key'}</div> : <div className="max-h-[420px] overflow-auto"><table className="w-full border-collapse text-[13px]"><thead><tr>{['Key', '类型', '大小'].map((label) => <th key={label} className="sticky top-0 text-left px-3 py-2 font-medium text-gray-400 border-b border-gray-200 bg-gray-50 text-xs">{label}</th>)}</tr></thead><tbody>{keys.map((item, index) => <tr key={`${item.key}-${index}`}><td className="px-3 py-2 font-mono border-b border-gray-100 max-w-[420px] truncate" title={item.key}>{item.key}</td><td className="px-3 py-2 border-b border-gray-100">{item.type}</td><td className="px-3 py-2 font-mono border-b border-gray-100 whitespace-nowrap">{item.size_desc}</td></tr>)}</tbody></table></div>}</div>}
+      </> : !loading && <div className="min-h-[150px] border border-dashed border-gray-200 rounded-md grid place-items-center content-center gap-2 text-center text-gray-400"><Search size={28} className="text-gray-300" /><span className="text-sm">扫描可留在当前窗口等待，也可以随时关闭后从运维任务继续查看。</span><span className="text-xs">同一实例同时只允许一个扫描任务。</span></div>}
+    </>
+  );
+}
+
+export function BigkeysModal({ instanceName, requestFn, onViewTasks, onClose }) {
+  return (
     <div className="fixed inset-0 z-40 p-7 grid place-items-center bg-black/40 animate-[fadeIn_0.15s_ease-out]" role="presentation" onMouseDown={onClose}>
       <section className="w-[min(980px,100%)] max-h-[min(860px,calc(100vh-56px))] rounded-xl border border-gray-200 overflow-hidden grid grid-rows-[auto_minmax(0,1fr)] bg-white shadow-lg animate-[slideUp_0.18s_cubic-bezier(0.16,1,0.3,1)]" role="dialog" aria-modal="true" onMouseDown={(e) => e.stopPropagation()}>
         <div className="min-h-[62px] px-4 py-4 border-b border-gray-200 flex items-center justify-between gap-3">
@@ -781,17 +822,7 @@ export function BigkeysModal({ instanceName, requestFn, onViewTasks, onClose }) 
           <button className="w-8 h-8 rounded-md border border-gray-200 bg-white text-gray-500 inline-flex items-center justify-center hover:bg-gray-50 transition-colors" onClick={onClose} aria-label="关闭" type="button"><X size={18} /></button>
         </div>
         <div className="min-h-0 overflow-auto p-4 grid gap-4">
-          <div className="flex items-center justify-between">
-            <span className="text-xs text-gray-400">阈值: string &gt; 100KB，集合类 &gt; 10000 元素</span>
-            <button className="h-7 px-2.5 rounded-md border border-gray-200 bg-white text-gray-700 text-xs font-medium inline-flex items-center gap-1 hover:bg-gray-50 cursor-pointer transition-colors disabled:opacity-50" onClick={run} disabled={loading || active}>
-              {loading ? <><RefreshCw size={14} className="animate-spin" /> 提交中...</> : active ? <><RefreshCw size={14} className="animate-spin" /> 扫描中...</> : taskId ? <><Play size={14} /> 再次扫描</> : <><Play size={14} /> 开始扫描</>}
-            </button>
-          </div>
-          {error && <div className="border border-red-200 rounded-md px-3 py-2.5 flex items-center gap-2 bg-red-50 text-red-700 text-[13px]"><AlertCircle size={16} /> {error}</div>}
-          {taskId ? <>
-            <div className="border border-gray-200 rounded-md px-3 py-3 flex items-center gap-3 text-[13px]"><span className={`w-2 h-2 rounded-full ${task?.status === 'success' ? 'bg-emerald-500' : ['failed', 'interrupted'].includes(task?.status) ? 'bg-red-500' : task?.status === 'canceled' ? 'bg-gray-400' : 'bg-amber-500'}`} /><div className="flex-1"><strong className="block font-medium">{operationTaskStatusLabel(task?.status)}</strong><span className="block mt-0.5 text-xs text-gray-400">{task?.message || '正在读取任务状态'}{task?.progress > 0 ? ` · 已扫描 ${task.progress} 个 Key` : ''}</span></div>{active && task?.cancelable && <button type="button" onClick={cancelTask} disabled={canceling || task?.cancel_requested} className="h-7 px-2.5 rounded-md border border-red-200 bg-white text-red-600 text-xs font-medium cursor-pointer hover:bg-red-50 disabled:opacity-50">{canceling || task?.cancel_requested ? '正在取消…' : '取消扫描'}</button>}<button type="button" onClick={onViewTasks} className="h-7 px-2.5 rounded-md border border-gray-200 bg-white text-gray-600 text-xs font-medium cursor-pointer hover:bg-gray-50">任务详情</button></div>
-            {result && <div className="border border-gray-200 rounded-md overflow-hidden"><div className="px-3 py-2.5 border-b border-gray-200 text-xs text-gray-500">已扫描 {result.scanned || 0} 个 Key，命中 {keys.length} 个{result.incomplete ? '，结果不完整' : ''}</div>{keys.length === 0 ? <div className="p-8 text-center text-sm text-gray-400">{active ? '扫描中，暂未发现大 Key' : '未发现超过阈值的大 Key'}</div> : <div className="max-h-[420px] overflow-auto"><table className="w-full border-collapse text-[13px]"><thead><tr>{['Key', '类型', '大小'].map((label) => <th key={label} className="sticky top-0 text-left px-3 py-2 font-medium text-gray-400 border-b border-gray-200 bg-gray-50 text-xs">{label}</th>)}</tr></thead><tbody>{keys.map((item, index) => <tr key={`${item.key}-${index}`}><td className="px-3 py-2 font-mono border-b border-gray-100 max-w-[420px] truncate" title={item.key}>{item.key}</td><td className="px-3 py-2 border-b border-gray-100">{item.type}</td><td className="px-3 py-2 font-mono border-b border-gray-100 whitespace-nowrap">{item.size_desc}</td></tr>)}</tbody></table></div>}</div>}
-          </> : !loading && <div className="min-h-[150px] border border-dashed border-gray-200 rounded-md grid place-items-center content-center gap-2 text-center text-gray-400"><Search size={28} className="text-gray-300" /><span className="text-sm">扫描可留在当前窗口等待，也可以随时关闭后从运维任务继续查看。</span><span className="text-xs">同一实例同时只允许一个扫描任务。</span></div>}
+          <BigkeysPanel instanceName={instanceName} requestFn={requestFn} onViewTasks={onViewTasks} />
         </div>
       </section>
     </div>
@@ -1732,7 +1763,7 @@ export function GroupLabelsModal({ group, suggestions, requestFn, onSaved, onClo
 // ─── 受限 K/V 浏览器（仅 admin）───────────────────────────────────────────────
 // 读全类型 + 分页（集合类游标「加载更多」，list/string 偏移），写按类型给表单，
 // DELETE 二次确认。服务端强制 admin，本弹窗仅在 admin 时挂载。
-export function KeyBrowserModal({ instanceName, requestFn, onClose }) {
+export function KeyBrowserPanel({ instanceName, requestFn }) {
   const [keyInput, setKeyInput] = useState('');
   const [meta, setMeta] = useState(null);   // { type, size, ttl, truncated }
   const [items, setItems] = useState([]);
@@ -1741,6 +1772,8 @@ export function KeyBrowserModal({ instanceName, requestFn, onClose }) {
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [editMode, setEditMode] = useState(false); // 默认只读，显式开启后才显示写入/删除
+  const [moreOpen, setMoreOpen] = useState(false);
   const [newType, setNewType] = useState('string'); // 新建不存在 key 时选定的类型
   const [form, setForm] = useState({ value: '', field: '', member: '', score: '', side: 'right', ttl: '' });
 
@@ -1750,10 +1783,11 @@ export function KeyBrowserModal({ instanceName, requestFn, onClose }) {
     return `/instance/key/get?name=${encodeURIComponent(instanceName)}&key=${encodeURIComponent(k)}`;
   }
 
-  async function query(k) {
+  async function query(k, { keepEdit = false } = {}) {
     const key = (k ?? keyInput).trim();
     if (!key) return;
-    setLoading(true); setError(''); setNotice(''); setConfirmDelete(false);
+    setLoading(true); setError(''); setNotice(''); setConfirmDelete(false); setMoreOpen(false);
+    if (!keepEdit) setEditMode(false);
     try {
       const data = await requestFn(`${baseQuery(key)}&count=200`);
       setMeta({ ...data, _key: key });
@@ -1792,7 +1826,7 @@ export function KeyBrowserModal({ instanceName, requestFn, onClose }) {
     try {
       await requestFn('/instance/key/write', { method: 'POST', body: JSON.stringify({ name: instanceName, key: queriedKey || keyInput.trim(), op, args }) });
       setNotice('写入成功');
-      await query(queriedKey || keyInput.trim());
+      await query(queriedKey || keyInput.trim(), { keepEdit: true });
     } catch (err) {
       setError(err.message || String(err));
     } finally {
@@ -1805,7 +1839,7 @@ export function KeyBrowserModal({ instanceName, requestFn, onClose }) {
     try {
       await requestFn('/instance/key/delete', { method: 'POST', body: JSON.stringify({ name: instanceName, key: queriedKey }) });
       setNotice('已删除');
-      setMeta(null); setItems([]); setConfirmDelete(false);
+      setMeta(null); setItems([]); setConfirmDelete(false); setEditMode(false); setMoreOpen(false);
     } catch (err) {
       setError(err.message || String(err));
     } finally {
@@ -1828,19 +1862,31 @@ export function KeyBrowserModal({ instanceName, requestFn, onClose }) {
 
   const scanType = meta && ['hash', 'set', 'zset'].includes(meta.type);
   const hasMore = meta && (scanType ? cursor !== '0' : (meta.size > items.length && meta.type !== 'string') || (meta.type === 'string' && meta.truncated));
+  const ttlLabel = meta?.ttl === -1 ? '永久' : meta?.ttl === -2 ? '-' : `${meta?.ttl}s`;
+
+  function enterEditMode() {
+    setEditMode(true);
+    setConfirmDelete(false);
+    setMoreOpen(false);
+    setForm((current) => ({
+      ...current,
+      value: meta?.type === 'string' ? items.map((item) => item.value).join('') : current.value,
+      ttl: meta?.ttl >= 0 ? String(meta.ttl) : '',
+    }));
+  }
+
+  function leaveEditMode() {
+    setEditMode(false);
+    setConfirmDelete(false);
+    setMoreOpen(false);
+  }
 
   return (
-    <div className="fixed inset-0 z-40 p-7 grid place-items-center bg-black/40 animate-[fadeIn_0.15s_ease-out]" role="presentation" onMouseDown={onClose}>
-      <section className="w-[min(980px,100%)] max-h-[min(860px,calc(100vh-56px))] rounded-xl border border-gray-200 overflow-hidden grid grid-rows-[auto_minmax(0,1fr)] bg-white shadow-lg animate-[slideUp_0.18s_cubic-bezier(0.16,1,0.3,1)]" role="dialog" aria-modal="true" onMouseDown={(e) => e.stopPropagation()}>
-        <div className="min-h-[62px] px-4 py-4 border-b border-gray-200 flex items-center justify-between gap-3">
-          <div><h3 className="m-0 text-base font-semibold">Key 浏览器</h3><span className="block mt-0.5 text-xs text-gray-400">{instanceName} · 读写均作用于当前主库</span></div>
-          <button className="w-8 h-8 rounded-md border border-gray-200 bg-white text-gray-500 inline-flex items-center justify-center hover:bg-gray-50 transition-colors" onClick={onClose} aria-label="关闭" type="button"><X size={18} /></button>
-        </div>
-        <div className="min-h-0 overflow-auto p-4 grid gap-4">
-          <div className="flex items-center gap-2">
-            <input className="flex-1 h-9 px-3 rounded-md border border-gray-200 text-[13px] font-mono focus:outline-none focus:ring-1 focus:ring-gray-400" placeholder="输入 key 后查询" value={keyInput} onChange={(e) => setKeyInput(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') query(); }} />
-            <button className="h-9 px-4 rounded-md bg-gray-900 text-white text-[13px] font-medium inline-flex items-center gap-1 hover:bg-gray-700 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer transition-colors" onClick={() => query()} disabled={loading || !keyInput.trim()}><Search size={14} /> 查询</button>
-          </div>
+    <>
+      <div className="flex items-center gap-2">
+        <input className="flex-1 h-10 px-3.5 rounded-md border border-gray-200 bg-white text-sm font-mono shadow-sm focus:outline-none focus:border-gray-400 focus:ring-1 focus:ring-gray-300" placeholder="输入 key 后查询" value={keyInput} onChange={(e) => setKeyInput(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') query(); }} />
+        <button className="h-10 px-4 rounded-md bg-gray-900 text-white text-[13px] font-medium inline-flex items-center gap-1.5 hover:bg-gray-700 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer transition-colors" onClick={() => query()} disabled={loading || !keyInput.trim()}>{loading ? <RefreshCw size={15} className="animate-spin" /> : <Search size={15} />} 查询</button>
+      </div>
           {notice && <div className="border border-emerald-200 rounded-md px-3 py-2 flex items-center gap-2 bg-emerald-50 text-emerald-700 text-[13px]"><CheckCircle2 size={16} /> {notice}</div>}
           {error && <div className="border border-red-200 rounded-md px-3 py-2.5 flex items-center gap-2 bg-red-50 text-red-700 text-[13px]"><AlertCircle size={16} /> {error}</div>}
 
@@ -1863,32 +1909,58 @@ export function KeyBrowserModal({ instanceName, requestFn, onClose }) {
           )}
 
           {meta && meta.type !== 'none' && <>
-            <div className="flex flex-wrap items-center gap-2.5 border border-gray-200 rounded-md px-3 py-2.5">
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-2 border border-gray-200 rounded-md px-3 py-2.5 bg-white shadow-sm">
               <span className={`inline-flex items-center rounded px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wide ${KV_TYPE_BADGE[meta.type] || 'bg-gray-100 text-gray-600'}`}>{meta.type}</span>
+              <span className="h-4 w-px bg-gray-200" />
               <span className="text-xs text-gray-500">大小 <b className="text-gray-800 font-mono">{meta.size}</b>{meta.type === 'string' ? ' bytes' : ' 个'}</span>
-              <span className="text-gray-300">·</span>
-              <span className="text-xs text-gray-500">TTL <b className="text-gray-800 font-mono">{meta.ttl === -1 ? '永久' : meta.ttl === -2 ? '-' : `${meta.ttl}s`}</b></span>
-              {meta.truncated && <span className="ml-auto inline-flex items-center gap-1 text-[11px] text-amber-600 bg-amber-50 border border-amber-200 rounded px-1.5 py-0.5">已截断显示</span>}
+              <span className="h-4 w-px bg-gray-200" />
+              <span className="text-xs text-gray-500">TTL <b className="text-gray-800 font-mono">{ttlLabel}</b></span>
+              {meta.truncated && <span className="inline-flex items-center gap-1 text-[11px] text-amber-600 bg-amber-50 border border-amber-200 rounded px-1.5 py-0.5">已截断显示</span>}
+              <div className="ml-auto flex flex-wrap items-center justify-end gap-2">
+                {editMode ? <>
+                  <span className="inline-flex items-center gap-1 text-xs font-medium text-amber-600"><Pencil size={13} /> 编辑模式</span>
+                  <label className="inline-flex h-8 items-center gap-1.5 rounded-md border border-gray-200 bg-gray-50 px-2 text-xs text-gray-500">
+                    TTL
+                    <input className="w-20 bg-transparent font-mono text-gray-800 outline-none" placeholder="永久" value={form.ttl} onChange={(event) => setForm({ ...form, ttl: event.target.value })} />
+                  </label>
+                  <button className="h-8 px-2.5 rounded-md border border-gray-200 bg-white text-gray-600 text-xs hover:bg-gray-50 disabled:opacity-50" onClick={() => doWrite('expire', { ttl_seconds: parseInt(form.ttl, 10) || -1 })} disabled={loading}>应用 TTL</button>
+                  <button className="h-8 px-2.5 rounded-md border border-gray-200 bg-white text-gray-600 text-xs hover:bg-gray-50" onClick={leaveEditMode}>退出编辑</button>
+                </> : <button className="h-8 px-3 rounded-md border border-gray-200 bg-white text-gray-700 text-xs font-medium inline-flex items-center gap-1.5 hover:bg-gray-50" onClick={enterEditMode}><Pencil size={14} /> 编辑 / 写入</button>}
+                <div className="relative">
+                  <button type="button" className="w-8 h-8 rounded-md border border-gray-200 bg-white text-gray-500 inline-flex items-center justify-center hover:bg-gray-50" onClick={() => { setMoreOpen((value) => !value); setConfirmDelete(false); }} aria-label="更多操作"><MoreHorizontal size={16} /></button>
+                  {moreOpen && <div className="absolute right-0 top-10 z-20 w-72 rounded-md border border-gray-200 bg-white p-2 shadow-lg">
+                    {confirmDelete ? <div className="grid gap-2 p-1">
+                      <p className="m-0 text-xs leading-relaxed text-red-600">确认删除整个 Key <b className="font-mono">{queriedKey}</b>？此操作不可恢复。</p>
+                      <div className="flex justify-end gap-1.5">
+                        <button className="h-7 px-2.5 rounded-md border border-gray-200 bg-white text-gray-600 text-xs hover:bg-gray-50" onClick={() => setConfirmDelete(false)}>取消</button>
+                        <button className="h-7 px-2.5 rounded-md bg-red-600 text-white text-xs font-medium hover:bg-red-700 disabled:opacity-50" onClick={doDelete} disabled={loading}>确认删除</button>
+                      </div>
+                    </div> : <button className="w-full h-8 px-2 rounded text-left text-xs text-red-600 inline-flex items-center gap-2 hover:bg-red-50" onClick={() => setConfirmDelete(true)}><Trash2 size={14} /> 删除整个 Key</button>}
+                  </div>}
+                </div>
+              </div>
             </div>
 
-            <KVValueView type={meta.type} items={items} onRowDelete={rowDelete} onRowSave={rowSave} busy={loading} />
+            <KVValueView type={meta.type} items={items} total={meta.size} editMode={editMode} onRowDelete={editMode ? rowDelete : undefined} onRowSave={editMode ? rowSave : undefined} stringValue={form.value} onStringChange={(value) => setForm({ ...form, value })} onStringSave={() => doWrite('set', { value: form.value })} busy={loading} />
 
             {hasMore && <button className="h-8 px-3 rounded-md border border-gray-200 bg-white text-gray-700 text-xs font-medium inline-flex items-center gap-1 hover:bg-gray-50 self-start disabled:opacity-50" onClick={loadMore} disabled={loading}><RefreshCw size={14} className={loading ? 'animate-spin' : ''} /> 加载更多</button>}
 
-            <KVWriteArea type={meta.type} form={form} setForm={setForm} onWrite={doWrite} loading={loading} />
-
-            <div className="border-t border-gray-100 pt-3">
-              {confirmDelete ? (
-                <div className="flex items-center gap-2 text-[13px]">
-                  <span className="text-red-600">确认删除整个 key <b className="font-mono">{queriedKey}</b>？不可恢复。</span>
-                  <button className="h-8 px-3 rounded-md border border-red-300 bg-red-600 text-white text-xs font-medium hover:bg-red-700 disabled:opacity-50" onClick={doDelete} disabled={loading}>确认删除</button>
-                  <button className="h-8 px-3 rounded-md border border-gray-200 bg-white text-gray-600 text-xs font-medium hover:bg-gray-50" onClick={() => setConfirmDelete(false)}>取消</button>
-                </div>
-              ) : (
-                <button className="h-8 px-3 rounded-md border border-red-200 bg-white text-red-600 text-xs font-medium inline-flex items-center gap-1 hover:bg-red-50" onClick={() => setConfirmDelete(true)}><Trash2 size={14} /> 删除整个 key</button>
-              )}
-            </div>
+            {editMode && meta.type !== 'string' && <KVWriteArea type={meta.type} form={form} setForm={setForm} onWrite={doWrite} loading={loading} />}
           </>}
+    </>
+  );
+}
+
+export function KeyBrowserModal({ instanceName, requestFn, onClose }) {
+  return (
+    <div className="fixed inset-0 z-40 p-7 grid place-items-center bg-black/40 animate-[fadeIn_0.15s_ease-out]" role="presentation" onMouseDown={onClose}>
+      <section className="w-[min(980px,100%)] max-h-[min(860px,calc(100vh-56px))] rounded-xl border border-gray-200 overflow-hidden grid grid-rows-[auto_minmax(0,1fr)] bg-white shadow-lg animate-[slideUp_0.18s_cubic-bezier(0.16,1,0.3,1)]" role="dialog" aria-modal="true" onMouseDown={(e) => e.stopPropagation()}>
+        <div className="min-h-[62px] px-4 py-4 border-b border-gray-200 flex items-center justify-between gap-3">
+          <div><h3 className="m-0 text-base font-semibold">Key 浏览器</h3><span className="block mt-0.5 text-xs text-gray-400">{instanceName} · 读写均作用于当前主库</span></div>
+          <button className="w-8 h-8 rounded-md border border-gray-200 bg-white text-gray-500 inline-flex items-center justify-center hover:bg-gray-50 transition-colors" onClick={onClose} aria-label="关闭" type="button"><X size={18} /></button>
+        </div>
+        <div className="min-h-0 overflow-auto p-4 grid gap-4">
+          <KeyBrowserPanel instanceName={instanceName} requestFn={requestFn} />
         </div>
       </section>
     </div>
@@ -1918,17 +1990,26 @@ const KV_TYPE_BADGE = {
 
 // KVValueView 按类型渲染值。集合类支持行内删除（HDEL/SREM/ZREM）与行内编辑
 // （hash 改值 HSET / zset 改分数 ZADD / list 按下标改值 LSET）；set 成员即值，只能删不能改。
-function KVValueView({ type, items, onRowDelete, onRowSave, busy }) {
+function KVValueView({ type, items, total, editMode, onRowDelete, onRowSave, stringValue, onStringChange, onStringSave, busy }) {
   const [editIdx, setEditIdx] = useState(-1);
   const [editVal, setEditVal] = useState('');
-  if (!items || items.length === 0) return <div className="text-center p-6 text-gray-400 text-sm">（空）</div>;
   if (type === 'string') {
-    return <pre className="border border-gray-200 rounded-md p-3 text-[13px] font-mono whitespace-pre-wrap break-all max-h-[300px] overflow-auto bg-gray-50">{items.map((i) => i.value).join('')}</pre>;
+    return <div className="overflow-hidden rounded-md border border-gray-200 bg-white">
+      <div className="flex items-center justify-between border-b border-gray-200 bg-gray-50 px-3 py-2.5">
+        <span className="text-xs font-semibold text-gray-600">值（字符串）</span>
+        <span className="text-[11px] text-gray-400">{total} bytes</span>
+      </div>
+      {editMode ? <div className="grid gap-2.5 p-3">
+        <textarea className="min-h-[180px] w-full resize-y rounded-md border border-gray-300 bg-white p-3 font-mono text-[13px] leading-relaxed text-gray-900 outline-none focus:border-gray-500 focus:ring-1 focus:ring-gray-300" value={stringValue} onChange={(event) => onStringChange(event.target.value)} autoFocus />
+        <div className="flex justify-end"><button className="h-8 px-3 rounded-md bg-gray-900 text-white text-xs font-medium inline-flex items-center gap-1.5 hover:bg-gray-700 disabled:opacity-50" onClick={onStringSave} disabled={busy}><Save size={14} /> 保存 SET</button></div>
+      </div> : <pre className="m-0 min-h-[180px] max-h-[360px] overflow-auto bg-white p-4 text-[13px] leading-relaxed font-mono whitespace-pre-wrap break-all text-gray-900">{items.map((item) => item.value).join('')}</pre>}
+    </div>;
   }
-  const canDelete = ['hash', 'set', 'zset'].includes(type);
-  const canEdit = ['hash', 'zset', 'list'].includes(type); // set 无「改」概念
+  const canDelete = ['hash', 'set', 'zset'].includes(type) && !!onRowDelete;
+  const canEdit = ['hash', 'zset', 'list'].includes(type) && !!onRowSave; // set 无「改」概念
   const hasActions = canDelete || canEdit;
-  const cols = type === 'hash' ? ['字段', '值'] : type === 'zset' ? ['成员', 'score'] : type === 'list' ? ['#', '值'] : ['成员'];
+  const cols = type === 'hash' ? ['字段 field', '值 value'] : type === 'zset' ? ['成员 member', '分数 score'] : type === 'list' ? ['#', '值 value'] : ['成员 member'];
+  const title = type === 'hash' ? 'Hash 字段' : type === 'zset' ? '有序集合成员' : type === 'list' ? 'List 元素' : 'Set 成员';
   // editField：可编辑的目标单元格（hash/list 改 value，zset 改 score）。
   const editValueOf = (it) => (type === 'zset' ? it.score : it.value);
   const startEdit = (i, it) => { setEditIdx(i); setEditVal(editValueOf(it) ?? ''); };
@@ -1938,6 +2019,10 @@ function KVValueView({ type, items, onRowDelete, onRowSave, busy }) {
   const editInput = 'h-7 w-full px-2 rounded border border-gray-300 text-[13px] font-mono focus:outline-none focus:ring-1 focus:ring-gray-400';
   return (
     <div className="border border-gray-200 rounded-md overflow-hidden">
+      <div className="flex items-center justify-between border-b border-gray-200 bg-white px-3 py-2.5">
+        <span className="text-xs font-semibold text-gray-600">{title}</span>
+        <span className="text-[11px] text-gray-400">已显示 {items?.length || 0} / {total}</span>
+      </div>
       <div className="max-h-[300px] overflow-auto">
         <table className="w-full border-collapse text-[13px]">
           <thead><tr>
@@ -1945,7 +2030,7 @@ function KVValueView({ type, items, onRowDelete, onRowSave, busy }) {
             {hasActions && <th className="sticky top-0 w-[92px] px-3 py-2 border-b border-gray-200 bg-gray-50"></th>}
           </tr></thead>
           <tbody>
-            {items.map((it, i) => {
+            {(!items || items.length === 0) ? <tr><td colSpan={cols.length + (hasActions ? 1 : 0)} className="p-8 text-center text-sm text-gray-400">（空）</td></tr> : items.map((it, i) => {
               const editing = editIdx === i;
               return (
                 <tr key={i} className="hover:bg-gray-50 group">
@@ -1963,14 +2048,14 @@ function KVValueView({ type, items, onRowDelete, onRowSave, busy }) {
                   </>}
                   {type === 'set' && <td className="px-3 py-1.5 font-mono border-b border-gray-100 align-top break-all">{it.member}</td>}
                   {hasActions && (
-                    <td className="px-3 py-1.5 border-b border-gray-100 align-top text-right whitespace-nowrap">
+                    <td className="px-3 py-1.5 border-b border-gray-100 align-middle text-right whitespace-nowrap">
                       {editing ? (
                         <span className="inline-flex gap-1">
                           <button className={`${iconBtn} border-gray-900 bg-gray-900 text-white hover:bg-gray-700`} title="保存" disabled={busy} onClick={() => saveEdit(it)}><Check size={14} /></button>
                           <button className={`${iconBtn} border-gray-200 bg-white text-gray-500 hover:bg-gray-50`} title="取消" onClick={cancelEdit}><X size={14} /></button>
                         </span>
                       ) : (
-                        <span className="inline-flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                        <span className="inline-flex gap-1 opacity-40 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity">
                           {canEdit && <button className={`${iconBtn} border-gray-200 bg-white text-gray-500 hover:bg-gray-100`} title="编辑" disabled={busy} onClick={() => startEdit(i, it)}><Pencil size={13} /></button>}
                           {canDelete && <button className={`${iconBtn} border-red-200 bg-white text-red-500 hover:bg-red-50`} title="删除" disabled={busy} onClick={() => onRowDelete?.(it)}><Trash2 size={13} /></button>}
                         </span>
@@ -1987,11 +2072,10 @@ function KVValueView({ type, items, onRowDelete, onRowSave, busy }) {
   );
 }
 
-// KVWriteArea 按类型给对应写表单 + TTL 设置。
+// KVWriteArea 按类型给对应的新增表单；TTL 在元数据工具栏统一维护。
 function KVWriteArea({ type, form, setForm, onWrite, loading }) {
   const inputCls = 'h-8 px-2.5 rounded-md border border-gray-200 bg-white text-[13px] font-mono focus:outline-none focus:ring-1 focus:ring-gray-400';
   const btnCls = 'h-8 px-3 rounded-md bg-gray-900 text-white text-xs font-medium inline-flex items-center gap-1 hover:bg-gray-700 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer transition-colors';
-  const ghostBtn = 'h-8 px-3 rounded-md border border-gray-200 bg-white text-gray-700 text-xs font-medium inline-flex items-center gap-1 hover:bg-gray-50 disabled:opacity-50 cursor-pointer transition-colors';
   const set = (k) => (e) => setForm({ ...form, [k]: e.target.value });
   const Fld = ({ label, grow, children }) => (
     <label className={`flex flex-col gap-1 ${grow ? 'flex-1 min-w-[160px]' : ''}`}>
@@ -1999,9 +2083,10 @@ function KVWriteArea({ type, form, setForm, onWrite, loading }) {
       {children}
     </label>
   );
+  const title = type === 'hash' ? '新增字段' : type === 'list' ? '添加元素' : type === 'set' ? '新增成员' : type === 'zset' ? '新增成员' : '设置字符串';
   return (
-    <div className="border border-gray-200 rounded-md p-3.5 grid gap-3 bg-gray-50/60">
-      <div className="text-xs font-medium text-gray-500">写入 · 作用于当前 key</div>
+    <div className="border border-gray-200 rounded-md p-3 grid gap-2.5 bg-gray-50/70">
+      <div className="text-xs font-semibold text-gray-600">{title}</div>
       <div className="flex flex-wrap items-end gap-2">
         {type === 'string' && <>
           <Fld label="值 value" grow><input className={`${inputCls} w-full`} placeholder="要写入的字符串" value={form.value} onChange={set('value')} /></Fld>
@@ -2010,26 +2095,22 @@ function KVWriteArea({ type, form, setForm, onWrite, loading }) {
         {type === 'hash' && <>
           <Fld label="字段 field"><input className={`${inputCls} w-40`} placeholder="field" value={form.field} onChange={set('field')} /></Fld>
           <Fld label="值 value" grow><input className={`${inputCls} w-full`} placeholder="value" value={form.value} onChange={set('value')} /></Fld>
-          <button className={btnCls} onClick={() => onWrite('hset', { field: form.field, value: form.value })} disabled={loading || !form.field}><Save size={14} /> HSET</button>
+          <button className={btnCls} onClick={() => onWrite('hset', { field: form.field, value: form.value })} disabled={loading || !form.field}><Save size={14} /> 添加 HSET</button>
         </>}
         {type === 'list' && <>
           <Fld label="方向"><select className={`${inputCls} w-32`} value={form.side} onChange={set('side')}><option value="left">左 (LPUSH)</option><option value="right">右 (RPUSH)</option></select></Fld>
           <Fld label="值 value" grow><input className={`${inputCls} w-full`} placeholder="value" value={form.value} onChange={set('value')} /></Fld>
-          <button className={btnCls} onClick={() => onWrite('push', { value: form.value, side: form.side })} disabled={loading}><Save size={14} /> PUSH</button>
+          <button className={btnCls} onClick={() => onWrite('push', { value: form.value, side: form.side })} disabled={loading}><Save size={14} /> 添加 PUSH</button>
         </>}
         {type === 'set' && <>
           <Fld label="成员 member" grow><input className={`${inputCls} w-full`} placeholder="member" value={form.member} onChange={set('member')} /></Fld>
-          <button className={btnCls} onClick={() => onWrite('sadd', { member: form.member })} disabled={loading || !form.member}><Save size={14} /> SADD</button>
+          <button className={btnCls} onClick={() => onWrite('sadd', { member: form.member })} disabled={loading || !form.member}><Save size={14} /> 添加 SADD</button>
         </>}
         {type === 'zset' && <>
           <Fld label="成员 member" grow><input className={`${inputCls} w-full`} placeholder="member" value={form.member} onChange={set('member')} /></Fld>
           <Fld label="分数 score"><input className={`${inputCls} w-24`} placeholder="score" value={form.score} onChange={set('score')} /></Fld>
-          <button className={btnCls} onClick={() => onWrite('zadd', { member: form.member, score: form.score })} disabled={loading || !form.member}><Save size={14} /> ZADD</button>
+          <button className={btnCls} onClick={() => onWrite('zadd', { member: form.member, score: form.score })} disabled={loading || !form.member}><Save size={14} /> 添加 ZADD</button>
         </>}
-      </div>
-      <div className="flex flex-wrap items-end gap-2 pt-2.5 border-t border-gray-200/70">
-        <Fld label="TTL（秒，留空或 <0 表示永久）"><input className={`${inputCls} w-44`} placeholder="如 3600" value={form.ttl} onChange={set('ttl')} /></Fld>
-        <button className={ghostBtn} onClick={() => onWrite('expire', { ttl_seconds: parseInt(form.ttl, 10) || -1 })} disabled={loading || form.ttl === ''}>设置 TTL</button>
       </div>
     </div>
   );

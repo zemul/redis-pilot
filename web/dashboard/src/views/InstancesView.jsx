@@ -16,7 +16,7 @@ import { topologyLabel, engineLabel, powerActionFor } from '../lib/instance.js';
 // 实例列表统一的网格列模板：实例组/节点 | 类型 | 接入/拓扑 | 架构/版本 | 节点/接入点 | 内存使用 | 状态 | 操作
 const INST_GRID = 'grid items-center gap-4 grid-cols-[280px_84px_120px_130px_minmax(220px,1fr)_90px_92px_112px] px-4';
 
-export function InstancesView({ groups, publicHost, sentinelPort, query, setQuery, expandedGroups, setExpandedGroups, onOpenDetail, onOpenBackups, onPowerAction, onDelete, onSlowlog, onBigkeys, onConfig, onKeyBrowser, canKeyBrowser, onResize, onToggleAccessMode, onEditLabels, onCreate, pendingAction }) {
+export function InstancesView({ groups, publicHost, sentinelPort, query, setQuery, expandedGroups, setExpandedGroups, onOpenDetail, onOpenBackups, onPowerAction, onDelete, onConfig, onResize, onToggleAccessMode, onEditLabels, onCreate, pendingAction }) {
   const filtered = groups.filter((group) => {
     const text = [
       group.groupName,
@@ -78,11 +78,7 @@ export function InstancesView({ groups, publicHost, sentinelPort, query, setQuer
               onOpenBackups={onOpenBackups}
               onPowerAction={onPowerAction}
               onDelete={onDelete}
-              onSlowlog={onSlowlog}
-              onBigkeys={onBigkeys}
               onConfig={onConfig}
-              onKeyBrowser={onKeyBrowser}
-              canKeyBrowser={canKeyBrowser}
               onResize={onResize}
               onToggleAccessMode={onToggleAccessMode}
               onEditLabels={onEditLabels}
@@ -95,7 +91,7 @@ export function InstancesView({ groups, publicHost, sentinelPort, query, setQuer
   );
 }
 
-function InstanceGroupCard({ group, expanded, onToggle, publicHost, sentinelPort, onOpenDetail, onOpenBackups, onPowerAction, onDelete, onSlowlog, onBigkeys, onConfig, onKeyBrowser, canKeyBrowser, onResize, onToggleAccessMode, onEditLabels, pendingAction }) {
+function InstanceGroupCard({ group, expanded, onToggle, publicHost, sentinelPort, onOpenDetail, onOpenBackups, onPowerAction, onDelete, onConfig, onResize, onToggleAccessMode, onEditLabels, pendingAction }) {
   const master = group.master;
   const hasReplicas = group.replicas.length > 0;
   const topology = topologyLabel(group, master);
@@ -104,13 +100,10 @@ function InstanceGroupCard({ group, expanded, onToggle, publicHost, sentinelPort
   const powerAction = master ? powerActionFor(master, group) : null;
 
   const menuItems = master ? [
+    { label: '编辑标签', onClick: () => onEditLabels(group) },
     { label: '备份列表', onClick: () => onOpenBackups(master, group) },
     { label: '修改配置', onClick: () => onConfig(master) },
     { label: '调整规格', onClick: () => onResize(master) },
-    { label: '编辑标签', onClick: () => onEditLabels(group) },
-    { label: '慢查询', onClick: () => onSlowlog(master) },
-    { label: '大 Key 分析', onClick: () => onBigkeys(master) },
-    canKeyBrowser && { label: 'Key 浏览器', onClick: () => onKeyBrowser(master) },
     powerAction && {
       label: powerAction.label,
       disabled: powerAction.disabledReason || pendingAction === `${powerAction.action}:${master.name}`,
@@ -187,8 +180,6 @@ function InstanceGroupCard({ group, expanded, onToggle, publicHost, sentinelPort
               onOpenBackups={onOpenBackups}
               onPowerAction={onPowerAction}
               onDelete={onDelete}
-              onSlowlog={onSlowlog}
-              onBigkeys={onBigkeys}
               onConfig={onConfig}
               onResize={onResize}
               onToggleAccessMode={onToggleAccessMode}
@@ -205,8 +196,6 @@ function InstanceGroupCard({ group, expanded, onToggle, publicHost, sentinelPort
               onOpenBackups={onOpenBackups}
               onPowerAction={onPowerAction}
               onDelete={onDelete}
-              onSlowlog={onSlowlog}
-              onBigkeys={onBigkeys}
               onConfig={onConfig}
               onResize={onResize}
               onToggleAccessMode={onToggleAccessMode}
@@ -230,7 +219,7 @@ function ProxyPorts({ group, publicHost }) {
   return <CopyableEndpoint host={publicHost} port={port} className="text-gray-700 text-[13px]" />;
 }
 
-function InstanceNodeRow({ item, group, role, first, onOpenDetail, onOpenBackups, onPowerAction, onDelete, onSlowlog, onBigkeys, onConfig, onResize, onToggleAccessMode, pendingAction }) {
+function InstanceNodeRow({ item, group, role, first, onOpenDetail, onOpenBackups, onPowerAction, onDelete, onConfig, onResize, onToggleAccessMode, pendingAction }) {
   const powerAction = powerActionFor(item, group);
   const isReplica = role === '从库';
   const isMasterWithReplicas = role === '主库' && group.replicas.length > 0;
@@ -248,8 +237,6 @@ function InstanceNodeRow({ item, group, role, first, onOpenDetail, onOpenBackups
     { label: '备份列表', onClick: () => onOpenBackups(item, group) },
     { label: '修改配置', onClick: () => onConfig(item) },
     { label: '调整规格', onClick: () => onResize(item) },
-    { label: '慢查询', onClick: () => onSlowlog(item) },
-    { label: '大 Key 分析', onClick: () => onBigkeys(item) },
     powerAction && {
       label: powerAction.label,
       disabled: powerAction.disabledReason || pendingAction === `${powerAction.action}:${item.name}`,
