@@ -7,10 +7,19 @@ import {
   displayValue,
   parseGi,
   statusMeta,
+  incidentTypeLabel,
 } from './format.js';
 
 export function instanceStatusTone(status) {
   return statusMeta(status).tone;
+}
+
+// 展示层有效色调：有 open 异常时按异常严重度（critical→bad, warning→warn），
+// 否则回退到运行态色调。用于列表/大盘行着色与状态徽标，保证与异常表口径一致。
+export function groupDisplayTone(group) {
+  const incident = group.incident;
+  if (incident && incident.count) return incident.severity === 'critical' ? 'bad' : 'warn';
+  return instanceStatusTone(group.status);
 }
 
 export function groupStatus(instances) {
@@ -21,63 +30,33 @@ export function groupStatus(instances) {
   return instances[0] ? getField(instances[0], 'status', 'Status') : 'unknown';
 }
 
-export function topologyStatus(groupState, instances) {
-  if (getField(groupState, 'failover_conflict', 'FailoverConflict', false)) return 'failover_conflict';
-  const topology = getField(groupState, 'topology_status', 'TopologyStatus', '');
-  const instanceStatus = groupStatus(instances);
-  if (instanceStatusTone(instanceStatus) === 'bad') return instanceStatus;
-  if (instanceStatus && instanceStatus !== 'running') return instanceStatus;
-  if (topology) return topology;
-  return instanceStatus;
+// 运行态：只反映实例进程的真实状态（运行中/已停止/异常停止/创建中等），
+// 不做任何拓扑健康推算。拓扑/复制类健康判定统一交给后端异常表（/incidents）。
+export function runtimeStatus(instances) {
+  return groupStatus(instances);
 }
 
-// 实例是否处于对外服务态（与后端 IsServing 语义对齐，前端以派生 status 近似）。
+// 实例是否处于运行态。
 function instanceRunning(item) {
   return getField(item, 'status', 'Status') === 'running';
 }
 
-// 把 degraded / failover_conflict 这类"只有颜色没有原因"的状态，
-// 从组拓扑数据里派生成可读的原因 + 处置建议，供列表 tooltip 与详情弹窗展示。
-// 返回 null 表示无需额外说明（健康/运行中等）。
+// 状态说明块（详情弹窗用）：完全以异常表为来源。
+// 有 open 异常 → 返回按严重度排序的异常清单；无异常 → null（无需额外说明）。
 export function topologyReason(group) {
-  const status = group.status;
-  if (status === 'failover_conflict') {
-    return {
-      title: '故障转移冲突',
-      detail: 'Sentinel 记录的主节点与平台状态不一致，读写路由可能异常。请执行 sentinel sync 或检查主从拓扑。',
-    };
-  }
-  if (status !== 'degraded') return null;
-  const isReplication = group.type === 'replication' || group.replicas.length > 0;
-  const masterRunning = group.master && instanceRunning(group.master);
-  if (!masterRunning) {
-    return {
-      title: '主节点不可用',
-      detail: isReplication
-        ? '主从组的主节点当前未在运行，读写可能中断，需尽快恢复或触发故障转移。'
-        : '单点实例当前未在运行。',
-    };
-  }
-  if (isReplication) {
-    const runningReplicas = group.replicas.filter(instanceRunning).length;
-    if (group.replicas.length === 0) {
-      return {
-        title: '缺少从节点',
-        detail: '主从组当前没有从节点，无法进行故障转移与读写分离，建议补充从节点。',
-      };
-    }
-    if (runningReplicas === 0) {
-      return {
-        title: '从节点未运行',
-        detail: `${group.replicas.length} 个从节点均未在运行，主从复制已中断。`,
-      };
-    }
-    return {
-      title: '部分从节点异常',
-      detail: `${group.replicas.length - runningReplicas}/${group.replicas.length} 个从节点未在运行。`,
-    };
-  }
-  return { title: '拓扑降级', detail: '实例组拓扑与预期状态不符。' };
+  const incident = group.incident;
+  if (!incident || !incident.count) return null;
+  const types = incident.types || [];
+  const critical = incident.severity === 'critical';
+  return {
+    critical,
+    title: types.length ? incidentTypeLabel(types[0]) : '存在未处理异常',
+    detail: types.length
+      ? `该实例组存在 ${incident.count} 条未处理异常：${types.map(incidentTypeLabel).join('、')}。详见异常记录。`
+      : `该实例组存在 ${incident.count} 条未处理异常。详见异常记录。`,
+    types,
+    count: incident.count,
+  };
 }
 
 export function buildInstanceGroups(instanceState, incidentsByGroup = {}) {
@@ -145,14 +124,14 @@ export function buildInstanceGroups(instanceState, incidentsByGroup = {}) {
     const memoryUsed = group.instances.reduce((sum, item) => sum + Number(getField(item, 'memory_used', 'MemoryUsed', 0) || 0), 0);
     const disk = group.instances.reduce((sum, item) => sum + parseGi(getField(item, 'disk', 'Disk')), 0);
     const cpus = group.instances.reduce((sum, item) => sum + Number(getField(item, 'cpus', 'CPUs', 0) || 0), 0);
-    const topoStatus = topologyStatus(group.groupState, group.instances);
+    const runStatus = runtimeStatus(group.instances);
     const incident = incidentsByGroup[group.groupName] || null;
     return {
       ...group,
       master: primary,
       replicas: group.instances.filter((item) => item.name !== primary?.name && getField(item, 'role', 'Role') !== 'master' && getField(item, 'role', 'Role') !== 'standalone'),
-      status: mergeStatusWithIncident(topoStatus, incident),
-      topologyStatus: topoStatus,
+      // status 只反映运行态；健康/异常判定交给 incident（来自异常表），由展示层合成。
+      status: runStatus,
       incident,
       engine: getField(group.groupState, 'engine', 'Engine', primary ? getField(primary, 'engine', 'Engine', group.engine) : group.engine),
       engineVersion: getField(group.groupState, 'engine_version', 'EngineVersion', group.engineVersion),
@@ -161,23 +140,6 @@ export function buildInstanceGroups(instanceState, incidentsByGroup = {}) {
       resource: { memory, memoryUsed, disk, cpus }
     };
   });
-}
-
-// mergeStatusWithIncident 把拓扑派生状态与该组 open 异常等级取最差，作为列表展示状态。
-// 保证列表状态不比实际乐观，且与异常中心口径一致（既覆盖拓扑降级，也覆盖未配置备份
-// 这类非拓扑异常）。
-// - 拓扑本身已是 bad（如 failed/failover_conflict）：保持拓扑状态，标签更具体。
-// - 拓扑非 bad 但有 critical 异常：升级为 abnormal(bad)。
-// - 拓扑非 bad 且只有 warning 异常：若拓扑已是 warn（degraded 等）保持其更具体的标签，
-//   否则（拓扑健康）升级为 attention(warn)，避免显示"健康"掩盖异常。
-function mergeStatusWithIncident(topoStatus, incident) {
-  if (!incident) return topoStatus;
-  const topoTone = instanceStatusTone(topoStatus);
-  if (topoTone === 'bad') return topoStatus;
-  if (incident.severity === 'critical') return 'abnormal';
-  // warning 异常
-  if (topoTone === 'warn') return topoStatus; // degraded 等更具体，保留
-  return 'attention';
 }
 
 function normalizeGroupLabels(raw) {

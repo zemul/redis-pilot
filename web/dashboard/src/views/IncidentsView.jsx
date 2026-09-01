@@ -2,25 +2,15 @@
 import { useEffect, useState } from 'react';
 import { AlertCircle, AlertTriangle, ChevronRight, RefreshCw, ShieldAlert, X } from 'lucide-react';
 import { EmptyState, Filter, FilterSelect } from '../components/common.jsx';
-import { formatDateTime, formatDuration } from '../lib/format.js';
+import { formatDateTime, formatDuration, INCIDENT_TYPE_LABELS, incidentTypeLabel } from '../lib/format.js';
 
-// incident_type → 中文标签。
-const TYPE_LABELS = {
-  instance_unexpected_down: '实例意外停止',
-  node_agent_unreachable: '节点 Agent 不可达',
-  master_mismatch: 'Master 视角不一致',
-  failover_conflict: '故障转移冲突',
-  no_running_replica: '无可用从节点',
-  replica_missing: '缺少从节点',
-  backup_task_failed: '备份失败',
-  restore_task_failed: '恢复失败',
-  backup_not_configured: '未配置备份',
-};
+// incident_type → 中文标签（统一取自 lib/format.js，避免多处副本漂移）。
+const TYPE_LABELS = INCIDENT_TYPE_LABELS;
 
 const OBJECT_LABELS = { instance: '实例', group: '实例组', node: '节点' };
 const SOURCE_LABELS = { reconcile: '状态校验', topology: '拓扑', task: '任务' };
 
-function typeLabel(t) { return TYPE_LABELS[t] || t; }
+function typeLabel(t) { return incidentTypeLabel(t); }
 function objectLabel(o) { return OBJECT_LABELS[o] || o; }
 function durationLabel(ms) { return ms > 0 ? formatDuration(Math.round(ms / 1000)) : '-'; }
 

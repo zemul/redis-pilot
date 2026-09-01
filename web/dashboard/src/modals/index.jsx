@@ -127,11 +127,11 @@ export function InstanceDetailModal({ detail, publicHost, sentinelPort, requestF
         </div>
         <div className="min-h-0 overflow-auto p-4 grid gap-4">
           {reason && (
-            <div className="flex items-start gap-2.5 rounded-md border border-amber-200 bg-amber-50 px-3 py-2.5 text-[13px] text-amber-800">
-              <AlertTriangle size={16} className="mt-0.5 shrink-0 text-amber-500" />
+            <div className={`flex items-start gap-2.5 rounded-md border px-3 py-2.5 text-[13px] ${reason.critical ? 'border-red-200 bg-red-50 text-red-800' : 'border-amber-200 bg-amber-50 text-amber-800'}`}>
+              <AlertTriangle size={16} className={`mt-0.5 shrink-0 ${reason.critical ? 'text-red-500' : 'text-amber-500'}`} />
               <div className="min-w-0">
                 <strong className="font-semibold">{reason.title}</strong>
-                <p className="m-0 mt-0.5 text-[12px] leading-relaxed text-amber-700">{reason.detail}</p>
+                <p className={`m-0 mt-0.5 text-[12px] leading-relaxed ${reason.critical ? 'text-red-700' : 'text-amber-700'}`}>{reason.detail}</p>
               </div>
             </div>
           )}

@@ -313,3 +313,30 @@ export function taskDuration(task) {
   const rest = seconds % 60;
   return `${minutes}分${rest ? `${rest}秒` : ''}`;
 }
+
+// 异常类型 → 中文标签（异常记录页 / 大盘当前异常 / 实例列表角标共用同一份）。
+export const INCIDENT_TYPE_LABELS = {
+  instance_unexpected_down: '实例意外停止',
+  node_agent_unreachable: '节点 Agent 不可达',
+  master_mismatch: 'Master 视角不一致',
+  failover_conflict: '故障转移冲突',
+  no_running_replica: '无可用从节点',
+  replica_missing: '缺少从节点',
+  backup_task_failed: '备份失败',
+  restore_task_failed: '恢复失败',
+  backup_not_configured: '未配置备份',
+};
+
+export function incidentTypeLabel(type) {
+  return INCIDENT_TYPE_LABELS[type] || type;
+}
+
+// 由异常聚合({types, severity, count})合成状态徽标的 label + tone。
+// 供 StatusBadge 的 metaFn 使用：单类型显示类型名，多类型显示"主类型 等N类"。
+export function incidentStatusMeta(incident) {
+  const types = incident?.types || [];
+  const primary = types.length ? incidentTypeLabel(types[0]) : '存在异常';
+  const label = types.length > 1 ? `${primary} 等${types.length}类` : primary;
+  const tone = incident?.severity === 'critical' ? 'bad' : 'warn';
+  return { label, tone };
+}

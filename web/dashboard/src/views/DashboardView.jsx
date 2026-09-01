@@ -1,8 +1,8 @@
 // 大盘看板视图：平台汇总 + 实例组态势 + 基础设施/最近操作。
 import { ChevronRight, Database, Server, ShieldCheck, ShieldAlert, Clock, GitMerge, MemoryStick } from 'lucide-react';
 import { EmptyState, EngineIcon, MemoryUsage, StatusBadge, SummaryCell } from '../components/common.jsx';
-import { formatBytes, formatDuration, getField } from '../lib/format.js';
-import { engineLabel, topologyLabel, instanceStatusTone, topologyReason } from '../lib/instance.js';
+import { formatBytes, formatDuration, getField, INCIDENT_TYPE_LABELS, incidentStatusMeta } from '../lib/format.js';
+import { engineLabel, topologyLabel, instanceStatusTone, topologyReason, groupDisplayTone } from '../lib/instance.js';
 import { AuditCard } from './AuditView.jsx';
 
 // 大盘只展示实例组态势；节点级明细留在实例管理页和详情弹窗中。
@@ -30,7 +30,7 @@ function DashboardInstanceOverview({ groups, onOpenDetail }) {
         {orderedGroups.map((group) => {
           const running = group.instances.filter((inst) => getField(inst, 'status', 'Status') === 'running').length;
           const total = group.instances.length;
-          const tone = instanceStatusTone(group.status);
+          const tone = groupDisplayTone(group);
           const isRwSplit = group.access_mode === 'rw-split';
           const reason = topologyReason(group);
           const rowTint = tone === 'bad' ? 'bg-red-50/40' : tone === 'warn' ? 'bg-amber-50/30' : 'bg-white';
@@ -62,13 +62,17 @@ function DashboardInstanceOverview({ groups, onOpenDetail }) {
               <MemoryUsage memory={group.resource.memory} memoryUsed={group.resource.memoryUsed} />
               <span className="flex items-center justify-between gap-2 min-w-0">
                 <span className="min-w-0">
-                  <StatusBadge status={group.status} title={reason?.detail} />
+                  {group.incident && group.incident.count ? (
+                    <StatusBadge status="incident" metaFn={() => incidentStatusMeta(group.incident)} title={reason?.detail} />
+                  ) : (
+                    <StatusBadge status={group.status} />
+                  )}
                   {reason && (
                     <span
                       className={`block mt-0.5 text-[11px] truncate ${tone === 'bad' ? 'text-red-500' : 'text-amber-600'}`}
                       title={reason.detail}
                     >
-                      {reason.title}
+                      {reason.detail}
                     </span>
                   )}
                 </span>
@@ -84,17 +88,6 @@ function DashboardInstanceOverview({ groups, onOpenDetail }) {
 
 // 当前异常卡片：只展示未恢复(open)异常，严重优先、持续时间倒序，最多 5 条。
 // 数据来自 /incidents/summary，不在前端自行聚合全量列表。
-const INCIDENT_TYPE_LABELS = {
-  instance_unexpected_down: '实例意外停止',
-  node_agent_unreachable: '节点 Agent 不可达',
-  master_mismatch: 'Master 视角不一致',
-  failover_conflict: '故障转移冲突',
-  no_running_replica: '无可用从节点',
-  backup_task_failed: '备份失败',
-  restore_task_failed: '恢复失败',
-  backup_not_configured: '未配置备份',
-};
-
 function CurrentIncidentsCard({ summary, onOpenIncidents }) {
   const total = summary?.total || 0;
   const top = summary?.top || [];

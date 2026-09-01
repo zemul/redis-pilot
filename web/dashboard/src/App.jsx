@@ -174,12 +174,16 @@ function AppShell() {
           const group = rec.group_name || rec.GroupName;
           if (!group) continue;
           const severity = rec.severity || rec.Severity || 'warning';
+          const type = rec.incident_type || rec.IncidentType || '';
           const prev = byGroup[group];
-          // critical 优先于 warning；记录条数用于角标计数。
+          // critical 优先于 warning；记录条数用于角标计数；types 记录出现过的异常类型（去重，保序）。
           const worse = prev?.severity === 'critical' ? 'critical' : severity;
+          const types = prev?.types ? [...prev.types] : [];
+          if (type && !types.includes(type)) types.push(type);
           byGroup[group] = {
             severity: prev?.severity === 'critical' ? 'critical' : worse,
             count: (prev?.count || 0) + 1,
+            types,
           };
         }
         if (!ignore) setOpenIncidentsByGroup(byGroup);
@@ -378,6 +382,10 @@ function AppShell() {
     }
   }
 
+  // 异常记录导航角标：未处理异常总数 + 是否含严重级（严重→红，仅警告→琥珀）。
+  const incidentCount = incidentSummary?.total || 0;
+  const incidentHasCritical = (incidentSummary?.top || []).some((inc) => inc.severity === 'critical');
+
   const nav = (
     <nav className="grid gap-0.5">
       {TABS.map((tab) => {
@@ -399,6 +407,7 @@ function AppShell() {
             <Icon size={19} className={activeTab === tab.id ? 'text-white' : 'text-gray-400'} />
             <span>{tab.label}</span>
             {tab.id === 'tasks' && activeTaskCount > 0 && <span className={`ml-auto min-w-5 h-5 px-1 rounded-full inline-grid place-items-center text-[11px] font-semibold ${activeTab === 'tasks' ? 'bg-white text-gray-900' : 'bg-amber-100 text-amber-700'}`}>{activeTaskCount > 99 ? '99+' : activeTaskCount}</span>}
+            {tab.id === 'incidents' && incidentCount > 0 && <span className={`ml-auto min-w-5 h-5 px-1 rounded-full inline-grid place-items-center text-[11px] font-semibold ${activeTab === 'incidents' ? 'bg-white text-gray-900' : incidentHasCritical ? 'bg-red-100 text-red-700' : 'bg-amber-100 text-amber-700'}`}>{incidentCount > 99 ? '99+' : incidentCount}</span>}
           </button>
         );
       })}

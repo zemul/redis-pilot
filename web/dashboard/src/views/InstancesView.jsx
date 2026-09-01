@@ -16,7 +16,7 @@ import {
   MoreMenu,
   FilterSelect,
 } from '../components/common.jsx';
-import { getField, parseGi, statusMeta } from '../lib/format.js';
+import { getField, parseGi, statusMeta, incidentTypeLabel, incidentStatusMeta } from '../lib/format.js';
 import {
   topologyLabel,
   engineLabel,
@@ -272,12 +272,14 @@ function InstanceGroupCard({ group, expanded, onToggle, publicHost, sentinelPort
         <div className="text-[13px]"><ProxyPorts group={group} publicHost={publicHost} /></div>
         <div>{master ? <MemoryUsage memory={group.resource.memory} memoryUsed={group.resource.memoryUsed} /> : <span className="text-gray-300">-</span>}</div>
         <div className="flex items-center gap-1.5">
-          <StatusBadge status={group.status} />
-          {group.incident && (
-            <span
-              title={`该组有 ${group.incident.count} 条未处理异常，详见异常记录`}
-              className={`inline-flex items-center justify-center min-w-[16px] h-4 px-1 rounded-full text-[10px] font-semibold ${group.incident.severity === 'critical' ? 'bg-red-100 text-red-700' : 'bg-amber-100 text-amber-700'}`}
-            >{group.incident.count}</span>
+          {group.incident && group.incident.count ? (
+            <StatusBadge
+              status="incident"
+              metaFn={() => incidentStatusMeta(group.incident)}
+              title={`${(group.incident.types || []).map(incidentTypeLabel).join('、') || '存在异常'}（共 ${group.incident.count} 条），详见异常记录`}
+            />
+          ) : (
+            <StatusBadge status={group.status} />
           )}
         </div>
         <div className="flex justify-end items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
