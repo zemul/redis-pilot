@@ -48,14 +48,14 @@ redis-pilot-cli instance failover <name>            # 触发故障转移（参�
 redis-pilot-cli instance set-access-mode <name> <standard|rw-split>  # 设置代理访问模式
 ```
 
-### 备份管理
+### 备份管理（组级）
 ```
-redis-pilot-cli backup exec <name>                  # 执行备份
-redis-pilot-cli backup list <name>                  # 查看备份列表
-redis-pilot-cli backup restore <name> --backup-ts <ts> # 恢复指定时间戳备份
-redis-pilot-cli backup get-schedule <name>          # 查看定时备份配置
-redis-pilot-cli backup set-schedule <name> --cron "0 2 * * *" --retention 7
-redis-pilot-cli backup set-schedule <name> --cron "" # 关闭定时备份
+redis-pilot-cli backup exec <group>                  # 执行组备份（平台自动优先选健康从节点）
+redis-pilot-cli backup list <group>                  # 查看备份列表
+redis-pilot-cli backup restore <group> --backup-ts <ts> # 恢复指定时间戳备份（恢复到组 master）
+redis-pilot-cli backup get-schedule <group>          # 查看定时备份配置
+redis-pilot-cli backup set-schedule <group> --cron "0 2 * * *" --retention 7
+redis-pilot-cli backup set-schedule <group> --cron "" # 关闭定时备份
 ```
 
 ### Sentinel

@@ -271,6 +271,8 @@ func (s *Server) runReconcile() ([]ReconcileResult, error) {
 	s.emitReconcileIncidents(results, serverReachable, instances)
 	// 组级：replication 组是否还有可用从节点。
 	s.emitReplicaAvailability(results, instances)
+	// 组级：持久化组是否配置了备份策略。
+	s.emitBackupNotConfigured(instances)
 
 	return results, nil
 }

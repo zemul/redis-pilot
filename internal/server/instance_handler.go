@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"net/http"
 	"strconv"
 	"strings"
@@ -80,6 +81,30 @@ func defaultPersistence(engine, category string, overrides map[string]string) *a
 		}
 	}
 	return p
+}
+
+// defaultBackupSchedule 为持久化组生成默认备份计划：每日一次，时刻在 02:00–04:00
+// 窗口内按组名 fnv32 打散，避免多组同时 BGSAVE + S3 上传（见 group-backup.md §8）。
+// 同一组每次算得一致；不同组分散在 120 分钟窗口内。
+func defaultBackupSchedule(groupName string) string {
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(groupName))
+	mins := h.Sum32() % 120 // 0..119
+	hour := 2 + mins/60     // 2 或 3
+	minute := mins % 60     // 0..59
+	return fmt.Sprintf("%d %d * * *", minute, hour)
+}
+
+// defaultGroupBackup 为持久化组返回默认备份策略；非持久化（cache）返回 nil。
+// category=="persistent" 覆盖 redis persistent 与 kvrocks（kvrocks 数据天然持久化）。
+func defaultGroupBackup(category, groupName string) *apitypes.BackupConfig {
+	if category != "persistent" {
+		return nil
+	}
+	return &apitypes.BackupConfig{
+		Schedule:  defaultBackupSchedule(groupName),
+		Retention: 7,
+	}
 }
 
 func (s *Server) resolveEngineImage(engine, version string) (resolvedVersion, image string, err error) {
@@ -424,8 +449,10 @@ func (s *Server) instanceCreate(c *gin.Context) {
 				CurrentMaster:  req.Name,
 				TopologyStatus: "degraded",
 				Proxy:          ec,
-				CreatedAt:      now,
-				UpdatedAt:      now,
+				// 持久化组默认带一份打散后的每日备份，避免"持久化数据无备份"静默存在。
+				Backup:    defaultGroupBackup(req.Category, groupName),
+				CreatedAt: now,
+				UpdatedAt: now,
 			}
 		}
 
@@ -598,11 +625,17 @@ func (s *Server) instanceDelete(c *gin.Context) {
 	}
 
 	client := newAgentClient(srv)
-	if _, err := client.post("/instance/delete", map[string]interface{}{
+	deleteBody := map[string]interface{}{
 		"name":       req.Name,
 		"engine":     groupState.Engine,
 		"clean_data": req.CleanData,
-	}); err != nil {
+	}
+	// 组级备份归档在 S3 <group>/ 下。仅当这是组内最后一个实例且要求清数据时，
+	// 才让 Agent 清理组级备份；否则同组其他实例仍需要这些备份。
+	if req.CleanData && len(group) == 1 {
+		deleteBody["s3_prefix"] = inst.Group
+	}
+	if _, err := client.post("/instance/delete", deleteBody); err != nil {
 		fail(c, http.StatusInternalServerError, "agent delete failed: "+err.Error())
 		return
 	}
@@ -1492,16 +1525,36 @@ func (s *Server) instanceReplicate(c *gin.Context) {
 
 // --- 备份管理 ---
 
+// resolveBackupGroup 校验备份接口的目标组名存在。备份是组级概念，只认组名。
+func (s *Server) resolveBackupGroup(groupName string) (*apitypes.InstanceGroupState, error) {
+	if groupName == "" {
+		return nil, fmt.Errorf("group is required")
+	}
+	instances, err := s.db.ReadInstances()
+	if err != nil {
+		return nil, err
+	}
+	group := instances.Groups[groupName]
+	if group == nil {
+		return nil, fmt.Errorf("group not found: %s", groupName)
+	}
+	return group, nil
+}
+
 func (s *Server) backupExec(c *gin.Context) {
 	var req struct {
-		Name string `json:"name" binding:"required"`
+		Group string `json:"group" binding:"required"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		fail(c, http.StatusBadRequest, err.Error())
 		return
 	}
+	if _, err := s.resolveBackupGroup(req.Group); err != nil {
+		fail(c, http.StatusNotFound, err.Error())
+		return
+	}
 
-	taskID, err := s.execBackup(req.Name, operatorFrom(c))
+	taskID, err := s.execBackupForGroup(req.Group, operatorFrom(c))
 	if err != nil {
 		fail(c, http.StatusInternalServerError, err.Error())
 		return
@@ -1510,10 +1563,10 @@ func (s *Server) backupExec(c *gin.Context) {
 }
 
 func (s *Server) backupStatus(c *gin.Context) {
-	name := c.Query("name")
+	group := c.Query("group")
 	taskID := c.Query("task_id")
-	if name == "" || taskID == "" {
-		fail(c, http.StatusBadRequest, "name and task_id required")
+	if group == "" || taskID == "" {
+		fail(c, http.StatusBadRequest, "group and task_id required")
 		return
 	}
 
@@ -1527,8 +1580,8 @@ func (s *Server) backupStatus(c *gin.Context) {
 		return
 	}
 	var payload operationTaskPayload
-	if json.Unmarshal([]byte(task.Payload), &payload) != nil || payload.Instance != name {
-		fail(c, http.StatusNotFound, "task not found for instance")
+	if json.Unmarshal([]byte(task.Payload), &payload) != nil || payload.Group != group {
+		fail(c, http.StatusNotFound, "task not found for group")
 		return
 	}
 	ok(c, gin.H{
@@ -1538,40 +1591,53 @@ func (s *Server) backupStatus(c *gin.Context) {
 	})
 }
 
-// execBackup 触发一次异步备份，立即返回 task_id。
-func (s *Server) execBackup(name, operator string) (string, error) {
+// execBackupForGroup 为一个组触发一次异步备份，立即返回 task_id。
+// 执行节点由平台在触发时选定（优先健康从节点，回退 master）；备份对象在 S3 上
+// 按组名归档（下发 s3_prefix=groupName），failover 后仍归属同一组。
+func (s *Server) execBackupForGroup(groupName, operator string) (string, error) {
 	start := time.Now()
 
-	inst, srv, unlock, err := s.resolveAndLockInternal(name, "backup")
+	// 每次触发都重新读组状态并选节点，读到的是当前拓扑（failover 后自然选新节点）。
+	instances, err := s.db.ReadInstances()
+	if err != nil {
+		return "", err
+	}
+	group := instances.Groups[groupName]
+	if group == nil {
+		return "", fmt.Errorf("group not found: %s", groupName)
+	}
+	execName := state.PickBackupExecInstance(groupName, instances)
+	if execName == "" {
+		return "", fmt.Errorf("group %s: no serving instance available for backup", groupName)
+	}
+
+	inst, srv, unlock, err := s.resolveAndLockInternal(execName, "backup")
 	if err != nil {
 		return "", err
 	}
 	defer unlock()
 
-	groupState, err := s.groupForInstance(name)
-	if err != nil {
-		return "", err
-	}
-	// 构建请求，传入 retention
+	// 构建请求：s3_prefix=组名（组级归档），retention 取组级配置。
 	body := map[string]interface{}{
-		"name":   name,
-		"engine": groupState.Engine,
+		"name":      execName,
+		"engine":    group.Engine,
+		"s3_prefix": groupName,
 	}
-	taskID := newOperationTaskID("backup.create", name)
+	taskID := newOperationTaskID("backup.create", groupName)
 	body["task_id"] = taskID
-	if inst.Backup != nil && inst.Backup.Retention > 0 {
-		body["retention"] = inst.Backup.Retention
+	if group.Backup != nil && group.Backup.Retention > 0 {
+		body["retention"] = group.Backup.Retention
 	}
 
 	source, trigger := "manual", "manual"
 	if operator == "system" {
 		source, trigger = "scheduler", "scheduled"
 	}
-	payload := operationTaskPayload{Instance: name, Server: inst.Server, Group: inst.Group, Operator: operator, Source: source, Trigger: trigger}
+	payload := operationTaskPayload{Instance: execName, Server: inst.Server, Group: groupName, Operator: operator, Source: source, Trigger: trigger}
 	if err := s.db.CreateTask(store.Task{
 		ID: taskID, Kind: "backup.create", Status: "pending", Payload: marshalTaskPayload(payload),
 		Operator: operator, Source: source, Trigger: trigger,
-		GroupName: inst.Group, InstanceName: name, ServerName: inst.Server,
+		GroupName: groupName, InstanceName: execName, ServerName: inst.Server,
 	}); err != nil {
 		return "", err
 	}
@@ -1590,7 +1656,7 @@ func (s *Server) execBackup(name, operator string) (string, error) {
 		Source:   source, Trigger: trigger, CorrelationID: taskID,
 		Action: "backup.create", Level: audit.LevelNormal, Result: "accepted",
 		DurationMs: time.Since(start).Milliseconds(),
-		Target:     map[string]interface{}{"instance": name, "group": inst.Group, "server": inst.Server, "task_id": taskID},
+		Target:     map[string]interface{}{"instance": execName, "group": groupName, "server": inst.Server, "task_id": taskID},
 	})
 	return taskID, nil
 }
@@ -1598,17 +1664,39 @@ func (s *Server) execBackup(name, operator string) (string, error) {
 func (s *Server) backupRestore(c *gin.Context) {
 	start := time.Now()
 	var req struct {
-		Name     string `json:"name" binding:"required"`
+		Group    string `json:"group" binding:"required"`
 		BackupTs string `json:"backup_ts" binding:"required"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		fail(c, http.StatusBadRequest, err.Error())
 		return
 	}
+	if _, err := s.resolveBackupGroup(req.Group); err != nil {
+		fail(c, http.StatusNotFound, err.Error())
+		return
+	}
+	groupName := req.Group
 
-	taskID := newOperationTaskID("backup.restore", req.Name)
+	// 恢复本质是"把这份数据回滚到某个时间点"，落到 master 再由复制同步到从。
+	instances, err := s.db.ReadInstances()
+	if err != nil {
+		fail(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+	group := instances.Groups[groupName]
+	if group == nil {
+		fail(c, http.StatusNotFound, "group not found")
+		return
+	}
+	restoreName := group.CurrentMaster
+	if restoreName == "" {
+		fail(c, http.StatusConflict, "group has no current master to restore to")
+		return
+	}
+
+	taskID := newOperationTaskID("backup.restore", groupName)
 	c.Request.Header.Set("X-Session-ID", taskID)
-	inst, srv, unlock, err := s.resolveAndLock(c, req.Name, "restore")
+	inst, srv, unlock, err := s.resolveAndLock(c, restoreName, "restore")
 	if err != nil {
 		return
 	}
@@ -1619,34 +1707,25 @@ func (s *Server) backupRestore(c *gin.Context) {
 		}
 	}()
 
-	groupState, err := s.groupForInstance(req.Name)
-	if err != nil {
-		fail(c, http.StatusInternalServerError, err.Error())
-		return
-	}
-	instances, err := s.db.ReadInstances()
-	if err != nil {
-		fail(c, http.StatusInternalServerError, err.Error())
-		return
-	}
 	operator := operatorFrom(c)
 	payload := operationTaskPayload{
-		Instance: req.Name, Server: inst.Server, Group: inst.Group, Operator: operator, Source: "manual", Trigger: "manual", BackupTs: req.BackupTs,
-		LockSessionID: taskID, LockInstances: state.InstanceGroup(instances, req.Name),
+		Instance: restoreName, Server: inst.Server, Group: groupName, Operator: operator, Source: "manual", Trigger: "manual", BackupTs: req.BackupTs,
+		LockSessionID: taskID, LockInstances: state.InstanceGroup(instances, restoreName),
 	}
 	if err := s.db.CreateTask(store.Task{
 		ID: taskID, Kind: "backup.restore", Status: "pending", Payload: marshalTaskPayload(payload),
 		Operator: operator, Source: "manual", Trigger: "manual",
-		GroupName: inst.Group, InstanceName: req.Name, ServerName: inst.Server,
+		GroupName: groupName, InstanceName: restoreName, ServerName: inst.Server,
 	}); err != nil {
 		fail(c, http.StatusInternalServerError, err.Error())
 		return
 	}
 	client := newAgentClient(srv)
 	if _, err := client.post("/instance/restore", map[string]string{
-		"name":      req.Name,
-		"engine":    groupState.Engine,
+		"name":      restoreName,
+		"engine":    group.Engine,
 		"backup_ts": req.BackupTs,
+		"s3_prefix": groupName,
 		"task_id":   taskID,
 	}); err != nil {
 		_ = s.db.UpdateTaskStatus(taskID, "failed", "", err.Error())
@@ -1664,7 +1743,7 @@ func (s *Server) backupRestore(c *gin.Context) {
 		Source:   "manual", Trigger: "manual", CorrelationID: taskID,
 		Action: "backup.restore", Level: audit.LevelCritical, Result: "accepted",
 		DurationMs: time.Since(start).Milliseconds(),
-		Target:     map[string]interface{}{"instance": req.Name, "group": inst.Group, "server": inst.Server, "task_id": taskID},
+		Target:     map[string]interface{}{"instance": restoreName, "group": groupName, "server": inst.Server, "task_id": taskID},
 		Params:     map[string]interface{}{"backup_ts": req.BackupTs},
 	})
 
@@ -1672,19 +1751,45 @@ func (s *Server) backupRestore(c *gin.Context) {
 }
 
 func (s *Server) backupList(c *gin.Context) {
-	name := c.Query("name")
-	if name == "" {
-		fail(c, http.StatusBadRequest, "name is required")
+	groupName := c.Query("group")
+	if _, err := s.resolveBackupGroup(groupName); err != nil {
+		fail(c, http.StatusNotFound, err.Error())
 		return
 	}
 
-	inst, srv, err := s.resolveInstance(c, name)
+	instances, err := s.db.ReadInstances()
 	if err != nil {
+		fail(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+	group := instances.Groups[groupName]
+	if group == nil {
+		fail(c, http.StatusNotFound, "group not found")
+		return
+	}
+	// 备份对象按组名归档在 S3 <group>/ 下，可通过组内任一可服务实例查询。
+	// 优先选一个 serving 实例；没有则退回组内任意实例（Agent 只是转发 S3 list）。
+	queryName := state.PickBackupExecInstance(groupName, instances)
+	if queryName == "" {
+		for name, inst := range instances.Instances {
+			if inst != nil && inst.Group == groupName {
+				queryName = name
+				break
+			}
+		}
+	}
+	if queryName == "" {
+		fail(c, http.StatusNotFound, "group has no instances")
+		return
+	}
+	_, srv, err := s.lookupInstance(queryName)
+	if err != nil {
+		fail(c, http.StatusInternalServerError, err.Error())
 		return
 	}
 
 	client := newAgentClient(srv)
-	resp, err := client.get("/instance/backups?name=" + name)
+	resp, err := client.get("/instance/backups?name=" + queryName + "&s3_prefix=" + groupName)
 	if err != nil {
 		fail(c, http.StatusInternalServerError, "agent backups failed: "+err.Error())
 		return
@@ -1711,13 +1816,13 @@ func (s *Server) backupList(c *gin.Context) {
 	var items []backupItem
 	json.Unmarshal(envelope.Data.Backups, &items)
 
-	// 判断是否配置了定时备份
-	hasSchedule := inst.Backup != nil && inst.Backup.Schedule != ""
+	// 判断是否配置了定时备份（组级）
+	hasSchedule := group.Backup != nil && group.Backup.Schedule != ""
 
 	// 为每个备份标记类型：通过时间戳判断是否是整点/cron 触发的自动备份
 	for i := range items {
 		items[i].Status = "success"
-		if hasSchedule && looksLikeScheduledBackup(items[i].Timestamp, inst.Backup.Schedule) {
+		if hasSchedule && looksLikeScheduledBackup(items[i].Timestamp, group.Backup.Schedule) {
 			items[i].Type = "auto"
 		} else {
 			items[i].Type = "manual"
@@ -1728,35 +1833,26 @@ func (s *Server) backupList(c *gin.Context) {
 }
 
 func (s *Server) backupGetSchedule(c *gin.Context) {
-	name := c.Query("name")
-	if name == "" {
-		fail(c, http.StatusBadRequest, "name is required")
-		return
-	}
-	instances, err := s.db.ReadInstances()
+	groupName := c.Query("group")
+	group, err := s.resolveBackupGroup(groupName)
 	if err != nil {
-		fail(c, http.StatusInternalServerError, err.Error())
+		fail(c, http.StatusNotFound, err.Error())
 		return
 	}
-	inst, ok2 := instances.Instances[name]
-	if !ok2 {
-		fail(c, http.StatusNotFound, "instance not found")
-		return
-	}
-	if inst.Backup == nil {
-		ok(c, map[string]interface{}{"name": name, "schedule": "", "retention": 0})
+	if group.Backup == nil {
+		ok(c, map[string]interface{}{"group": groupName, "schedule": "", "retention": 0})
 		return
 	}
 	ok(c, map[string]interface{}{
-		"name":      name,
-		"schedule":  inst.Backup.Schedule,
-		"retention": inst.Backup.Retention,
+		"group":     groupName,
+		"schedule":  group.Backup.Schedule,
+		"retention": group.Backup.Retention,
 	})
 }
 
 func (s *Server) backupSetSchedule(c *gin.Context) {
 	var req struct {
-		Name      string `json:"name" binding:"required"`
+		Group     string `json:"group" binding:"required"`
 		Schedule  string `json:"schedule"`
 		Retention int    `json:"retention"`
 	}
@@ -1764,27 +1860,27 @@ func (s *Server) backupSetSchedule(c *gin.Context) {
 		fail(c, http.StatusBadRequest, err.Error())
 		return
 	}
-	var groupName, oldSchedule, newSchedule string
+	groupName := req.Group
+	var oldSchedule, newSchedule string
 	var oldRetention, newRetention int
 	err := s.db.WithInstances(func(instances *apitypes.InstancesState) error {
-		inst, ok2 := instances.Instances[req.Name]
+		group, ok2 := instances.Groups[groupName]
 		if !ok2 {
-			return fmt.Errorf("instance not found")
+			return fmt.Errorf("group not found")
 		}
-		if inst.Backup == nil {
-			inst.Backup = &apitypes.BackupConfig{Retention: 7}
+		if group.Backup == nil {
+			group.Backup = &apitypes.BackupConfig{Retention: 7}
 		}
-		groupName = inst.Group
-		oldSchedule, oldRetention = inst.Backup.Schedule, inst.Backup.Retention
-		inst.Backup.Schedule = req.Schedule
+		oldSchedule, oldRetention = group.Backup.Schedule, group.Backup.Retention
+		group.Backup.Schedule = req.Schedule
 		if req.Retention > 0 {
-			inst.Backup.Retention = req.Retention
+			group.Backup.Retention = req.Retention
 		}
-		newSchedule, newRetention = inst.Backup.Schedule, inst.Backup.Retention
+		newSchedule, newRetention = group.Backup.Schedule, group.Backup.Retention
 		return nil
 	})
 	if err != nil {
-		if err.Error() == "instance not found" {
+		if err.Error() == "group not found" {
 			fail(c, http.StatusNotFound, err.Error())
 		} else {
 			fail(c, http.StatusInternalServerError, err.Error())
@@ -1793,7 +1889,7 @@ func (s *Server) backupSetSchedule(c *gin.Context) {
 	}
 	s.audit.Log(store.AuditRecord{
 		Operator: operatorFrom(c), Action: "backup.schedule", Level: audit.LevelImportant, Result: "success",
-		Target: map[string]interface{}{"instance": req.Name, "group": groupName},
+		Target: map[string]interface{}{"group": groupName},
 		Before: map[string]interface{}{"schedule": oldSchedule, "retention": oldRetention},
 		After:  map[string]interface{}{"schedule": newSchedule, "retention": newRetention},
 	})

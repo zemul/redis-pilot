@@ -372,3 +372,70 @@ func TestRecalculateGroupTopology_ReplicationHealthyWithReplica(t *testing.T) {
 		t.Fatalf("expected replication healthy with replica, got %s", st.Groups["order"].TopologyStatus)
 	}
 }
+
+// ---------- PickBackupExecInstance 测试 ----------
+
+func pbInstances(defs map[string]struct {
+	group, role, observed string
+}) *apitypes.InstancesState {
+	st := &apitypes.InstancesState{Instances: map[string]*apitypes.Instance{}}
+	for name, d := range defs {
+		st.Instances[name] = &apitypes.Instance{
+			Group: d.group, Role: d.role,
+			DesiredState: "running", ObservedStatus: d.observed,
+		}
+	}
+	return st
+}
+
+func TestPickBackupExecInstance_PreferReplica(t *testing.T) {
+	st := pbInstances(map[string]struct{ group, role, observed string }{
+		"g-m":  {"g", "master", "running"},
+		"g-r1": {"g", "replica", "running"},
+		"g-r2": {"g", "replica", "running"},
+	})
+	// 应优先选从节点，且多个从时按名字排序取第一个（g-r1 < g-r2）。
+	if got := PickBackupExecInstance("g", st); got != "g-r1" {
+		t.Fatalf("expected g-r1, got %q", got)
+	}
+}
+
+func TestPickBackupExecInstance_FallbackMaster(t *testing.T) {
+	st := pbInstances(map[string]struct{ group, role, observed string }{
+		"g-m":  {"g", "master", "running"},
+		"g-r1": {"g", "replica", "stopped"}, // 从节点不可服务
+	})
+	if got := PickBackupExecInstance("g", st); got != "g-m" {
+		t.Fatalf("expected fallback to master g-m, got %q", got)
+	}
+}
+
+func TestPickBackupExecInstance_StandaloneMaster(t *testing.T) {
+	st := pbInstances(map[string]struct{ group, role, observed string }{
+		"g-m": {"g", "master", "running"},
+	})
+	if got := PickBackupExecInstance("g", st); got != "g-m" {
+		t.Fatalf("expected g-m, got %q", got)
+	}
+}
+
+func TestPickBackupExecInstance_AllDownReturnsEmpty(t *testing.T) {
+	st := pbInstances(map[string]struct{ group, role, observed string }{
+		"g-m":  {"g", "master", "stopped"},
+		"g-r1": {"g", "replica", "missing"},
+	})
+	if got := PickBackupExecInstance("g", st); got != "" {
+		t.Fatalf("expected empty when nothing serving, got %q", got)
+	}
+}
+
+func TestPickBackupExecInstance_IgnoresOtherGroups(t *testing.T) {
+	st := pbInstances(map[string]struct{ group, role, observed string }{
+		"g-m":     {"g", "master", "running"},
+		"other-r": {"other", "replica", "running"},
+	})
+	// other 组的从节点不能被 g 组选中。
+	if got := PickBackupExecInstance("g", st); got != "g-m" {
+		t.Fatalf("expected g-m, got %q", got)
+	}
+}

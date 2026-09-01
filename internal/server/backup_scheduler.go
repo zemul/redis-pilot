@@ -5,13 +5,15 @@ import (
 	"time"
 
 	"github.com/robfig/cron/v3"
+
+	"gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/internal/state"
 )
 
 type backupScheduler struct {
 	s    *Server
 	cron *cron.Cron
 	mu   sync.Mutex
-	jobs map[string]scheduledJob // instance name → job info
+	jobs map[string]scheduledJob // group name → job info
 }
 
 type scheduledJob struct {
@@ -39,7 +41,8 @@ func (bs *backupScheduler) Start() {
 	}()
 }
 
-// syncJobs 读取实例状态，对比当前 jobs，增删变更的 cron 任务。
+// syncJobs 读取组状态，对比当前 jobs，增删变更的 cron 任务。
+// 备份策略挂在组上（group.Backup）：对配置了 schedule 且组内有可服务实例的组建 job。
 func (bs *backupScheduler) syncJobs() {
 	instances, err := bs.s.db.ReadInstances()
 	if err != nil {
@@ -47,16 +50,18 @@ func (bs *backupScheduler) syncJobs() {
 		return
 	}
 
-	// 构建期望状态：running 且有 schedule 的实例
-	desired := make(map[string]string) // name → schedule
-	if instances.Instances != nil {
-		for name, inst := range instances.Instances {
-			// 判据必须是观测：对一个已经挂掉的实例发 BGSAVE 只会失败。
-			// 用意图（DesiredState）判断会给死实例排上备份任务。
-			if inst.IsServing() && inst.Backup != nil && inst.Backup.Schedule != "" {
-				desired[name] = inst.Backup.Schedule
-			}
+	// 构建期望状态：配置了 schedule 且组内存在可服务实例的组。
+	// 判据必须是观测：组内没有任何 serving 实例时，触发备份也会失败（pickBackupExecInstance
+	// 会返回空），因此本轮不建 job，等实例恢复后下一轮再补。
+	desired := make(map[string]string) // group name → schedule
+	for groupName, group := range instances.Groups {
+		if group == nil || group.Backup == nil || group.Backup.Schedule == "" {
+			continue
 		}
+		if state.PickBackupExecInstance(groupName, instances) == "" {
+			continue
+		}
+		desired[groupName] = group.Backup.Schedule
 	}
 
 	bs.mu.Lock()
@@ -67,7 +72,7 @@ func (bs *backupScheduler) syncJobs() {
 		if _, ok := desired[name]; !ok {
 			bs.cron.Remove(job.entryID)
 			delete(bs.jobs, name)
-			bs.s.log.Infof("backup scheduler: removed job for %s", name)
+			bs.s.log.Infof("backup scheduler: removed job for group %s", name)
 		}
 	}
 
@@ -81,24 +86,24 @@ func (bs *backupScheduler) syncJobs() {
 			bs.cron.Remove(existing.entryID)
 			delete(bs.jobs, name)
 		}
-		instName := name // capture for closure
+		groupName := name // capture for closure
 		entryID, err := bs.cron.AddFunc(schedule, func() {
-			bs.runBackup(instName)
+			bs.runBackup(groupName)
 		})
 		if err != nil {
-			bs.s.log.Errorf("backup scheduler: invalid cron %q for %s: %v", schedule, name, err)
+			bs.s.log.Errorf("backup scheduler: invalid cron %q for group %s: %v", schedule, name, err)
 			continue
 		}
 		bs.jobs[name] = scheduledJob{entryID: entryID, schedule: schedule}
-		bs.s.log.Infof("backup scheduler: added job for %s schedule=%s", name, schedule)
+		bs.s.log.Infof("backup scheduler: added job for group %s schedule=%s", name, schedule)
 	}
 }
 
-func (bs *backupScheduler) runBackup(name string) {
-	taskID, err := bs.s.execBackup(name, "system")
+func (bs *backupScheduler) runBackup(groupName string) {
+	taskID, err := bs.s.execBackupForGroup(groupName, "system")
 	if err != nil {
-		bs.s.log.Errorf("backup scheduler: backup %s failed: %v", name, err)
+		bs.s.log.Errorf("backup scheduler: backup group %s failed: %v", groupName, err)
 	} else {
-		bs.s.log.Infof("backup scheduler: backup %s triggered, task_id=%s", name, taskID)
+		bs.s.log.Infof("backup scheduler: backup group %s triggered, task_id=%s", groupName, taskID)
 	}
 }

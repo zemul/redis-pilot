@@ -472,7 +472,7 @@ func TestInstanceBackups_NotConfigured(t *testing.T) {
 	a := newTestAgent(t)
 	r := a.Router()
 	os.MkdirAll(filepath.Join(a.cfg.DataDir, "redis-1", "backup"), 0755)
-	w := doAgentRequest(r, "GET", "/instance/backups?name=redis-1", nil)
+	w := doAgentRequest(r, "GET", "/instance/backups?name=redis-1&s3_prefix=g1", nil)
 	if w.Code != http.StatusServiceUnavailable {
 		t.Fatalf("expected 503 (s3 not configured), got %d", w.Code)
 	}

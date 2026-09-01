@@ -173,7 +173,11 @@ func writeToolSummary(name, argsJSON string) string {
 		}
 		return fmt.Sprintf("变配实例 %s：%s（内存/CPU 不停机在线调整，磁盘为规划配额；升配受节点容量校验，内存降配受 OOM 护栏保护）", target, change)
 	case "backup_exec":
-		return fmt.Sprintf("对实例 %s 立即执行一次备份", target)
+		grp := a.Group
+		if grp == "" {
+			grp = "(未指定 group)"
+		}
+		return fmt.Sprintf("对实例组 %s 立即执行一次备份（平台自动优先选健康从节点执行）", grp)
 	case "set_access_mode":
 		modeLabel := a.AccessMode
 		switch a.AccessMode {
@@ -190,14 +194,18 @@ func writeToolSummary(name, argsJSON string) string {
 		}
 		return fmt.Sprintf("让实例 %s 作为 %s 的从库（加入其主从组并开始复制）", target, src)
 	case "backup_set_schedule":
+		grp := a.Group
+		if grp == "" {
+			grp = "(未指定 group)"
+		}
 		if a.Schedule == "" {
-			return fmt.Sprintf("关闭实例 %s 的自动备份计划", target)
+			return fmt.Sprintf("关闭实例组 %s 的自动备份计划", grp)
 		}
 		ret := ""
 		if a.Retention > 0 {
 			ret = fmt.Sprintf("，保留 %d 份", a.Retention)
 		}
-		return fmt.Sprintf("设置实例 %s 的自动备份计划：cron=%q%s", target, a.Schedule, ret)
+		return fmt.Sprintf("设置实例组 %s 的自动备份计划：cron=%q%s", grp, a.Schedule, ret)
 	case "write_key":
 		keyLabel := a.Key
 		if keyLabel == "" {
@@ -361,7 +369,10 @@ func (r *toolRegistry) schemas() []openai.ChatCompletionToolParam {
 					"cpus":   map[string]string{"type": "number", "description": "新 CPU 核数，可选，需 >0；不改则省略"},
 					"disk":   map[string]string{"type": "string", "description": "新磁盘规划配额，可选，单位用 Gi 如 100Gi；不改则省略。纯规划元数据，不强制"},
 				}, []string{"name"}),
-			makeTool("backup_exec", "对指定实例立即执行一次备份（写操作，需二次确认）", nameArg, []string{"name"}),
+			makeTool("backup_exec", "对指定实例组立即执行一次备份（平台自动优先选健康从节点执行；写操作，需二次确认）",
+				map[string]any{
+					"group": map[string]string{"type": "string", "description": "实例组名"},
+				}, []string{"group"}),
 			makeTool("set_access_mode", "设置实例所在组的访问模式：standard（全部走 master）或 rw-split（读写分离）。影响伪 Sentinel 返回给客户端的端口（写操作，需二次确认）",
 				map[string]any{
 					"name":        map[string]string{"type": "string", "description": "实例名或组名"},
@@ -372,12 +383,12 @@ func (r *toolRegistry) schemas() []openai.ChatCompletionToolParam {
 					"name":       map[string]string{"type": "string", "description": "要变为从库的实例名"},
 					"replica_of": map[string]string{"type": "string", "description": "作为复制源的主实例名"},
 				}, []string{"name", "replica_of"}),
-			makeTool("backup_set_schedule", "设置或关闭指定实例的自动备份计划（写操作，需二次确认；schedule 为 cron 表达式，留空表示关闭自动备份）",
+			makeTool("backup_set_schedule", "设置或关闭指定实例组的自动备份计划（写操作，需二次确认；schedule 为 cron 表达式，留空表示关闭自动备份）",
 				map[string]any{
-					"name":      map[string]string{"type": "string", "description": "实例名"},
+					"group":     map[string]string{"type": "string", "description": "实例组名"},
 					"schedule":  map[string]string{"type": "string", "description": "cron 表达式，如 '0 2 * * *'；留空关闭自动备份"},
 					"retention": map[string]string{"type": "integer", "description": "保留备份份数，可选；0 或省略表示不改动现值"},
-				}, []string{"name"}),
+				}, []string{"group"}),
 			makeTool("write_key", "对一个 key 做受限写操作（写操作，需二次确认；读写都路由到组当前主库）。op 决定动作：set(字符串)/hset(hash 设字段)/push(list 追加)/sadd(set 加成员)/zadd(zset 加/改成员分数)/expire(设过期,ttl_seconds<0 为永久)/hdel(删 hash 字段)/srem(删 set 成员)/zrem(删 zset 成员)/lset(按下标改 list 值)。按 op 提供对应参数。",
 				map[string]any{
 					"name":        map[string]string{"type": "string", "description": "实例名或从库名（路由到当前主库）"},

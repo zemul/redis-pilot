@@ -63,7 +63,7 @@ flowchart TB
     proxy -- "只读流量" --> instB2
 ```
 
-管理流量从 GAL Skills/CLI 进入 Server，再由 Server 调度到各节点 Agent 执行 Podman 容器操作；业务流量不经过 Server，直接通过 Redis Pilot Proxy 访问后端 Redis/Kvrocks 实例。Server 是全局状态唯一写入点，状态和审计日志统一存储在 `pilot.db`（SQLite）：`servers` 表记录节点资源和 Agent 连接信息，`instances`/`instance_groups` 表记录实例拓扑、端口、角色和备份配置，`audit_log` 表记录所有管理操作。
+管理流量从 GAL Skills/CLI 进入 Server，再由 Server 调度到各节点 Agent 执行 Podman 容器操作；业务流量不经过 Server，直接通过 Redis Pilot Proxy 访问后端 Redis/Kvrocks 实例。Server 是全局状态唯一写入点，状态和审计日志统一存储在 `pilot.db`（SQLite）：`servers` 表记录节点资源和 Agent 连接信息，`instance_groups` 表记录组级拓扑与备份策略，`instances` 表记录实例端口、角色等，`audit_log` 表记录所有管理操作。
 
 | 组件 | 端口 | 职责 |
 |------|------|------|
@@ -277,11 +277,11 @@ redis-pilot-cli instance set-access-mode <name> <standard|rw-split>
 # 故障转移（Sentinel 唯一权威：不保证提升指定的那个实例，最终由 Sentinel 选举决定）
 redis-pilot-cli instance failover <name>
 
-# 备份
-redis-pilot-cli backup exec <instance>
-redis-pilot-cli backup list <instance>
-redis-pilot-cli backup restore <instance> --backup-ts <timestamp>
-redis-pilot-cli backup set-schedule <instance> --cron "0 2 * * *" --retention 7
+# 备份（组级：平台自动优先选健康从节点执行）
+redis-pilot-cli backup exec <group>
+redis-pilot-cli backup list <group>
+redis-pilot-cli backup restore <group> --backup-ts <timestamp>
+redis-pilot-cli backup set-schedule <group> --cron "0 2 * * *" --retention 7
 
 # Sentinel
 redis-pilot-cli sentinel status

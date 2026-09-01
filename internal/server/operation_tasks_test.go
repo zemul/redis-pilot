@@ -31,7 +31,7 @@ func TestOperationTrackerPersistsRestoreResultAndReleasesLock(t *testing.T) {
 	if err := s.db.WriteInstances(instances); err != nil {
 		t.Fatal(err)
 	}
-	payload := operationTaskPayload{Instance: "redis-1", Server: "srv1", Operator: "admin", BackupTs: "2026-08-27T01:02:03", LockSessionID: "restore-1", LockInstances: []string{"redis-1"}}
+	payload := operationTaskPayload{Instance: "redis-1", Server: "srv1", Group: "g", Operator: "admin", BackupTs: "2026-08-27T01:02:03", LockSessionID: "restore-1", LockInstances: []string{"redis-1"}}
 	if err := s.db.CreateTask(store.Task{ID: "restore-1", Kind: "backup.restore", Status: "running", Payload: marshalTaskPayload(payload)}); err != nil {
 		t.Fatal(err)
 	}
@@ -45,7 +45,7 @@ func TestOperationTrackerPersistsRestoreResultAndReleasesLock(t *testing.T) {
 	if got.Instances["redis-1"].Lock != nil {
 		t.Fatalf("restore lock was not released: %+v", got.Instances["redis-1"].Lock)
 	}
-	w := doAuthRequest(s.Router(), http.MethodGet, "/backup/status?name=redis-1&task_id=restore-1", nil)
+	w := doAuthRequest(s.Router(), http.MethodGet, "/backup/status?group=g&task_id=restore-1", nil)
 	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"status":"success"`) {
 		t.Fatalf("persisted status query failed: code=%d body=%s", w.Code, w.Body.String())
 	}

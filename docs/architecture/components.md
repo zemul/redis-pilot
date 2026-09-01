@@ -46,11 +46,13 @@
   POST /instance/key/write      受限 K/V 浏览器：按 op 写入（set/hset/push/sadd/zadd/expire/hdel/srem/zrem/lset）；仅 admin
   POST /instance/key/delete     受限 K/V 浏览器：删除整个 key（DEL）；仅 admin
 
-备份管理（转发到目标服务器 Agent）
-  POST /backup/exec             执行备份（异步，返回 task_id）
+备份管理（组级；转发到目标服务器 Agent）
+  POST /backup/exec             执行组备份（异步，返回 task_id；平台自动优先选健康从节点执行）
   GET  /backup/status           查询备份或恢复任务的持久化状态
-  POST /backup/restore          从备份恢复（异步，返回 task_id）
-  GET  /backup/list             列出可用备份
+  POST /backup/restore          从备份恢复整个组（异步，返回 task_id；恢复到组 master）
+  GET  /backup/list             列出组的可用备份
+  GET  /backup/schedule         读取组备份计划
+  POST /backup/schedule         设置组备份计划（cron + retention）
 
 运维任务（读取 pilot.db，不依赖原操作弹窗存活）
   GET  /tasks                   分页查询任务；支持 status/kind/operator/q 筛选
@@ -637,9 +639,10 @@ Kvrocks 基于 RocksDB 存储，数据天然持久化到磁盘，无需 RDB/AOF�
   - 从库执行 `BGSAVE`，等待完成后打包为 tar.gz 上传 S3
   - 无从库的单点实例，在主库执行（安排在低峰期）
 
-备份调度由 Server 内置 cron 驱动，配置读取自 `instances` 表每个实例的 `backup` 列（JSON）。Server 负责注册定时任务并在触发时调用目标实例所在 Agent 执行备份；Agent 不独立维护调度状态。
+备份调度由 Server 内置 cron 驱动，配置读取自 `instance_groups` 表每个组的 `backup` 列（JSON）。Server 遍历组，对配置了 schedule 且组内存在可服务实例的组注册定时任务；触发时自动优先选健康从节点执行，回退 master。Agent 不独立维护调度状态。
 
 ```yaml
+# 组级备份策略（存在 instance_groups.backup 列）
 backup:
   schedule: "0 2 * * *"   # cron 表达式，空字符串表示不启用自动备份
   retention: 7             # S3 保留份数
@@ -649,16 +652,16 @@ backup:
 
 ```bash
 # 设置定时备份
-redis-pilot-cli backup set-schedule <instance> --cron "0 2 * * *" --retention 7
+redis-pilot-cli backup set-schedule <group> --cron "0 2 * * *" --retention 7
 
 # 查看当前配置
-redis-pilot-cli backup get-schedule <instance>
+redis-pilot-cli backup get-schedule <group>
 
 # 禁用自动备份
-redis-pilot-cli backup set-schedule <instance> --cron ""
+redis-pilot-cli backup set-schedule <group> --cron ""
 ```
 
-Server 启动时读取所有实例的 `backup.schedule`，注册内部 cron，并每 60 秒与 `instances` 表同步一次。实例备份配置变更后，Server 调度器在下一轮同步中增删对应任务。
+Server 启动时读取所有组的 `backup.schedule`，注册内部 cron，并每 60 秒与 `instance_groups` 表同步一次。组备份配置变更后，Server 调度器在下一轮同步中增删对应任务。
 
 **S3 对象存储：**
 

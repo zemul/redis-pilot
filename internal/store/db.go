@@ -189,7 +189,6 @@ func (d *DB) migrate() error {
 			persistence      TEXT NOT NULL DEFAULT 'null', -- JSON: Persistence|null
 			config_overrides TEXT NOT NULL DEFAULT '{}',  -- JSON: map[string]string
 			replica_of       TEXT NOT NULL DEFAULT '',
-			backup           TEXT NOT NULL DEFAULT 'null', -- JSON: BackupConfig|null
 			-- 状态拆成意图与观测两列，各自只有一类写入者。
 			-- desired_state  仅用户操作可写（create/start → running, stop → stopped）
 			-- observed_status 仅观测通道可写（reconcile；空串表示尚未观测）
@@ -415,6 +414,9 @@ func (d *DB) migrate() error {
 		{sql: `ALTER TABLE tasks ADD COLUMN message TEXT NOT NULL DEFAULT ''`},
 		{sql: `ALTER TABLE tasks ADD COLUMN cancelable INTEGER NOT NULL DEFAULT 0`},
 		{sql: `ALTER TABLE tasks ADD COLUMN cancel_requested INTEGER NOT NULL DEFAULT 0`},
+		// 组级备份：备份策略属于"这份数据"而非某个进程，存 instance_groups.backup。
+		// 只加列，不做实例级→组级的一次性提升：改版时清理旧备份记录，用户重新配置组级策略。
+		{sql: `ALTER TABLE instance_groups ADD COLUMN backup TEXT NOT NULL DEFAULT 'null'`},
 	}
 	for _, m := range alterMigrations {
 		if _, err := tx.Exec(m.sql); err != nil {

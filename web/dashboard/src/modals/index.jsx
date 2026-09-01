@@ -339,6 +339,7 @@ const INCIDENT_TYPE_LABELS_TAB = {
   no_running_replica: '无可用从节点',
   backup_task_failed: '备份失败',
   restore_task_failed: '恢复失败',
+  backup_not_configured: '未配置备份',
 };
 
 function InstanceIncidentsTab({ groupName, instanceName, requestFn, onViewAll }) {
@@ -1026,7 +1027,7 @@ export function BackupListModal({ detail, requestFn, onReload, onViewTasks, onCl
     let ignore = false;
     async function loadSchedule() {
       try {
-        const data = await requestFn(`/backup/schedule?name=${encodeURIComponent(item.name)}`);
+        const data = await requestFn(`/backup/schedule?group=${encodeURIComponent(group.groupName)}`);
         if (!ignore) {
           setSchedule(data?.schedule || '');
           setRetention(data?.retention || 7);
@@ -1039,7 +1040,7 @@ export function BackupListModal({ detail, requestFn, onReload, onViewTasks, onCl
     }
     loadSchedule();
     return () => { ignore = true; };
-  }, [item.name]);
+  }, [group.groupName]);
 
   useEffect(() => {
     if (!execTaskId) return undefined;
@@ -1071,9 +1072,6 @@ export function BackupListModal({ detail, requestFn, onReload, onViewTasks, onCl
     };
   }, [execTaskId]);
 
-  const isMaster = getField(item, 'role', 'Role') === 'master';
-  const hasReplicas = group.replicas && group.replicas.length > 0;
-
   async function handleExecBackup() {
     setExecLoading(true);
     setExecMsg('');
@@ -1082,7 +1080,7 @@ export function BackupListModal({ detail, requestFn, onReload, onViewTasks, onCl
     try {
       const res = await requestFn('/backup/exec', {
         method: 'POST',
-        body: JSON.stringify({ name: item.name })
+        body: JSON.stringify({ group: group.groupName })
       });
       const taskId = res?.task_id;
       if (!taskId) {
@@ -1116,7 +1114,7 @@ export function BackupListModal({ detail, requestFn, onReload, onViewTasks, onCl
     try {
       await requestFn('/backup/schedule', {
         method: 'POST',
-        body: JSON.stringify({ name: item.name, schedule, retention: Number(retention) || 7 })
+        body: JSON.stringify({ group: group.groupName, schedule, retention: Number(retention) || 7 })
       });
       setScheduleSaved(true);
     } catch (err) {
@@ -1131,8 +1129,8 @@ export function BackupListModal({ detail, requestFn, onReload, onViewTasks, onCl
       <section className="w-[min(980px,100%)] max-h-[min(860px,calc(100vh-56px))] rounded-xl border border-gray-200 overflow-hidden grid grid-rows-[auto_minmax(0,1fr)] bg-white shadow-lg animate-[slideUp_0.18s_cubic-bezier(0.16,1,0.3,1)]" role="dialog" aria-modal="true" onMouseDown={(event) => event.stopPropagation()}>
         <div className="min-h-[62px] px-4 py-4 border-b border-gray-200 flex items-center justify-between gap-3">
           <div>
-            <h3 className="m-0 text-base font-semibold">{item.name} 备份管理</h3>
-            <span className="block mt-0.5 text-xs text-gray-400">{group.groupName}</span>
+            <h3 className="m-0 text-base font-semibold">{group.groupName} 备份管理</h3>
+            <span className="block mt-0.5 text-xs text-gray-400">实例组 · 平台自动选择健康从节点执行备份</span>
           </div>
           <button className="w-8 h-8 rounded-md border border-gray-200 bg-white text-gray-500 inline-flex items-center justify-center hover:bg-gray-50 transition-colors" onClick={onClose} aria-label="关闭" type="button"><X size={18} /></button>
         </div>
@@ -1149,7 +1147,12 @@ export function BackupListModal({ detail, requestFn, onReload, onViewTasks, onCl
               </button>
             </div>
             {(execTask || execMsg) && <div className={`border rounded-md px-3 py-2 flex items-center gap-2 text-[13px] mb-2 ${execFailed ? 'border-red-200 bg-red-50 text-red-700' : 'border-gray-200 bg-gray-50 text-gray-700'}`}><AlertCircle size={16} /> <span className="flex-1">{execMsg || execTask?.message || execStatusLabel}{execTask?.error ? `：${execTask.error}` : ''}</span>{execTaskId && onViewTasks && <button type="button" className="h-7 px-2.5 rounded-md border border-gray-300 bg-white text-gray-700 text-xs font-medium cursor-pointer hover:bg-gray-100" onClick={onViewTasks}>任务详情</button>}</div>}
-            {isMaster && hasReplicas && <div className="text-xs text-gray-500 bg-gray-100 rounded-md px-2.5 py-2 mb-2">⚠️ 当前为主库，建议在从库上执行备份以避免影响主库性能。</div>}
+            {execTask && (execTask.instance_name || execTask.InstanceName) && (
+              <div className="text-xs text-gray-500 bg-gray-100 rounded-md px-2.5 py-2 mb-2">
+                最近一次备份由节点 <span className="font-medium text-gray-700">{execTask.instance_name || execTask.InstanceName}</span>
+                {(execTask.server_name || execTask.ServerName) ? <>（{execTask.server_name || execTask.ServerName}）</> : null} 执行。平台自动优先选择健康从节点，减轻主库压力。
+              </div>
+            )}
             {loading ? (
               <div className="min-h-[110px] border border-dashed border-gray-200 rounded-md grid place-items-center text-gray-400">正在读取备份列表...</div>
             ) : error ? (

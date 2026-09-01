@@ -242,7 +242,7 @@ function AppShell() {
   async function openBackupList(item, group) {
     setBackupDetail({ item, group, loading: true, error: '', backups: [] });
     try {
-      const payload = await request(`/backup/list?name=${encodeURIComponent(item.name)}`);
+      const payload = await request(`/backup/list?group=${encodeURIComponent(group.groupName)}`);
       setBackupDetail({ item, group, loading: false, error: '', backups: backupRows(payload) });
     } catch (err) {
       setBackupDetail({ item, group, loading: false, error: err.message || String(err), backups: [] });

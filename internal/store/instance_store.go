@@ -14,7 +14,7 @@ import (
 func (d *DB) GetAllGroups() (map[string]*apitypes.InstanceGroupState, error) {
 	rows, err := d.sql.Query(
 		`SELECT name, type, engine, engine_version, category, access_mode, labels, password,
-		        current_master, topology_status, failover_conflict, proxy, created_at, updated_at
+		        current_master, topology_status, failover_conflict, proxy, backup, created_at, updated_at
 		 FROM instance_groups`)
 	if err != nil {
 		return nil, err
@@ -27,10 +27,11 @@ func (d *DB) GetAllGroups() (map[string]*apitypes.InstanceGroupState, error) {
 func (d *DB) UpsertGroup(name string, g *apitypes.InstanceGroupState) error {
 	proxyJSON, _ := json.Marshal(g.Proxy)
 	labelsJSON, _ := json.Marshal(g.Labels)
+	backupJSON, _ := json.Marshal(g.Backup)
 	return d.execWrite(`
 		INSERT INTO instance_groups(name, type, engine, engine_version, category, access_mode, labels, password,
-		    current_master, topology_status, failover_conflict, proxy, created_at, updated_at)
-		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+		    current_master, topology_status, failover_conflict, proxy, backup, created_at, updated_at)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 		ON CONFLICT(name) DO UPDATE SET
 			type              = excluded.type,
 			engine            = excluded.engine,
@@ -43,12 +44,13 @@ func (d *DB) UpsertGroup(name string, g *apitypes.InstanceGroupState) error {
 			topology_status   = excluded.topology_status,
 			failover_conflict = excluded.failover_conflict,
 			proxy             = excluded.proxy,
+			backup            = excluded.backup,
 			created_at        = excluded.created_at,
 			updated_at        = excluded.updated_at`,
 		name,
 		g.Type, g.Engine, g.EngineVersion, g.Category, g.AccessMode, string(labelsJSON), g.Password,
 		g.CurrentMaster, g.TopologyStatus, boolToInt(g.FailoverConflict),
-		string(proxyJSON), g.CreatedAt, g.UpdatedAt,
+		string(proxyJSON), string(backupJSON), g.CreatedAt, g.UpdatedAt,
 	)
 }
 
@@ -64,7 +66,7 @@ func (d *DB) GetAllInstances() (map[string]*apitypes.Instance, error) {
 	rows, err := d.sql.Query(
 		`SELECT name, grp, role, server, container, port, memory, cpus, disk,
 		        config_path, data_path, backup_path,
-		        persistence, config_overrides, replica_of, backup, desired_state, observed_status, lock, created_at
+		        persistence, config_overrides, replica_of, desired_state, observed_status, lock, created_at
 		 FROM instances`)
 	if err != nil {
 		return nil, err
@@ -77,14 +79,13 @@ func (d *DB) GetAllInstances() (map[string]*apitypes.Instance, error) {
 func (d *DB) UpsertInstance(name string, inst *apitypes.Instance) error {
 	persistenceJSON, _ := json.Marshal(inst.Persistence)
 	overridesJSON, _ := json.Marshal(inst.ConfigOverrides)
-	backupJSON, _ := json.Marshal(inst.Backup)
 	lockJSON, _ := json.Marshal(inst.Lock)
 
 	return d.execWrite(`
 		INSERT INTO instances(name, grp, role, server, container, port, memory, cpus, disk,
 		    config_path, data_path, backup_path,
-		    persistence, config_overrides, replica_of, backup, desired_state, observed_status, lock, created_at)
-		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+		    persistence, config_overrides, replica_of, desired_state, observed_status, lock, created_at)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 		ON CONFLICT(name) DO UPDATE SET
 			grp              = excluded.grp,
 			role             = excluded.role,
@@ -100,7 +101,6 @@ func (d *DB) UpsertInstance(name string, inst *apitypes.Instance) error {
 			persistence      = excluded.persistence,
 			config_overrides = excluded.config_overrides,
 			replica_of       = excluded.replica_of,
-			backup           = excluded.backup,
 			desired_state    = excluded.desired_state,
 			observed_status  = excluded.observed_status,
 			lock             = excluded.lock,
@@ -110,7 +110,7 @@ func (d *DB) UpsertInstance(name string, inst *apitypes.Instance) error {
 		inst.Port, inst.Memory, inst.CPUs, inst.Disk,
 		inst.ConfigPath, inst.DataPath, inst.BackupPath,
 		string(persistenceJSON), string(overridesJSON),
-		inst.ReplicaOf, string(backupJSON),
+		inst.ReplicaOf,
 		inst.DesiredState, inst.ObservedStatus, string(lockJSON), inst.CreatedAt,
 	)
 }
@@ -125,7 +125,7 @@ func (d *DB) GetInstance(name string) (*apitypes.Instance, error) {
 	row := d.sql.QueryRow(
 		`SELECT name, grp, role, server, container, port, memory, cpus, disk,
 		        config_path, data_path, backup_path,
-		        persistence, config_overrides, replica_of, backup, desired_state, observed_status, lock, created_at
+		        persistence, config_overrides, replica_of, desired_state, observed_status, lock, created_at
 		 FROM instances WHERE name = ?`, name)
 
 	inst, err := scanInstance(row)
@@ -173,10 +173,11 @@ func (d *DB) WithInstances(fn func(*apitypes.InstancesState) error) error {
 	for name, g := range st.Groups {
 		proxyJSON, _ := json.Marshal(g.Proxy)
 		labelsJSON, _ := json.Marshal(g.Labels)
+		backupJSON, _ := json.Marshal(g.Backup)
 		if _, err := tx.Exec(`
 			INSERT INTO instance_groups(name, type, engine, engine_version, category, access_mode, labels, password,
-			    current_master, topology_status, failover_conflict, proxy, created_at, updated_at)
-			VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+			    current_master, topology_status, failover_conflict, proxy, backup, created_at, updated_at)
+			VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 			ON CONFLICT(name) DO UPDATE SET
 				type              = excluded.type,
 				engine            = excluded.engine,
@@ -189,12 +190,13 @@ func (d *DB) WithInstances(fn func(*apitypes.InstancesState) error) error {
 				topology_status   = excluded.topology_status,
 				failover_conflict = excluded.failover_conflict,
 				proxy             = excluded.proxy,
+				backup            = excluded.backup,
 				created_at        = excluded.created_at,
 				updated_at        = excluded.updated_at`,
 			name,
 			g.Type, g.Engine, g.EngineVersion, g.Category, g.AccessMode, string(labelsJSON), g.Password,
 			g.CurrentMaster, g.TopologyStatus, boolToInt(g.FailoverConflict),
-			string(proxyJSON), g.CreatedAt, g.UpdatedAt,
+			string(proxyJSON), string(backupJSON), g.CreatedAt, g.UpdatedAt,
 		); err != nil {
 			return fmt.Errorf("upsert group %s: %w", name, err)
 		}
@@ -211,14 +213,13 @@ func (d *DB) WithInstances(fn func(*apitypes.InstancesState) error) error {
 	for name, inst := range st.Instances {
 		persistenceJSON, _ := json.Marshal(inst.Persistence)
 		overridesJSON, _ := json.Marshal(inst.ConfigOverrides)
-		backupJSON, _ := json.Marshal(inst.Backup)
 		lockJSON, _ := json.Marshal(inst.Lock)
 
 		if _, err := tx.Exec(`
 			INSERT INTO instances(name, grp, role, server, container, port, memory, cpus, disk,
 			    config_path, data_path, backup_path,
-			    persistence, config_overrides, replica_of, backup, desired_state, observed_status, lock, created_at)
-			VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+			    persistence, config_overrides, replica_of, desired_state, observed_status, lock, created_at)
+			VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 			ON CONFLICT(name) DO UPDATE SET
 				grp              = excluded.grp,
 				role             = excluded.role,
@@ -234,7 +235,6 @@ func (d *DB) WithInstances(fn func(*apitypes.InstancesState) error) error {
 				persistence      = excluded.persistence,
 				config_overrides = excluded.config_overrides,
 				replica_of       = excluded.replica_of,
-				backup           = excluded.backup,
 				desired_state    = excluded.desired_state,
 				observed_status  = excluded.observed_status,
 				lock             = excluded.lock,
@@ -244,7 +244,7 @@ func (d *DB) WithInstances(fn func(*apitypes.InstancesState) error) error {
 			inst.Port, inst.Memory, inst.CPUs, inst.Disk,
 			inst.ConfigPath, inst.DataPath, inst.BackupPath,
 			string(persistenceJSON), string(overridesJSON),
-			inst.ReplicaOf, string(backupJSON),
+			inst.ReplicaOf,
 			inst.DesiredState, inst.ObservedStatus, string(lockJSON), inst.CreatedAt,
 		); err != nil {
 			return fmt.Errorf("upsert instance %s: %w", name, err)
@@ -320,7 +320,7 @@ func loadInstancesState(db *sql.DB) (*apitypes.InstancesState, error) {
 	// 读 groups
 	gRows, err := db.Query(
 		`SELECT name, type, engine, engine_version, category, access_mode, labels, password,
-		        current_master, topology_status, failover_conflict, proxy, created_at, updated_at
+		        current_master, topology_status, failover_conflict, proxy, backup, created_at, updated_at
 		 FROM instance_groups`)
 	if err != nil {
 		return nil, err
@@ -335,7 +335,7 @@ func loadInstancesState(db *sql.DB) (*apitypes.InstancesState, error) {
 	iRows, err := db.Query(
 		`SELECT name, grp, role, server, container, port, memory, cpus, disk,
 		        config_path, data_path, backup_path,
-		        persistence, config_overrides, replica_of, backup, desired_state, observed_status, lock, created_at
+		        persistence, config_overrides, replica_of, desired_state, observed_status, lock, created_at
 		 FROM instances`)
 	if err != nil {
 		return nil, err
@@ -356,7 +356,7 @@ func loadInstancesStateTx(tx *sql.Tx) (*apitypes.InstancesState, error) {
 
 	gRows, err := tx.Query(
 		`SELECT name, type, engine, engine_version, category, access_mode, labels, password,
-		        current_master, topology_status, failover_conflict, proxy, created_at, updated_at
+		        current_master, topology_status, failover_conflict, proxy, backup, created_at, updated_at
 		 FROM instance_groups`)
 	if err != nil {
 		return nil, err
@@ -370,7 +370,7 @@ func loadInstancesStateTx(tx *sql.Tx) (*apitypes.InstancesState, error) {
 	iRows, err := tx.Query(
 		`SELECT name, grp, role, server, container, port, memory, cpus, disk,
 		        config_path, data_path, backup_path,
-		        persistence, config_overrides, replica_of, backup, desired_state, observed_status, lock, created_at
+		        persistence, config_overrides, replica_of, desired_state, observed_status, lock, created_at
 		 FROM instances`)
 	if err != nil {
 		return nil, err
@@ -388,7 +388,7 @@ type rowScanner interface {
 }
 
 func scanInstance(row rowScanner) (*apitypes.Instance, error) {
-	var name, persistenceJSON, overridesJSON, backupJSON, lockJSON string
+	var name, persistenceJSON, overridesJSON, lockJSON string
 	inst := &apitypes.Instance{}
 	if err := row.Scan(
 		&name,
@@ -396,14 +396,13 @@ func scanInstance(row rowScanner) (*apitypes.Instance, error) {
 		&inst.Port, &inst.Memory, &inst.CPUs, &inst.Disk,
 		&inst.ConfigPath, &inst.DataPath, &inst.BackupPath,
 		&persistenceJSON, &overridesJSON,
-		&inst.ReplicaOf, &backupJSON,
+		&inst.ReplicaOf,
 		&inst.DesiredState, &inst.ObservedStatus, &lockJSON, &inst.CreatedAt,
 	); err != nil {
 		return nil, err
 	}
 	json.Unmarshal([]byte(persistenceJSON), &inst.Persistence)   //nolint:errcheck
 	json.Unmarshal([]byte(overridesJSON), &inst.ConfigOverrides) //nolint:errcheck
-	json.Unmarshal([]byte(backupJSON), &inst.Backup)             //nolint:errcheck
 	json.Unmarshal([]byte(lockJSON), &inst.Lock)                 //nolint:errcheck
 	return inst, nil
 }
@@ -412,7 +411,7 @@ func scanInstances(rows *sql.Rows) (map[string]*apitypes.Instance, error) {
 	defer rows.Close()
 	result := make(map[string]*apitypes.Instance)
 	for rows.Next() {
-		var name, persistenceJSON, overridesJSON, backupJSON, lockJSON string
+		var name, persistenceJSON, overridesJSON, lockJSON string
 		inst := &apitypes.Instance{}
 		if err := rows.Scan(
 			&name,
@@ -420,14 +419,13 @@ func scanInstances(rows *sql.Rows) (map[string]*apitypes.Instance, error) {
 			&inst.Port, &inst.Memory, &inst.CPUs, &inst.Disk,
 			&inst.ConfigPath, &inst.DataPath, &inst.BackupPath,
 			&persistenceJSON, &overridesJSON,
-			&inst.ReplicaOf, &backupJSON,
+			&inst.ReplicaOf,
 			&inst.DesiredState, &inst.ObservedStatus, &lockJSON, &inst.CreatedAt,
 		); err != nil {
 			return nil, err
 		}
 		json.Unmarshal([]byte(persistenceJSON), &inst.Persistence)   //nolint:errcheck
 		json.Unmarshal([]byte(overridesJSON), &inst.ConfigOverrides) //nolint:errcheck
-		json.Unmarshal([]byte(backupJSON), &inst.Backup)             //nolint:errcheck
 		json.Unmarshal([]byte(lockJSON), &inst.Lock)                 //nolint:errcheck
 		result[name] = inst
 	}
@@ -439,19 +437,23 @@ func scanGroups(rows *sql.Rows) (map[string]*apitypes.InstanceGroupState, error)
 	result := make(map[string]*apitypes.InstanceGroupState)
 	for rows.Next() {
 		var name, labelsJSON, proxyJSON string
+		var backupJSON sql.NullString
 		var failoverConflict int
 		g := &apitypes.InstanceGroupState{}
 		if err := rows.Scan(
 			&name,
 			&g.Type, &g.Engine, &g.EngineVersion, &g.Category, &g.AccessMode, &labelsJSON, &g.Password,
 			&g.CurrentMaster, &g.TopologyStatus, &failoverConflict,
-			&proxyJSON, &g.CreatedAt, &g.UpdatedAt,
+			&proxyJSON, &backupJSON, &g.CreatedAt, &g.UpdatedAt,
 		); err != nil {
 			return nil, err
 		}
 		g.FailoverConflict = failoverConflict != 0
 		g.Labels = decodeGroupLabels(labelsJSON)
 		json.Unmarshal([]byte(proxyJSON), &g.Proxy) //nolint:errcheck
+		if backupJSON.Valid && backupJSON.String != "" {
+			json.Unmarshal([]byte(backupJSON.String), &g.Backup) //nolint:errcheck
+		}
 		result[name] = g
 	}
 	return result, rows.Err()

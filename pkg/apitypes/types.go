@@ -139,8 +139,12 @@ type InstanceGroupState struct {
 	TopologyStatus   string       `yaml:"topology_status" json:"topology_status"` // healthy | degraded
 	FailoverConflict bool         `yaml:"failover_conflict" json:"failover_conflict"`
 	Proxy            *ProxyConfig `yaml:"proxy,omitempty" json:"proxy,omitempty"`
-	CreatedAt        string       `yaml:"created_at" json:"created_at"`
-	UpdatedAt        string       `yaml:"updated_at" json:"updated_at"`
+	// Backup 是组级备份策略。nil 或 Schedule=="" 表示未配置自动备份。
+	// 执行节点由平台在触发时选定（优先健康从节点，回退 master），不落在配置里；
+	// 备份对象在 S3 上按组名归档（Server 下发 s3_prefix=组名），failover 后仍归属同一组。
+	Backup    *BackupConfig `yaml:"backup,omitempty" json:"backup,omitempty"`
+	CreatedAt string        `yaml:"created_at" json:"created_at"`
+	UpdatedAt string        `yaml:"updated_at" json:"updated_at"`
 }
 
 // InstanceGroupView 是实例组面向用户 API 的安全投影。
@@ -156,6 +160,7 @@ type InstanceGroupView struct {
 	TopologyStatus   string       `json:"topology_status"`
 	FailoverConflict bool         `json:"failover_conflict"`
 	Proxy            *ProxyConfig `json:"proxy,omitempty"`
+	Backup           *BackupConfig `json:"backup,omitempty"`
 	CreatedAt        string       `json:"created_at"`
 	UpdatedAt        string       `json:"updated_at"`
 	// SentinelMaster 是 Sentinel 共识认为的当前 master（已解析成实例名，解析不到时
@@ -175,7 +180,7 @@ func (g *InstanceGroupState) ToView() *InstanceGroupView {
 		Type: g.Type, Engine: g.Engine, EngineVersion: g.EngineVersion,
 		Category: g.Category, AccessMode: g.AccessMode, Labels: g.Labels, CurrentMaster: g.CurrentMaster,
 		TopologyStatus: g.TopologyStatus, FailoverConflict: g.FailoverConflict,
-		Proxy: g.Proxy, CreatedAt: g.CreatedAt, UpdatedAt: g.UpdatedAt,
+		Proxy: g.Proxy, Backup: g.Backup, CreatedAt: g.CreatedAt, UpdatedAt: g.UpdatedAt,
 	}
 }
 
@@ -195,7 +200,6 @@ type Instance struct {
 	Persistence     *Persistence      `yaml:"persistence,omitempty" json:"persistence,omitempty"`
 	ConfigOverrides map[string]string `yaml:"config_overrides,omitempty" json:"config_overrides,omitempty"`
 	ReplicaOf       string            `yaml:"replica_of,omitempty" json:"replica_of,omitempty"`
-	Backup          *BackupConfig     `yaml:"backup,omitempty" json:"backup,omitempty"`
 	// DesiredState 是人的意图：这个实例应该处于什么状态。
 	//
 	// 只有用户发起的操作可以写：create/start → running，stop → stopped。
@@ -300,7 +304,6 @@ type InstanceView struct {
 	Persistence     *Persistence      `json:"persistence,omitempty"`
 	ConfigOverrides map[string]string `json:"config_overrides,omitempty"`
 	ReplicaOf       string            `json:"replica_of,omitempty"`
-	Backup          *BackupConfig     `json:"backup,omitempty"`
 	// Status 是派生的综合状态（Phase()），保持对外词汇稳定：
 	// creating / running / stopped / stopping / unexpected_stopped / failed / unreachable
 	Status string `json:"status"`
@@ -332,7 +335,6 @@ func (i *Instance) ToView() *InstanceView {
 		Persistence:     i.Persistence,
 		ConfigOverrides: i.ConfigOverrides,
 		ReplicaOf:       i.ReplicaOf,
-		Backup:          i.Backup,
 		Status:          i.Phase(),
 		DesiredState:    i.DesiredState,
 		ObservedStatus:  i.ObservedStatus,

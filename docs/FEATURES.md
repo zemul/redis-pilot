@@ -102,25 +102,34 @@
 
 ### 1.3 备份管理 (`/backup` 路由)
 
+> **组级备份**：备份策略属于「实例组」（一份数据），而非某个实例。所有 `/backup/*`
+> 接口以 `group` 为参数。执行节点由平台在触发时选定：优先健康从节点、无从则回退
+> master（`state.PickBackupExecInstance`），failover 后自然选到新拓扑下的合适节点。
+> 备份对象在 S3 上按**组名**归档（Server 下发 `s3_prefix=<组名>`），因此无论由组内哪个
+> 实例执行，备份都归属同一组、可统一列出与恢复。
+
 | API 路径 | 方法 | 功能 | 实现函数 |
 |---------|------|------|---------|
-| `/backup/exec` | POST | 触发一次备份（异步，返回 `task_id`） | `backupExec()` |
-| `/backup/status` | GET | 查询备份任务状态（需 `name` 和 `task_id` 参数） | `backupStatus()` |
-| `/backup/restore` | POST | 异步恢复数据，返回 `task_id` | `backupRestore()` |
-| `/backup/list` | GET | 列出可用备份（需 `name` 参数） | `backupList()` |
+| `/backup/exec` | POST | 触发一次组备份（异步，返回 `task_id`；平台自动选健康从节点执行） | `backupExec()` |
+| `/backup/status` | GET | 查询备份任务状态（需 `group` 和 `task_id` 参数） | `backupStatus()` |
+| `/backup/restore` | POST | 异步恢复整个组（异步，返回 `task_id`；恢复到组 master，从库重新同步） | `backupRestore()` |
+| `/backup/list` | GET | 列出组的可用备份（需 `group` 参数） | `backupList()` |
+| `/backup/schedule` | GET/POST | 读取/设置组的自动备份计划（cron + retention） | `backupGetSchedule()` / `backupSetSchedule()` |
 
 **备份特性**:
-- **异步模型**: 备份和恢复均立即返回 `task_id`；Agent 后台执行，Server 后台轮询并把终态持久化到 `pilot.db`。通过 `GET /backup/status?name=xxx&task_id=xxx` 查询（`running` / `success` / `failed` / `interrupted`）
+- **异步模型**: 备份和恢复均立即返回 `task_id`；Agent 后台执行，Server 后台轮询并把终态持久化到 `pilot.db`。通过 `GET /backup/status?group=xxx&task_id=xxx` 查询（`running` / `success` / `failed` / `interrupted`）
 
-- **S3 存储**: 备份产物上传至 S3 兼容对象存储，本地磁盘仅作暂存。上传成功后立即删除本地文件。`backup list` 通过 `ListObjects` 查询；恢复时从 S3 下载
+- **默认配备份 + 打散**: 创建 `category==persistent` 的组时，平台默认配一份每日备份（retention=7），cron 时刻在 02:00–04:00 窗口内按组名 fnv32 打散，避免多组同时 BGSAVE + S3 上传。持久化组若无任何备份策略，会记一条 `backup_not_configured` warning（见 health-incidents.md）
+
+- **S3 存储**: 备份产物上传至 S3 兼容对象存储，本地磁盘仅作暂存。上传成功后立即删除本地文件。`backup list` 通过 `ListObjects` 查询；恢复时从 S3 下载。S3 key 前缀为**组名**（`{group}/...`）
 
 - **Redis 备份**:
-  - 仅 RDB: `BGSAVE` -> 等待完成 -> 校验产物 -> 上传 `{instance}/{ts}.rdb`
-  - RDB+AOF: `BGSAVE` + `BGREWRITEAOF` -> 暂存目录打包为 tar.gz -> 上传 `{instance}/{ts}.rdbaof.tar.gz`
+  - 仅 RDB: `BGSAVE` -> 等待完成 -> 校验产物 -> 上传 `{group}/{ts}.rdb`
+  - RDB+AOF: `BGSAVE` + `BGREWRITEAOF` -> 暂存目录打包为 tar.gz -> 上传 `{group}/{ts}.rdbaof.tar.gz`
   - 支持 AOF 目录模式（`appendonlydir/`）和单文件模式（`appendonly.aof`）
 
 - **Kvrocks 备份**:
-  - `BGSAVE` -> 校验产物 -> 压缩为 `{instance}/{ts}.checkpoint.tar.gz`
+  - `BGSAVE` -> 校验产物 -> 压缩为 `{group}/{ts}.checkpoint.tar.gz`
   - 不使用 `ROCKSDB.CHECKPOINT`：kvrocks 2.15.0 不存在该命令，实测返回 `ERR unknown command`
   - `BGSAVE` 把 RocksDB 数据文件写入容器内 `/data/backup`（宿主机 `dataDir/data/backup`），
     而不是 `-v` 挂载的 `/backup`（`dataDir/backup`）
@@ -134,7 +143,7 @@
     不足以区分「本次生成」和「上一次失败留下的残留」——后者会产出一个格式完全有效、
     时间戳崭新、内容却是旧快照的备份包，比没有备份更危险
 
-- **轮转清理**: 支持 `retention` 参数限制 S3 中的备份份数。上传成功后执行 `ListObjects` + `DeleteObjects` 保留最近 N 份。实例删除时（`clean_data=true`）清理该实例在 S3 中的所有对象
+- **轮转清理**: 支持 `retention` 参数限制 S3 中的备份份数。上传成功后执行 `ListObjects` + `DeleteObjects` 保留最近 N 份。删除组内**最后一个**实例时（`clean_data=true`，Server 下发 `s3_prefix=<组名>`）清理该组在 S3 中的所有对象；删除非最后实例不清理，避免误删同组仍需要的组级备份
 
 - **恢复优先级**: AOF > RDB（若存在 AOF 则优先恢复）
 

@@ -4,6 +4,7 @@ package state
 
 import (
 	"fmt"
+	"sort"
 	"time"
 
 	"gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/pkg/apitypes"
@@ -75,6 +76,44 @@ func InstanceGroup(instances *apitypes.InstancesState, name string) []string {
 		}
 	}
 	return []string{name}
+}
+
+// PickBackupExecInstance 为一个组选出执行备份的实例。
+//
+// 规则（见 docs/architecture/group-backup.md §5）：
+//   - 优先选一个 IsServing() 的从节点（role=replica）；备份 BGSAVE 的 fork 开销落在从上，
+//     不影响主的在线读写。
+//   - 没有可用从节点时回退到 IsServing() 的 master。
+//   - 都不满足返回 ""（本轮跳过，由调用方记日志）。
+//
+// 判据必须是观测（IsServing）：对已挂掉的实例发 BGSAVE 只会失败。
+// 多个候选从节点时按实例名排序取第一个，保证稳定可复现。
+// 选择在每次触发时做（不缓存），failover 后自然选到新拓扑下合适的节点。
+func PickBackupExecInstance(groupName string, instances *apitypes.InstancesState) string {
+	if instances == nil {
+		return ""
+	}
+	var replicas []string
+	master := ""
+	for name, inst := range instances.Instances {
+		if inst == nil || inst.Group != groupName || !inst.IsServing() {
+			continue
+		}
+		switch inst.Role {
+		case "replica":
+			replicas = append(replicas, name)
+		case "master":
+			// 组内可能短暂出现多个自认 master 的实例；按名字取稳定的一个。
+			if master == "" || name < master {
+				master = name
+			}
+		}
+	}
+	if len(replicas) > 0 {
+		sort.Strings(replicas)
+		return replicas[0]
+	}
+	return master
 }
 
 // RecalculateGroupTopology 根据实例实际状态刷新组拓扑派生字段。

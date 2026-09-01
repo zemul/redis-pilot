@@ -412,7 +412,11 @@ func (s *Server) aiExecute(c *gin.Context) {
 	case "failover":
 		handler, body = s.instanceFailover, map[string]any{"name": a.Name}
 	case "backup_exec":
-		handler, body = s.backupExec, map[string]any{"name": a.Name}
+		if a.Group == "" {
+			fail(c, http.StatusBadRequest, "missing arg: group")
+			return
+		}
+		handler, body = s.backupExec, map[string]any{"group": a.Group}
 	case "set_access_mode":
 		if a.AccessMode != "rw-split" && a.AccessMode != "standard" {
 			fail(c, http.StatusBadRequest, "access_mode must be rw-split or standard")
@@ -427,7 +431,11 @@ func (s *Server) aiExecute(c *gin.Context) {
 		handler, body = s.instanceReplicate, map[string]any{"name": a.Name, "replica_of": a.ReplicaOf}
 	case "backup_set_schedule":
 		// schedule 允许为空（表示关闭自动备份），故不强制校验；retention 可选。
-		handler, body = s.backupSetSchedule, map[string]any{"name": a.Name, "schedule": a.Schedule, "retention": a.Retention}
+		if a.Group == "" {
+			fail(c, http.StatusBadRequest, "missing arg: group")
+			return
+		}
+		handler, body = s.backupSetSchedule, map[string]any{"group": a.Group, "schedule": a.Schedule, "retention": a.Retention}
 	case "config_set":
 		if a.Key == "" {
 			fail(c, http.StatusBadRequest, "missing arg: key")

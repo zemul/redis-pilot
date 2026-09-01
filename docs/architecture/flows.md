@@ -491,23 +491,28 @@ Skill: redis-migrate
 
 Skill: redis-backup
   │
-  ├─1. 确定备份源
-  │   -> 优先从库: order-2 (server-b)
-  │   -> 无从库时从主库备份
+  ├─1. 平台确定执行节点（备份是组级概念）
+  │   -> 优先健康从库: order-2 (server-b)
+  │   -> 无可用从库时回退主库（state.PickBackupExecInstance）
   │
   ├─2. agent_exec(server-b, "instance/backup", {
-  │       name: "order-2",
+  │       name:      "order-2",   // 平台选出的执行实例
+  │       s3_prefix: "order",     // 组名，S3 归档前缀
   │   })
-  │   -> 立即返回 {task_id: "order-2-16989xxxxx"}
+  │   -> 立即返回 {task_id: "order-16989xxxxx"}
   │
-  ├─3. Server 后台轮询 agent "instance/backup/status?task_id=order-2-16989xxxxx"
+  ├─3. Server 后台轮询 agent "instance/backup/status?task_id=order-16989xxxxx"
   │   -> Agent 后台: BGSAVE -> 等待完成（失败/超时即报错）-> 校验产物
-  │                   -> 上传 S3（key: order-2/{ts}.rdb）-> 删本地临时文件
+  │                   -> 上传 S3（key: order/{ts}.rdb，按组名归档）-> 删本地临时文件
   │                   -> S3 轮转清理（保留最近 N 份）
   │   -> 轮询直到 status=success 或 failed
   │
   └─4. 通知: "备份完成" / "备份失败: {error}"
 ```
+
+> 备份策略挂在组上（`group.Backup`）：`/backup/*` 接口以 `group` 为参数，执行节点每次
+> 触发重新选定，failover 后自然落到新拓扑下的合适节点；备份对象按组名归档，无论由哪个
+> 实例执行都归属同一组，可统一列出与恢复。
 
 恢复使用同一模型：`POST /backup/restore` 立即返回 `task_id`，Agent 使用独立于 HTTP
 请求的后台 context 完成 S3 下载、校验、停机、原子替换和启动。Server 后台轮询

@@ -6,16 +6,18 @@ import (
 	"gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/pkg/apitypes"
 )
 
+// 组级备份模型：备份策略挂在 group.Backup 上；建 job 的条件是
+// group.Backup.Schedule != "" 且组内存在可服务实例（PickBackupExecInstance 非空）。
+
 func TestSyncJobs_AddNewJob(t *testing.T) {
 	s := newTestServer(t, "")
 	s.db.WriteInstances(&apitypes.InstancesState{
 		Groups: map[string]*apitypes.InstanceGroupState{
-			"redis-1": testGroup("redis-1"),
+			"redis-1": testGroupWithBackup("redis-1", "0 2 * * *"),
 		},
 		Instances: map[string]*apitypes.Instance{
 			"redis-1": {
-				Group: "redis-1", DesiredState: "running", ObservedStatus: "running",
-				Backup: &apitypes.BackupConfig{Schedule: "0 2 * * *"},
+				Group: "redis-1", Role: "master", DesiredState: "running", ObservedStatus: "running",
 			},
 		},
 	})
@@ -31,16 +33,15 @@ func TestSyncJobs_AddNewJob(t *testing.T) {
 	}
 }
 
-func TestSyncJobs_SkipStoppedInstance(t *testing.T) {
+func TestSyncJobs_SkipNoServingInstance(t *testing.T) {
 	s := newTestServer(t, "")
 	s.db.WriteInstances(&apitypes.InstancesState{
 		Groups: map[string]*apitypes.InstanceGroupState{
-			"redis-1": testGroup("redis-1"),
+			"redis-1": testGroupWithBackup("redis-1", "0 2 * * *"),
 		},
 		Instances: map[string]*apitypes.Instance{
 			"redis-1": {
-				Group: "redis-1", DesiredState: "stopped", ObservedStatus: "stopped",
-				Backup: &apitypes.BackupConfig{Schedule: "0 2 * * *"},
+				Group: "redis-1", Role: "master", DesiredState: "stopped", ObservedStatus: "stopped",
 			},
 		},
 	})
@@ -49,7 +50,7 @@ func TestSyncJobs_SkipStoppedInstance(t *testing.T) {
 	bs.syncJobs()
 
 	if len(bs.jobs) != 0 {
-		t.Fatalf("expected 0 jobs for stopped instance, got %d", len(bs.jobs))
+		t.Fatalf("expected 0 jobs when no serving instance, got %d", len(bs.jobs))
 	}
 }
 
@@ -60,7 +61,7 @@ func TestSyncJobs_SkipNoSchedule(t *testing.T) {
 			"redis-1": testGroup("redis-1"),
 		},
 		Instances: map[string]*apitypes.Instance{
-			"redis-1": {Group: "redis-1", DesiredState: "running", ObservedStatus: "running"},
+			"redis-1": {Group: "redis-1", Role: "master", DesiredState: "running", ObservedStatus: "running"},
 		},
 	})
 
@@ -68,20 +69,19 @@ func TestSyncJobs_SkipNoSchedule(t *testing.T) {
 	bs.syncJobs()
 
 	if len(bs.jobs) != 0 {
-		t.Fatalf("expected 0 jobs for instance without schedule, got %d", len(bs.jobs))
+		t.Fatalf("expected 0 jobs for group without schedule, got %d", len(bs.jobs))
 	}
 }
 
-func TestSyncJobs_RemoveDeletedInstance(t *testing.T) {
+func TestSyncJobs_RemoveDeletedGroup(t *testing.T) {
 	s := newTestServer(t, "")
 	s.db.WriteInstances(&apitypes.InstancesState{
 		Groups: map[string]*apitypes.InstanceGroupState{
-			"redis-1": testGroup("redis-1"),
+			"redis-1": testGroupWithBackup("redis-1", "0 2 * * *"),
 		},
 		Instances: map[string]*apitypes.Instance{
 			"redis-1": {
-				Group: "redis-1", DesiredState: "running", ObservedStatus: "running",
-				Backup: &apitypes.BackupConfig{Schedule: "0 2 * * *"},
+				Group: "redis-1", Role: "master", DesiredState: "running", ObservedStatus: "running",
 			},
 		},
 	})
@@ -93,14 +93,14 @@ func TestSyncJobs_RemoveDeletedInstance(t *testing.T) {
 		t.Fatalf("expected 1 job, got %d", len(bs.jobs))
 	}
 
-	// 删除实例
+	// 删除整个组
 	s.db.WriteInstances(&apitypes.InstancesState{
 		Instances: map[string]*apitypes.Instance{},
 	})
 	bs.syncJobs()
 
 	if len(bs.jobs) != 0 {
-		t.Fatalf("expected 0 jobs after instance deleted, got %d", len(bs.jobs))
+		t.Fatalf("expected 0 jobs after group deleted, got %d", len(bs.jobs))
 	}
 }
 
@@ -108,12 +108,11 @@ func TestSyncJobs_UpdateSchedule(t *testing.T) {
 	s := newTestServer(t, "")
 	s.db.WriteInstances(&apitypes.InstancesState{
 		Groups: map[string]*apitypes.InstanceGroupState{
-			"redis-1": testGroup("redis-1"),
+			"redis-1": testGroupWithBackup("redis-1", "0 2 * * *"),
 		},
 		Instances: map[string]*apitypes.Instance{
 			"redis-1": {
-				Group: "redis-1", DesiredState: "running", ObservedStatus: "running",
-				Backup: &apitypes.BackupConfig{Schedule: "0 2 * * *"},
+				Group: "redis-1", Role: "master", DesiredState: "running", ObservedStatus: "running",
 			},
 		},
 	})
@@ -123,15 +122,14 @@ func TestSyncJobs_UpdateSchedule(t *testing.T) {
 
 	oldEntryID := bs.jobs["redis-1"].entryID
 
-	// 更新 schedule
+	// 更新组级 schedule
 	s.db.WriteInstances(&apitypes.InstancesState{
 		Groups: map[string]*apitypes.InstanceGroupState{
-			"redis-1": testGroup("redis-1"),
+			"redis-1": testGroupWithBackup("redis-1", "0 3 * * *"),
 		},
 		Instances: map[string]*apitypes.Instance{
 			"redis-1": {
-				Group: "redis-1", DesiredState: "running", ObservedStatus: "running",
-				Backup: &apitypes.BackupConfig{Schedule: "0 3 * * *"},
+				Group: "redis-1", Role: "master", DesiredState: "running", ObservedStatus: "running",
 			},
 		},
 	})
@@ -152,12 +150,11 @@ func TestSyncJobs_InvalidCron(t *testing.T) {
 	s := newTestServer(t, "")
 	s.db.WriteInstances(&apitypes.InstancesState{
 		Groups: map[string]*apitypes.InstanceGroupState{
-			"redis-1": testGroup("redis-1"),
+			"redis-1": testGroupWithBackup("redis-1", "invalid cron"),
 		},
 		Instances: map[string]*apitypes.Instance{
 			"redis-1": {
-				Group: "redis-1", DesiredState: "running", ObservedStatus: "running",
-				Backup: &apitypes.BackupConfig{Schedule: "invalid cron"},
+				Group: "redis-1", Role: "master", DesiredState: "running", ObservedStatus: "running",
 			},
 		},
 	})
@@ -170,26 +167,24 @@ func TestSyncJobs_InvalidCron(t *testing.T) {
 	}
 }
 
-func TestSyncJobs_MultipleInstances(t *testing.T) {
+func TestSyncJobs_MultipleGroups(t *testing.T) {
 	s := newTestServer(t, "")
 	s.db.WriteInstances(&apitypes.InstancesState{
 		Groups: map[string]*apitypes.InstanceGroupState{
-			"redis-1": testGroup("redis-1"),
-			"redis-2": testGroup("redis-2"),
-			"redis-3": testGroup("redis-3"),
+			"redis-1": testGroupWithBackup("redis-1", "0 2 * * *"),
+			"redis-2": testGroupWithBackup("redis-2", "0 4 * * *"),
+			"redis-3": testGroupWithBackup("redis-3", "0 6 * * *"),
 		},
 		Instances: map[string]*apitypes.Instance{
 			"redis-1": {
-				Group: "redis-1", DesiredState: "running", ObservedStatus: "running",
-				Backup: &apitypes.BackupConfig{Schedule: "0 2 * * *"},
+				Group: "redis-1", Role: "master", DesiredState: "running", ObservedStatus: "running",
 			},
 			"redis-2": {
-				Group: "redis-2", DesiredState: "running", ObservedStatus: "running",
-				Backup: &apitypes.BackupConfig{Schedule: "0 4 * * *"},
+				Group: "redis-2", Role: "master", DesiredState: "running", ObservedStatus: "running",
 			},
+			// redis-3 组内实例已停止：无可服务实例，不建 job
 			"redis-3": {
-				Group: "redis-3", DesiredState: "stopped", ObservedStatus: "stopped",
-				Backup: &apitypes.BackupConfig{Schedule: "0 6 * * *"},
+				Group: "redis-3", Role: "master", DesiredState: "stopped", ObservedStatus: "stopped",
 			},
 		},
 	})
@@ -198,13 +193,13 @@ func TestSyncJobs_MultipleInstances(t *testing.T) {
 	bs.syncJobs()
 
 	if len(bs.jobs) != 2 {
-		t.Fatalf("expected 2 jobs (redis-3 stopped), got %d", len(bs.jobs))
+		t.Fatalf("expected 2 jobs (redis-3 has no serving instance), got %d", len(bs.jobs))
 	}
 	if _, ok := bs.jobs["redis-1"]; !ok {
-		t.Fatal("expected job for redis-1")
+		t.Fatal("expected job for group redis-1")
 	}
 	if _, ok := bs.jobs["redis-2"]; !ok {
-		t.Fatal("expected job for redis-2")
+		t.Fatal("expected job for group redis-2")
 	}
 }
 
@@ -215,4 +210,10 @@ func testGroup(master string) *apitypes.InstanceGroupState {
 		Category:      "cache",
 		CurrentMaster: master,
 	}
+}
+
+func testGroupWithBackup(master, schedule string) *apitypes.InstanceGroupState {
+	g := testGroup(master)
+	g.Backup = &apitypes.BackupConfig{Schedule: schedule, Retention: 7}
+	return g
 }

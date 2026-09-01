@@ -72,6 +72,7 @@ CREATE UNIQUE INDEX idx_incidents_active_fingerprint
 | `failover_conflict` | group | topology | `failover_conflict` 标记为 true | 标记清除且连续 2 次评估一致 | critical |
 | `backup_task_failed` | instance | task | `backup.create` 进入 failed/interrupted | 下次同类备份成功 | warning |
 | `restore_task_failed` | instance | task | `backup.restore` 进入 failed/interrupted | 下次同类恢复成功 | critical |
+| `backup_not_configured` | group | reconcile | 组 `category=="persistent"` 且组无任何备份策略（`group.Backup==nil` 或 `Schedule==""`），连续 3 轮 | 配上备份后连续 2 轮 | warning |
 
 > `replica_wrong_target`(运行时复制地址指向错误 Master)暂缓：reconcile 的
 > replica-drift 逻辑会主动纠正它，恢复信号与自愈相互干扰，信号不够干净，留待后续。

@@ -247,10 +247,10 @@ ai:
 | `failover` | `instanceFailover`（re-dispatch） | 写 | ✅ M5 |
 | `config_set` | `instanceConfig`（re-dispatch，单 key/value，保留字校验） | 写 | ✅ M5 |
 | `create_instance` | `instanceCreate`（re-dispatch，自动调度节点，含 category/engine/memory 校验、保留字校验） | 写 | ✅ M6 |
-| `backup_exec` | `backupExec`（re-dispatch） | 写 | ✅ M5 |
+| `backup_exec` | `backupExec`（re-dispatch，组级；arg=group，平台自动优先选健康从节点执行） | 写 | ✅ M5 |
 | `set_access_mode` | `instanceAccessMode`（re-dispatch，standard/rw-split） | 写 | ✅ M6 |
 | `replicate` | `instanceReplicate`（re-dispatch，加副本/扩容，name→replica_of） | 写 | ✅ M6 |
-| `backup_set_schedule` | `backupSetSchedule`（re-dispatch，cron+retention，空 cron=关闭） | 写 | ✅ M6 |
+| `backup_set_schedule` | `backupSetSchedule`（re-dispatch，组级；arg=group，cron+retention，空 cron=关闭） | 写 | ✅ M6 |
 | `write_key` | `instanceKeyWrite`（re-dispatch，受限 K/V 写：set/hset/push/sadd/zadd/expire/hdel/srem/zrem/lset，白名单+master 路由） | 写 | ✅ |
 | `delete_key` | `instanceKeyDelete`（re-dispatch，删整个 key／DEL） | 写 | ✅ |
 | `delete_instance` / `backup restore` / `clean-data` / `node remove` | — | 写 | ❌ 永久排除（破坏性/不可逆，只走人工 CLI） |

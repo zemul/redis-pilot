@@ -92,6 +92,7 @@ const INCIDENT_TYPE_LABELS = {
   no_running_replica: '无可用从节点',
   backup_task_failed: '备份失败',
   restore_task_failed: '恢复失败',
+  backup_not_configured: '未配置备份',
 };
 
 function CurrentIncidentsCard({ summary, onOpenIncidents }) {

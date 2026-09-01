@@ -248,6 +248,35 @@ func (s *Server) emitTaskIncident(kind, instance, group, server, status, errMsg,
 	}
 }
 
+// emitBackupNotConfigured 组级：持久化组是否配置了备份策略(去抖)。
+//
+// backup_not_configured：group.Category=="persistent" 且组没有任何备份策略
+// (group.Backup==nil 或 Schedule==""）——持久化数据无备份是高风险状态，记为 warning。
+// 判据是"配置"而非观测，天然稳定；去抖仍保留以吸收建组过程中默认策略尚未写上的
+// 短暂窗口(组刚建、还没写默认备份的那一两轮)。cache 组跳过：不判定、不恢复。
+func (s *Server) emitBackupNotConfigured(instances *apitypes.InstancesState) {
+	if s.incidents == nil || instances == nil {
+		return
+	}
+	for groupName, group := range instances.Groups {
+		if group == nil || group.Category != "persistent" {
+			continue // 仅持久化组关心备份；cache 组跳过
+		}
+		notConfigured := group.Backup == nil || group.Backup.Schedule == ""
+		s.incidents.Observe(Observation{
+			Type:       "backup_not_configured",
+			Active:     notConfigured,
+			Severity:   "warning",
+			Source:     "reconcile",
+			ObjectType: "group",
+			ObjectID:   groupName,
+			GroupName:  groupName,
+			Summary:    fmt.Sprintf("持久化实例组 %s 未配置备份", groupName),
+			Reason:     "组的 category 为 persistent，但没有任何自动备份策略",
+		})
+	}
+}
+
 // truncateEvidenceText 截断错误文本，避免大响应/堆栈原样入库。
 func truncateEvidenceText(s string) string {
 	const max = 500

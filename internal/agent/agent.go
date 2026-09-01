@@ -442,6 +442,9 @@ func (a *Agent) instanceDelete(c *gin.Context) {
 		Name      string `json:"name" binding:"required"`
 		Engine    string `json:"engine" binding:"required"`
 		CleanData bool   `json:"clean_data"`
+		// S3Prefix 指定要清理的 S3 备份前缀（组名）。仅当 Server 判断这是组内
+		// 最后一个实例、整组被删除时才下发；空则不清理组级备份（保留给同组其他实例）。
+		S3Prefix string `json:"s3_prefix"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		fail(c, http.StatusBadRequest, err.Error())
@@ -467,10 +470,12 @@ func (a *Agent) instanceDelete(c *gin.Context) {
 	}
 	if req.CleanData {
 		os.RemoveAll(filepath.Join(a.cfg.DataDir, req.Name))
-		// Best-effort S3 cleanup: delete all backup objects for this instance.
-		if a.s3 != nil {
-			if err := a.s3.DeletePrefix(c.Request.Context(), req.Name+"/"); err != nil {
-				a.log.Errorf("instance delete: s3 cleanup for %s failed: %v", req.Name, err)
+		// Best-effort S3 cleanup: 组级备份归档在 <s3_prefix>/ 下（s3_prefix=组名）。
+		// 仅当 Server 明确下发 s3_prefix（整组删除的最后一个实例）时才清理，
+		// 避免删除同组其他实例仍需要的组级备份。
+		if a.s3 != nil && req.S3Prefix != "" {
+			if err := a.s3.DeletePrefix(c.Request.Context(), req.S3Prefix+"/"); err != nil {
+				a.log.Errorf("instance delete: s3 cleanup for group prefix %s failed: %v", req.S3Prefix, err)
 			}
 		}
 	}
@@ -1332,6 +1337,7 @@ func (a *Agent) instanceBackup(c *gin.Context) {
 		Name      string `json:"name" binding:"required"`
 		Engine    string `json:"engine" binding:"required"`
 		Retention int    `json:"retention"` // 保留份数，0 表示不清理
+		S3Prefix  string `json:"s3_prefix" binding:"required"` // S3 归档前缀（组名）
 		TaskID    string `json:"task_id"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -1340,6 +1346,10 @@ func (a *Agent) instanceBackup(c *gin.Context) {
 	}
 	if err := validateInstanceName(req.Name); err != nil {
 		fail(c, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := validateInstanceName(req.S3Prefix); err != nil {
+		fail(c, http.StatusBadRequest, "invalid s3_prefix: "+err.Error())
 		return
 	}
 	if a.s3 == nil {
@@ -1368,7 +1378,7 @@ func (a *Agent) instanceBackup(c *gin.Context) {
 		return
 	}
 
-	go a.runBackup(task, req.Name, req.Engine, req.Retention)
+	go a.runBackup(task, req.Name, req.Engine, req.Retention, req.S3Prefix)
 
 	ok(c, gin.H{"task_id": taskID})
 }
@@ -1389,9 +1399,12 @@ func (a *Agent) instanceBackupStatus(c *gin.Context) {
 }
 
 // runBackup executes the full backup pipeline in the background.
-func (a *Agent) runBackup(task *operationTask, name, engine string, retention int) {
+// s3Prefix 是 S3 归档前缀（组名），由 Server 下发，必填。
+func (a *Agent) runBackup(task *operationTask, name, engine string, retention int, s3Prefix string) {
 	unlock := a.lockInstance(name)
 	defer unlock()
+
+	keyPrefix := s3Prefix
 
 	backupDir := filepath.Join(a.cfg.DataDir, name, "backup")
 	os.MkdirAll(backupDir, 0o755)
@@ -1418,7 +1431,7 @@ func (a *Agent) runBackup(task *operationTask, name, engine string, retention in
 		}
 		s3Ext = ".checkpoint.tar.gz"
 		localPath = filepath.Join(backupDir, ts+s3Ext)
-		s3Key = name + "/" + ts + s3Ext
+		s3Key = keyPrefix + "/" + ts + s3Ext
 		if _, err := runShell("tar", "-czf", localPath, "-C", src, "."); err != nil {
 			os.Remove(localPath)
 			a.failTask(task, err.Error())
@@ -1484,7 +1497,7 @@ func (a *Agent) runBackup(task *operationTask, name, engine string, retention in
 			}
 			s3Ext = ".rdbaof.tar.gz"
 			localPath = filepath.Join(backupDir, ts+s3Ext)
-			s3Key = name + "/" + ts + s3Ext
+			s3Key = keyPrefix + "/" + ts + s3Ext
 			if _, err := runShell("tar", "-czf", localPath, "-C", stageDir, "."); err != nil {
 				os.Remove(localPath)
 				os.RemoveAll(stageDir)
@@ -1495,7 +1508,7 @@ func (a *Agent) runBackup(task *operationTask, name, engine string, retention in
 		} else {
 			s3Ext = ".rdb"
 			localPath = filepath.Join(backupDir, ts+s3Ext)
-			s3Key = name + "/" + ts + s3Ext
+			s3Key = keyPrefix + "/" + ts + s3Ext
 			if err := copyFile(rdbPath, localPath); err != nil {
 				os.Remove(localPath)
 				a.failTask(task, err.Error())
@@ -1514,7 +1527,7 @@ func (a *Agent) runBackup(task *operationTask, name, engine string, retention in
 
 	// S3 rotation cleanup (best-effort).
 	if retention > 0 {
-		a.cleanupS3Backups(context.Background(), name, retention)
+		a.cleanupS3Backups(context.Background(), keyPrefix, retention)
 	}
 
 	task.finish("success", ts, "")
@@ -1530,6 +1543,7 @@ func (a *Agent) instanceRestore(c *gin.Context) {
 		Name     string `json:"name" binding:"required"`
 		Engine   string `json:"engine" binding:"required"`
 		BackupTs string `json:"backup_ts" binding:"required"`
+		S3Prefix string `json:"s3_prefix" binding:"required"` // S3 归档前缀（组名）
 		TaskID   string `json:"task_id"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -1538,6 +1552,10 @@ func (a *Agent) instanceRestore(c *gin.Context) {
 	}
 	if err := validateInstanceName(req.Name); err != nil {
 		fail(c, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := validateInstanceName(req.S3Prefix); err != nil {
+		fail(c, http.StatusBadRequest, "invalid s3_prefix: "+err.Error())
 		return
 	}
 	if err := validateBackupTs(req.BackupTs); err != nil {
@@ -1562,7 +1580,7 @@ func (a *Agent) instanceRestore(c *gin.Context) {
 		ok(c, gin.H{"task_id": taskID})
 		return
 	}
-	go a.runRestore(task, req.Name, req.Engine, req.BackupTs)
+	go a.runRestore(task, req.Name, req.Engine, req.BackupTs, req.S3Prefix)
 	ok(c, gin.H{"task_id": taskID})
 }
 
@@ -1580,18 +1598,20 @@ func (a *Agent) instanceRestoreStatus(c *gin.Context) {
 	ok(c, v.(*operationTask).snapshot())
 }
 
-func (a *Agent) runRestore(task *operationTask, name, engine, backupTs string) {
-	if err := a.restoreDataset(name, engine, backupTs); err != nil {
+func (a *Agent) runRestore(task *operationTask, name, engine, backupTs, s3Prefix string) {
+	if err := a.restoreDataset(name, engine, backupTs, s3Prefix); err != nil {
 		a.failTask(task, err.Error())
 		return
 	}
 	task.finish("success", backupTs, "")
 }
 
-func (a *Agent) restoreDataset(name, engine, backupTs string) error {
+func (a *Agent) restoreDataset(name, engine, backupTs, s3Prefix string) error {
 
 	unlock := a.lockInstance(name)
 	defer unlock()
+
+	keyPrefix := s3Prefix
 
 	ctx := context.Background()
 	dataDir := filepath.Join(a.cfg.DataDir, name, "data")
@@ -1611,7 +1631,7 @@ func (a *Agent) restoreDataset(name, engine, backupTs string) error {
 
 	if engine == "kvrocks" {
 		// Download checkpoint archive from S3 and stage it as a complete data/db tree.
-		s3Key := name + "/" + backupTs + ".checkpoint.tar.gz"
+		s3Key := keyPrefix + "/" + backupTs + ".checkpoint.tar.gz"
 		archivePath := filepath.Join(stageRoot, "backup.tar.gz")
 		if err := a.s3.Download(ctx, s3Key, archivePath); err != nil {
 			return fmt.Errorf("download backup from s3 failed (original data untouched): %w", err)
@@ -1631,8 +1651,8 @@ func (a *Agent) restoreDataset(name, engine, backupTs string) error {
 		}
 	} else {
 		// Redis: determine backup format by checking S3 for rdbaof vs rdb.
-		rdbaofKey := name + "/" + backupTs + ".rdbaof.tar.gz"
-		rdbKey := name + "/" + backupTs + ".rdb"
+		rdbaofKey := keyPrefix + "/" + backupTs + ".rdbaof.tar.gz"
+		rdbKey := keyPrefix + "/" + backupTs + ".rdb"
 
 		if a.s3.Exists(ctx, rdbaofKey) {
 			// RDB + AOF joint backup: extract both into one staged data directory.
@@ -1700,12 +1720,22 @@ func (a *Agent) instanceBackups(c *gin.Context) {
 		fail(c, http.StatusBadRequest, err.Error())
 		return
 	}
+	// s3_prefix（组名）为 S3 归档前缀，必填。
+	keyPrefix := c.Query("s3_prefix")
+	if keyPrefix == "" {
+		fail(c, http.StatusBadRequest, "s3_prefix is required")
+		return
+	}
+	if err := validateInstanceName(keyPrefix); err != nil {
+		fail(c, http.StatusBadRequest, "invalid s3_prefix: "+err.Error())
+		return
+	}
 	if a.s3 == nil {
 		fail(c, http.StatusServiceUnavailable, "s3 not configured")
 		return
 	}
 
-	objects, err := a.s3.List(c.Request.Context(), name+"/")
+	objects, err := a.s3.List(c.Request.Context(), keyPrefix+"/")
 	if err != nil {
 		fail(c, http.StatusInternalServerError, "s3 list failed: "+err.Error())
 		return
@@ -1719,8 +1749,8 @@ func (a *Agent) instanceBackups(c *gin.Context) {
 	}
 	var backups []backupEntry
 	for _, obj := range objects {
-		// Key format: {instance}/{ts}.{ext}; strip the instance prefix.
-		key := strings.TrimPrefix(obj.Key, name+"/")
+		// Key format: {prefix}/{ts}.{ext}; strip the prefix.
+		key := strings.TrimPrefix(obj.Key, keyPrefix+"/")
 		var ts, format string
 		switch {
 		case strings.HasSuffix(key, ".checkpoint.tar.gz"):
@@ -1748,13 +1778,13 @@ func (a *Agent) instanceBackups(c *gin.Context) {
 // cleanupS3Backups retains only the most recent `retention` backups in S3 for
 // the given instance, deleting older ones. Best-effort: errors are logged but
 // do not fail the backup operation.
-func (a *Agent) cleanupS3Backups(ctx context.Context, instanceName string, retention int) {
+func (a *Agent) cleanupS3Backups(ctx context.Context, prefix string, retention int) {
 	if retention <= 0 || a.s3 == nil {
 		return
 	}
-	objects, err := a.s3.List(ctx, instanceName+"/")
+	objects, err := a.s3.List(ctx, prefix+"/")
 	if err != nil {
-		a.log.Errorf("s3 cleanup: list failed for %s: %v", instanceName, err)
+		a.log.Errorf("s3 cleanup: list failed for %s: %v", prefix, err)
 		return
 	}
 	if len(objects) <= retention {
@@ -1767,7 +1797,7 @@ func (a *Agent) cleanupS3Backups(ctx context.Context, instanceName string, reten
 		toDelete = append(toDelete, obj.Key)
 	}
 	if err := a.s3.Delete(ctx, toDelete); err != nil {
-		a.log.Errorf("s3 cleanup: delete failed for %s: %v", instanceName, err)
+		a.log.Errorf("s3 cleanup: delete failed for %s: %v", prefix, err)
 	}
 }
 
