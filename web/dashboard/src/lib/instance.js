@@ -80,7 +80,7 @@ export function topologyReason(group) {
   return { title: '拓扑降级', detail: '实例组拓扑与预期状态不符。' };
 }
 
-export function buildInstanceGroups(instanceState) {
+export function buildInstanceGroups(instanceState, incidentsByGroup = {}) {
   const instances = normalizeMap(instanceState, 'Instances', 'instances');
   const groupStates = normalizeNamedMap(instanceState, 'Groups', 'groups');
   const groups = new Map();
@@ -145,11 +145,15 @@ export function buildInstanceGroups(instanceState) {
     const memoryUsed = group.instances.reduce((sum, item) => sum + Number(getField(item, 'memory_used', 'MemoryUsed', 0) || 0), 0);
     const disk = group.instances.reduce((sum, item) => sum + parseGi(getField(item, 'disk', 'Disk')), 0);
     const cpus = group.instances.reduce((sum, item) => sum + Number(getField(item, 'cpus', 'CPUs', 0) || 0), 0);
+    const topoStatus = topologyStatus(group.groupState, group.instances);
+    const incident = incidentsByGroup[group.groupName] || null;
     return {
       ...group,
       master: primary,
       replicas: group.instances.filter((item) => item.name !== primary?.name && getField(item, 'role', 'Role') !== 'master' && getField(item, 'role', 'Role') !== 'standalone'),
-      status: topologyStatus(group.groupState, group.instances),
+      status: mergeStatusWithIncident(topoStatus, incident),
+      topologyStatus: topoStatus,
+      incident,
       engine: getField(group.groupState, 'engine', 'Engine', primary ? getField(primary, 'engine', 'Engine', group.engine) : group.engine),
       engineVersion: getField(group.groupState, 'engine_version', 'EngineVersion', group.engineVersion),
       category: getField(group.groupState, 'category', 'Category', group.category),
@@ -157,6 +161,23 @@ export function buildInstanceGroups(instanceState) {
       resource: { memory, memoryUsed, disk, cpus }
     };
   });
+}
+
+// mergeStatusWithIncident 把拓扑派生状态与该组 open 异常等级取最差，作为列表展示状态。
+// 保证列表状态不比实际乐观，且与异常中心口径一致（既覆盖拓扑降级，也覆盖未配置备份
+// 这类非拓扑异常）。
+// - 拓扑本身已是 bad（如 failed/failover_conflict）：保持拓扑状态，标签更具体。
+// - 拓扑非 bad 但有 critical 异常：升级为 abnormal(bad)。
+// - 拓扑非 bad 且只有 warning 异常：若拓扑已是 warn（degraded 等）保持其更具体的标签，
+//   否则（拓扑健康）升级为 attention(warn)，避免显示"健康"掩盖异常。
+function mergeStatusWithIncident(topoStatus, incident) {
+  if (!incident) return topoStatus;
+  const topoTone = instanceStatusTone(topoStatus);
+  if (topoTone === 'bad') return topoStatus;
+  if (incident.severity === 'critical') return 'abnormal';
+  // warning 异常
+  if (topoTone === 'warn') return topoStatus; // degraded 等更具体，保留
+  return 'attention';
 }
 
 function normalizeGroupLabels(raw) {

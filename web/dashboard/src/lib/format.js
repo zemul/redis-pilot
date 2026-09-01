@@ -209,6 +209,8 @@ export function statusMeta(status) {
     degraded: '拓扑降级',
     failover_conflict: '故障转移冲突',
     drain: '下线中',
+    attention: '需关注',
+    abnormal: '异常',
   };
   const tone = {
     running: 'ok',
@@ -223,6 +225,8 @@ export function statusMeta(status) {
     unhealthy: 'bad',
     degraded: 'warn',
     failover_conflict: 'bad',
+    attention: 'warn',
+    abnormal: 'bad',
   };
   return { label: labels[status] || status || '未知', tone: tone[status] || 'neutral' };
 }

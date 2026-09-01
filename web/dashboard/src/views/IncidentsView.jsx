@@ -11,6 +11,7 @@ const TYPE_LABELS = {
   master_mismatch: 'Master 视角不一致',
   failover_conflict: '故障转移冲突',
   no_running_replica: '无可用从节点',
+  replica_missing: '缺少从节点',
   backup_task_failed: '备份失败',
   restore_task_failed: '恢复失败',
   backup_not_configured: '未配置备份',

@@ -85,6 +85,7 @@ function AppShell() {
   const [taskInstanceFilter, setTaskInstanceFilter] = useState('');
   const [incidentInstanceFilter, setIncidentInstanceFilter] = useState('');
   const [incidentSummary, setIncidentSummary] = useState(null);
+  const [openIncidentsByGroup, setOpenIncidentsByGroup] = useState({});
   const [pendingAction, setPendingAction] = useState('');
   const [activeTaskCount, setActiveTaskCount] = useState(0);
   const [data, setData] = useState({ instances: {}, servers: {}, audits: [], sentinel: null });
@@ -92,7 +93,7 @@ function AppShell() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
 
-  const instanceGroups = useMemo(() => buildInstanceGroups(data.instances), [data.instances]);
+  const instanceGroups = useMemo(() => buildInstanceGroups(data.instances, openIncidentsByGroup), [data.instances, openIncidentsByGroup]);
   const labelSuggestions = useMemo(
     () => [...new Set(instanceGroups.flatMap((group) => group.labels || []))].sort((a, b) => a.localeCompare(b)),
     [instanceGroups]
@@ -162,6 +163,28 @@ function AppShell() {
         if (!ignore) setIncidentSummary(result || null);
       } catch {
         if (!ignore) setIncidentSummary(null);
+      }
+      // 额外拉取全部 open 异常，按 group 聚合出"每组最高 open 异常等级"，
+      // 供实例列表状态与拓扑取最差（口径与异常中心一致）。
+      try {
+        const list = await request('/incidents?status=open&page_size=200');
+        const records = list?.records || list?.Records || [];
+        const byGroup = {};
+        for (const rec of records) {
+          const group = rec.group_name || rec.GroupName;
+          if (!group) continue;
+          const severity = rec.severity || rec.Severity || 'warning';
+          const prev = byGroup[group];
+          // critical 优先于 warning；记录条数用于角标计数。
+          const worse = prev?.severity === 'critical' ? 'critical' : severity;
+          byGroup[group] = {
+            severity: prev?.severity === 'critical' ? 'critical' : worse,
+            count: (prev?.count || 0) + 1,
+          };
+        }
+        if (!ignore) setOpenIncidentsByGroup(byGroup);
+      } catch {
+        if (!ignore) setOpenIncidentsByGroup({});
       }
     }
     loadSummary();

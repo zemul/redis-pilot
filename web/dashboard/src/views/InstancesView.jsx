@@ -271,7 +271,15 @@ function InstanceGroupCard({ group, expanded, onToggle, publicHost, sentinelPort
         </div>
         <div className="text-[13px]"><ProxyPorts group={group} publicHost={publicHost} /></div>
         <div>{master ? <MemoryUsage memory={group.resource.memory} memoryUsed={group.resource.memoryUsed} /> : <span className="text-gray-300">-</span>}</div>
-        <div><StatusBadge status={group.status} /></div>
+        <div className="flex items-center gap-1.5">
+          <StatusBadge status={group.status} />
+          {group.incident && (
+            <span
+              title={`该组有 ${group.incident.count} 条未处理异常，详见异常记录`}
+              className={`inline-flex items-center justify-center min-w-[16px] h-4 px-1 rounded-full text-[10px] font-semibold ${group.incident.severity === 'critical' ? 'bg-red-100 text-red-700' : 'bg-amber-100 text-amber-700'}`}
+            >{group.incident.count}</span>
+          )}
+        </div>
         <div className="flex justify-end items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
           <button type="button" className="h-7 px-3 rounded-md border border-gray-200 bg-white text-[12px] text-gray-700 hover:bg-gray-50 hover:border-gray-300 transition-colors cursor-pointer" aria-label={detailAria} onClick={openDetail}>详情</button>
           <MoreMenu items={menuItems} ariaLabel={ariaLabel} />

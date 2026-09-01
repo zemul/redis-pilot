@@ -160,6 +160,59 @@ func noRunningReplicaObs(group string, active bool) Observation {
 	}
 }
 
+// emitReplicaMissing 组级：replication 组是否处于"1 主 0 从"的降级(去抖)。
+//
+// replica_missing：replication 组配置上就没有任何"应运行"的从节点(no-replicas)，
+// 且 master 正在服务——这是拓扑降级里唯一没有更具体异常兜底的情形(master 挂由
+// instance_unexpected_down 记，从节点全挂由 no_running_replica 记)。缺少从节点意味着
+// 无法读扩展、无故障转移目标，记为 warning。判据是"配置/观测拓扑"而非瞬时抖动，天然稳定。
+//
+// 与 no_running_replica 互斥：只在 no-replicas 分支记录；一旦补上从节点(status 变为
+// serving/all-down/unknown)，本条转为 Resolve，避免两条组级异常同时存在。
+// master 未在服务时也 Resolve：此时降级的根因是 master，交给实例级异常，不在此重复。
+func (s *Server) emitReplicaMissing(results []ReconcileResult, instances *apitypes.InstancesState) {
+	if s.incidents == nil || instances == nil {
+		return
+	}
+	observed := make(map[string]string, len(results))
+	for _, r := range results {
+		observed[r.Instance] = r.Actual
+	}
+	for groupName, group := range instances.Groups {
+		if group == nil || group.Type != "replication" {
+			continue
+		}
+		missing := replicaAvailabilityStatus(groupName, group.CurrentMaster, instances, observed) == "no-replicas" &&
+			masterServing(groupName, group.CurrentMaster, instances, observed)
+		s.incidents.Observe(Observation{
+			Type:       "replica_missing",
+			Active:     missing,
+			Severity:   "warning",
+			Source:     "reconcile",
+			ObjectType: "group",
+			ObjectID:   groupName,
+			GroupName:  groupName,
+			Summary:    fmt.Sprintf("主从实例组 %s 缺少从节点", groupName),
+			Reason:     "组的拓扑为主从(replication)，但当前没有任何应运行的从节点(1 主 0 从)，无法读扩展与故障转移",
+		})
+	}
+}
+
+// masterServing 判断组的当前 master 是否观测为正在服务(纯函数，便于测试)。
+// 无法确信(unreachable/未观测)时返回 false，让 emitReplicaMissing 保守地不记 warning，
+// 把降级交给实例级/节点级异常，避免与它们重复。
+func masterServing(groupName, currentMaster string, instances *apitypes.InstancesState, observed map[string]string) bool {
+	for name, inst := range instances.Instances {
+		if inst == nil || inst.Group != groupName {
+			continue
+		}
+		if name == currentMaster && inst.Role == "master" {
+			return observed[name] == apitypes.ObservedRunning
+		}
+	}
+	return false
+}
+
 // emitMasterMismatch 提交组级 Master 视角一致性观测(去抖)。
 //
 //   - masterName：平台记录的当前 master 实例名(用于展示)。
