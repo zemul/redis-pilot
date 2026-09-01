@@ -588,6 +588,12 @@ function AccessInfoTab({ group, publicHost, sentinelPort, requestFn, onRefresh }
   const autoEndpoint = publicHost && autoPort ? `${publicHost}:${autoPort}` : (autoPort ? String(autoPort) : null);
   const sentinelEndpoint = publicHost && sentinelPort ? `${publicHost}:${sentinelPort}` : null;
 
+  useEffect(() => {
+    const next = group.access_mode === 'rw-split' ? 'rw-split' : 'standard';
+    setCurrent(next);
+    setSel(next);
+  }, [group.access_mode, group.groupName]);
+
   async function applySwitch() {
     if (sel === current || saving) return;
     setSaving(true); setSwitchErr('');
@@ -646,24 +652,25 @@ function AccessInfoTab({ group, publicHost, sentinelPort, requestFn, onRefresh }
 
       <section className="space-y-2.5">
         <h4 className="m-0 text-[13px] font-semibold text-gray-500">Sentinel 接入方式</h4>
-        <p className="m-0 -mt-1 text-[11px] text-gray-400">仅影响 Sentinel 模式下伪 Sentinel 返回给客户端的端口；直连不受此设置影响。</p>
+        <p className="m-0 -mt-1 text-[11px] text-gray-400">选择客户端通过 Sentinel 接入时使用的流量模式。</p>
         {switchErr && <div className="border border-red-200 rounded-md px-3 py-2 flex items-center gap-2 bg-red-50 text-red-700 text-[13px]"><AlertCircle size={16} /> {switchErr}</div>}
-        <div className="border border-gray-200 rounded-md px-3 py-2.5 space-y-2">
-          <label className="flex items-center gap-2 cursor-pointer">
+        <div className="border border-gray-200 rounded-md p-2 space-y-1">
+          <label className={`flex items-center gap-2 rounded px-2.5 py-2 cursor-pointer transition-colors ${sel === 'standard' ? 'bg-gray-50' : 'hover:bg-gray-50'}`}>
             <input type="radio" name="access_mode" value="standard" checked={sel === 'standard'} onChange={() => setSel('standard')} disabled={saving} />
-            <span className="text-[13px]"><strong className="font-medium">标准</strong> — 所有流量走主库{current === 'standard' && <span className="ml-1 text-[11px] text-gray-400">（当前）</span>}</span>
+            <span className="min-w-0 flex-1 text-[13px]"><strong className="font-medium">标准</strong> — 所有流量走主库{current === 'standard' && <span className="ml-1 text-[11px] text-gray-400">（当前）</span>}</span>
           </label>
-          <label className="flex items-center gap-2 cursor-pointer">
-            <input type="radio" name="access_mode" value="rw-split" checked={sel === 'rw-split'} onChange={() => setSel('rw-split')} disabled={saving} />
-            <span className="text-[13px]"><strong className="font-medium">读写分离</strong> — 读请求分发到从库{current === 'rw-split' && <span className="ml-1 text-[11px] text-gray-400">（当前）</span>}</span>
+          <label className={`flex items-center gap-2 rounded px-2.5 py-2 transition-colors ${autoEndpoint ? 'cursor-pointer' : 'cursor-not-allowed opacity-50'} ${sel === 'rw-split' ? 'bg-gray-50' : autoEndpoint ? 'hover:bg-gray-50' : ''}`}>
+            <input type="radio" name="access_mode" value="rw-split" checked={sel === 'rw-split'} onChange={() => setSel('rw-split')} disabled={saving || !autoEndpoint} />
+            <span className="min-w-0 flex-1 text-[13px]"><strong className="font-medium">读写分离</strong> — 读请求分发到从库{current === 'rw-split' && <span className="ml-1 text-[11px] text-gray-400">（当前）</span>}</span>
           </label>
-          <div className="flex justify-end pt-1">
-            <button type="button" disabled={sel === current || saving}
+          {sel !== current && <div className="mt-1 flex flex-wrap items-center justify-between gap-2 border-t border-gray-100 px-2.5 pt-2.5 pb-0.5">
+            <span className="text-[11px] text-amber-700">切换后，Sentinel 客户端将使用{sel === 'rw-split' ? '读写分离' : '全走主库'}模式。</span>
+            <button type="button" disabled={saving}
               className="h-8 px-3 rounded-md bg-gray-900 text-white text-xs font-medium hover:bg-gray-700 disabled:opacity-50 disabled:cursor-not-allowed inline-flex items-center gap-1"
               onClick={applySwitch}>
               {saving ? <><RefreshCw size={14} className="animate-spin" /> 切换中…</> : '切换模式'}
             </button>
-          </div>
+          </div>}
         </div>
       </section>
     </div>
