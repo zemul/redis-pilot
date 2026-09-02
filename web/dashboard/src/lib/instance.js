@@ -129,7 +129,10 @@ export function buildInstanceGroups(instanceState, incidentsByGroup = {}) {
     return {
       ...group,
       master: primary,
-      replicas: group.instances.filter((item) => item.name !== primary?.name && getField(item, 'role', 'Role') !== 'master' && getField(item, 'role', 'Role') !== 'standalone'),
+      // 只按“不是当前主”过滤，不要用 role 反推：故障转移未收敛时旧主 role 仍是
+      // master、但已不等于 currentMaster，若再用 role!=='master' 排除，它会既不入
+      // master 又落不进 replicas，导致该节点行/拓扑/操作入口在最需要观察的时刻整体消失。
+      replicas: group.instances.filter((item) => item.name !== primary?.name),
       // status 只反映运行态；健康/异常判定交给 incident（来自异常表），由展示层合成。
       status: runStatus,
       incident,
