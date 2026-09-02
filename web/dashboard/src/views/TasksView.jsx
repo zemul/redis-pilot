@@ -157,7 +157,7 @@ export function TasksView({ request, initialInstance = '' }) {
 
       <section className="border border-gray-200 rounded-lg bg-white overflow-hidden">
         <div className="min-h-[54px] px-4 py-3 border-b border-gray-200 flex items-center justify-between gap-3">
-          <div><h3 className="m-0 text-[15px] font-semibold">任务记录</h3><p className="m-0 mt-0.5 text-xs text-gray-400">页面关闭后任务仍由 Server 持续跟踪</p></div>
+          <h3 className="m-0 text-[15px] font-semibold">任务记录</h3>
           <button type="button" onClick={() => fetchTasks(page, appliedFilters)} className="h-8 px-2.5 rounded-md border border-gray-200 bg-white text-gray-500 text-xs inline-flex items-center gap-1.5 hover:bg-gray-50 cursor-pointer"><RefreshCw size={14} /> 刷新</button>
         </div>
         {error && <div className="mx-4 mt-4 px-3 py-2 text-[13px] text-red-700 bg-red-50 border border-red-200 rounded-md"><AlertCircle size={15} className="inline mr-1.5" />{error}</div>}

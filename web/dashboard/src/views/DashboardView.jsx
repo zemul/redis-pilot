@@ -2,7 +2,7 @@
 import { useMemo, useState } from 'react';
 import {
   AlertCircle, AlertTriangle, Bot, CheckCircle2, ChevronRight,
-  CircleGauge, Clock3, FileSearch, Network, RefreshCcw, RefreshCw, Settings2,
+  Clock3, FileSearch, Network, RefreshCcw, RefreshCw, Settings2,
   ShieldCheck, Upload,
 } from 'lucide-react';
 import { CategoryBadge, EmptyState, EngineIcon, MemoryUsage, StatusBadge } from '../components/common.jsx';
@@ -14,16 +14,6 @@ import { groupDisplayTone, topologyLabel } from '../lib/instance.js';
 
 const cardClass = 'border border-gray-200 rounded-lg bg-white overflow-hidden';
 const headClass = 'min-h-[46px] px-4 py-2.5 border-b border-gray-200 flex items-center justify-between gap-3';
-
-function relativeTime(value) {
-  if (!value) return '-';
-  const seconds = Math.max(0, Math.round((Date.now() - new Date(value).getTime()) / 1000));
-  if (!Number.isFinite(seconds)) return '-';
-  if (seconds < 60) return `${seconds} 秒前`;
-  if (seconds < 3600) return `${Math.floor(seconds / 60)} 分钟前`;
-  if (seconds < 86400) return `${Math.floor(seconds / 3600)} 小时前`;
-  return `${Math.floor(seconds / 86400)} 天前`;
-}
 
 function incidentImpact(incident) {
   const labels = {
@@ -92,17 +82,15 @@ function RuntimeAssurance({ servers, sentinel, proxyStatus }) {
   const onlineProxies = proxyStatus?.online || 0;
   const versions = new Set(proxies.filter((proxy) => proxy.status === 'online' && proxy.snapshot_version).map((proxy) => proxy.snapshot_version));
   const proxyHealthy = proxies.length > 0 && onlineProxies === proxies.length && versions.size <= 1 && proxies.every((proxy) => proxy.snapshot_version);
-  const lastReconcileAt = servers.map((item) => getField(item, 'last_heartbeat', 'LastHeartbeat')).filter(Boolean).sort().at(-1);
   const cells = [
     { label: 'Agent', Icon: Bot, ok: servers.length > 0 && healthyAgents === servers.length, value: `${healthyAgents} / ${servers.length} 在线`, detail: servers.length ? '节点状态采集正常' : '尚未注册节点' },
     { label: 'Sentinel', Icon: ShieldCheck, ok: sentinelHealthy, value: sentinel?.enabled ? `${onlineSentinels} / ${sentinelNodes.length} 健康` : '未启用', detail: sentinel?.enabled ? `quorum=${sentinel.quorum}` : '当前不使用 Sentinel' },
     { label: 'Proxy', Icon: Network, ok: proxyHealthy, value: proxies.length ? `${onlineProxies} / ${proxies.length} 在线` : '等待状态上报', detail: proxies.length ? (versions.size > 1 ? '快照版本不一致' : proxyHealthy ? '快照一致' : '等待快照应用') : '重启 Proxy 后自动接入' },
-    { label: '最后一次对账', Icon: CircleGauge, ok: Boolean(lastReconcileAt), value: lastReconcileAt ? relativeTime(lastReconcileAt) : '等待首次对账', detail: lastReconcileAt ? formatDateTime(lastReconcileAt) : 'Server 每 30 秒执行一次' },
   ];
-  return <section className={`${cardClass} h-full`}>
+  return <section className={`${cardClass} h-full flex flex-col`}>
     <div className={headClass}><h3 className="m-0 text-[15px] font-semibold">运行保障</h3></div>
-    <div className="divide-y divide-gray-100">
-      {cells.map(({ label, Icon, ok, value, detail }) => <div key={label} className="min-h-[88px] px-4 py-4 flex items-center gap-3.5">
+    <div className="flex-1 flex flex-col divide-y divide-gray-100">
+      {cells.map(({ label, Icon, ok, value, detail }) => <div key={label} className="flex-1 min-h-[88px] px-4 py-4 flex items-center gap-3.5">
         <div className={`w-9 h-9 rounded-lg grid place-items-center shrink-0 ${ok ? 'bg-emerald-50 text-emerald-600' : 'bg-gray-100 text-gray-500'}`}><Icon size={20} /></div>
         <div className="min-w-0 flex-1">
           <div className="flex items-center justify-between gap-3"><strong className="text-[13px] font-semibold text-gray-800">{label}</strong><span className={`text-[12px] font-semibold whitespace-nowrap ${ok ? 'text-emerald-600' : 'text-gray-500'}`}>{value}</span></div>
