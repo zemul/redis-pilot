@@ -18,7 +18,11 @@ type metricsStore struct {
 
 func openMetricsStore(dataDir string) (*metricsStore, error) {
 	dbPath := filepath.Join(dataDir, "metrics.db")
-	db, err := sql.Open("sqlite", dbPath+"?_busy_timeout=5000&_journal_mode=WAL")
+	// modernc.org/sqlite 使用 _pragma=name(value) 格式，不支持 _busy_timeout / _journal_mode
+	// 等下划线参数（静默忽略，导致 busy_timeout=0 + 非 WAL 模式 -> 并发读写直接 SQLITE_BUSY）。
+	//   - WAL：读不阻塞写、写不阻塞读
+	//   - busy_timeout=5s：遇到锁时自动重试
+	db, err := sql.Open("sqlite", dbPath+"?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)")
 	if err != nil {
 		return nil, fmt.Errorf("open metrics db: %w", err)
 	}
