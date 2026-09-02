@@ -98,6 +98,87 @@ collector 在初始化时显式注册。
 > `redis_pilot_proxy_backend_down_total`（down 事件）与 `redis_pilot_proxy_error_total`（转发失败）表达；若未来需要
 > 每后端实时健康枚举，须单独引入 Proxy 主动健康探测能力。
 
+#### Server 指标（前缀 `redis_pilot_server_`，完全公开 `/metrics`，端口 8080）
+
+Server 的 Prometheus 抓取口挂在公开路由区（无鉴权，同 Proxy `:19100` 的做法；8080 须
+网络隔离在可信网段）。指标只用有限枚举标签，不含 instance_name/object_id 等高基数字段。
+
+异常告警核心指标**直接读平台 `health_incidents` 表**（单一事实来源），由 custom collector
+在抓取时现算，不自建第二套健康判定：
+
+- `redis_pilot_server_open_incidents{severity,incident_type,object_type}`（Gauge）——当前未恢复
+  异常数。`severity` ∈ critical/warning，`object_type` ∈ instance/node/group。具体是哪个对象出问题
+  不进标签（避免基数爆炸），告警触发后经 `/incidents` API 查明细。
+- `redis_pilot_server_oldest_open_incident_age_seconds{severity}`（Gauge）——最老未恢复异常已持续
+  秒数，用于"异常长时间未恢复"告警。
+- `redis_pilot_server_incident_scrape_error`（Gauge，0/1）——抓取时读库是否失败。
+
+控制面存活（看门狗）：
+- `redis_pilot_server_reconcile_last_timestamp_seconds`（Gauge）——上次 reconcile 完成时刻；
+  `time() - 该值` 即空转时长，冻结说明 reconcile loop 卡死。
+- `redis_pilot_server_reconcile_runs_total{result}`（Counter，result=success/error）——运行成败计数。
+
+进程兜底：Go/Process collector（`go_*`/`process_*`，标准约定不加产品前缀）。
+
+> 死路由清理：原 `authed.GET("/metrics")`（业务实例状态 JSON，与前端/CLI 实际使用的
+> `/instance/metrics` 重复、无调用方）已删除，根 `/metrics` 让给 Prometheus 抓取。
+
+### 4.2.1 推荐告警规则（可直接用于 Prometheus rules）
+
+> 指标由代码暴露，**告警规则配在 Prometheus/Alertmanager**，不在代码内。以下为可直接
+> 复制的规则草案，阈值按实际调整。
+
+```yaml
+groups:
+- name: redis-pilot
+  rules:
+  # ── 一线：平台已判定的异常（来自 incidents 表）──
+  - alert: RedisPilotCriticalIncident
+    expr: sum(redis_pilot_server_open_incidents{severity="critical"}) > 0
+    for: 1m
+    labels: {severity: critical}
+    annotations: {summary: "存在未恢复的 critical 异常，去 Dashboard/incidents 查明细"}
+  - alert: RedisPilotIncidentStuck
+    expr: max(redis_pilot_server_oldest_open_incident_age_seconds{severity="critical"}) > 1800
+    for: 5m
+    labels: {severity: critical}
+    annotations: {summary: "critical 异常持续超过 30 分钟未恢复"}
+
+  # ── 控制面存活 ──
+  - alert: RedisPilotReconcileStuck
+    expr: time() - redis_pilot_server_reconcile_last_timestamp_seconds > 120
+    for: 1m
+    labels: {severity: critical}
+    annotations: {summary: "Server reconcile loop 超过 2 分钟未运行（控制面可能卡死）"}
+  - alert: RedisPilotReconcileErrors
+    expr: increase(redis_pilot_server_reconcile_runs_total{result="error"}[10m]) > 3
+    for: 0m
+    labels: {severity: warning}
+    annotations: {summary: "reconcile 近 10 分钟多次失败"}
+  - alert: RedisPilotMetricsScrapeError
+    expr: redis_pilot_server_incident_scrape_error > 0
+    for: 5m
+    labels: {severity: warning}
+    annotations: {summary: "Server 指标读取 incidents 表失败（DB 异常？）"}
+
+  # ── Proxy 侧（前缀 redis_pilot_proxy_）──
+  - alert: RedisPilotProxyDiscoveryStuck
+    expr: time() - max(redis_pilot_proxy_snapshot_applied_timestamp_seconds) > 60
+    for: 1m
+    labels: {severity: critical}
+    annotations: {summary: "Proxy 超过 60s 未应用新快照（发现链路卡死）"}
+  - alert: RedisPilotProxyReadFallback
+    expr: sum by (group) (rate(redis_pilot_proxy_read_fallback_master_total[5m])) > 0
+    for: 5m
+    labels: {severity: warning}
+    annotations: {summary: "读请求持续回落 master（从库可能全挂）"}
+  - alert: RedisPilotProxyLatencyHigh
+    expr: histogram_quantile(0.99, sum by (le,group) (rate(redis_pilot_proxy_command_duration_seconds_bucket[5m]))) > 0.05
+    for: 5m
+    labels: {severity: warning}
+    annotations: {summary: "Proxy P99 后端往返延迟 > 50ms"}
+```
+
 ### 4.3 Label 约束
 
 允许使用数量受控的标签：

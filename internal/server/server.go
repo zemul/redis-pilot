@@ -13,6 +13,7 @@ import (
 	"gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/internal/audit"
 	"gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/internal/logger"
 	"gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/internal/server/ai"
+	servermetrics "gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/internal/server/metrics"
 	"gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/internal/store"
 	"gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/pkg/apitypes"
 )
@@ -23,6 +24,7 @@ type Server struct {
 	log       *logger.Logger
 	audit     *audit.Logger
 	scheduler *backupScheduler
+	metrics   *servermetrics.Metrics
 
 	// topologyMu 串行化"读取拓扑状态 → 把它推给 Sentinel / 推给 Agent 写配置文件"
 	// 这个复合序列。
@@ -106,6 +108,7 @@ func New(cfg *Config) (*Server, error) {
 	}
 	s.scheduler = newBackupScheduler(s)
 	s.incidents = newIncidentService(db, s.log)
+	s.metrics = servermetrics.New(db.ListOpenIncidents)
 	s.initAIAgent()
 	return s, nil
 }
@@ -167,6 +170,7 @@ func (s *Server) StartReconcileLoop() {
 	go func() {
 		for range time.Tick(30 * time.Second) {
 			results, err := s.runReconcile()
+			s.metrics.ObserveReconcile(err == nil)
 			if err != nil {
 				s.log.Errorf("reconcile failed: %v", err)
 				continue
@@ -196,6 +200,9 @@ func (s *Server) Router() *gin.Engine {
 	r.GET("/", s.dashboardRoot)
 	r.GET("/dashboard", s.dashboardIndex)
 	r.GET("/dashboard/*filepath", s.dashboardAsset)
+	// Prometheus 抓取口（完全公开，同 Proxy :19100 的做法）。指标只含枚举标签，
+	// 不泄露敏感值；8080 本就应限制在可信网段（见部署文档）。
+	r.GET("/metrics", gin.WrapH(s.metrics.Handler()))
 
 	// ── 内部组件路由（静态 internal_token 校验）──────────────────────────
 	// Proxy 拉快照：机器凭证走配置文件（server.yaml 的 internal_token 与
@@ -286,7 +293,6 @@ func (s *Server) Router() *gin.Engine {
 	authed.GET("/incidents/:id", s.incidentDetail)
 	authed.GET("/server/info", s.serverInfo)
 	authed.GET("/proxy/status", s.proxyStatus)
-	authed.GET("/metrics", s.metricsCollect)
 
 	// AI 运维助手（SSE 流式对话）。挂在 authed：所有登录用户可用只读诊断。
 	// 写操作默认关闭（cfg.AI.AllowWrite）；开启后写工具也只产出 confirm，
