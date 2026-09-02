@@ -4,3 +4,7 @@ web/dashboard/node_modules/
 .claude/settings.local.json
 /server
 
+# 本地运维文档/环境清单，含内网拓扑与凭证线索，不入库
+*.local.md
+
+
