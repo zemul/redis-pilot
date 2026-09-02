@@ -1,4 +1,6 @@
 bin/
 node_modules/
 web/dashboard/node_modules/
-.claude/settings.local.json/server
+.claude/settings.local.json
+/server
+

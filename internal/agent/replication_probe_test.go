@@ -131,7 +131,7 @@ func TestProbeInstance_ReturnsRuntimeReplicationState(t *testing.T) {
 	f := newFakeRedis(t, "+OK\r\n", "+PONG\r\n")
 	f.infoReply = bulkReply("role:slave\r\nmaster_host:10.0.1.11\r\nmaster_port:6380\r\n")
 
-	health, repl, err := probeInstance(f.addr(), "")
+	health, repl, err := probeInstance(f.addr(), "", nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -152,7 +152,7 @@ func TestProbeInstance_InfoFailureDoesNotAffectHealth(t *testing.T) {
 	// 不设 infoReply，fakeRedis 对 INFO 回 +OK（不是批量字符串）
 	f := newFakeRedis(t, "+OK\r\n", "+PONG\r\n")
 
-	health, repl, err := probeInstance(f.addr(), "")
+	health, repl, err := probeInstance(f.addr(), "", nil)
 	if err != nil {
 		t.Fatalf("INFO 失败不应变成 probe 错误: %v", err)
 	}
@@ -174,7 +174,7 @@ func TestProbeInstance_AuthThenPingThenInfoOnOneConnection(t *testing.T) {
 	f := newFakeRedis(t, "+OK\r\n", "+PONG\r\n")
 	f.infoReply = bulkReply("# Replication\r\nrole:master\r\nconnected_slaves:2\r\nslave0:ip=1.2.3.4\r\n")
 
-	health, repl, err := probeInstance(f.addr(), "secret")
+	health, repl, err := probeInstance(f.addr(), "secret", nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

@@ -213,10 +213,16 @@ func (a *Agent) runHealthCheck() {
 				continue
 			}
 			instName := trimPrefix(c.Name)
-			health, repl, pingErr := probeInstance("127.0.0.1:"+c.Port, a.getPassword(instName))
+			// replErrLog 记录"PING 通但 INFO replication 读取失败"——实例健康，只是这一轮
+			// 拿不到运行时复制观测。此前静默丢弃，导致 Server 侧"运行时实际 master"视角和
+			// 运行时复制漂移自愈拿不到数据时排查无线索。
+			health, repl, probeErr := probeInstance("127.0.0.1:"+c.Port, a.getPassword(instName),
+				func(replErr error) {
+					a.log.Infof("instance %s: replication observation unavailable: %v", instName, replErr)
+				})
 			detail := ""
-			if pingErr != nil {
-				detail = pingErr.Error()
+			if probeErr != nil {
+				detail = probeErr.Error()
 			}
 			a.mon.setHealth(instName, health, detail)
 			// 复制关系只在这次探测确实读到了才更新，读不到就丢弃旧值——Server 会据此
@@ -327,7 +333,11 @@ type containerInfo struct {
 }
 
 func podmanListContainersWithPort() ([]containerInfo, error) {
-	out, err := runShell("podman", "ps", "--format", "{{.Names}}\t{{.Ports}}")
+	// 分隔符用 '|' 而非 '\t'：部分 podman 版本的 --format 模板不会把 "\t" 输出成真正的
+	// 制表符（0x09），而是输出成空格，导致按 "\t" 分割永远只得到一段、所有容器被跳过、
+	// 健康探测与运行时复制观测全部失效（dev 与线上 podman 版本行为不同，曾据此误判）。
+	// Ports 字段形如 "0.0.0.0:6379->6379/tcp"，不含 '|'，用它做分隔符安全。
+	out, err := runShell("podman", "ps", "--format", "{{.Names}}|{{.Ports}}")
 	if err != nil {
 		return nil, err
 	}
@@ -336,7 +346,7 @@ func podmanListContainersWithPort() ([]containerInfo, error) {
 	}
 	var result []containerInfo
 	for _, line := range strings.Split(out, "\n") {
-		parts := strings.SplitN(line, "\t", 2)
+		parts := strings.SplitN(line, "|", 2)
 		if len(parts) < 2 || parts[0] == "" {
 			continue
 		}
@@ -396,7 +406,7 @@ const (
 // tcpPing 通过 RESP 协议直连实例发送 PING，返回分类后的健康状态。
 // 是 probeInstance 的窄接口，供只关心健康分类的调用方使用。
 func tcpPing(addr, password string) (instanceHealth, error) {
-	health, _, err := probeInstance(addr, password)
+	health, _, err := probeInstance(addr, password, nil)
 	return health, err
 }
 
@@ -409,7 +419,7 @@ func tcpPing(addr, password string) (instanceHealth, error) {
 // 复制关系读取失败不影响健康结论：健康由 PING 决定，INFO replication 只是顺路取回的
 // 观测信息，读不到就返回 nil 让调用方跳过这一轮。反过来把 INFO 失败当成不健康，会让
 // 一个纯观测功能去误报实例故障。
-func probeInstance(addr, password string) (instanceHealth, *replicationState, error) {
+func probeInstance(addr, password string, replErrLog func(error)) (instanceHealth, *replicationState, error) {
 	conn, err := net.DialTimeout("tcp", addr, 3*time.Second)
 	if err != nil {
 		return healthUnreachable, nil, err
@@ -456,8 +466,15 @@ func probeInstance(addr, password string) (instanceHealth, *replicationState, er
 		return healthUnexpected, nil, fmt.Errorf("unexpected PING reply: %q", strings.TrimSpace(resp))
 	}
 
+	// PING 成功但 INFO replication 读取失败：实例是健康的（能应答 PING），只是这一轮
+	// 拿不到运行时复制观测。返回值维持原语义——一个纯观测功能不该否定 PING 的结论，
+	// 所以 err 仍为 nil、health 仍为 OK、repl=nil 让调用方跳过。但失败原因不再静默丢弃：
+	// 通过 replErrLog 回调记录，供排查运行时复制观测为何缺失（此前完全无线索）。
 	repl, replErr := readReplicationState(conn, r)
 	if replErr != nil {
+		if replErrLog != nil {
+			replErrLog(replErr)
+		}
 		return healthOK, nil, nil
 	}
 	return healthOK, repl, nil
