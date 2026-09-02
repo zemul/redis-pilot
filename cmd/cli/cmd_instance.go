@@ -394,7 +394,7 @@ func init() {
 	instanceCreateCmd.Flags().String("engine-version", "", "Engine version (redis: 5, 6.2, 7; kvrocks: 2.15.0)")
 	instanceCreateCmd.Flags().String("type", "standalone", "Topology: standalone | replication")
 	instanceCreateCmd.Flags().String("node", "", "Target node name")
-	instanceCreateCmd.Flags().String("memory", "1Gi", "Memory")
+	instanceCreateCmd.Flags().String("memory", "1Gi", "Memory (e.g. 8Gi; use Gi/Mi)")
 	instanceCreateCmd.Flags().String("disk", "", "Disk quota for capacity planning (e.g. 20Gi)")
 	instanceCreateCmd.Flags().Float64("cpus", 1, "CPU cores")
 	instanceCreateCmd.Flags().String("password", "", "Password")
