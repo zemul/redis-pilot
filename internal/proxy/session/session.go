@@ -51,7 +51,7 @@ type Session struct {
 	metrics      *metrics.Metrics
 
 	masterPool   *backend.Pool
-	replicaPools map[string]*backend.Pool // addr -> pool（由 proxysvc 创建，共享）
+	replicaPools map[string]*backend.Pool // addr -> pool（proxysvc 传入的每会话快照，只读，不与拓扑更新共享同一 map）
 	readPool     *readpool.Pool           // 选择逻辑（per-session）
 
 	mode          Mode
@@ -67,7 +67,8 @@ type Session struct {
 
 var ErrQuit = errors.New("client sent QUIT")
 
-// New 创建 session。Pools 由 proxysvc 创建并共享。
+// New 创建 session。masterPool 由 proxysvc 创建并共享；replicaPools 是 proxysvc
+// 传入的每会话快照（浅拷贝，见 Proxy.snapshotReplicas），session 只读不改。
 func New(conn net.Conn, cfg Config, masterPool *backend.Pool, replicaPools map[string]*backend.Pool, m *metrics.Metrics) (*Session, error) {
 	// 构建读池：master + 所有 replica
 	entries := []readpool.Entry{

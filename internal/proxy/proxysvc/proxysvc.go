@@ -540,7 +540,7 @@ func (p *Proxy) handleConnDiscovery(conn net.Conn, group, mode string) {
 		sessCfg.ReplicaAddrs = nil
 	}
 
-	sess, err := session.New(conn, sessCfg, pools.master, pools.replicas, p.metrics)
+	sess, err := session.New(conn, sessCfg, pools.master, p.snapshotReplicas(pools), p.metrics)
 	if err != nil {
 		slog.Error("session create failed", "group", group, "client", conn.RemoteAddr(), "err", err)
 		return
@@ -577,7 +577,7 @@ func (p *Proxy) handleConnStatic(conn net.Conn) {
 		MaxRequestBytes:  p.cfg.MaxRequestBytes,
 	}
 
-	sess, err := session.New(conn, sessCfg, pools.master, pools.replicas, p.metrics)
+	sess, err := session.New(conn, sessCfg, pools.master, p.snapshotReplicas(pools), p.metrics)
 	if err != nil {
 		slog.Error("session create failed", "client", conn.RemoteAddr(), "err", err)
 		return
@@ -609,6 +609,22 @@ func (p *Proxy) getOrCreatePools(group string, g *discovery.GroupTopology) *grou
 	p.pools[group] = pools
 	slog.Info("created pools", "group", group, "master", g.MasterAddr, "replicas", len(g.ReplicaAddrs))
 	return pools
+}
+
+// snapshotReplicas 在 poolsMu 保护下返回 group 当前 replica 池的浅拷贝快照
+// （addr -> *Pool）。session 必须持有独立的 map 容器：其读路径
+// （selectFromReadPool）不持锁，而 updateReplicaPools 会在拓扑变化时对共享 map
+// 做 delete/写，二者并发命中同一 map 会触发 Go 运行时 fatal（recover 拦不住，
+// 整进程被杀），加减从库/failover 正是高发窗口。session 的 readPool 在连接时已
+// 冻结选择集，故快照与现有语义一致；*Pool 本身并发安全，可跨 session 共享。
+func (p *Proxy) snapshotReplicas(pools *groupPools) map[string]*backend.Pool {
+	p.poolsMu.Lock()
+	defer p.poolsMu.Unlock()
+	out := make(map[string]*backend.Pool, len(pools.replicas))
+	for addr, rp := range pools.replicas {
+		out[addr] = rp
+	}
+	return out
 }
 
 // getOrCreateStaticPools 获取或创建 static 模式的连接池。
