@@ -239,3 +239,82 @@ func upper(b []byte) string {
 	}
 	return string(out)
 }
+
+// NormalizeCommand 把命令名归一化为大写，仅当命中已知命令表时返回该名，
+// 否则返回 "OTHER"。用于慢命令指标的 cmd 标签，防止客户端发送任意命令名
+// 导致 Prometheus series 基数爆炸（白名单封顶）。
+//
+// 命中判定复用本包所有静态命令表（含子命令依赖类命令 CONFIG/MEMORY/OBJECT
+// 的本体名），与 Classify 的命令覆盖面保持一致。
+func NormalizeCommand(name []byte) string {
+	if len(name) == 0 {
+		return "OTHER"
+	}
+	cmd := upper(name)
+	if isKnownCommand(cmd) {
+		return cmd
+	}
+	return "OTHER"
+}
+
+// isKnownCommand 判定 cmd（已大写）是否在任一已知命令表内。
+func isKnownCommand(cmd string) bool {
+	if _, ok := connStateCommands[cmd]; ok {
+		return true
+	}
+	if _, ok := denyCommands[cmd]; ok {
+		return true
+	}
+	if _, ok := subscribeCommands[cmd]; ok {
+		return true
+	}
+	if _, ok := txnCommands[cmd]; ok {
+		return true
+	}
+	if _, ok := blockingCommands[cmd]; ok {
+		return true
+	}
+	if _, ok := masterOnlyCommands[cmd]; ok {
+		return true
+	}
+	if _, ok := adminCommands[cmd]; ok {
+		return true
+	}
+	if _, ok := readCommands[cmd]; ok {
+		return true
+	}
+	// 子命令依赖类命令的本体名（子命令细分由 Classify 处理，指标只需本体名）
+	switch cmd {
+	case "CONFIG", "MEMORY", "OBJECT", "XREAD", "XREADGROUP":
+		return true
+	}
+	// 常见 WRITE 命令（table.go 的 WRITE 表仅作文档，未参与判定，这里显式列出
+	// 高频写命令，避免它们全被归入 OTHER 而失去区分度）。
+	if _, ok := knownWriteCommands[cmd]; ok {
+		return true
+	}
+	return false
+}
+
+// knownWriteCommands 是高频 WRITE 命令白名单，仅供 NormalizeCommand 使用。
+// Classify 不依赖此表（写命令走兜底规则），这里列出是为了让慢命令指标能区分
+// 具体写命令，而非全部归入 OTHER。
+var knownWriteCommands = map[string]struct{}{
+	"SET": {}, "SETNX": {}, "SETEX": {}, "PSETEX": {}, "SETRANGE": {},
+	"APPEND": {}, "GETSET": {}, "GETDEL": {}, "GETEX": {},
+	"MSET": {}, "MSETNX": {}, "DEL": {}, "UNLINK": {}, "RENAME": {},
+	"RENAMENX": {}, "MOVE": {}, "COPY": {}, "RESTORE": {},
+	"EXPIRE": {}, "PEXPIRE": {}, "EXPIREAT": {}, "PEXPIREAT": {}, "PERSIST": {},
+	"INCR": {}, "INCRBY": {}, "INCRBYFLOAT": {}, "DECR": {}, "DECRBY": {},
+	"HSET": {}, "HSETNX": {}, "HMSET": {}, "HDEL": {}, "HINCRBY": {}, "HINCRBYFLOAT": {},
+	"LPUSH": {}, "LPUSHX": {}, "RPUSH": {}, "RPUSHX": {}, "LPOP": {}, "RPOP": {},
+	"LSET": {}, "LINSERT": {}, "LREM": {}, "LTRIM": {}, "RPOPLPUSH": {}, "LMOVE": {}, "LMPOP": {},
+	"SADD": {}, "SREM": {}, "SPOP": {}, "SMOVE": {}, "SINTERSTORE": {}, "SUNIONSTORE": {}, "SDIFFSTORE": {},
+	"ZADD": {}, "ZINCRBY": {}, "ZREM": {}, "ZREMRANGEBYRANK": {}, "ZREMRANGEBYSCORE": {}, "ZREMRANGEBYLEX": {},
+	"ZPOPMIN": {}, "ZPOPMAX": {}, "ZMPOP": {}, "ZRANGESTORE": {}, "ZDIFFSTORE": {}, "ZINTERSTORE": {}, "ZUNIONSTORE": {},
+	"SETBIT": {}, "BITOP": {}, "BITFIELD": {},
+	"PFADD": {}, "PFMERGE": {}, "PFCOUNT": {},
+	"GEOADD": {}, "GEOSEARCHSTORE": {}, "GEORADIUS": {}, "GEORADIUSBYMEMBER": {},
+	"SORT": {},
+	"XADD": {}, "XACK": {}, "XDEL": {}, "XTRIM": {}, "XSETID": {}, "XCLAIM": {}, "XAUTOCLAIM": {}, "XGROUP": {},
+}

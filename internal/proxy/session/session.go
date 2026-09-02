@@ -125,7 +125,7 @@ func (s *Session) Serve() error {
 			continue
 		}
 
-		s.metrics.IncCommand(s.cfg.Group)
+		s.metrics.IncCommand(s.cfg.Group, route.NormalizeCommand(firstArg(argv)))
 
 		d := route.Classify(argv)
 
@@ -150,7 +150,7 @@ func (s *Session) Serve() error {
 			s.exclusiveConn = conn
 			s.metrics.IncExclusive(s.cfg.Group)
 			s.mode = ModeSubscribe
-			if err := s.forwardExclusive(raw); err != nil {
+			if err := s.forwardExclusive(raw, d, argv[0]); err != nil {
 				return err
 			}
 			s.relay(conn)
@@ -169,7 +169,7 @@ func (s *Session) Serve() error {
 				}
 				s.mode = ModeExclusive
 			}
-			if err := s.forwardAndRelay(raw, s.masterPool); err != nil {
+			if err := s.forwardAndRelay(raw, s.masterPool, d, argv[0]); err != nil {
 				return err
 			}
 			if !d.Pin {
@@ -199,7 +199,7 @@ func (s *Session) Serve() error {
 				s.metrics.IncExclusive(s.cfg.Group)
 			}
 			s.mode = ModeExclusive
-			if err := s.forwardAndRelay(raw, s.masterPool); err != nil {
+			if err := s.forwardAndRelay(raw, s.masterPool, d, argv[0]); err != nil {
 				return err
 			}
 			if !s.pinnedBySelect {
@@ -228,16 +228,16 @@ func (s *Session) Serve() error {
 					s.pendingArgv = argv2
 					break
 				}
-				s.metrics.IncCommand(s.cfg.Group)
+				s.metrics.IncCommand(s.cfg.Group, route.NormalizeCommand(firstArg(argv2)))
 				batch = append(batch, raw2)
 			}
 
 			if len(batch) == 1 {
-				if err := s.forwardAndRelay(raw, pool); err != nil {
+				if err := s.forwardAndRelay(raw, pool, d, argv[0]); err != nil {
 					return err
 				}
 			} else {
-				if err := s.forwardBatchAndRelay(batch, pool); err != nil {
+				if err := s.forwardBatchAndRelay(batch, pool, d, argv[0]); err != nil {
 					return err
 				}
 			}
@@ -272,6 +272,12 @@ func (s *Session) selectFromReadPool() *backend.Pool {
 	entry := s.readPool.Select()
 
 	if entry.Role == readpool.RoleMaster || entry.Addr == s.cfg.MasterAddr {
+		// 选中 master 有两种情形：master 配了读权重被正常加权命中（预期分流，
+		// 非回落）；或所有 replica 不可用被迫回落（D10）。仅后者计入回落指标，
+		// 用 HasAvailableReplica 区分，避免污染 proxy_read_fallback_master_total。
+		if !s.readPool.HasAvailableReplica() {
+			s.metrics.IncReadFallback(s.cfg.Group)
+		}
 		return s.masterPool
 	}
 
@@ -281,6 +287,7 @@ func (s *Session) selectFromReadPool() *backend.Pool {
 
 	// 不应发生（replicaPools 由 proxysvc 预建）
 	slog.Warn("replica pool not found, falling back to master", "addr", entry.Addr)
+	s.metrics.IncReadFallback(s.cfg.Group)
 	return s.masterPool
 }
 
@@ -289,26 +296,65 @@ func (s *Session) rwSplitEnabled() bool {
 	return len(s.cfg.ReplicaAddrs) > 0
 }
 
+// slowCommandThreshold 是慢命令阈值：单次后端 round-trip 超过此值即记入
+// proxy_slow_command_total。10ms 对 Redis O(1) 命令已属明显偏慢。
+const slowCommandThreshold = 10 * time.Millisecond
+
+// firstArg 返回 argv 的首元素（命令名），argv 为空时返回 nil，避免越界。
+// RESP 允许 *0 空数组或空 inline，此时 argv 为空但无错误。
+func firstArg(argv [][]byte) []byte {
+	if len(argv) == 0 {
+		return nil
+	}
+	return argv[0]
+}
+
+// kindOf 把路由分类映射为延迟指标的 kind 标签（read/write/other）。
+func kindOf(c route.Class) string {
+	switch c {
+	case route.ClassRead:
+		return "read"
+	case route.ClassWrite:
+		return "write"
+	default:
+		return "other"
+	}
+}
+
+// observeCommand 记录一次后端 round-trip 的延迟，并在超阈值时按命令记慢命令。
+// firstArg 为该次转发的首条命令名（argv[0]，pipeline 批取批首）；nil 时跳过慢命令归一化。
+func (s *Session) observeCommand(start time.Time, kind string, firstArg []byte) {
+	elapsed := time.Since(start)
+	s.metrics.ObserveCommandDuration(s.cfg.Group, kind, elapsed.Seconds())
+	if elapsed >= slowCommandThreshold && len(firstArg) > 0 {
+		s.metrics.IncSlowCommand(s.cfg.Group, route.NormalizeCommand(firstArg))
+	}
+}
+
 // forwardAndRelay 转发命令到后端，读取响应，转发给客户端。
 // EXCLUSIVE 模式用 exclusiveConn 直连；SHARED 模式用 pool.RoundTrip（FIFO 解复用）。
-func (s *Session) forwardAndRelay(raw []byte, pool *backend.Pool) error {
+// d/firstArg 供延迟与慢命令指标使用（EXCLUSIVE 路径由 forwardExclusive 记录）。
+func (s *Session) forwardAndRelay(raw []byte, pool *backend.Pool, d route.Decision, firstArg []byte) error {
 	if s.exclusiveConn != nil {
-		return s.forwardExclusive(raw)
+		return s.forwardExclusive(raw, d, firstArg)
 	}
 	if pool == nil {
 		return errors.New("no backend pool available")
 	}
+	start := time.Now()
 	resp, err := pool.RoundTrip(raw)
 	if err != nil {
 		return err
 	}
+	s.observeCommand(start, kindOf(d.Class), firstArg)
 	return s.clientWriter.WriteRaw(resp)
 }
 
 // forwardBatchAndRelay forwards a batch of commands to the same pool,
 // collecting all responses before writing them to the client in one flush.
 // Enables pipelining: all commands are sent before any response is read.
-func (s *Session) forwardBatchAndRelay(batch [][]byte, pool *backend.Pool) error {
+// d/firstArg 供延迟与慢命令指标使用；整批记为单次观测。
+func (s *Session) forwardBatchAndRelay(batch [][]byte, pool *backend.Pool, d route.Decision, firstArg []byte) error {
 	// EXCLUSIVE mode: send all, then recv all (pipeline on exclusive conn).
 	if s.exclusiveConn != nil {
 		w := s.exclusiveConn.Writer()
@@ -336,10 +382,12 @@ func (s *Session) forwardBatchAndRelay(batch [][]byte, pool *backend.Pool) error
 		return errors.New("no backend pool available")
 	}
 
+	start := time.Now()
 	resps, err := pool.RoundTripBatch(batch)
 	if err != nil {
 		return err
 	}
+	s.observeCommand(start, kindOf(d.Class), firstArg)
 	for _, resp := range resps {
 		if err := s.clientWriter.WriteRawNoFlush(resp); err != nil {
 			return err
@@ -349,14 +397,17 @@ func (s *Session) forwardBatchAndRelay(batch [][]byte, pool *backend.Pool) error
 }
 
 // forwardExclusive 在独占连接上直接转发（不走 FIFO）。
-func (s *Session) forwardExclusive(raw []byte) error {
+// d/firstArg 供延迟与慢命令指标使用。
+func (s *Session) forwardExclusive(raw []byte, d route.Decision, firstArg []byte) error {
 	if err := s.exclusiveConn.Writer().WriteRaw(raw); err != nil {
 		return err
 	}
+	start := time.Now()
 	resp, err := s.exclusiveConn.Recv()
 	if err != nil {
 		return err
 	}
+	s.observeCommand(start, kindOf(d.Class), firstArg)
 	return s.clientWriter.WriteRaw(resp)
 }
 
@@ -430,13 +481,13 @@ func (s *Session) handleConnState(argv [][]byte, raw []byte, d route.Decision) e
 		}
 		s.mode = ModeExclusive
 		s.pinnedBySelect = true
-		return s.forwardExclusive(raw)
+		return s.forwardExclusive(raw, d, argv[0])
 
 	default:
 		if cmd == "CLIENT" {
 			return s.handleClient(argv, raw)
 		}
-		return s.forwardAndRelay(raw, s.masterPool)
+		return s.forwardAndRelay(raw, s.masterPool, d, argv[0])
 	}
 }
 
@@ -505,7 +556,7 @@ func (s *Session) handleClient(argv [][]byte, raw []byte) error {
 	case "SETINFO":
 		return s.clientWriter.WriteSimpleString("OK")
 	case "LIST":
-		return s.forwardAndRelay(raw, s.masterPool)
+		return s.forwardAndRelay(raw, s.masterPool, route.Classify(argv), argv[0])
 	default:
 		return s.clientWriter.WriteError("ERR command not allowed: CLIENT " + sub)
 	}

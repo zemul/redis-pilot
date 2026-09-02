@@ -10,6 +10,15 @@ import (
 	"gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/pkg/apitypes"
 )
 
+// SnapshotObserver 接收发现链路的可观测事件。由 proxysvc 注入（适配到 metrics），
+// discovery 包不直接依赖 metrics 包，保持独立可测。
+type SnapshotObserver interface {
+	// SnapshotFetchSucceeded 在一次拉取拿到新版本并成功应用后调用。
+	SnapshotFetchSucceeded(version string, appliedAtUnix float64)
+	// SnapshotFetchFailed 在一次拉取失败（与 Server 失联）后调用。
+	SnapshotFetchFailed()
+}
+
 // Manager 持续从 Server 拉取 ProxySnapshot 并维护后端拓扑。
 //
 // 职责：
@@ -31,6 +40,7 @@ type Manager struct {
 	ready    chan struct{} // 首次快照就绪后 close
 	once     sync.Once
 	onUpdate func(*Topology, *Topology) // (new, old) 回调
+	observer SnapshotObserver           // 可选：发现链路指标观测器
 }
 
 // NewManager 创建 discovery manager。
@@ -52,6 +62,11 @@ func (m *Manager) OnUpdate(cb func(newTopo, oldTopo *Topology)) {
 	m.onUpdate = cb
 }
 
+// SetObserver 注册发现链路指标观测器（可选）。须在 Run 之前调用。
+func (m *Manager) SetObserver(obs SnapshotObserver) {
+	m.observer = obs
+}
+
 // Run 启动轮询循环。阻塞直到 ctx 取消。
 func (m *Manager) Run(ctx context.Context) {
 	for {
@@ -65,6 +80,9 @@ func (m *Manager) Run(ctx context.Context) {
 		case err != nil:
 			// 出错时退避，避免 Server 不可用期间被打成忙循环（§7.6）
 			slog.Warn("discovery fetch snapshot failed, keeping last topology", "err", err)
+			if m.observer != nil {
+				m.observer.SnapshotFetchFailed()
+			}
 			if !sleepCtx(ctx, m.pollCfg.Interval) {
 				return
 			}
@@ -152,7 +170,12 @@ func (m *Manager) applySnapshot(snap *apitypes.ProxySnapshot) {
 	m.topo = newTopo
 	m.version = snap.Version
 	m.appliedAt = time.Now().UTC()
+	appliedAt := m.appliedAt
 	m.mu.Unlock()
+
+	if m.observer != nil {
+		m.observer.SnapshotFetchSucceeded(snap.Version, float64(appliedAt.Unix()))
+	}
 
 	// 首次快照：signal ready
 	m.once.Do(func() {

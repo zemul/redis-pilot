@@ -5,6 +5,7 @@ package metrics
 
 import (
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/collectors"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"net/http"
 )
@@ -15,7 +16,7 @@ type Metrics struct {
 	ActiveClientConns  *prometheus.GaugeVec
 	ActiveUpstreamConns *prometheus.GaugeVec
 	ExclusiveConns      *prometheus.GaugeVec
-	BackendHealth      *prometheus.GaugeVec
+	SnapshotAppliedAt   *prometheus.GaugeVec
 
 	// Counters
 	ReadFallbackMaster *prometheus.CounterVec
@@ -23,6 +24,12 @@ type Metrics struct {
 	ClientConnTotal     *prometheus.CounterVec
 	CommandCount        *prometheus.CounterVec
 	BackendDownCount    *prometheus.CounterVec
+	SlowCommand         *prometheus.CounterVec
+	SnapshotFetch       *prometheus.CounterVec // labels: result=success|failure
+	ServerDisconnect    prometheus.Counter
+
+	// Histograms
+	CommandDuration *prometheus.HistogramVec
 
 	registry *prometheus.Registry
 }
@@ -47,10 +54,11 @@ func New() *Metrics {
 			Help: "Exclusive (pinned) upstream connections (blocking/txn/subscribe)",
 		}, []string{"group"}),
 
-		BackendHealth: prometheus.NewGaugeVec(prometheus.GaugeOpts{
-			Name: "proxy_backend_health",
-			Help: "Backend health status (0=OK, 1=DEGRADED, 2=SYNCING, 3=DOWN)",
-		}, []string{"group", "backend"}),
+		SnapshotAppliedAt: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "proxy_snapshot_applied_timestamp_seconds",
+			Help: "Unix timestamp (seconds) when the currently applied discovery snapshot was applied. " +
+				"Staleness = time() - this; a frozen value means the discovery/long-poll link is stuck.",
+		}, []string{"version"}),
 
 		ReadFallbackMaster: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "proxy_read_fallback_master_total",
@@ -69,25 +77,61 @@ func New() *Metrics {
 
 		CommandCount: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "proxy_command_total",
-			Help: "Total commands processed by group",
-		}, []string{"group"}),
+			Help: "Total commands processed, by group and command. " +
+				"Command names are normalized against a known-command whitelist; unknown names map to OTHER to bound cardinality. " +
+				"Only forwarded business commands are counted; locally-terminated (AUTH/PING/CLIENT/INFO/CONFIG…) and denied commands are excluded.",
+		}, []string{"group", "cmd"}),
 
 		BackendDownCount: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "proxy_backend_down_total",
 			Help: "Backend DOWN events",
 		}, []string{"group"}),
+
+		SlowCommand: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "proxy_slow_command_total",
+			Help: "Commands whose backend round-trip exceeded the slow threshold, by command. " +
+				"Command names are normalized against a known-command whitelist; unknown names map to OTHER to bound cardinality.",
+		}, []string{"group", "cmd"}),
+
+		SnapshotFetch: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "proxy_snapshot_fetch_total",
+			Help: "Discovery snapshot long-poll fetch attempts, by result (success|failure). " +
+				"A rising failure rate signals the Proxy -> Server discovery link is degraded.",
+		}, []string{"result"}),
+
+		ServerDisconnect: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "proxy_server_disconnect_total",
+			Help: "Number of times a discovery snapshot fetch failed (Proxy lost contact with Server). " +
+				"Equivalent to the failure stream of proxy_snapshot_fetch_total, exposed as a scalar for easy alerting.",
+		}),
+
+		CommandDuration: prometheus.NewHistogramVec(prometheus.HistogramOpts{
+			Name: "proxy_command_duration_seconds",
+			Help: "Backend round-trip latency in seconds, by group and kind (read/write/other). " +
+				"Observes one backend round-trip; a pipelined batch is recorded as a single observation, " +
+				"so this is round-trip latency, not strictly per-command latency.",
+			Buckets: []float64{0.0001, 0.00025, 0.0005, 0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1},
+		}, []string{"group", "kind"}),
 	}
 
 	m.registry.MustRegister(
 		m.ActiveClientConns,
 		m.ActiveUpstreamConns,
 		m.ExclusiveConns,
-		m.BackendHealth,
+		m.SnapshotAppliedAt,
 		m.ReadFallbackMaster,
 		m.ErrorCount,
 		m.ClientConnTotal,
 		m.CommandCount,
 		m.BackendDownCount,
+		m.SlowCommand,
+		m.SnapshotFetch,
+		m.ServerDisconnect,
+		m.CommandDuration,
+		// 进程级指标：私有 registry 不会自动注册默认 collector，显式加入。
+		// 覆盖 goroutine 数、GC、堆内存、FD、CPU 等（proxy 高并发长驻进程的兜底观测）。
+		collectors.NewGoCollector(),
+		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
 	)
 
 	return m
@@ -134,12 +178,42 @@ func (m *Metrics) IncClientConnTotal(group string) {
 	m.ClientConnTotal.WithLabelValues(group).Inc()
 }
 
-// IncCommand 命令处理计数（per-group）。
-func (m *Metrics) IncCommand(group string) {
-	m.CommandCount.WithLabelValues(group).Inc()
+// IncCommand 命令处理计数（per-group, per-command）。
+// cmd 需由 route.NormalizeCommand 归一化后传入（白名单外归 OTHER）。
+func (m *Metrics) IncCommand(group, cmd string) {
+	m.CommandCount.WithLabelValues(group, cmd).Inc()
 }
 
 // IncBackendDown 后端 DOWN 事件。
 func (m *Metrics) IncBackendDown(group string) {
 	m.BackendDownCount.WithLabelValues(group).Inc()
+}
+
+// ObserveCommandDuration 记录一次后端 round-trip 耗时（秒），kind ∈ {read,write,other}。
+// pipeline 批调用一次，记为单次观测。
+func (m *Metrics) ObserveCommandDuration(group, kind string, seconds float64) {
+	m.CommandDuration.WithLabelValues(group, kind).Observe(seconds)
+}
+
+// IncSlowCommand 慢命令计数（超过阈值），cmd 需由 route.NormalizeCommand 归一化后传入。
+func (m *Metrics) IncSlowCommand(group, cmd string) {
+	m.SlowCommand.WithLabelValues(group, cmd).Inc()
+}
+
+// IncSnapshotFetchSuccess 记录一次成功的快照拉取（拿到新版本）。
+func (m *Metrics) IncSnapshotFetchSuccess() {
+	m.SnapshotFetch.WithLabelValues("success").Inc()
+}
+
+// IncSnapshotFetchFailure 记录一次失败的快照拉取，并累加 Server 断连计数。
+func (m *Metrics) IncSnapshotFetchFailure() {
+	m.SnapshotFetch.WithLabelValues("failure").Inc()
+	m.ServerDisconnect.Inc()
+}
+
+// SetSnapshotApplied 记录当前已应用快照的版本与应用时刻（Unix 秒）。
+// 每次只暴露最新版本的时间戳；旧版本 series 会被重置为 0 以避免陈旧标签堆积。
+func (m *Metrics) SetSnapshotApplied(version string, appliedAtUnix float64) {
+	m.SnapshotAppliedAt.Reset()
+	m.SnapshotAppliedAt.WithLabelValues(version).Set(appliedAtUnix)
 }

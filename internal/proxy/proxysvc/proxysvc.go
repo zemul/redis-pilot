@@ -154,6 +154,7 @@ func New(cfg Config) *Proxy {
 			Token:    cfg.ServerToken,
 		}, pollCfg)
 		p.discovery.OnUpdate(p.onTopologyChange)
+		p.discovery.SetObserver(snapshotMetricsObserver{m: p.metrics})
 	}
 
 	return p
@@ -350,6 +351,21 @@ func (p *Proxy) listenAndServeStatic() error {
 			p.handleConnStatic(conn)
 		}()
 	}
+}
+
+// snapshotMetricsObserver 把 discovery 链路事件适配到 metrics，实现
+// discovery.SnapshotObserver，使 discovery 包无需依赖 metrics 包。
+type snapshotMetricsObserver struct {
+	m *metrics.Metrics
+}
+
+func (o snapshotMetricsObserver) SnapshotFetchSucceeded(version string, appliedAtUnix float64) {
+	o.m.IncSnapshotFetchSuccess()
+	o.m.SetSnapshotApplied(version, appliedAtUnix)
+}
+
+func (o snapshotMetricsObserver) SnapshotFetchFailed() {
+	o.m.IncSnapshotFetchFailure()
 }
 
 func (p *Proxy) onTopologyChange(newTopo, oldTopo *discovery.Topology) {
