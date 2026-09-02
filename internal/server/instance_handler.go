@@ -305,6 +305,19 @@ func (s *Server) instanceCreate(c *gin.Context) {
 	req.EngineVersion = resolvedVersion
 	req.EngineImage = engineImage
 
+	// 规格单位校验：memory 必填（binding:required 只保证非空，不校验单位），disk 可选。
+	// 非法单位会被 parseMemoryGi 解析成 0 从而跳过容量超卖校验，必须在调度前拦下。
+	if err := validateCapacitySpec("memory", req.Memory); err != nil {
+		fail(c, http.StatusBadRequest, err.Error())
+		return
+	}
+	if strings.TrimSpace(req.Disk) != "" {
+		if err := validateCapacitySpec("disk", req.Disk); err != nil {
+			fail(c, http.StatusBadRequest, err.Error())
+			return
+		}
+	}
+
 	// 与 instanceConfig 同理：在调度和写库之前拦下非法的配置覆盖项。创建路径尤其
 	// 需要提前拦，因为一旦走到后面，Agent 拒绝时 Server 已经写了 creating 记录、
 	// 分配了端口，要走一遍回滚。
@@ -866,6 +879,12 @@ func (s *Server) instanceResize(c *gin.Context) {
 		fail(c, http.StatusBadRequest, "memory must not be empty when specified")
 		return
 	}
+	if req.Memory != nil {
+		if err := validateCapacitySpec("memory", *req.Memory); err != nil {
+			fail(c, http.StatusBadRequest, err.Error())
+			return
+		}
+	}
 	if req.CPUs != nil && *req.CPUs <= 0 {
 		fail(c, http.StatusBadRequest, "cpus must be greater than 0")
 		return
@@ -873,6 +892,12 @@ func (s *Server) instanceResize(c *gin.Context) {
 	if req.Disk != nil && strings.TrimSpace(*req.Disk) == "" {
 		fail(c, http.StatusBadRequest, "disk must not be empty when specified")
 		return
+	}
+	if req.Disk != nil {
+		if err := validateCapacitySpec("disk", *req.Disk); err != nil {
+			fail(c, http.StatusBadRequest, err.Error())
+			return
+		}
 	}
 
 	inst, srv, unlock, err := s.resolveAndLock(c, req.Name, "resize")
@@ -2154,6 +2179,19 @@ func parseMemoryGi(s string) int {
 		return (n + 1023) / 1024
 	}
 	return 0
+}
+
+// validateCapacitySpec 校验内存/磁盘规格字符串能被 parseMemoryGi 解析为正数。
+//
+// parseMemoryGi 只认 Gi/G/Mi/M，遇到 GB/TB/纯数字/空等一律静默返回 0；而所有配额
+// 超卖校验都以 reqXxx>0 为前置条件（见 selectServer 与 instanceResize），0 会直接
+// 跳过检查。因此非法单位必须在 API 入口拦成 400，绝不能放行到调度环节——否则
+// "2GB" / "2048" 这类值会被当成 0，绕过内存/磁盘超卖护栏。
+func validateCapacitySpec(field, val string) error {
+	if parseMemoryGi(val) <= 0 {
+		return fmt.Errorf("invalid %s (use Gi unit, e.g. 8Gi): %q", field, val)
+	}
+	return nil
 }
 
 // parseMemoryBytes 解析内存字符串为字节数,用于与实时 used_memory(字节)比较。
