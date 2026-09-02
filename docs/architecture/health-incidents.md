@@ -87,6 +87,46 @@ CREATE UNIQUE INDEX idx_incidents_active_fingerprint
 - 备份/恢复失败是一次性事件，立即记 open，不走 3 轮去抖；`canceled`(用户主动取消)不记。
 - 复制链路健康(`master_link_status`)、内存/磁盘水位等需要指标数据，第一阶段不做，留到后续。
 
+### 3.1 Master 三视角一致性的数据来源
+
+`master_mismatch` 与 Dashboard「Master 权威一致性」面板依赖同一组数据——同一个组的
+Master 在三个**相互独立**的视角下分别是谁。三条链路彼此隔离、可以互相偏离，正因如此
+任意一条断掉都不会污染另外两条（这也是排障时判断"哪一环出问题"的依据）。
+
+| 视角 | 字段 | 来源 | 存储 | 更新时机 |
+|------|------|------|------|----------|
+| 平台记录 | `current_master` | Server 数据库 `instance_groups` 表 | pilot.db（持久化，重启不丢） | 建组时写入；故障转移同步 / reconcile 时改写 |
+| Sentinel 共识 | `sentinel_master` | Server 向 Sentinel 查询（`get-master-addr-by-name` / 监听 `+switch-master`），解析地址为实例名 | Server 内存 `s.sentinelMaster` | Sentinel 事件与定期查询 |
+| 运行时实际 | `runtime_master` | Agent 探测实例进程 `INFO replication`，Server 经 reconcile 汇聚 | Agent 内存 `monitor.repl`（有效期 90s）→ Server 内存 `s.runtimeReplicaOf` | Agent 每 30s 健康探测；Server 每 30s reconcile |
+
+三个视角的语义刻意不同（见 `internal/agent/monitor.go` 的 `replicationState` 注释）：
+平台记录是**意图**（希望谁是 master），Sentinel 共识是故障转移的**权威结论**，运行时实际是
+实例进程**此刻真实**在复制谁。三者一致即健康；不一致意味着发生了漂移（故障转移事件丢失、
+实例按旧配置文件重启、有人手动 `REPLICAOF` 等），由 reconcile 的运行时复制漂移自愈介入。
+
+**运行时实际视角的完整采集链路**（最长的一条，任一环断掉该视角即"未知"）：
+
+```
+Agent runHealthCheck（每 30s）
+  → podmanListContainersWithPort()   列出带端口的运行容器
+  → probeInstance(127.0.0.1:port)     一条 TCP 连接上 PING + INFO replication
+  → parseReplicationInfo               master 报空串，replica 报 "master_host:port"
+  → monitor.setRepl                    存入 Agent 内存，有效期 90s（过期即丢弃，不上报陈旧观测）
+  → Agent /instance/list 响应 runtime_replica_of 字段
+       ↓
+Server runReconcile（每 30s）拉取各 Agent
+  → parseRuntimeReplicaOf             读 runtime_replica_of
+  → s.runtimeReplicaOf                存入 Server 内存（重启后为空，自动重建）
+       ↓
+列表接口 injectSentinelRuntime
+  → 组内 runtimeReplicaOf 值为空串（自认 master）的实例 → RuntimeMaster
+```
+
+> 运行时实际视角是纯观测、需重建的：Server 或 Agent 重启后 `runtimeReplicaOf` 清空，
+> 需等下一轮成功探测重新填充；这段窗口内该视角为"未知"，按 §3 规则不判定 master_mismatch，
+> 不会误报。判据宁可缺失也不猜——把一个正常 replica 误判成 master 会触发错误的 REPLICAOF 下发。
+
+
 ## 4. 记录逻辑
 
 一个服务，两个动作：
