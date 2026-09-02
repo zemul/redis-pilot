@@ -62,7 +62,34 @@
 代理管理
   GET  /api/v1/proxy/snapshot   查看代理层结构化快照
   GET  /proxy/snapshot          查看代理层结构化快照
+  POST /api/v1/proxy/heartbeat  Proxy 上报进程在线、已应用快照与监听/后端数量（internal_token）
+  POST /proxy/heartbeat         心跳接口别名
+  GET  /proxy/status            Dashboard 查询 Proxy 运行状态（JWT / API Token）
 ```
+
+Proxy 运行状态采用单向上报，不建立 Server → Proxy 回调。`proxy_id` 优先取
+`proxy.yaml` 显式配置，未配置时使用主机 hostname。Server 仅在内存中按 `proxy_id`
+保留最新一条心跳：30 秒内为 online、30–60 秒为 stale、超过 60 秒为 offline；Server
+重启后等待 Proxy 下一次上报。心跳只承载控制面低频状态，QPS、连接数、错误计数等时序
+指标继续由 Prometheus 抓取 Proxy `/metrics`，不写入 `pilot.db`。
+
+#### Dashboard 总览
+
+总览定位为运维入口，不重复实例管理页的全部字段，也不把时序监控图表塞进首页。页面按处理
+优先级组织为：待处理事项、运行保障、轻量实例列表、最近任务和最近事件。
+
+- **待处理事项**：读取异常汇总，只展示最高优先级事项及可执行入口；未配置备份属于警告，
+  不把所有持久化实例强制判定为异常。
+- **运行保障**：合并 Agent 节点健康、Sentinel quorum、Proxy 心跳/快照接入和最近节点对账时间。
+  Proxy 卡片只展示控制面状态；QPS、连接数和慢查询等时序指标仍留在监控视图。
+- **实例列表**：保留实例组、实例类别（缓存/持久化）、拓扑、标签、内存使用和状态，最多展示六组；Redis/Kvrocks 使用
+  对应引擎图标，标签直接平铺并默认选中“全部”，多选标签按 AND 语义筛选。详细操作继续放在
+  实例管理页。
+- **最近任务 / 最近事件**：任务读取 `/tasks` 的持久化状态，事件读取审计记录。两者并列是为了
+  分别回答“后台工作执行到哪了”和“平台最近发生了什么”，不以虚构进度代替任务真实状态。
+
+总览只组合现有 API 数据，不引入独立首页状态表；刷新时同时更新实例、节点、任务、审计、
+Sentinel 与 Proxy 状态，并记录本次成功刷新时间。
 
 #### 受限 K/V 浏览器
 

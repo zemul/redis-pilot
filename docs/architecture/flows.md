@@ -683,6 +683,18 @@ Server / Agent / Proxy 三处 Bearer Token 校验改用 `subtle.ConstantTimeComp
 
 Proxy 侧 `http.Client` 刻意不设 `Timeout`（它会连正常挂起一起掐断），每次请求的超时由 `refresh` 用 context 按 `Wait + Timeout` 单独设定。`Poll.Timeout` 的含义因此变成"网络往返余量"，默认从 1s 调到 5s。首次拉取还没有版本可比，不进长轮询，避免启动时白等一个 `Wait`。
 
+**Proxy 运行状态心跳**
+
+Discovery 模式启动后，Proxy 每 10 秒向 `POST /api/v1/proxy/heartbeat` 上报一次。上报内容
+只包含稳定 `proxy_id`（未配置时回退 hostname）、进程启动时间、最近应用的快照版本和时间、
+当前 listener 数与快照内 backend 数。该请求与快照拉取复用 `internal_token`，通信方向始终为
+Proxy → Server，避免 Server 主动访问 Proxy 带来的双向防火墙和循环依赖。
+
+Server 按 `proxy_id` 覆盖内存中的最新观测，不把每 10 秒一次的心跳写入 SQLite。Dashboard
+查询 `GET /proxy/status` 时依据 `last_seen` 动态计算 online / stale / offline；Server 重启后的
+短暂空白明确显示为“等待 Proxy 上报”。业务流量数据不进入心跳，仍由 Prometheus 从
+Proxy `/metrics` 采集。
+
 ## 5. Skills 设计
 
 

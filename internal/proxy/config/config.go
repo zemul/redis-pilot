@@ -29,11 +29,13 @@ func (d *Duration) UnmarshalYAML(value *yaml.Node) error {
 // FileConfig 是 YAML 配置文件的 schema。
 type FileConfig struct {
 	// Discovery 模式（M4）
-	ServerEndpoint string   `yaml:"server_endpoint"`
-	ServerToken    string   `yaml:"server_token"`
-	PollInterval   Duration `yaml:"poll_interval"`
-	PollTimeout    Duration `yaml:"poll_timeout"`
-	PollWait       Duration `yaml:"poll_wait"`
+	ProxyID           string   `yaml:"proxy_id"`
+	ServerEndpoint    string   `yaml:"server_endpoint"`
+	ServerToken       string   `yaml:"server_token"`
+	HeartbeatInterval Duration `yaml:"heartbeat_interval"`
+	PollInterval      Duration `yaml:"poll_interval"`
+	PollTimeout       Duration `yaml:"poll_timeout"`
+	PollWait          Duration `yaml:"poll_wait"`
 
 	// Static 模式（M3 兼容）
 	Listen   string   `yaml:"listen"`
@@ -51,11 +53,11 @@ type FileConfig struct {
 	Log LogConfig `yaml:"log"`
 
 	// 通用
-	MasterReadWeight  int      `yaml:"master_read_weight"`
-	PoolSize          int      `yaml:"pool_size"`
-	IdleTimeout       Duration `yaml:"idle_timeout"`
-	MetricsListen     string   `yaml:"metrics_listen"`
-	MaxRequestBytes   int      `yaml:"max_request_bytes"`
+	MasterReadWeight int      `yaml:"master_read_weight"`
+	PoolSize         int      `yaml:"pool_size"`
+	IdleTimeout      Duration `yaml:"idle_timeout"`
+	MetricsListen    string   `yaml:"metrics_listen"`
+	MaxRequestBytes  int      `yaml:"max_request_bytes"`
 }
 
 // LogConfig 日志配置。

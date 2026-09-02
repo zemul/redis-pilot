@@ -74,6 +74,35 @@ type ProxySnapshot struct {
 	Clusters   []ProxyCluster  `json:"clusters"`
 }
 
+// ProxyHeartbeat is the latest runtime observation reported by one redis-proxy
+// process. High-frequency traffic metrics intentionally stay in Prometheus;
+// this payload only describes control-plane liveness and snapshot freshness.
+type ProxyHeartbeat struct {
+	ProxyID           string `json:"proxy_id"`
+	Hostname          string `json:"hostname,omitempty"`
+	StartedAt         string `json:"started_at"`
+	SnapshotVersion   string `json:"snapshot_version,omitempty"`
+	SnapshotAppliedAt string `json:"snapshot_applied_at,omitempty"`
+	ListenerCount     int    `json:"listener_count"`
+	BackendCount      int    `json:"backend_count"`
+}
+
+// ProxyRuntimeStatus is the Server-side view of a reported proxy. Online is
+// derived from LastSeen instead of being trusted from the proxy payload.
+type ProxyRuntimeStatus struct {
+	ProxyHeartbeat
+	LastSeen   string `json:"last_seen"`
+	AgeSeconds int64  `json:"age_seconds"`
+	Status     string `json:"status"` // online | stale | offline
+}
+
+// ProxyStatusSummary is consumed by the management dashboard.
+type ProxyStatusSummary struct {
+	Online  int                  `json:"online"`
+	Total   int                  `json:"total"`
+	Proxies []ProxyRuntimeStatus `json:"proxies"`
+}
+
 // ProxyListener describes one Proxy Redis proxy listener.
 type ProxyListener struct {
 	Name        string `json:"name"`
@@ -150,19 +179,19 @@ type InstanceGroupState struct {
 // InstanceGroupView 是实例组面向用户 API 的安全投影。
 // Password 只供 Server 生成 Proxy 内部快照，不通过实例查询接口返回。
 type InstanceGroupView struct {
-	Type             string       `json:"type"`
-	Engine           string       `json:"engine"`
-	EngineVersion    string       `json:"engine_version,omitempty"`
-	Category         string       `json:"category"`
-	AccessMode       string       `json:"access_mode,omitempty"`
-	Labels           []string     `json:"labels,omitempty"`
-	CurrentMaster    string       `json:"current_master"`
-	TopologyStatus   string       `json:"topology_status"`
-	FailoverConflict bool         `json:"failover_conflict"`
-	Proxy            *ProxyConfig `json:"proxy,omitempty"`
+	Type             string        `json:"type"`
+	Engine           string        `json:"engine"`
+	EngineVersion    string        `json:"engine_version,omitempty"`
+	Category         string        `json:"category"`
+	AccessMode       string        `json:"access_mode,omitempty"`
+	Labels           []string      `json:"labels,omitempty"`
+	CurrentMaster    string        `json:"current_master"`
+	TopologyStatus   string        `json:"topology_status"`
+	FailoverConflict bool          `json:"failover_conflict"`
+	Proxy            *ProxyConfig  `json:"proxy,omitempty"`
 	Backup           *BackupConfig `json:"backup,omitempty"`
-	CreatedAt        string       `json:"created_at"`
-	UpdatedAt        string       `json:"updated_at"`
+	CreatedAt        string        `json:"created_at"`
+	UpdatedAt        string        `json:"updated_at"`
 	// SentinelMaster 是 Sentinel 共识认为的当前 master（已解析成实例名，解析不到时
 	// 退回原始 host:port）。仅 replication 组有意义；由 Server 缓存注入，ToView 不填。
 	// 空表示 Sentinel 未启用或本轮尚未取得共识。

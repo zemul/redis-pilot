@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -22,25 +23,28 @@ import (
 	"gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/internal/proxy/metrics"
 	"gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/internal/proxy/sentinel"
 	"gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/internal/proxy/session"
+	"gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/pkg/apitypes"
 )
 
 // Config 是 proxy 进程的配置。
 type Config struct {
 	// 通用
-	ConnectTimeout    time.Duration
-	ShutdownTimeout   time.Duration
-	MasterReadWeight  int
-	PoolSize          int           // 每后端池上限（§13，默认 64）
-	IdleTimeout       time.Duration // 空闲连接回收（§13，默认 5m）
-	MetricsListen     string        // /metrics HTTP 监听地址（空=不开）
-	MaxRequestBytes   int           // 单条命令最大字节数（D13，默认 16MB）
+	ConnectTimeout   time.Duration
+	ShutdownTimeout  time.Duration
+	MasterReadWeight int
+	PoolSize         int           // 每后端池上限（§13，默认 64）
+	IdleTimeout      time.Duration // 空闲连接回收（§13，默认 5m）
+	MetricsListen    string        // /metrics HTTP 监听地址（空=不开）
+	MaxRequestBytes  int           // 单条命令最大字节数（D13，默认 16MB）
 
 	// Discovery 模式（M4）
-	ServerEndpoint string
-	ServerToken   string
-	PollInterval  time.Duration
-	PollTimeout   time.Duration
-	PollWait      time.Duration
+	ProxyID           string
+	ServerEndpoint    string
+	ServerToken       string
+	HeartbeatInterval time.Duration
+	PollInterval      time.Duration
+	PollTimeout       time.Duration
+	PollWait          time.Duration
 
 	// 伪 Sentinel（proxy-design §19）
 	SentinelListen   string
@@ -70,8 +74,9 @@ type Proxy struct {
 	poolsMu sync.Mutex
 	pools   map[string]*groupPools // group name -> pools
 
-	wg     sync.WaitGroup
-	cancel context.CancelFunc
+	wg        sync.WaitGroup
+	cancel    context.CancelFunc
+	startedAt time.Time
 }
 
 type listenerEntry struct {
@@ -110,12 +115,23 @@ func New(cfg Config) *Proxy {
 	if cfg.MaxRequestBytes == 0 {
 		cfg.MaxRequestBytes = 16 * 1024 * 1024 // 16MB
 	}
+	cfg.ProxyID = strings.TrimSpace(cfg.ProxyID)
+	if cfg.ProxyID == "" {
+		cfg.ProxyID, _ = os.Hostname()
+		if cfg.ProxyID == "" {
+			cfg.ProxyID = "unknown-proxy"
+		}
+	}
+	if cfg.HeartbeatInterval <= 0 {
+		cfg.HeartbeatInterval = 10 * time.Second
+	}
 
 	p := &Proxy{
 		cfg:       cfg,
 		listeners: make(map[string]*listenerEntry),
 		pools:     make(map[string]*groupPools),
 		metrics:   metrics.New(),
+		startedAt: time.Now().UTC(),
 	}
 
 	if cfg.ServerEndpoint != "" {
@@ -191,6 +207,7 @@ func (p *Proxy) listenAndServeDiscovery() error {
 	p.cancel = cancel
 
 	go p.discovery.Run(ctx)
+	go p.reportHeartbeat(ctx)
 
 	slog.Info("waiting for first snapshot", "server", p.cfg.ServerEndpoint)
 	if err := p.discovery.WaitReady(ctx); err != nil {
@@ -235,6 +252,66 @@ func (p *Proxy) listenAndServeDiscovery() error {
 
 	p.wg.Wait()
 	return nil
+}
+
+// reportHeartbeat keeps only low-cardinality runtime state in the Server.
+// Traffic counters and time-series metrics remain available through /metrics.
+func (p *Proxy) reportHeartbeat(ctx context.Context) {
+	report := func() {
+		version, appliedAt := p.discovery.SnapshotStatus()
+		topo := p.discovery.Topology()
+		backendCount := 0
+		if topo != nil {
+			for _, group := range topo.Groups {
+				if group.MasterAddr != "" {
+					backendCount++
+				}
+				backendCount += len(group.ReplicaAddrs)
+			}
+		}
+		p.mu.Lock()
+		listenerCount := len(p.listeners)
+		p.mu.Unlock()
+
+		hb := apitypes.ProxyHeartbeat{
+			ProxyID:         p.cfg.ProxyID,
+			Hostname:        hostname(),
+			StartedAt:       p.startedAt.Format(time.RFC3339),
+			SnapshotVersion: version,
+			ListenerCount:   listenerCount,
+			BackendCount:    backendCount,
+		}
+		if !appliedAt.IsZero() {
+			hb.SnapshotAppliedAt = appliedAt.Format(time.RFC3339)
+		}
+		timeout := p.cfg.PollTimeout
+		if timeout <= 0 {
+			timeout = 5 * time.Second
+		}
+		reqCtx, cancel := context.WithTimeout(ctx, timeout)
+		err := p.discovery.ReportHeartbeat(reqCtx, hb)
+		cancel()
+		if err != nil && ctx.Err() == nil {
+			slog.Warn("proxy heartbeat failed", "proxy_id", p.cfg.ProxyID, "err", err)
+		}
+	}
+
+	report()
+	ticker := time.NewTicker(p.cfg.HeartbeatInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			report()
+		}
+	}
+}
+
+func hostname() string {
+	host, _ := os.Hostname()
+	return host
 }
 
 // listenAndServeStatic: M3 兼容模式。
@@ -451,13 +528,13 @@ func (p *Proxy) handleConnDiscovery(conn net.Conn, group, mode string) {
 	pools := p.getOrCreatePools(group, g)
 
 	sessCfg := session.Config{
-		Group:             group,
-		MasterAddr:        g.MasterAddr,
-		ReplicaAddrs:      g.ReplicaAddrs,
-		Password:          g.FrontPassword,
-		ConnectTimeout:    p.cfg.ConnectTimeout,
-		MasterReadWeight:  p.cfg.MasterReadWeight,
-		MaxRequestBytes:   p.cfg.MaxRequestBytes,
+		Group:            group,
+		MasterAddr:       g.MasterAddr,
+		ReplicaAddrs:     g.ReplicaAddrs,
+		Password:         g.FrontPassword,
+		ConnectTimeout:   p.cfg.ConnectTimeout,
+		MasterReadWeight: p.cfg.MasterReadWeight,
+		MaxRequestBytes:  p.cfg.MaxRequestBytes,
 	}
 	if mode == "master" {
 		sessCfg.ReplicaAddrs = nil
@@ -491,13 +568,13 @@ func (p *Proxy) handleConnStatic(conn net.Conn) {
 	pools := p.getOrCreateStaticPools()
 
 	sessCfg := session.Config{
-		Group:             "_static",
-		MasterAddr:        p.cfg.MasterAddr,
-		ReplicaAddrs:      p.cfg.ReplicaAddrs,
-		Password:          p.cfg.Password,
-		ConnectTimeout:    p.cfg.ConnectTimeout,
-		MasterReadWeight:  p.cfg.MasterReadWeight,
-		MaxRequestBytes:   p.cfg.MaxRequestBytes,
+		Group:            "_static",
+		MasterAddr:       p.cfg.MasterAddr,
+		ReplicaAddrs:     p.cfg.ReplicaAddrs,
+		Password:         p.cfg.Password,
+		ConnectTimeout:   p.cfg.ConnectTimeout,
+		MasterReadWeight: p.cfg.MasterReadWeight,
+		MaxRequestBytes:  p.cfg.MaxRequestBytes,
 	}
 
 	sess, err := session.New(conn, sessCfg, pools.master, pools.replicas, p.metrics)
@@ -523,7 +600,7 @@ func (p *Proxy) getOrCreatePools(group string, g *discovery.GroupTopology) *grou
 		return pools
 	}
 	pools := &groupPools{
-		master: backend.NewPool(g.MasterAddr, g.BackendPassword, p.cfg.ConnectTimeout, p.cfg.PoolSize, p.cfg.IdleTimeout),
+		master:   backend.NewPool(g.MasterAddr, g.BackendPassword, p.cfg.ConnectTimeout, p.cfg.PoolSize, p.cfg.IdleTimeout),
 		replicas: make(map[string]*backend.Pool),
 	}
 	for _, addr := range g.ReplicaAddrs {
@@ -543,7 +620,7 @@ func (p *Proxy) getOrCreateStaticPools() *groupPools {
 		return pools
 	}
 	pools := &groupPools{
-		master: backend.NewPool(p.cfg.MasterAddr, p.cfg.Password, p.cfg.ConnectTimeout, p.cfg.PoolSize, p.cfg.IdleTimeout),
+		master:   backend.NewPool(p.cfg.MasterAddr, p.cfg.Password, p.cfg.ConnectTimeout, p.cfg.PoolSize, p.cfg.IdleTimeout),
 		replicas: make(map[string]*backend.Pool),
 	}
 	for _, addr := range p.cfg.ReplicaAddrs {

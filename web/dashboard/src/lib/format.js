@@ -265,6 +265,8 @@ export function taskKindLabel(kind) {
     'backup.create': '创建备份',
     'backup.restore': '恢复备份',
     'diagnostic.bigkeys': '大 Key 扫描',
+    'topology.failover': '故障转移',
+    'config.update': '配置重写',
   };
   return labels[kind] || kind || '-';
 }

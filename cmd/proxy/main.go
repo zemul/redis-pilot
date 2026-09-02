@@ -4,13 +4,16 @@
 // 支持 discovery 模式（从 Server 快照驱动）和 static 模式（YAML/CLI 配置）。
 //
 // 用法（配置文件）：
-//   redis-proxy -config proxy.yaml
+//
+//	redis-proxy -config proxy.yaml
 //
 // 用法（discovery 模式，CLI）：
-//   redis-proxy -server-endpoint http://127.0.0.1:8080 -metrics-listen :19100
+//
+//	redis-proxy -server-endpoint http://127.0.0.1:8080 -metrics-listen :19100
 //
 // 用法（static 模式，CLI）：
-//   redis-proxy -listen :16379 -master 127.0.0.1:6379 -metrics-listen :19100
+//
+//	redis-proxy -listen :16379 -master 127.0.0.1:6379 -metrics-listen :19100
 //
 // 配置优先级：CLI flag > YAML > 代码默认值。
 package main
@@ -34,11 +37,13 @@ func main() {
 	configPath := flag.String("config", "", "config file path (YAML)")
 
 	// Discovery 模式
+	proxyID := flag.String("proxy-id", "", "stable proxy identity (empty = hostname)")
 	serverEndpoint := flag.String("server-endpoint", "", "Server HTTP endpoint for snapshot (empty = static mode)")
 	serverToken := flag.String("server-token", "", "Server bearer token")
 	pollInterval := flag.Duration("poll-interval", 2*time.Second, "minimum interval between snapshot polls")
 	pollTimeout := flag.Duration("poll-timeout", 5*time.Second, "network round-trip timeout for snapshot fetch")
 	pollWait := flag.Duration("poll-wait", 20*time.Second, "long-poll wait (0 = disable long-poll)")
+	heartbeatInterval := flag.Duration("heartbeat-interval", 10*time.Second, "proxy status heartbeat interval")
 
 	// Static 模式
 	listen := flag.String("listen", ":16379", "proxy listen address (static mode only)")
@@ -106,10 +111,14 @@ func main() {
 		PollInterval:      2 * time.Second,
 		PollTimeout:       5 * time.Second,
 		PollWait:          20 * time.Second,
+		HeartbeatInterval: 10 * time.Second,
 	}
 
 	// YAML 覆盖
 	if fc != nil {
+		if fc.ProxyID != "" {
+			cfg.ProxyID = fc.ProxyID
+		}
 		if fc.ServerEndpoint != "" {
 			cfg.ServerEndpoint = fc.ServerEndpoint
 		}
@@ -124,6 +133,9 @@ func main() {
 		}
 		if fc.PollWait != 0 {
 			cfg.PollWait = time.Duration(fc.PollWait)
+		}
+		if fc.HeartbeatInterval != 0 {
+			cfg.HeartbeatInterval = time.Duration(fc.HeartbeatInterval)
 		}
 		if fc.Listen != "" {
 			cfg.Listen = fc.Listen
@@ -161,6 +173,9 @@ func main() {
 	}
 
 	// CLI flag 覆盖（仅显式设置的 flag）
+	if setFlags["proxy-id"] {
+		cfg.ProxyID = *proxyID
+	}
 	if setFlags["server-endpoint"] {
 		cfg.ServerEndpoint = *serverEndpoint
 	}
@@ -175,6 +190,9 @@ func main() {
 	}
 	if setFlags["poll-wait"] {
 		cfg.PollWait = *pollWait
+	}
+	if setFlags["heartbeat-interval"] {
+		cfg.HeartbeatInterval = *heartbeatInterval
 	}
 	if setFlags["listen"] {
 		cfg.Listen = *listen

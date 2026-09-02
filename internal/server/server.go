@@ -68,6 +68,12 @@ type Server struct {
 
 	// incidents 异常记录服务：把 reconcile/topology/task 观测转成可查询的异常生命周期。
 	incidents *IncidentService
+
+	// proxyRuntime keeps only the latest heartbeat per proxy process. It is
+	// intentionally ephemeral: traffic history belongs in Prometheus and a
+	// restarted Server waits for proxies to report again.
+	proxyRuntimeMu sync.RWMutex
+	proxyRuntime   map[string]proxyRuntimeObservation
 }
 
 func New(cfg *Config) (*Server, error) {
@@ -96,6 +102,7 @@ func New(cfg *Config) (*Server, error) {
 		memoryUsed:       make(map[string]int64),
 		sentinelMaster:   make(map[string]string),
 		runtimeReplicaOf: make(map[string]string),
+		proxyRuntime:     make(map[string]proxyRuntimeObservation),
 	}
 	s.scheduler = newBackupScheduler(s)
 	s.incidents = newIncidentService(db, s.log)
@@ -197,6 +204,8 @@ func (s *Server) Router() *gin.Engine {
 	internal.Use(s.internalTokenMiddleware())
 	internal.GET("/proxy/snapshot", s.proxySnapshot)
 	internal.GET("/api/v1/proxy/snapshot", s.proxySnapshot)
+	internal.POST("/proxy/heartbeat", s.proxyHeartbeat)
+	internal.POST("/api/v1/proxy/heartbeat", s.proxyHeartbeat)
 
 	// ── 需要认证的路由（JWT 或 API Token）────────────────────────────────
 	authed := r.Group("")
@@ -276,6 +285,7 @@ func (s *Server) Router() *gin.Engine {
 	authed.GET("/incidents/summary", s.incidentSummary)
 	authed.GET("/incidents/:id", s.incidentDetail)
 	authed.GET("/server/info", s.serverInfo)
+	authed.GET("/proxy/status", s.proxyStatus)
 	authed.GET("/metrics", s.metricsCollect)
 
 	// AI 运维助手（SSE 流式对话）。挂在 authed：所有登录用户可用只读诊断。

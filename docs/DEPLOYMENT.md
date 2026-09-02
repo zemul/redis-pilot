@@ -324,8 +324,11 @@ chmod +x /opt/redis-pilot/redis-pilot
 
 ```yaml
 # Discovery 模式：从 Server 拉取快照，动态驱动 listener 和连接池
+proxy_id: "redis-proxy-a"                 # 可选；省略时使用 hostname
 server_endpoint: "http://127.0.0.1:8080"   # 本机 Server 地址（A 上 Server 和 Proxy 同机）
 server_token: "your-secret-token"          # 与 server.yaml 中的 token 一致，空字符串则不鉴权
+
+heartbeat_interval: 10s    # 上报在线与快照状态；QPS/连接数仍走 Prometheus
 
 poll_interval: 2s          # 两次请求的最小间隔（长轮询下仅作下限）
 poll_timeout: 5s           # 网络往返余量，不含服务端挂起时长

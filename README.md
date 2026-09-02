@@ -185,8 +185,10 @@ log:
 
 ```yaml
 # Discovery 模式：从 Server 拉取快照，动态驱动 listener 和连接池
+proxy_id: redis-proxy-01                    # 可选稳定身份；省略时使用 hostname
 server_endpoint: http://127.0.0.1:8080   # Server API 地址
 server_token: ""                          # Bearer Token，与 Server 的 token 一致（空=不鉴权）
+heartbeat_interval: 10s                    # 向 Server 上报在线与快照状态
 poll_interval: 2s                         # 两次长轮询请求的最小间隔（长轮询下仅作下限）
 poll_timeout: 5s                          # 网络往返余量，不含服务端挂起时长
 poll_wait: 20s                            # 长轮询挂起上限，0 关闭长轮询退回定期轮询
@@ -200,7 +202,7 @@ sentinel_listen: ":26379"                 # 空=关闭
 sentinel_password: ""                     # 发现端口鉴权密码；空=不鉴权
 ```
 
-Proxy 启动后通过 HTTP 长轮询 `GET /api/v1/proxy/snapshot` 从 Server 拉取代理快照，按快照中的后端实例列表动态调整读写分离路由；业务 Redis 流量直接由 Proxy 处理，不经过 Server。完整配置（含 static 模式与连接池参数）见 `configs/proxy.yaml.example`。
+Proxy 启动后通过 HTTP 长轮询 `GET /api/v1/proxy/snapshot` 从 Server 拉取代理快照，并通过 `POST /api/v1/proxy/heartbeat` 上报进程在线与已应用快照状态；两条链路均为 Proxy → Server。业务 Redis 流量直接由 Proxy 处理，不经过 Server，QPS、连接数等时序指标仍由 Prometheus 从 Proxy `/metrics` 采集。完整配置（含 static 模式与连接池参数）见 `configs/proxy.yaml.example`。
 
 > **安全模型（仅 Proxy 前端鉴权）**：后端 Redis/Kvrocks 实例**一律不设密码**，鉴权只在
 > 客户端 → Proxy 这一段由 Proxy 校验前端密码（快照 `ProxyListener.Password`）完成；

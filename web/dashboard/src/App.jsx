@@ -88,8 +88,10 @@ function AppShell() {
   const [openIncidentsByGroup, setOpenIncidentsByGroup] = useState({});
   const [pendingAction, setPendingAction] = useState('');
   const [activeTaskCount, setActiveTaskCount] = useState(0);
-  const [data, setData] = useState({ instances: {}, servers: {}, audits: [], sentinel: null });
+  const [data, setData] = useState({ instances: {}, servers: {}, audits: [], tasks: [], sentinel: null });
+  const [proxyStatus, setProxyStatus] = useState(null);
   const [serverInfo, setServerInfo] = useState(null);
+  const [lastUpdatedAt, setLastUpdatedAt] = useState('');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
 
@@ -114,18 +116,21 @@ function AppShell() {
     setLoading(true);
     setError('');
     try {
-      const [instanceData, nodeData, auditData, sentinelData] = await Promise.all([
+      const [instanceData, nodeData, auditData, taskData, sentinelData] = await Promise.all([
         request('/instance/list'),
         request('/node/list'),
         request(auditQuery(auditFilters, 1, 6)),
+        request('/tasks?page=1&page_size=4').catch(() => null),
         request('/sentinel/status').catch(() => null)
       ]);
       setData({
         instances: instanceData || {},
         servers: nodeData || {},
         audits: auditData?.records || auditData?.Records || [],
+        tasks: taskData?.records || taskData?.Records || [],
         sentinel: sentinelData
       });
+      setLastUpdatedAt(new Date().toISOString());
     } catch (err) {
       setError(err.message || String(err));
     } finally {
@@ -137,6 +142,22 @@ function AppShell() {
     if (!auth) return;
     request('/server/info').then((data) => setServerInfo(data)).catch(() => {});
   }, [auth]);
+
+  useEffect(() => {
+    if (!auth) return undefined;
+    let ignore = false;
+    async function loadProxyStatus() {
+      try {
+        const result = await request('/proxy/status');
+        if (!ignore) setProxyStatus(result || null);
+      } catch {
+        if (!ignore) setProxyStatus(null);
+      }
+    }
+    loadProxyStatus();
+    const timer = setInterval(loadProxyStatus, 10000);
+    return () => { ignore = true; clearInterval(timer); };
+  }, [auth, request]);
 
   useEffect(() => {
     if (!auth) return undefined;
@@ -202,10 +223,11 @@ function AppShell() {
       setLoading(true);
       setError('');
       try {
-        const [instanceData, nodeData, auditData, sentinelData] = await Promise.all([
+        const [instanceData, nodeData, auditData, taskData, sentinelData] = await Promise.all([
           request('/instance/list'),
           request('/node/list'),
           request(auditQuery(auditFilters, 1, 6)),
+          request('/tasks?page=1&page_size=4').catch(() => null),
           request('/sentinel/status').catch(() => null)
         ]);
         if (!ignore) {
@@ -213,8 +235,10 @@ function AppShell() {
             instances: instanceData || {},
             servers: nodeData || {},
             audits: auditData?.records || auditData?.Records || [],
+            tasks: taskData?.records || taskData?.Records || [],
             sentinel: sentinelData
           });
+          setLastUpdatedAt(new Date().toISOString());
         }
       } catch (err) {
         if (!ignore) setError(err.message || String(err));
@@ -462,7 +486,7 @@ function AppShell() {
             <div className="border border-gray-200 rounded-lg bg-white min-h-[260px] grid place-items-center text-gray-400">正在读取服务状态...</div>
           ) : (
             <>
-              {activeTab === 'dashboard' && <DashboardView groups={instanceGroups} servers={servers} audits={data.audits} sentinel={data.sentinel} incidentSummary={incidentSummary} publicHost={serverInfo?.proxy_public_endpoint} onOpenDetail={openInstanceDetail} onOpenIncidents={openIncidents} />}
+              {activeTab === 'dashboard' && <DashboardView groups={instanceGroups} servers={servers} audits={data.audits} tasks={data.tasks} sentinel={data.sentinel} proxyStatus={proxyStatus} incidentSummary={incidentSummary} lastUpdatedAt={lastUpdatedAt} onRefresh={refresh} onOpenDetail={openInstanceDetail} onOpenIncidents={openIncidents} onOpenBackups={openBackupList} onOpenTasks={openInstanceTasks} onOpenAudit={() => setActiveTab('audit')} onViewInstances={() => setActiveTab('instances')} />}
               {activeTab === 'instances' && (
                 <InstancesView
                   groups={instanceGroups}

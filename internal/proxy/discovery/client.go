@@ -5,6 +5,7 @@
 package discovery
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -21,6 +22,31 @@ type serverClient struct {
 	baseURL string
 	token   string
 	client  *http.Client
+}
+
+// ReportHeartbeat updates the Server's in-memory runtime view of this proxy.
+func (c *serverClient) ReportHeartbeat(ctx context.Context, heartbeat apitypes.ProxyHeartbeat) error {
+	body, err := json.Marshal(heartbeat)
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/api/v1/proxy/heartbeat", bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("server proxy heartbeat: %s", resp.Status)
+	}
+	return nil
 }
 
 func newServerClient(cfg ServerConfig, httpClient *http.Client) *serverClient {

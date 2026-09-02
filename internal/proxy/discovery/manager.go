@@ -23,9 +23,10 @@ type Manager struct {
 	pollCfg PollConfig
 	httpCli *http.Client
 
-	mu      sync.RWMutex
-	topo    *Topology
-	version string
+	mu        sync.RWMutex
+	topo      *Topology
+	version   string
+	appliedAt time.Time
 
 	ready    chan struct{} // 首次快照就绪后 close
 	once     sync.Once
@@ -97,6 +98,19 @@ func (m *Manager) Topology() *Topology {
 	return m.topo
 }
 
+// SnapshotStatus returns the last successfully applied snapshot metadata.
+func (m *Manager) SnapshotStatus() (version string, appliedAt time.Time) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.version, m.appliedAt
+}
+
+// ReportHeartbeat reports runtime liveness through the same authenticated,
+// one-way Proxy -> Server channel used by discovery.
+func (m *Manager) ReportHeartbeat(ctx context.Context, heartbeat apitypes.ProxyHeartbeat) error {
+	return m.client.ReportHeartbeat(ctx, heartbeat)
+}
+
 // refresh 拉取一次快照，必要时更新拓扑并触发回调。
 func (m *Manager) refresh(ctx context.Context) (bool, error) {
 	m.mu.RLock()
@@ -137,6 +151,7 @@ func (m *Manager) applySnapshot(snap *apitypes.ProxySnapshot) {
 	oldTopo := m.topo
 	m.topo = newTopo
 	m.version = snap.Version
+	m.appliedAt = time.Now().UTC()
 	m.mu.Unlock()
 
 	// 首次快照：signal ready
