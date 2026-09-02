@@ -34,79 +34,98 @@ type Metrics struct {
 	registry *prometheus.Registry
 }
 
+// namespace 是所有 Proxy 自有指标的统一前缀。最终指标名为
+// redis_pilot_proxy_<name>，用产品+组件命名，避免与其他 exporter（尤其
+// redis_exporter、通用 proxy/sidecar）的指标混淆。Go/Process collector 的
+// go_*/process_* 是标准约定，不加此前缀。
+const namespace = "redis_pilot_proxy"
+
 // New 创建 Metrics 并注册到私有 registry。
 func New() *Metrics {
 	m := &Metrics{
 		registry: prometheus.NewRegistry(),
 
 		ActiveClientConns: prometheus.NewGaugeVec(prometheus.GaugeOpts{
-			Name: "proxy_active_client_conns",
-			Help: "Active client connections to proxy",
+			Namespace: namespace,
+			Name:      "active_client_conns",
+			Help:      "Active client connections to proxy",
 		}, []string{"group"}),
 
 		ActiveUpstreamConns: prometheus.NewGaugeVec(prometheus.GaugeOpts{
-			Name: "proxy_active_upstream_conns",
-			Help: "Active upstream connections from proxy to backends",
+			Namespace: namespace,
+			Name:      "active_upstream_conns",
+			Help:      "Active upstream connections from proxy to backends",
 		}, []string{"group", "backend", "role"}),
 
 		ExclusiveConns: prometheus.NewGaugeVec(prometheus.GaugeOpts{
-			Name: "proxy_exclusive_conns",
-			Help: "Exclusive (pinned) upstream connections (blocking/txn/subscribe)",
+			Namespace: namespace,
+			Name:      "exclusive_conns",
+			Help:      "Exclusive (pinned) upstream connections (blocking/txn/subscribe)",
 		}, []string{"group"}),
 
 		SnapshotAppliedAt: prometheus.NewGaugeVec(prometheus.GaugeOpts{
-			Name: "proxy_snapshot_applied_timestamp_seconds",
+			Namespace: namespace,
+			Name:      "snapshot_applied_timestamp_seconds",
 			Help: "Unix timestamp (seconds) when the currently applied discovery snapshot was applied. " +
 				"Staleness = time() - this; a frozen value means the discovery/long-poll link is stuck.",
 		}, []string{"version"}),
 
 		ReadFallbackMaster: prometheus.NewCounterVec(prometheus.CounterOpts{
-			Name: "proxy_read_fallback_master_total",
-			Help: "Read requests that fell back to master (D10)",
+			Namespace: namespace,
+			Name:      "read_fallback_master_total",
+			Help:      "Read requests that fell back to master (D10)",
 		}, []string{"group"}),
 
 		ErrorCount: prometheus.NewCounterVec(prometheus.CounterOpts{
-			Name: "proxy_error_total",
-			Help: "Total errors",
+			Namespace: namespace,
+			Name:      "error_total",
+			Help:      "Total errors",
 		}, []string{"group"}),
 
 		ClientConnTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
-			Name: "proxy_client_conn_total",
-			Help: "Total client connections accepted",
+			Namespace: namespace,
+			Name:      "client_conn_total",
+			Help:      "Total client connections accepted",
 		}, []string{"group"}),
 
 		CommandCount: prometheus.NewCounterVec(prometheus.CounterOpts{
-			Name: "proxy_command_total",
+			Namespace: namespace,
+			Name:      "command_total",
 			Help: "Total commands processed, by group and command. " +
 				"Command names are normalized against a known-command whitelist; unknown names map to OTHER to bound cardinality. " +
 				"Only forwarded business commands are counted; locally-terminated (AUTH/PING/CLIENT/INFO/CONFIG…) and denied commands are excluded.",
 		}, []string{"group", "cmd"}),
 
 		BackendDownCount: prometheus.NewCounterVec(prometheus.CounterOpts{
-			Name: "proxy_backend_down_total",
-			Help: "Backend DOWN events",
+			Namespace: namespace,
+			Name:      "backend_down_total",
+			Help:      "Backend DOWN events",
 		}, []string{"group"}),
 
 		SlowCommand: prometheus.NewCounterVec(prometheus.CounterOpts{
-			Name: "proxy_slow_command_total",
+			Namespace: namespace,
+			Name:      "slow_command_total",
 			Help: "Commands whose backend round-trip exceeded the slow threshold, by command. " +
 				"Command names are normalized against a known-command whitelist; unknown names map to OTHER to bound cardinality.",
 		}, []string{"group", "cmd"}),
 
 		SnapshotFetch: prometheus.NewCounterVec(prometheus.CounterOpts{
-			Name: "proxy_snapshot_fetch_total",
+			Namespace: namespace,
+			Name:      "snapshot_fetch_total",
 			Help: "Discovery snapshot long-poll fetch attempts, by result (success|failure). " +
 				"A rising failure rate signals the Proxy -> Server discovery link is degraded.",
 		}, []string{"result"}),
 
 		ServerDisconnect: prometheus.NewCounter(prometheus.CounterOpts{
-			Name: "proxy_server_disconnect_total",
+			Namespace: namespace,
+			Name:      "server_disconnect_total",
 			Help: "Number of times a discovery snapshot fetch failed (Proxy lost contact with Server). " +
-				"Equivalent to the failure stream of proxy_snapshot_fetch_total, exposed as a scalar for easy alerting.",
+				"Equivalent to the failure stream of redis_pilot_proxy_snapshot_fetch_total, exposed as a scalar for easy alerting.",
 		}),
 
 		CommandDuration: prometheus.NewHistogramVec(prometheus.HistogramOpts{
-			Name: "proxy_command_duration_seconds",
+			Namespace: namespace,
+			Name:      "command_duration_seconds",
 			Help: "Backend round-trip latency in seconds, by group and kind (read/write/other). " +
 				"Observes one backend round-trip; a pipelined batch is recorded as a single observation, " +
 				"so this is round-trip latency, not strictly per-command latency.",

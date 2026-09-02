@@ -73,29 +73,29 @@ PromQL 使用 `rate()` 或区间增量计算，不能将累计值直接展示为
 Server 至少暴露 Agent 在线状态、API 请求、调度、reconcile、备份任务和快照生成状态。
 Proxy 至少暴露连接数、请求数、错误、路由失败、后端状态和快照版本。
 
-延迟分位（P95/P99）由 Proxy 的 Histogram `proxy_command_duration_seconds{group,kind}` 提供，
+延迟分位（P95/P99）由 Proxy 的 Histogram `redis_pilot_proxy_command_duration_seconds{group,kind}` 提供，
 `kind` 取 read/write/other（由命令路由分类映射）。它观测的是一次后端 round-trip 耗时，
 pipeline 批记为单次观测，因此是往返延迟而非严格的单命令延迟；PromQL 侧用
 `histogram_quantile()` 计算分位。命令级流量（ops by command）由 Counter
-`proxy_command_total{group,cmd}` 提供，`cmd` 经命令白名单归一化（未知命令归入 `OTHER`）；
+`redis_pilot_proxy_command_total{group,cmd}` 提供，`cmd` 经命令白名单归一化（未知命令归入 `OTHER`）；
 仅统计转发的业务命令，本地终结（AUTH/PING/CLIENT/INFO/CONFIG…）与被拒命令不计入。
-命令级慢查询由 Counter `proxy_slow_command_total{group,cmd}`
+命令级慢查询由 Counter `redis_pilot_proxy_slow_command_total{group,cmd}`
 承接：仅当单次 round-trip 超过慢命令阈值（当前 10ms）时按命令 +1，`cmd` 经命令白名单
 归一化（未知命令归入 `OTHER`）以约束基数。路由回落 master 由
-`proxy_read_fallback_master_total{group}` 记录，仅统计"无可用 replica 被迫回落"的情形，
+`redis_pilot_proxy_read_fallback_master_total{group}` 记录，仅统计"无可用 replica 被迫回落"的情形，
 master 因读权重被正常加权命中不计入。
 
-发现链路（Proxy → Server 长轮询）健康由三项指标暴露：`proxy_snapshot_fetch_total{result}`
-（拉取成功/失败计数，failure 上升即链路劣化）、`proxy_server_disconnect_total`（失联次数，
-scalar 便于告警）、`proxy_snapshot_applied_timestamp_seconds{version}`（当前已应用快照的
+发现链路（Proxy → Server 长轮询）健康由三项指标暴露：`redis_pilot_proxy_snapshot_fetch_total{result}`
+（拉取成功/失败计数，failure 上升即链路劣化）、`redis_pilot_proxy_server_disconnect_total`（失联次数，
+scalar 便于告警）、`redis_pilot_proxy_snapshot_applied_timestamp_seconds{version}`（当前已应用快照的
 应用时刻，`time() - 该值` 即快照陈旧度；数值冻结说明链路卡死）。进程级兜底指标由
 prometheus 的 Go/Process collector 提供（`go_goroutines`、`go_memstats_*`、`go_gc_duration_seconds`、
 `process_resident_memory_bytes`、`process_open_fds` 等），因 Proxy 使用私有 registry，这些
 collector 在初始化时显式注册。
 
-> 注：`proxy_backend_health` 已移除。Proxy 不主动健康探测后端，快照也不含每后端健康度，
+> 注：`redis_pilot_proxy_backend_health` 已移除。Proxy 不主动健康探测后端，快照也不含每后端健康度，
 > 该 gauge 无可靠数据源、长期为空会误导，故删除。后端健康信号改用
-> `proxy_backend_down_total`（down 事件）与 `proxy_error_total`（转发失败）表达；若未来需要
+> `redis_pilot_proxy_backend_down_total`（down 事件）与 `redis_pilot_proxy_error_total`（转发失败）表达；若未来需要
 > 每后端实时健康枚举，须单独引入 Proxy 主动健康探测能力。
 
 ### 4.3 Label 约束

@@ -28,11 +28,11 @@ func TestHandlerExposesProcessAndSnapshotMetrics(t *testing.T) {
 	out := string(body)
 
 	mustContain := []string{
-		"go_goroutines",                            // GoCollector
-		"process_open_fds",                         // ProcessCollector
-		"proxy_snapshot_fetch_total",               // ③
-		"proxy_server_disconnect_total",            // ③
-		"proxy_snapshot_applied_timestamp_seconds", // ③
+		"go_goroutines",                                      // GoCollector
+		"process_open_fds",                                   // ProcessCollector
+		"redis_pilot_proxy_snapshot_fetch_total",             // ③
+		"redis_pilot_proxy_server_disconnect_total",          // ③
+		"redis_pilot_proxy_snapshot_applied_timestamp_seconds", // ③
 	}
 	for _, s := range mustContain {
 		if !strings.Contains(out, s) {
@@ -40,7 +40,11 @@ func TestHandlerExposesProcessAndSnapshotMetrics(t *testing.T) {
 		}
 	}
 	// 已删除的假指标不应再出现
-	if strings.Contains(out, "proxy_backend_health") {
-		t.Errorf("proxy_backend_health should have been removed but is still exposed")
+	if strings.Contains(out, "backend_health") {
+		t.Errorf("backend_health should have been removed but is still exposed")
+	}
+	// 旧的裸 proxy_ 前缀不应再出现（已统一为 redis_pilot_proxy_）
+	if strings.Contains(out, "\nproxy_") || strings.HasPrefix(out, "proxy_") {
+		t.Errorf("legacy bare proxy_ prefix should no longer be exposed")
 	}
 }
