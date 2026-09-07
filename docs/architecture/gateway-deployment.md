@@ -34,4 +34,25 @@ Server 保留配置草稿；Gateway 注册、配置拉取、已应用版本和�
 后续 G5c 由 Gateway 直接与 Server 建立控制面通信，具体注册、认证、心跳、配置应用确认协议待定；不通过 Agent 转发。
 多网关归属、分片 fencing、高可用与切流仍待实现，不能把复制 systemd 服务理解为完成高可用。
 
-本次仅添加模板和构建入口，没有在 redis01～03 安装或启动服务。
+## 开发机部署记录（2026-09-07）
+
+代码版本 `efbf187` 已在 redis01 独立部署，未部署 Server/Agent 的新版本，未修改 Proxy 路由。
+
+| 项目 | 实际值 |
+| --- | --- |
+| 服务 | `redis-gateway.service`，专用无登录账号 `redis-gateway` |
+| 二进制 | `/opt/redis-gateway/redis-gateway` |
+| 配置 | `/etc/redis-gateway/gateway.yaml`，来源为 [小预算部署示例](../examples/gateway-systemd.yaml) |
+| 入口 / 管理 | `127.0.0.1:17379` / `127.0.0.1:19200` |
+| 凭据 | 随机生成，保存在 `/etc/redis-gateway/frontend.secret`，0600；不入库、不入仓库 |
+| 隔离后端 | `redis-gateway-dev-backend`，Redis 7.4.9，仅映射 `127.0.0.1:16389` |
+| 后端资源 | 容器内存 128MiB，Redis maxmemory 64MiB，noeviction；禁用 AOF/RDB，不存业务数据 |
+| 自启动 | Gateway 未 enable；测试后端无自动重启策略，主机重启后需人工启动后端再启动 Gateway |
+
+二进制 SHA256：`3ca12802520cfb49f5c3ef9ee67d10d5e8ec3fe4b1534e736e6f8feb311ae8f8`，本地与远端一致。
+已验证 `/readyz`、前端认证、SET/INCR/GET/DEL（41→42），未认证 GET 返回 NOAUTH；测试 key 已删除。
+另已验证 Gateway 停止后重新启动、`/metrics` 可访问、仅回环监听和凭据权限；后端 DBSIZE 为 0。现有 Server/Agent/Proxy 保持 active，未重启。
+systemd 单元校验通过；系统同时提示既有 cloudmonitor 单元的告警，该服务未改动。
+首次 start 返回后立即请求健康端口曾遇到连接拒绝，随后服务完成启动并返回 ok；不能把 systemctl start 成功等同于就绪。
+
+该部署只用于功能验证，不是生产发布，也没有开启冷热同步、回温、淘汰或 Server 状态上报。
