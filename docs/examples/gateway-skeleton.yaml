@@ -1,0 +1,12 @@
+# G1 only: loopback listeners; no business forwarding or storage connections.
+gateway_id: gateway-local
+service_id: test
+shard_id: test-0
+mode: skeleton
+listen: 127.0.0.1:17379
+admin_listen: 127.0.0.1:19200
+shutdown_timeout: 10s
+limits:
+  max_bytes: 16777216
+  max_elements: 4096
+  max_depth: 32
