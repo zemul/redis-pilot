@@ -141,6 +141,15 @@ func (d *DB) Checkpoint() error {
 // migrate 执行幂等建表。新增字段时追加 ALTER TABLE，不删除旧表。
 func (d *DB) migrate() error {
 	stmts := []string{
+		// Unapplied plans intentionally have no runtime FK/port reservation.
+		// Existing state writers replace group/node snapshots wholesale.
+		`CREATE TABLE IF NOT EXISTS gateway_drafts (
+			name TEXT PRIMARY KEY,
+			spec TEXT NOT NULL,
+			revision TEXT NOT NULL,
+			created_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL
+		)`,
 		// ── 节点 ────────────────────────────────────────────────────────────
 		`CREATE TABLE IF NOT EXISTS servers (
 			name            TEXT PRIMARY KEY,

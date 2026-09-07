@@ -1,0 +1,27 @@
+[Unit]
+Description=Redis Pilot development gateway
+After=network.target
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=redis-gateway
+Group=redis-gateway
+WorkingDirectory=/opt/redis-gateway
+ExecStartPre=/opt/redis-gateway/redis-gateway -config /etc/redis-gateway/gateway.yaml -check-config
+ExecStart=/opt/redis-gateway/redis-gateway -config /etc/redis-gateway/gateway.yaml
+Restart=on-failure
+RestartSec=3s
+KillSignal=SIGTERM
+# Keep longer than gateway.yaml shutdown_timeout (10s in the example).
+TimeoutStopSec=20s
+UMask=0077
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

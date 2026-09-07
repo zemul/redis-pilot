@@ -1,0 +1,22 @@
+# Isolated development deployment; not a partial hot database.
+gateway_id: gateway-redis01-dev
+service_id: gateway-dev
+shard_id: gateway-dev-0
+mode: passthrough
+listen: 127.0.0.1:17379
+admin_listen: 127.0.0.1:19200
+redis_address: 127.0.0.1:16389
+allow_unauthenticated: false
+frontend_password_file: /etc/redis-gateway/frontend.secret
+connect_timeout: 3s
+request_timeout: 5s
+client_idle_timeout: 1m
+shutdown_timeout: 10s
+max_connections: 8
+max_pipeline: 8
+max_batch_bytes: 262144
+buffer_budget_bytes: 67108864
+limits:
+  max_bytes: 65536
+  max_elements: 4096
+  max_depth: 32

@@ -32,6 +32,9 @@ type Config struct {
 	RequestTimeout       time.Duration `yaml:"request_timeout"`
 	ClientIdleTimeout    time.Duration `yaml:"client_idle_timeout"`
 	MaxConnections       int           `yaml:"max_connections"`
+	MaxPipeline          int           `yaml:"max_pipeline"`
+	MaxBatchBytes        int           `yaml:"max_batch_bytes"`
+	BufferBudgetBytes    int64         `yaml:"buffer_budget_bytes"`
 }
 
 func DefaultConfig() Config {
@@ -42,6 +45,7 @@ func DefaultConfig() Config {
 		Limits:          Limits{MaxBytes: 16 << 20, MaxElements: 4096, MaxDepth: 32},
 		ConnectTimeout:  3 * time.Second, RequestTimeout: 5 * time.Second,
 		ClientIdleTimeout: time.Minute, MaxConnections: 16,
+		MaxPipeline: 8, MaxBatchBytes: 16 << 20, BufferBudgetBytes: 1 << 30,
 	}
 }
 
@@ -83,6 +87,9 @@ func (c Config) Validate() error {
 		return errors.New("mode must be skeleton or passthrough; hybrid is unavailable")
 	}
 	if c.Mode == "passthrough" {
+		if c.MaxPipeline < 1 || c.MaxPipeline > 64 || c.MaxBatchBytes < c.Limits.MaxBytes || c.MaxBatchBytes > 64<<20 || c.BufferBudgetBytes < c.workspaceBytes()+c.probeWorkspaceBytes() || c.BufferBudgetBytes > 8<<30 {
+			return errors.New("invalid pipeline/batch/buffer limits; budget must fit one session workspace")
+		}
 		host, port, err := net.SplitHostPort(c.RedisAddress)
 		n, pe := strconv.Atoi(port)
 		if err != nil || strings.TrimSpace(host) == "" || pe != nil || n < 1 || n > 65535 {
@@ -116,4 +123,15 @@ func (c Config) Validate() error {
 		return errors.New("shutdown_timeout must be positive and at most 1m")
 	}
 	return c.Limits.Validate()
+}
+
+func (c Config) probeWorkspaceBytes() int64 {
+	return 8*int64(c.Limits.MaxBytes) + 64*int64(c.Limits.MaxElements) + 16384
+}
+
+// Conservatively reserve a whole workspace before parsing any client input.
+// Includes a batch, read-ahead/pending frames, response, argv and I/O buffers.
+// This is an admission budget, not an RSS measurement or a heap hard limit.
+func (c Config) workspaceBytes() int64 {
+	return 8*(int64(c.MaxBatchBytes)+4*int64(c.Limits.MaxBytes)) + 64*int64(c.Limits.MaxElements)*int64(c.MaxPipeline+3) + 65536
 }

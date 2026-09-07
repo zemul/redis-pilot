@@ -53,6 +53,8 @@ func infoReply(c net.Conn, role string) {
 }
 func passConfig(addr string) Config {
 	c := DefaultConfig()
+	c.Limits.MaxBytes = 64 << 10
+	c.MaxBatchBytes = 256 << 10
 	c.Mode = "passthrough"
 	c.RedisAddress = addr
 	c.AllowUnauthenticated = true

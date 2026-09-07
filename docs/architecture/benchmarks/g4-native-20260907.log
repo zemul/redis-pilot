@@ -1,0 +1,19 @@
+=== RUN   TestG4NativeBenchmark
+    g4_sustained_test.go:41: G4_NATIVE route=direct requests=20000
+        "test","rps","avg_latency_ms","min_latency_ms","p50_latency_ms","p95_latency_ms","p99_latency_ms","max_latency_ms"
+        "SET","160000.00","1.112","0.264","0.559","1.431","33.951","35.007"
+        "GET","150375.94","1.004","0.184","0.567","1.935","6.327","32.351"
+    g4_sustained_test.go:41: G4_NATIVE route=direct requests=500000
+        "test","rps","avg_latency_ms","min_latency_ms","p50_latency_ms","p95_latency_ms","p99_latency_ms","max_latency_ms"
+        "SET","134952.77","1.314","0.216","0.559","1.359","29.439","35.551"
+        "GET","140607.42","1.254","0.224","0.551","1.495","25.519","32.927"
+    g4_sustained_test.go:41: G4_NATIVE route=proxy requests=20000
+        "test","rps","avg_latency_ms","min_latency_ms","p50_latency_ms","p95_latency_ms","p99_latency_ms","max_latency_ms"
+        "SET","62111.80","3.586","0.160","1.863","23.279","25.711","26.591"
+        "GET","76335.88","3.040","0.072","1.639","19.903","26.191","26.991"
+    g4_sustained_test.go:41: G4_NATIVE route=proxy requests=500000
+        "test","rps","avg_latency_ms","min_latency_ms","p50_latency_ms","p95_latency_ms","p99_latency_ms","max_latency_ms"
+        "SET","66979.23","3.355","0.128","1.751","22.367","27.839","42.463"
+        "GET","69920.29","3.177","0.168","1.655","19.519","30.815","37.759"
+--- PASS: TestG4NativeBenchmark (22.88s)
+PASS

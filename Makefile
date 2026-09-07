@@ -1,4 +1,5 @@
 MODULE  := gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot
+.DEFAULT_GOAL := all
 VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -s -w -X main.version=$(VERSION)
 GOFLAGS := -trimpath
@@ -12,6 +13,14 @@ DEPLOY_SERVER := redis01
 DEPLOY_AGENTS := redis01 redis02 redis03
 
 .PHONY: all clean dashboard skills-embed $(BINS) build-linux deploy deploy-server deploy-agent deploy-cli deploy-proxy setup
+
+# Opt-in development artifact; not part of deploy and never restarts services.
+.PHONY: gateway gateway-linux
+gateway:
+	CGO_ENABLED=0 go build $(GOFLAGS) -ldflags '$(LDFLAGS)' -o $(OUT)/redis-gateway ./cmd/gateway
+
+gateway-linux:
+	GOOS=linux GOARCH=amd64 $(MAKE) gateway
 
 all: $(BINS)
 

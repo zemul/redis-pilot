@@ -1,4 +1,4 @@
-# G2 development only. Use a disposable Redis, never a partial hot database.
+# G3 development only. Use a disposable Redis, never a partial hot database.
 gateway_id: gateway-local
 service_id: test
 shard_id: test-0
@@ -15,6 +15,11 @@ request_timeout: 5s
 client_idle_timeout: 1m
 shutdown_timeout: 10s
 max_connections: 16
+max_pipeline: 8
+max_batch_bytes: 1048576
+# Conservative workspace reservations, not measured RSS; limits below determine
+# how many sessions fit. Memory remaining after admission is not lent elsewhere.
+buffer_budget_bytes: 1073741824
 limits:
   max_bytes: 1048576
   max_elements: 4096

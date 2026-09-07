@@ -218,6 +218,15 @@ func (s *Server) Router() *gin.Engine {
 	authed := r.Group("")
 	authed.Use(s.unifiedAuthMiddleware())
 
+	// Draft metadata only: no deployment, heartbeat, or Proxy routing changes.
+	gateways := authed.Group("/api/v1/gateway/drafts")
+	gateways.Use(s.adminOnly())
+	gateways.GET("", s.gatewayDraftList)
+	gateways.GET("/:name", s.gatewayDraftGet)
+	gateways.POST("", s.gatewayDraftCreate)
+	gateways.PUT("/:name", s.gatewayDraftUpdate)
+	gateways.DELETE("/:name", s.gatewayDraftDelete)
+
 	// 用户与 Token 管理（自己的密码/token 任何角色都能操作，用户增删仅 admin）
 	authed.GET("/auth/me", s.authMe)
 	authed.POST("/auth/change-password", s.authChangePassword)

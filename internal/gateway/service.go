@@ -25,13 +25,26 @@ type Service struct {
 	frontendPassword string
 	backendPassword  string
 	uncertain        prometheus.Counter
+	sessionsMu       sync.Mutex
+	sessions         map[*sessionControl]struct{}
+	budgetMu         sync.Mutex
+	reserved         int64
+	active           prometheus.Gauge
+	bufferReserved   prometheus.Gauge
+	inflight         prometheus.Gauge
+	rejects          *prometheus.CounterVec
+	errors           *prometheus.CounterVec
+	completed        *prometheus.CounterVec
+	duration         prometheus.Histogram
+	batchSize        prometheus.Histogram
+	drainDuration    prometheus.Histogram
 }
 
 func NewService(c Config) (*Service, error) {
 	if err := c.Validate(); err != nil {
 		return nil, err
 	}
-	s := &Service{cfg: c, registry: prometheus.NewRegistry()}
+	s := &Service{cfg: c, registry: prometheus.NewRegistry(), sessions: make(map[*sessionControl]struct{})}
 	var err error
 	if c.Mode == "passthrough" {
 		s.frontendPassword, err = readPassword(c.FrontendPasswordFile)
@@ -47,6 +60,7 @@ func NewService(c Config) (*Service, error) {
 	s.registry.MustRegister(s.rejected)
 	s.uncertain = prometheus.NewCounter(prometheus.CounterOpts{Name: "redis_pilot_gateway_upstream_result_unknown_total", Help: "Requests whose backend result is unknown after dispatch; includes reads."})
 	s.registry.MustRegister(s.uncertain)
+	s.initMetrics()
 	return s, nil
 }
 func (s *Service) Handler() http.Handler {
@@ -85,12 +99,18 @@ func (s *Service) serve(ctx context.Context, data, admin net.Listener) error {
 	work, cancelWork := context.WithCancel(context.Background())
 	defer cancelWork()
 	var workers sync.WaitGroup
+	probeCtx, cancelProbe := context.WithCancel(work)
+	defer cancelProbe()
 	slots := make(chan struct{}, s.cfg.MaxConnections)
 	s.serving.Store(true)
 	defer s.serving.Store(false)
 	if s.cfg.Mode == "passthrough" {
+		probeBytes := s.cfg.probeWorkspaceBytes()
+		if !s.acquireWorkspace(probeBytes) {
+			return errors.New("insufficient probe buffer budget")
+		}
 		workers.Add(1)
-		go func() { defer workers.Done(); s.probe(work) }()
+		go func() { defer workers.Done(); defer s.releaseWorkspace(probeBytes); s.probe(probeCtx) }()
 	}
 	server := &http.Server{Handler: s.Handler(), ReadHeaderTimeout: 3 * time.Second, ReadTimeout: 5 * time.Second, WriteTimeout: 5 * time.Second, IdleTimeout: 30 * time.Second, MaxHeaderBytes: 8192}
 	done := make(chan error, 2)
@@ -108,6 +128,7 @@ func (s *Service) serve(ctx context.Context, data, admin net.Listener) error {
 					workers.Add(1)
 					go func() { defer workers.Done(); defer func() { <-slots }(); s.session(work, c) }()
 				default:
+					s.rejects.WithLabelValues("connections").Inc()
 					c.Close()
 				}
 				continue
@@ -126,10 +147,15 @@ func (s *Service) serve(ctx context.Context, data, admin net.Listener) error {
 	case cause = <-done:
 		consumed = 1
 	}
+	drainStart := time.Now()
+	s.sessionsMu.Lock()
 	s.draining.Store(true)
+	for session := range s.sessions {
+		session.stopReading()
+	}
+	s.sessionsMu.Unlock()
 	data.Close()
-	// G2 closes active sessions on stop; in-flight graceful draining is G3.
-	cancelWork()
+	cancelProbe()
 	shutdown, cancel := context.WithTimeout(context.Background(), s.cfg.ShutdownTimeout)
 	defer cancel()
 	if err := server.Shutdown(shutdown); err != nil {
@@ -142,7 +168,17 @@ func (s *Service) serve(ctx context.Context, data, admin net.Listener) error {
 		<-done
 		consumed++
 	}
-	workers.Wait()
+	finished := make(chan struct{})
+	go func() { workers.Wait(); close(finished) }()
+	select {
+	case <-finished:
+	case <-shutdown.Done():
+		s.errors.WithLabelValues("drain_timeout").Inc()
+		cancelWork()
+		<-finished
+	}
+	cancelWork()
+	s.drainDuration.Observe(time.Since(drainStart).Seconds())
 	if errors.Is(cause, http.ErrServerClosed) || errors.Is(cause, net.ErrClosed) {
 		return nil
 	}

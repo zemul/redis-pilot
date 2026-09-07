@@ -3,8 +3,6 @@ package gateway
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
-	"crypto/subtle"
 	"errors"
 	"fmt"
 	"io"
@@ -119,101 +117,6 @@ func standaloneMaster(raw []byte) bool {
 		}
 	}
 	return fields["role"] == "master" && fields["cluster_enabled"] == "0" && fields["redis_version"] != ""
-}
-
-func (s *Service) session(ctx context.Context, client net.Conn) {
-	defer client.Close()
-	r, _ := NewReader(client, s.cfg.Limits)
-	var upstream net.Conn
-	var replies *Reader
-	defer func() {
-		if upstream != nil {
-			upstream.Close()
-		}
-	}()
-	stop := context.AfterFunc(ctx, func() { client.Close() })
-	defer stop()
-	authed := s.frontendPassword == ""
-	send := func(b []byte) bool {
-		client.SetWriteDeadline(time.Now().Add(s.cfg.RequestTimeout))
-		return writeAll(client, b) == nil
-	}
-	for !s.draining.Load() {
-		client.SetReadDeadline(time.Now().Add(s.cfg.ClientIdleTimeout))
-		raw, args, err := r.ReadCommand()
-		if err != nil {
-			return
-		}
-		if s.draining.Load() {
-			return
-		}
-		cmd := strings.ToUpper(string(args[0]))
-		var local string
-		switch {
-		case cmd == "AUTH":
-			authed = false
-			if len(args) != 2 {
-				local = "-ERR wrong number of arguments for AUTH\r\n"
-			} else if s.frontendPassword == "" {
-				local = "-ERR no frontend password configured\r\n"
-				authed = true
-			} else {
-				x := sha256.Sum256(args[1])
-				y := sha256.Sum256([]byte(s.frontendPassword))
-				authed = subtle.ConstantTimeCompare(x[:], y[:]) == 1
-				if authed {
-					local = "+OK\r\n"
-				} else {
-					local = "-WRONGPASS invalid credentials\r\n"
-				}
-			}
-		case cmd == "QUIT" && len(args) == 1:
-			send([]byte("+OK\r\n"))
-			return
-		case !authed:
-			local = "-NOAUTH Authentication required.\r\n"
-		case !forwardCommands[cmd]:
-			local = "-ERR command not supported by gateway passthrough\r\n"
-		}
-		if local != "" {
-			if !send([]byte(local)) {
-				return
-			}
-			continue
-		}
-		if upstream == nil {
-			upstream, replies, err = s.openBackend(ctx)
-			if err != nil {
-				s.backendReady.Store(false)
-				send([]byte("-ERR backend unavailable; command not sent\r\n"))
-				return
-			}
-			stopBackend := context.AfterFunc(ctx, func() { upstream.Close() })
-			defer stopBackend()
-		}
-		// One in-flight request per session: pipelines remain ordered, but are
-		// deliberately not batched until G3. Never reconnect/replay this request.
-		upstream.SetDeadline(time.Now().Add(s.cfg.RequestTimeout))
-		if err = writeAll(upstream, raw); err != nil {
-			s.backendReady.Store(false)
-			s.uncertain.Inc()
-			return
-		}
-		b, err := replies.ReadFrame()
-		if err != nil {
-			s.backendReady.Store(false)
-			s.uncertain.Inc()
-			return
-		}
-		if bytes.HasPrefix(b, []byte("-MOVED ")) || bytes.HasPrefix(b, []byte("-ASK ")) {
-			s.backendReady.Store(false)
-			send(b)
-			return
-		}
-		if !send(b) {
-			return
-		}
-	}
 }
 
 func (s *Service) probe(ctx context.Context) {
