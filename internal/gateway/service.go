@@ -16,6 +16,9 @@ import (
 
 // Service supports the isolated skeleton and single-backend G2 passthrough.
 type Service struct {
+	reporter         *heartbeatReporter
+	heartbeats       *prometheus.CounterVec
+	lastHeartbeatAck prometheus.Gauge
 	cfg              Config
 	rejected         prometheus.Counter
 	registry         *prometheus.Registry
@@ -61,6 +64,10 @@ func NewService(c Config) (*Service, error) {
 	s.uncertain = prometheus.NewCounter(prometheus.CounterOpts{Name: "redis_pilot_gateway_upstream_result_unknown_total", Help: "Requests whose backend result is unknown after dispatch; includes reads."})
 	s.registry.MustRegister(s.uncertain)
 	s.initMetrics()
+	s.reporter, err = newHeartbeatReporter(c)
+	if err != nil {
+		return nil, err
+	}
 	return s, nil
 }
 func (s *Service) Handler() http.Handler {
@@ -111,6 +118,10 @@ func (s *Service) serve(ctx context.Context, data, admin net.Listener) error {
 		}
 		workers.Add(1)
 		go func() { defer workers.Done(); defer s.releaseWorkspace(probeBytes); s.probe(probeCtx) }()
+	}
+	if s.reporter != nil {
+		workers.Add(1)
+		go func() { defer workers.Done(); s.reporter.run(probeCtx, s) }()
 	}
 	server := &http.Server{Handler: s.Handler(), ReadHeaderTimeout: 3 * time.Second, ReadTimeout: 5 * time.Second, WriteTimeout: 5 * time.Second, IdleTimeout: 30 * time.Second, MaxHeaderBytes: 8192}
 	done := make(chan error, 2)

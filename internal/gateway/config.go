@@ -16,30 +16,34 @@ import (
 
 // Config describes the isolated single-backend development gateway.
 type Config struct {
-	GatewayID            string        `yaml:"gateway_id"`
-	ServiceID            string        `yaml:"service_id"`
-	ShardID              string        `yaml:"shard_id"`
-	Mode                 string        `yaml:"mode"`
-	Listen               string        `yaml:"listen"`
-	AdminListen          string        `yaml:"admin_listen"`
-	ShutdownTimeout      time.Duration `yaml:"shutdown_timeout"`
-	Limits               Limits        `yaml:"limits"`
-	RedisAddress         string        `yaml:"redis_address"`
-	FrontendPasswordFile string        `yaml:"frontend_password_file"`
-	BackendPasswordFile  string        `yaml:"backend_password_file"`
-	AllowUnauthenticated bool          `yaml:"allow_unauthenticated"`
-	ConnectTimeout       time.Duration `yaml:"connect_timeout"`
-	RequestTimeout       time.Duration `yaml:"request_timeout"`
-	ClientIdleTimeout    time.Duration `yaml:"client_idle_timeout"`
-	MaxConnections       int           `yaml:"max_connections"`
-	MaxPipeline          int           `yaml:"max_pipeline"`
-	MaxBatchBytes        int           `yaml:"max_batch_bytes"`
-	BufferBudgetBytes    int64         `yaml:"buffer_budget_bytes"`
+	ControlPlane         ControlPlaneConfig `yaml:"control_plane"`
+	BuildVersion         string             `yaml:"-"` // supplied by the executable, not YAML
+	GatewayID            string             `yaml:"gateway_id"`
+	ServiceID            string             `yaml:"service_id"`
+	ShardID              string             `yaml:"shard_id"`
+	Mode                 string             `yaml:"mode"`
+	Listen               string             `yaml:"listen"`
+	AdminListen          string             `yaml:"admin_listen"`
+	ShutdownTimeout      time.Duration      `yaml:"shutdown_timeout"`
+	Limits               Limits             `yaml:"limits"`
+	RedisAddress         string             `yaml:"redis_address"`
+	FrontendPasswordFile string             `yaml:"frontend_password_file"`
+	BackendPasswordFile  string             `yaml:"backend_password_file"`
+	AllowUnauthenticated bool               `yaml:"allow_unauthenticated"`
+	ConnectTimeout       time.Duration      `yaml:"connect_timeout"`
+	RequestTimeout       time.Duration      `yaml:"request_timeout"`
+	ClientIdleTimeout    time.Duration      `yaml:"client_idle_timeout"`
+	MaxConnections       int                `yaml:"max_connections"`
+	MaxPipeline          int                `yaml:"max_pipeline"`
+	MaxBatchBytes        int                `yaml:"max_batch_bytes"`
+	BufferBudgetBytes    int64              `yaml:"buffer_budget_bytes"`
 }
 
 func DefaultConfig() Config {
 	return Config{
-		GatewayID: "gateway-local", ServiceID: "test", ShardID: "test-0",
+		BuildVersion: "dev",
+		ControlPlane: ControlPlaneConfig{HeartbeatInterval: 10 * time.Second, RequestTimeout: 3 * time.Second},
+		GatewayID:    "gateway-local", ServiceID: "test", ShardID: "test-0",
 		Mode: "skeleton", Listen: "127.0.0.1:17379", AdminListen: "127.0.0.1:19200",
 		ShutdownTimeout: 10 * time.Second,
 		Limits:          Limits{MaxBytes: 16 << 20, MaxElements: 4096, MaxDepth: 32},
@@ -80,6 +84,9 @@ func DecodeConfig(r io.Reader) (Config, error) {
 }
 
 func (c Config) Validate() error {
+	if err := c.validateControlPlane(); err != nil {
+		return err
+	}
 	if c.GatewayID == "" || c.ServiceID == "" || c.ShardID == "" {
 		return errors.New("gateway/service/shard IDs must not be empty")
 	}

@@ -12,6 +12,8 @@ import (
 	"gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/internal/gateway"
 )
 
+var version = "dev"
+
 func main() {
 	file := flag.String("config", "", "gateway skeleton YAML configuration")
 	check := flag.Bool("check-config", false, "validate configuration and exit")
@@ -25,6 +27,7 @@ func main() {
 			os.Exit(1)
 		}
 	}
+	c.BuildVersion = version
 	s, err := gateway.NewService(c)
 	if err != nil {
 		slog.Error("invalid gateway configuration", "error", err)

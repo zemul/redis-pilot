@@ -14,7 +14,7 @@
 - [实例管理页操作设计](instance-management-ui.md) — standalone、主从实例组与节点的展示层级、操作归属和验收标准
 - [Redis / Kvrocks 冷热混合存储预研](hot-cold-storage-research.md) — 未实现的探索方向、冷热网关与同步思路、风险、待定项和原型验收阶段；不改变当前范围
 - [冷热网关设计与实现计划](hot-cold-gateway-design.md) — G1～G3 基础已实现；G4 已做受限环境复测，正式性能验收和冷热协调待做
-- [网关控制面接入](gateway-control-plane.md) — G5a 配置草稿已实现；Gateway 状态上报和 Proxy 切流待做
+- [网关控制面接入](gateway-control-plane.md) — G5a 草稿和 G5c 最小状态上报闭环已实现；配置应用确认、Proxy 切流待做
 - [网关独立部署](gateway-deployment.md) — 二进制 + systemd，与 Agent 解耦；构建入口及模板已提供
 - [产品优化路线图](../ROADMAP.md) — Web/H5 信息架构与 P1～P5 优先级
 

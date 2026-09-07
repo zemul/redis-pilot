@@ -5,7 +5,7 @@
 > 前置文档：[冷热混合存储预研](hot-cold-storage-research.md)。
 > 仅供隔离开发测试；已在 redis01 部署独立 Gateway 和专用测试 Redis，不改变现有 Proxy 路由。
 
-控制面接入进展：[G5 接入设计](gateway-control-plane.md)。G5a 已实现 Server 配置草稿及管理 API；G5b 独立二进制 + systemd 已完成开发机部署及基础验证；运行状态上报和 Proxy 切流未实现，草稿不代表已生效。
+控制面接入进展：[G5 接入设计](gateway-control-plane.md)。G5a 已实现 Server 配置草稿及管理 API；G5b 已完成开发机独立部署；G5c 最小登记/心跳观测闭环已实现但未部署，配置应用确认和 Proxy 切流未实现。正式冷热产品目标为 Cluster，单后端模式仅用于开发验证。
 
 当前实现与运行方式见 §14～§16（分阶段记录）。下文配置草案与完整阶段目标不等于全部已经实现，以最新交付记录为准。
 

@@ -66,6 +66,8 @@ type AIConfig struct {
 }
 
 type Config struct {
+	// Per-gateway observation credentials; empty/missing entries always deny.
+	GatewayTokens map[string]string            `yaml:"gateway_tokens"`
 	Port          int                          `yaml:"port"`
 	DataDir       string                       `yaml:"data_dir"`
 	JWTSecret     string                       `yaml:"jwt_secret"`

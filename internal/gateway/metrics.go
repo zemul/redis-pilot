@@ -20,6 +20,8 @@ func (s *Service) initMetrics() {
 		return h
 	}
 	s.active = gauge("active_sessions", "Sessions holding a reserved workspace.")
+	s.heartbeats = counter("control_heartbeats_total", "Control-plane reports by fixed result; no effect on data admission.", "result")
+	s.lastHeartbeatAck = gauge("control_last_ack_timestamp_seconds", "Last validated Server heartbeat acknowledgement, zero until first success.")
 	s.bufferReserved = gauge("reserved_buffer_bytes", "Conservative admitted workspace bytes, not actual heap or RSS.")
 	s.inflight = gauge("inflight_requests", "Requests in batches currently being processed, including local replies.")
 	s.rejects = counter("admission_rejected_total", "Rejected connections by fixed reason.", "reason")

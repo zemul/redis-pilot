@@ -213,10 +213,12 @@ func (s *Server) Router() *gin.Engine {
 	internal.GET("/api/v1/proxy/snapshot", s.proxySnapshot)
 	internal.POST("/proxy/heartbeat", s.proxyHeartbeat)
 	internal.POST("/api/v1/proxy/heartbeat", s.proxyHeartbeat)
+	r.POST("/api/v1/gateway/heartbeat/:name", s.gatewayHeartbeatAuth(), s.gatewayHeartbeat)
 
 	// ── 需要认证的路由（JWT 或 API Token）────────────────────────────────
 	authed := r.Group("")
 	authed.Use(s.unifiedAuthMiddleware())
+	authed.GET("/api/v1/gateway/runtime", s.gatewayRuntimeList)
 
 	// Draft metadata only: no deployment, heartbeat, or Proxy routing changes.
 	gateways := authed.Group("/api/v1/gateway/drafts")
