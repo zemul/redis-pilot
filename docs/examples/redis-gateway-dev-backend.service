@@ -1,0 +1,18 @@
+# Development-only: starts the existing, disposable Redis container.
+[Unit]
+Description=Redis Gateway isolated development Redis
+After=network.target
+RequiresMountsFor=/var/lib/containers/storage
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/podman start --attach redis-gateway-dev-backend
+ExecStop=/usr/bin/podman stop --time 10 redis-gateway-dev-backend
+Restart=always
+RestartSec=3s
+TimeoutStopSec=20s
+
+[Install]
+WantedBy=multi-user.target

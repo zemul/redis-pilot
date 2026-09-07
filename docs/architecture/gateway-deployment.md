@@ -47,7 +47,7 @@ Server 保留配置草稿；Gateway 注册、配置拉取、已应用版本和�
 | 凭据 | 随机生成，保存在 `/etc/redis-gateway/frontend.secret`，0600；不入库、不入仓库 |
 | 隔离后端 | `redis-gateway-dev-backend`，Redis 7.4.9，仅映射 `127.0.0.1:16389` |
 | 后端资源 | 容器内存 128MiB，Redis maxmemory 64MiB，noeviction；禁用 AOF/RDB，不存业务数据 |
-| 自启动 | Gateway 未 enable；测试后端无自动重启策略，主机重启后需人工启动后端再启动 Gateway |
+| 自启动 | Gateway 和 `redis-gateway-dev-backend.service` 均已 enable、active；通过开发专用 drop-in 声明后端启动顺序 |
 
 二进制 SHA256：`3ca12802520cfb49f5c3ef9ee67d10d5e8ec3fe4b1534e736e6f8feb311ae8f8`，本地与远端一致。
 已验证 `/readyz`、前端认证、SET/INCR/GET/DEL（41→42），未认证 GET 返回 NOAUTH；测试 key 已删除。
@@ -56,3 +56,11 @@ systemd 单元校验通过；系统同时提示既有 cloudmonitor 单元的告�
 首次 start 返回后立即请求健康端口曾遇到连接拒绝，随后服务完成启动并返回 ok；不能把 systemctl start 成功等同于就绪。
 
 该部署只用于功能验证，不是生产发布，也没有开启冷热同步、回温、淘汰或 Server 状态上报。
+
+### 开机自启动补充
+
+开发后端使用 [独立 systemd 单元](../examples/redis-gateway-dev-backend.service) 管理已有容器，不重建、不删除容器。
+[开发依赖 drop-in](../examples/redis-gateway-dev-backend.conf) 安装至 `/etc/systemd/system/redis-gateway.service.d/dev-backend.conf`，仅适用于此隔离部署，不属于通用 Gateway 后端绑定。
+两服务已执行 `systemctl enable --now`；停止后端/网关后重新启动验证通过，健康检查在后端就绪前短暂返回 503，随后返回 ok。
+启动顺序不等于 Redis 就绪承诺，调用方仍需检查 `/readyz`。未实际重启开发机验证，未影响现有 Server/Agent/Proxy。
+测试 Redis 仍禁用持久化：开机自动启动不代表重启保留测试数据。
