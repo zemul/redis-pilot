@@ -1,4 +1,4 @@
-// redis-gateway currently starts only the isolated G1 skeleton, not forwarding.
+// redis-gateway starts an isolated skeleton or G2 single-backend passthrough.
 package main
 
 import (
@@ -36,7 +36,7 @@ func main() {
 	}
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
-	slog.Warn("starting G1 gateway skeleton; business forwarding unavailable", "listen", c.Listen, "admin_listen", c.AdminListen)
+	slog.Info("starting development gateway", "mode", c.Mode, "listen", c.Listen, "admin_listen", c.AdminListen)
 	if err = s.Run(ctx); err != nil {
 		slog.Error("gateway stopped", "error", err)
 		os.Exit(1)

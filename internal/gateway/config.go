@@ -8,22 +8,30 @@ import (
 	"net"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
 )
 
-// Config is deliberately limited to the G1 loopback-only skeleton.
-// Forwarding, credentials and dynamic topology are not supported yet.
+// Config describes the isolated single-backend development gateway.
 type Config struct {
-	GatewayID       string        `yaml:"gateway_id"`
-	ServiceID       string        `yaml:"service_id"`
-	ShardID         string        `yaml:"shard_id"`
-	Mode            string        `yaml:"mode"`
-	Listen          string        `yaml:"listen"`
-	AdminListen     string        `yaml:"admin_listen"`
-	ShutdownTimeout time.Duration `yaml:"shutdown_timeout"`
-	Limits          Limits        `yaml:"limits"`
+	GatewayID            string        `yaml:"gateway_id"`
+	ServiceID            string        `yaml:"service_id"`
+	ShardID              string        `yaml:"shard_id"`
+	Mode                 string        `yaml:"mode"`
+	Listen               string        `yaml:"listen"`
+	AdminListen          string        `yaml:"admin_listen"`
+	ShutdownTimeout      time.Duration `yaml:"shutdown_timeout"`
+	Limits               Limits        `yaml:"limits"`
+	RedisAddress         string        `yaml:"redis_address"`
+	FrontendPasswordFile string        `yaml:"frontend_password_file"`
+	BackendPasswordFile  string        `yaml:"backend_password_file"`
+	AllowUnauthenticated bool          `yaml:"allow_unauthenticated"`
+	ConnectTimeout       time.Duration `yaml:"connect_timeout"`
+	RequestTimeout       time.Duration `yaml:"request_timeout"`
+	ClientIdleTimeout    time.Duration `yaml:"client_idle_timeout"`
+	MaxConnections       int           `yaml:"max_connections"`
 }
 
 func DefaultConfig() Config {
@@ -32,6 +40,8 @@ func DefaultConfig() Config {
 		Mode: "skeleton", Listen: "127.0.0.1:17379", AdminListen: "127.0.0.1:19200",
 		ShutdownTimeout: 10 * time.Second,
 		Limits:          Limits{MaxBytes: 16 << 20, MaxElements: 4096, MaxDepth: 32},
+		ConnectTimeout:  3 * time.Second, RequestTimeout: 5 * time.Second,
+		ClientIdleTimeout: time.Minute, MaxConnections: 16,
 	}
 }
 
@@ -69,8 +79,21 @@ func (c Config) Validate() error {
 	if c.GatewayID == "" || c.ServiceID == "" || c.ShardID == "" {
 		return errors.New("gateway/service/shard IDs must not be empty")
 	}
-	if c.Mode != "skeleton" {
-		return errors.New("only skeleton mode is implemented; forwarding is unavailable")
+	if c.Mode != "skeleton" && c.Mode != "passthrough" {
+		return errors.New("mode must be skeleton or passthrough; hybrid is unavailable")
+	}
+	if c.Mode == "passthrough" {
+		host, port, err := net.SplitHostPort(c.RedisAddress)
+		n, pe := strconv.Atoi(port)
+		if err != nil || strings.TrimSpace(host) == "" || pe != nil || n < 1 || n > 65535 {
+			return errors.New("passthrough requires a valid redis_address")
+		}
+		if c.FrontendPasswordFile == "" && !c.AllowUnauthenticated {
+			return errors.New("frontend_password_file or explicit allow_unauthenticated is required")
+		}
+		if c.ConnectTimeout <= 0 || c.ConnectTimeout > time.Minute || c.RequestTimeout <= 0 || c.RequestTimeout > time.Minute || c.ClientIdleTimeout <= 0 || c.ClientIdleTimeout > time.Hour || c.MaxConnections < 1 || c.MaxConnections > 256 {
+			return errors.New("invalid gateway timeouts or max_connections")
+		}
 	}
 	for _, addr := range []string{c.Listen, c.AdminListen} {
 		host, port, err := net.SplitHostPort(addr)
@@ -80,7 +103,7 @@ func (c Config) Validate() error {
 		ip := net.ParseIP(host)
 		n, err := strconv.Atoi(port)
 		if ip == nil || !ip.IsLoopback() || err != nil || n < 0 || n > 65535 {
-			return errors.New("G1 listeners require a literal loopback IP and valid port")
+			return errors.New("development listeners require a literal loopback IP and valid port")
 		}
 	}
 	if c.Listen == c.AdminListen {

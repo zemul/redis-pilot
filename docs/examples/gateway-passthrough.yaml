@@ -1,0 +1,21 @@
+# G2 development only. Use a disposable Redis, never a partial hot database.
+gateway_id: gateway-local
+service_id: test
+shard_id: test-0
+mode: passthrough
+listen: 127.0.0.1:17379
+admin_listen: 127.0.0.1:19200
+redis_address: 127.0.0.1:16389
+# Anonymous access requires explicit opt-in; listeners remain loopback-only.
+allow_unauthenticated: true
+# frontend_password_file: /absolute/path/to/frontend-password
+# backend_password_file: /absolute/path/to/backend-password
+connect_timeout: 3s
+request_timeout: 5s
+client_idle_timeout: 1m
+shutdown_timeout: 10s
+max_connections: 16
+limits:
+  max_bytes: 1048576
+  max_elements: 4096
+  max_depth: 32

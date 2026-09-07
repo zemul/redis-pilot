@@ -13,7 +13,7 @@
 - [异常记录功能](health-incidents.md) — 异常检测、持续/恢复状态机、关键时间线、数据模型与页面设计
 - [实例管理页操作设计](instance-management-ui.md) — standalone、主从实例组与节点的展示层级、操作归属和验收标准
 - [Redis / Kvrocks 冷热混合存储预研](hot-cold-storage-research.md) — 未实现的探索方向、冷热网关与同步思路、风险、待定项和原型验收阶段；不改变当前范围
-- [冷热网关设计与实现计划](hot-cold-gateway-design.md) — 职责边界、代码复用评估和实现计划；G1 启动/协议骨架已实现，纯转发与冷热协调尚未实现
+- [冷热网关设计与实现计划](hot-cold-gateway-design.md) — 职责边界、代码复用评估和实现计划；G1 骨架与 G2 单连接转发已实现，批量 pipeline 与冷热协调尚未实现
 - [产品优化路线图](../ROADMAP.md) — Web/H5 信息架构与 P1～P5 优先级
 
 ---

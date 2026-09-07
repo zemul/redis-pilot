@@ -1,11 +1,11 @@
 # 冷热网关设计与第一阶段实现计划
 
 > 日期：2026-09-07
-> 状态：G1 启动与协议骨架已实现；纯转发 G2/G3 及冷热能力未实现。后续选择仍为设计草案。
+> 状态：G1 骨架与 G2 单连接串行转发已实现；G3 批量 pipeline/排空及冷热能力未实现。后续选择仍为设计草案。
 > 前置文档：[冷热混合存储预研](hot-cold-storage-research.md)。
 > 仅供隔离开发测试；未部署持续运行的新服务，不改变现有 Proxy 路由。
 
-当前实现与运行方式见 §14。下文的 passthrough、认证和转发配置是后续设计，不是 G1 实际可用配置。
+当前实现与运行方式见 §14（G1 历史）和 §15（G2）。下文配置草案与完整阶段目标不等于全部已经实现，以交付记录为准。
 
 ## 1. 目标与阶段边界
 
@@ -302,6 +302,8 @@ SIGTERM：ready=false → 停止新连接和新请求准入 → 有界排空已�
 
 ## 14. G1 当前交付记录
 
+本节记录 G1 skeleton 模式，G2 新增能力见 §15；两种模式均保留。
+
 实现文件：[入口](../../cmd/gateway/main.go)、[配置](../../internal/gateway/config.go)、[受限 RESP2 解析](../../internal/gateway/resp.go)、[服务骨架](../../internal/gateway/service.go)、[测试](../../internal/gateway/gateway_test.go)。
 
 当前行为：
@@ -335,3 +337,63 @@ go vet ./internal/gateway ./cmd/gateway
 未实现的 G1/G2 衔接工作：统一日志文件配置、完整进程指标、后端检查与凭据、单会话转发、pipeline 与全局缓冲预算。
 当前限制只保障骨架/单帧解析，不应描述为完整网关的资源隔离或性能验收。
 没有启动真实 Redis/Kvrocks 做集成或压测；业务正确性与后端故障恢复需要 G2 之后验证。
+
+## 15. G2 单连接转发交付记录
+
+新增 [session.go](../../internal/gateway/session.go)、[会话测试](../../internal/gateway/session_test.go)、[独立 Redis 集成测试](../../internal/gateway/integration_test.go)。现有 Proxy 代码不变。
+
+### 15.1 当前行为
+
+- 新增 `mode: passthrough`，仅回环监听、单个固定 Redis 后端，不允许 hybrid。
+- 每个入站会话独占后端连接；完成前一响应后才处理下一请求。同连接 pipeline 能保序，但不做批量发送，性能不等同 G3。
+- 前端 AUTH 在网关终结；后端使用独立文件中的口令，可为空。两者不共享凭据，也不转发前端 AUTH。
+- 未配置前端口令时必须显式 `allow_unauthenticated: true`，仅用于隔离环境。口令文件单行，最多 4096 字节，支持尾部换行，文件相对路径以进程工作目录为准。
+- AUTH 仅支持单密码形式；ACL 用户名、HELLO、CLIENT 握手等尚不支持，正式 Proxy 内部认证仍待设计。
+- 首个准入业务请求前建立后端连接，执行可选 AUTH 和 INFO all；要求 role=master、cluster_enabled=0 且存在 redis_version。
+- 后端身份检查不等于 fencing，也不是固定版本兼容保证；后端切主或模式变化需要后续专门协议。
+- 明确准入 §7 的普通命令，未知/高级命令本地拒绝；本地响应与后端响应严格保持请求顺序。
+- 建连/初始化失败时业务未发送，返回明确错误并关闭；发送后网络、协议或超时错误直接关闭，不重连、不重放、不伪造业务失败响应。
+- 后端业务错误原样转交；意外 ASK/MOVED 原样返回后关闭，不实现跳转。
+- 最大活跃会话数 `max_connections`；超限直接关闭新连接。所有会话逐帧受 limits 约束；完整全局字节预算仍属 G3。
+
+### 15.2 健康与关闭
+
+passthrough 每 2 秒完成一轮独立后端初始化探测（实际周期另加探测耗时），不往业务连接插入探测命令。
+ready 要求服务正在运行、未退出且最近探测成功；启动探测未完成前是 503。探测可连接不表示业务时刻绝不会失败。
+
+G2 退出时停止准入并关闭活跃会话，中止的已发请求结果可能不确定；不是在途写入排空。G3 再实现完整 drain。
+客户端读帧受 client_idle_timeout 限制，后端初始化/请求及客户端响应写入受有限超时约束；尚非跨所有阶段统一的端到端 deadline。
+客户端在等待后端时断连，最晚由当前请求超时结束后端会话；G3 再细化快速取消。
+
+新增 `redis_pilot_gateway_upstream_result_unknown_total` 统计发出后未取得完整后端响应的请求（含读），不承诺可自动重试。
+G1 skeleton 专用拒绝计数仍保留；完整连接、延迟、拒绝指标待 G3 完善。
+
+### 15.3 运行
+
+示例：[gateway-passthrough.yaml](../examples/gateway-passthrough.yaml)。运行前自行准备专用、数据完整的测试 Redis，示例地址是 `127.0.0.1:16389`，不会自动创建后端。
+
+```sh
+go run ./cmd/gateway -config docs/examples/gateway-passthrough.yaml -check-config
+go run ./cmd/gateway -config docs/examples/gateway-passthrough.yaml
+```
+
+check-config 校验配置和口令文件，不检查后端连通性。passthrough 是真实转发入口，不能指向只有部分热数据的实例。
+本阶段没有修改服务部署或让实例自动接入新网关。
+
+### 15.4 验证结果与剩余范围
+
+已通过普通测试、race、vet 和现有 Proxy 回归测试。
+假后端测试覆盖：认证分离、未认证不发业务请求、pipeline 本地拒绝保序、并发会话隔离、副本/Cluster/错误后端密码拒绝、写后断连、部分响应、超时与取消不重放。
+
+真实集成在本地 Redis 7.2.5 上通过：测试自动启动临时回环实例，关闭持久化，使用独立临时目录和测试口令；结束时停止测试进程。
+覆盖 GET/SET/INCR、过期与取消过期、删除、pipeline、AUTH 和 ready 检查。不等于项目所有 Redis 版本均验证通过。
+
+```sh
+# 可选集成测试；只指定可执行文件，不传入已有 Redis 地址。
+GATEWAY_TEST_REDIS_SERVER=/absolute/path/to/redis-server go test -race ./internal/gateway ./cmd/gateway
+go test ./internal/proxy/...
+go vet ./internal/gateway ./cmd/gateway
+```
+
+尚未验证：正式 Proxy→网关双层集成、性能压测、部分 socket 写入的精确注入、所有参数组合、真实切主、Kvrocks 与冷热协议。
+下一阶段 G3 优先补有界批量 pipeline、全局字节预算、在途排空和完整指标；不能把当前串行转发的测试通过视为生产上线许可。
