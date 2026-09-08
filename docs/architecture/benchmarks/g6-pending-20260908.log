@@ -1,0 +1,223 @@
+G6a-5 2026-09-08. Isolated pending-record recovery; not a capacity/performance benchmark.
+Kvrocks 2.15.0, redis03 container redis-pilot-g6-apply-0eGQag, network none, synchronous WAL.
+Real source fixtures retained from G6a-4; fault/binary/growth suffixes are synthetic test additions.
+
+Final Kvrocks pending phase, count=3:
+=== RUN   TestKvrocksCommitExperiment
+=== RUN   TestKvrocksCommitExperiment/bootstrap_before
+    sync_pending_integration_test.go:212: recovery and duplicate replay preserved counter; stale transaction cannot overwrite new checkpoint/intent
+=== RUN   TestKvrocksCommitExperiment/bootstrap_reply
+    sync_pending_integration_test.go:212: recovery and duplicate replay preserved counter; stale transaction cannot overwrite new checkpoint/intent
+=== RUN   TestKvrocksCommitExperiment/bootstrap_late
+    sync_pending_integration_test.go:212: recovery and duplicate replay preserved counter; stale transaction cannot overwrite new checkpoint/intent
+=== RUN   TestKvrocksCommitExperiment/prepare_before
+    sync_pending_integration_test.go:212: recovery and duplicate replay preserved counter; stale transaction cannot overwrite new checkpoint/intent
+=== RUN   TestKvrocksCommitExperiment/prepare_reply
+    sync_pending_integration_test.go:212: recovery and duplicate replay preserved counter; stale transaction cannot overwrite new checkpoint/intent
+=== RUN   TestKvrocksCommitExperiment/prepare_late
+    sync_pending_integration_test.go:212: recovery and duplicate replay preserved counter; stale transaction cannot overwrite new checkpoint/intent
+=== RUN   TestKvrocksCommitExperiment/apply_before
+    sync_pending_integration_test.go:212: recovery and duplicate replay preserved counter; stale transaction cannot overwrite new checkpoint/intent
+=== RUN   TestKvrocksCommitExperiment/apply_reply
+    sync_pending_integration_test.go:212: recovery and duplicate replay preserved counter; stale transaction cannot overwrite new checkpoint/intent
+=== RUN   TestKvrocksCommitExperiment/apply_late
+    sync_pending_integration_test.go:212: recovery and duplicate replay preserved counter; stale transaction cannot overwrite new checkpoint/intent
+=== RUN   TestKvrocksCommitExperiment/control_before
+    sync_pending_integration_test.go:212: recovery and duplicate replay preserved counter; stale transaction cannot overwrite new checkpoint/intent
+=== RUN   TestKvrocksCommitExperiment/control_reply
+    sync_pending_integration_test.go:212: recovery and duplicate replay preserved counter; stale transaction cannot overwrite new checkpoint/intent
+=== RUN   TestKvrocksCommitExperiment/control_late
+    sync_pending_integration_test.go:212: recovery and duplicate replay preserved counter; stale transaction cannot overwrite new checkpoint/intent
+=== RUN   TestKvrocksCommitExperiment/delete_before
+    sync_pending_integration_test.go:212: recovery and duplicate replay preserved counter; stale transaction cannot overwrite new checkpoint/intent
+=== RUN   TestKvrocksCommitExperiment/delete_reply
+    sync_pending_integration_test.go:212: recovery and duplicate replay preserved counter; stale transaction cannot overwrite new checkpoint/intent
+=== RUN   TestKvrocksCommitExperiment/delete_late
+    sync_pending_integration_test.go:212: recovery and duplicate replay preserved counter; stale transaction cannot overwrite new checkpoint/intent
+=== RUN   TestKvrocksCommitExperiment/applier_sigkill_with_pending
+    sync_pending_integration_test.go:259: applier process SIGKILL after intent persistence; reopened journal and recovered one INCR; no Kvrocks kill
+=== RUN   TestKvrocksCommitExperiment/data_ahead
+=== RUN   TestKvrocksCommitExperiment/checkpoint_ahead
+=== RUN   TestKvrocksCommitExperiment/metadata_missing
+=== RUN   TestKvrocksCommitExperiment/metadata_wrongtype
+=== RUN   TestKvrocksCommitExperiment/metadata_ttl
+=== RUN   TestKvrocksCommitExperiment/metadata_after_tamper
+=== RUN   TestKvrocksCommitExperiment/binary_empty_control_and_delete
+=== RUN   TestKvrocksCommitExperiment/resume_without_global_scan_or_model
+    sync_pending_integration_test.go:348: resumed with >256 keys; checked only last intent, not unrelated cold data
+--- PASS: TestKvrocksCommitExperiment (4.45s)
+    --- PASS: TestKvrocksCommitExperiment/bootstrap_before (0.05s)
+    --- PASS: TestKvrocksCommitExperiment/bootstrap_reply (0.05s)
+    --- PASS: TestKvrocksCommitExperiment/bootstrap_late (0.30s)
+    --- PASS: TestKvrocksCommitExperiment/prepare_before (0.05s)
+    --- PASS: TestKvrocksCommitExperiment/prepare_reply (0.05s)
+    --- PASS: TestKvrocksCommitExperiment/prepare_late (0.30s)
+    --- PASS: TestKvrocksCommitExperiment/apply_before (0.05s)
+    --- PASS: TestKvrocksCommitExperiment/apply_reply (0.05s)
+    --- PASS: TestKvrocksCommitExperiment/apply_late (0.30s)
+    --- PASS: TestKvrocksCommitExperiment/control_before (0.05s)
+    --- PASS: TestKvrocksCommitExperiment/control_reply (0.05s)
+    --- PASS: TestKvrocksCommitExperiment/control_late (0.30s)
+    --- PASS: TestKvrocksCommitExperiment/delete_before (0.05s)
+    --- PASS: TestKvrocksCommitExperiment/delete_reply (0.05s)
+    --- PASS: TestKvrocksCommitExperiment/delete_late (0.30s)
+    --- PASS: TestKvrocksCommitExperiment/applier_sigkill_with_pending (0.05s)
+    --- PASS: TestKvrocksCommitExperiment/data_ahead (0.03s)
+    --- PASS: TestKvrocksCommitExperiment/checkpoint_ahead (0.03s)
+    --- PASS: TestKvrocksCommitExperiment/metadata_missing (0.03s)
+    --- PASS: TestKvrocksCommitExperiment/metadata_wrongtype (0.03s)
+    --- PASS: TestKvrocksCommitExperiment/metadata_ttl (0.03s)
+    --- PASS: TestKvrocksCommitExperiment/metadata_after_tamper (0.03s)
+    --- PASS: TestKvrocksCommitExperiment/binary_empty_control_and_delete (0.08s)
+    --- PASS: TestKvrocksCommitExperiment/resume_without_global_scan_or_model (2.11s)
+=== RUN   TestKvrocksCommitExperiment
+=== RUN   TestKvrocksCommitExperiment/bootstrap_before
+    sync_pending_integration_test.go:212: recovery and duplicate replay preserved counter; stale transaction cannot overwrite new checkpoint/intent
+=== RUN   TestKvrocksCommitExperiment/bootstrap_reply
+    sync_pending_integration_test.go:212: recovery and duplicate replay preserved counter; stale transaction cannot overwrite new checkpoint/intent
+=== RUN   TestKvrocksCommitExperiment/bootstrap_late
+    sync_pending_integration_test.go:212: recovery and duplicate replay preserved counter; stale transaction cannot overwrite new checkpoint/intent
+=== RUN   TestKvrocksCommitExperiment/prepare_before
+    sync_pending_integration_test.go:212: recovery and duplicate replay preserved counter; stale transaction cannot overwrite new checkpoint/intent
+=== RUN   TestKvrocksCommitExperiment/prepare_reply
+    sync_pending_integration_test.go:212: recovery and duplicate replay preserved counter; stale transaction cannot overwrite new checkpoint/intent
+=== RUN   TestKvrocksCommitExperiment/prepare_late
+    sync_pending_integration_test.go:212: recovery and duplicate replay preserved counter; stale transaction cannot overwrite new checkpoint/intent
+=== RUN   TestKvrocksCommitExperiment/apply_before
+    sync_pending_integration_test.go:212: recovery and duplicate replay preserved counter; stale transaction cannot overwrite new checkpoint/intent
+=== RUN   TestKvrocksCommitExperiment/apply_reply
+    sync_pending_integration_test.go:212: recovery and duplicate replay preserved counter; stale transaction cannot overwrite new checkpoint/intent
+=== RUN   TestKvrocksCommitExperiment/apply_late
+    sync_pending_integration_test.go:212: recovery and duplicate replay preserved counter; stale transaction cannot overwrite new checkpoint/intent
+=== RUN   TestKvrocksCommitExperiment/control_before
+    sync_pending_integration_test.go:212: recovery and duplicate replay preserved counter; stale transaction cannot overwrite new checkpoint/intent
+=== RUN   TestKvrocksCommitExperiment/control_reply
+    sync_pending_integration_test.go:212: recovery and duplicate replay preserved counter; stale transaction cannot overwrite new checkpoint/intent
+=== RUN   TestKvrocksCommitExperiment/control_late
+    sync_pending_integration_test.go:212: recovery and duplicate replay preserved counter; stale transaction cannot overwrite new checkpoint/intent
+=== RUN   TestKvrocksCommitExperiment/delete_before
+    sync_pending_integration_test.go:212: recovery and duplicate replay preserved counter; stale transaction cannot overwrite new checkpoint/intent
+=== RUN   TestKvrocksCommitExperiment/delete_reply
+    sync_pending_integration_test.go:212: recovery and duplicate replay preserved counter; stale transaction cannot overwrite new checkpoint/intent
+=== RUN   TestKvrocksCommitExperiment/delete_late
+    sync_pending_integration_test.go:212: recovery and duplicate replay preserved counter; stale transaction cannot overwrite new checkpoint/intent
+=== RUN   TestKvrocksCommitExperiment/applier_sigkill_with_pending
+    sync_pending_integration_test.go:259: applier process SIGKILL after intent persistence; reopened journal and recovered one INCR; no Kvrocks kill
+=== RUN   TestKvrocksCommitExperiment/data_ahead
+=== RUN   TestKvrocksCommitExperiment/checkpoint_ahead
+=== RUN   TestKvrocksCommitExperiment/metadata_missing
+=== RUN   TestKvrocksCommitExperiment/metadata_wrongtype
+=== RUN   TestKvrocksCommitExperiment/metadata_ttl
+=== RUN   TestKvrocksCommitExperiment/metadata_after_tamper
+=== RUN   TestKvrocksCommitExperiment/binary_empty_control_and_delete
+=== RUN   TestKvrocksCommitExperiment/resume_without_global_scan_or_model
+    sync_pending_integration_test.go:348: resumed with >256 keys; checked only last intent, not unrelated cold data
+--- PASS: TestKvrocksCommitExperiment (4.46s)
+    --- PASS: TestKvrocksCommitExperiment/bootstrap_before (0.05s)
+    --- PASS: TestKvrocksCommitExperiment/bootstrap_reply (0.05s)
+    --- PASS: TestKvrocksCommitExperiment/bootstrap_late (0.30s)
+    --- PASS: TestKvrocksCommitExperiment/prepare_before (0.05s)
+    --- PASS: TestKvrocksCommitExperiment/prepare_reply (0.05s)
+    --- PASS: TestKvrocksCommitExperiment/prepare_late (0.31s)
+    --- PASS: TestKvrocksCommitExperiment/apply_before (0.05s)
+    --- PASS: TestKvrocksCommitExperiment/apply_reply (0.05s)
+    --- PASS: TestKvrocksCommitExperiment/apply_late (0.30s)
+    --- PASS: TestKvrocksCommitExperiment/control_before (0.05s)
+    --- PASS: TestKvrocksCommitExperiment/control_reply (0.05s)
+    --- PASS: TestKvrocksCommitExperiment/control_late (0.30s)
+    --- PASS: TestKvrocksCommitExperiment/delete_before (0.05s)
+    --- PASS: TestKvrocksCommitExperiment/delete_reply (0.05s)
+    --- PASS: TestKvrocksCommitExperiment/delete_late (0.30s)
+    --- PASS: TestKvrocksCommitExperiment/applier_sigkill_with_pending (0.05s)
+    --- PASS: TestKvrocksCommitExperiment/data_ahead (0.03s)
+    --- PASS: TestKvrocksCommitExperiment/checkpoint_ahead (0.03s)
+    --- PASS: TestKvrocksCommitExperiment/metadata_missing (0.03s)
+    --- PASS: TestKvrocksCommitExperiment/metadata_wrongtype (0.03s)
+    --- PASS: TestKvrocksCommitExperiment/metadata_ttl (0.03s)
+    --- PASS: TestKvrocksCommitExperiment/metadata_after_tamper (0.03s)
+    --- PASS: TestKvrocksCommitExperiment/binary_empty_control_and_delete (0.08s)
+    --- PASS: TestKvrocksCommitExperiment/resume_without_global_scan_or_model (2.12s)
+=== RUN   TestKvrocksCommitExperiment
+=== RUN   TestKvrocksCommitExperiment/bootstrap_before
+    sync_pending_integration_test.go:212: recovery and duplicate replay preserved counter; stale transaction cannot overwrite new checkpoint/intent
+=== RUN   TestKvrocksCommitExperiment/bootstrap_reply
+    sync_pending_integration_test.go:212: recovery and duplicate replay preserved counter; stale transaction cannot overwrite new checkpoint/intent
+=== RUN   TestKvrocksCommitExperiment/bootstrap_late
+    sync_pending_integration_test.go:212: recovery and duplicate replay preserved counter; stale transaction cannot overwrite new checkpoint/intent
+=== RUN   TestKvrocksCommitExperiment/prepare_before
+    sync_pending_integration_test.go:212: recovery and duplicate replay preserved counter; stale transaction cannot overwrite new checkpoint/intent
+=== RUN   TestKvrocksCommitExperiment/prepare_reply
+    sync_pending_integration_test.go:212: recovery and duplicate replay preserved counter; stale transaction cannot overwrite new checkpoint/intent
+=== RUN   TestKvrocksCommitExperiment/prepare_late
+    sync_pending_integration_test.go:212: recovery and duplicate replay preserved counter; stale transaction cannot overwrite new checkpoint/intent
+=== RUN   TestKvrocksCommitExperiment/apply_before
+    sync_pending_integration_test.go:212: recovery and duplicate replay preserved counter; stale transaction cannot overwrite new checkpoint/intent
+=== RUN   TestKvrocksCommitExperiment/apply_reply
+    sync_pending_integration_test.go:212: recovery and duplicate replay preserved counter; stale transaction cannot overwrite new checkpoint/intent
+=== RUN   TestKvrocksCommitExperiment/apply_late
+    sync_pending_integration_test.go:212: recovery and duplicate replay preserved counter; stale transaction cannot overwrite new checkpoint/intent
+=== RUN   TestKvrocksCommitExperiment/control_before
+    sync_pending_integration_test.go:212: recovery and duplicate replay preserved counter; stale transaction cannot overwrite new checkpoint/intent
+=== RUN   TestKvrocksCommitExperiment/control_reply
+    sync_pending_integration_test.go:212: recovery and duplicate replay preserved counter; stale transaction cannot overwrite new checkpoint/intent
+=== RUN   TestKvrocksCommitExperiment/control_late
+    sync_pending_integration_test.go:212: recovery and duplicate replay preserved counter; stale transaction cannot overwrite new checkpoint/intent
+=== RUN   TestKvrocksCommitExperiment/delete_before
+    sync_pending_integration_test.go:212: recovery and duplicate replay preserved counter; stale transaction cannot overwrite new checkpoint/intent
+=== RUN   TestKvrocksCommitExperiment/delete_reply
+    sync_pending_integration_test.go:212: recovery and duplicate replay preserved counter; stale transaction cannot overwrite new checkpoint/intent
+=== RUN   TestKvrocksCommitExperiment/delete_late
+    sync_pending_integration_test.go:212: recovery and duplicate replay preserved counter; stale transaction cannot overwrite new checkpoint/intent
+=== RUN   TestKvrocksCommitExperiment/applier_sigkill_with_pending
+    sync_pending_integration_test.go:259: applier process SIGKILL after intent persistence; reopened journal and recovered one INCR; no Kvrocks kill
+=== RUN   TestKvrocksCommitExperiment/data_ahead
+=== RUN   TestKvrocksCommitExperiment/checkpoint_ahead
+=== RUN   TestKvrocksCommitExperiment/metadata_missing
+=== RUN   TestKvrocksCommitExperiment/metadata_wrongtype
+=== RUN   TestKvrocksCommitExperiment/metadata_ttl
+=== RUN   TestKvrocksCommitExperiment/metadata_after_tamper
+=== RUN   TestKvrocksCommitExperiment/binary_empty_control_and_delete
+=== RUN   TestKvrocksCommitExperiment/resume_without_global_scan_or_model
+    sync_pending_integration_test.go:348: resumed with >256 keys; checked only last intent, not unrelated cold data
+--- PASS: TestKvrocksCommitExperiment (4.47s)
+    --- PASS: TestKvrocksCommitExperiment/bootstrap_before (0.05s)
+    --- PASS: TestKvrocksCommitExperiment/bootstrap_reply (0.05s)
+    --- PASS: TestKvrocksCommitExperiment/bootstrap_late (0.30s)
+    --- PASS: TestKvrocksCommitExperiment/prepare_before (0.05s)
+    --- PASS: TestKvrocksCommitExperiment/prepare_reply (0.05s)
+    --- PASS: TestKvrocksCommitExperiment/prepare_late (0.30s)
+    --- PASS: TestKvrocksCommitExperiment/apply_before (0.05s)
+    --- PASS: TestKvrocksCommitExperiment/apply_reply (0.05s)
+    --- PASS: TestKvrocksCommitExperiment/apply_late (0.30s)
+    --- PASS: TestKvrocksCommitExperiment/control_before (0.05s)
+    --- PASS: TestKvrocksCommitExperiment/control_reply (0.05s)
+    --- PASS: TestKvrocksCommitExperiment/control_late (0.30s)
+    --- PASS: TestKvrocksCommitExperiment/delete_before (0.05s)
+    --- PASS: TestKvrocksCommitExperiment/delete_reply (0.05s)
+    --- PASS: TestKvrocksCommitExperiment/delete_late (0.30s)
+    --- PASS: TestKvrocksCommitExperiment/applier_sigkill_with_pending (0.05s)
+    --- PASS: TestKvrocksCommitExperiment/data_ahead (0.03s)
+    --- PASS: TestKvrocksCommitExperiment/checkpoint_ahead (0.03s)
+    --- PASS: TestKvrocksCommitExperiment/metadata_missing (0.03s)
+    --- PASS: TestKvrocksCommitExperiment/metadata_wrongtype (0.03s)
+    --- PASS: TestKvrocksCommitExperiment/metadata_ttl (0.03s)
+    --- PASS: TestKvrocksCommitExperiment/metadata_after_tamper (0.03s)
+    --- PASS: TestKvrocksCommitExperiment/binary_empty_control_and_delete (0.09s)
+    --- PASS: TestKvrocksCommitExperiment/resume_without_global_scan_or_model (2.13s)
+PASS
+
+Local real Redis TestSync race, count=5; vet exited 0 without output:
+ok  	gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/internal/gateway	8.115s
+
+Local whole Gateway package race (external opt-ins absent):
+ok  	gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/internal/gateway	4.057s
+
+Stop / binary checksum / existing services:
+redis-pilot-g6-apply-0eGQag
+exited 0 none
+52a995917ce060d5b39572352edfa9241bf835023b8004266e706411e6d3e15c  /tmp/redis-pilot-g6-apply.0eGQag/redis-pilot-g6-pending-20260908.test
+redis-sentinel Up 3 months
+redis-galaxy-2 Up 2 weeks
+redis-test-v7 Up 11 days
+kvrocks-test-kv Up 2 weeks
+active

@@ -9,6 +9,10 @@
 
 当前实现与运行方式见 §14～§16（分阶段记录）。下文配置草案与完整阶段目标不等于全部已经实现，以最新交付记录为准。
 
+G6a-1 已增加独立测试调用的复制捕获、日志恢复与 PSYNC 续传原型，见 [异步同步路线与验收](gateway-async-sync.md)。G6a-4 已在隔离实验中把真实 RDB/增量日志应用到 Kvrocks，见 [无 TTL String 应用原型](gateway-string-apply.md)；仍未接入运行服务，尚无可部署的冷热能力。
+
+G6a-5 增加 [单项 pending 恢复](gateway-pending-recovery.md)，G6a-6 增加 [分段定位与安全回收](gateway-segmented-journal.md)。这些仍是隔离同步原型；TTL、淘汰/回温、所有权、物理磁盘水位和运行服务接线未完成。
+
 ## 1. 目标与阶段边界
 
 最终目标是在不改 Redis / Kvrocks 引擎源码的优先预研方向下，由网关承担冷热协调。

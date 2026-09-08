@@ -1,0 +1,109 @@
+G6a-3 2026-09-08. Selected raw command outputs; not a performance benchmark.
+
+Local Redis 7.2.5, real PSYNC, race, count=3 (before test cleanup refinement):
+=== RUN   TestSyncCaptureRedisExpiryCommands
+    sync_capture_test.go:506: source final counter=42 PTTL=-1; actual PSYNC commands=[["SET" "expiry-counter" "41" "PXAT" "1788797212346"] ["INCR" "expiry-counter"] ["PERSIST" "expiry-counter"] ["SET" "expiry-extension" "41" "PXAT" "1788797212346"] ["INCR" "expiry-extension"] ["PEXPIREAT" "expiry-extension" "1788797302359"]]
+--- PASS: TestSyncCaptureRedisExpiryCommands (0.25s)
+=== RUN   TestSyncCaptureRedisExpiryCommands
+    sync_capture_test.go:506: source final counter=42 PTTL=-1; actual PSYNC commands=[["SET" "expiry-counter" "41" "PXAT" "1788797212587"] ["INCR" "expiry-counter"] ["PERSIST" "expiry-counter"] ["SET" "expiry-extension" "41" "PXAT" "1788797212587"] ["INCR" "expiry-extension"] ["PEXPIREAT" "expiry-extension" "1788797302619"]]
+--- PASS: TestSyncCaptureRedisExpiryCommands (0.17s)
+=== RUN   TestSyncCaptureRedisExpiryCommands
+    sync_capture_test.go:506: source final counter=42 PTTL=-1; actual PSYNC commands=[["SET" "expiry-counter" "41" "PXAT" "1788797212745"] ["INCR" "expiry-counter"] ["PERSIST" "expiry-counter"] ["SET" "expiry-extension" "41" "PXAT" "1788797212745"] ["INCR" "expiry-extension"] ["PEXPIREAT" "expiry-extension" "1788797302758"]]
+--- PASS: TestSyncCaptureRedisExpiryCommands (0.16s)
+PASS
+ok  	gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/internal/gateway	2.765s
+
+Redis03 isolated Kvrocks 2.15.0, replay phase, count=3:
+redis-pilot-g6-commit-nsXnBj
+=== RUN   TestKvrocksCommitExperiment
+=== RUN   TestKvrocksCommitExperiment/retry_exec_drop_before_true
+    sync_replay_test.go:161: fresh-connection retry=applied; duplicate did not increment; next value=43 sequence=2
+=== RUN   TestKvrocksCommitExperiment/retry_exec_drop_before_false
+    sync_replay_test.go:161: fresh-connection retry=duplicate; duplicate did not increment; next value=43 sequence=2
+=== RUN   TestKvrocksCommitExperiment/preconditions_reject_before_transaction
+=== RUN   TestKvrocksCommitExperiment/delayed_expiry_then_incr_persist
+    sync_replay_test.go:195: normal commands, no execution errors: delayed replay value=1 permanent; source before deadline value=42 permanent; MULTI alone does not preserve historical expiry
+=== RUN   TestKvrocksCommitExperiment/delayed_expiry_then_incr_extension
+    sync_replay_test.go:209: expiry extension succeeded but retained value=1, not source value=42; first-stage PEXPIRE support also needs expiry-aware replay
+--- PASS: TestKvrocksCommitExperiment (0.04s)
+    --- PASS: TestKvrocksCommitExperiment/retry_exec_drop_before_true (0.01s)
+    --- PASS: TestKvrocksCommitExperiment/retry_exec_drop_before_false (0.01s)
+    --- PASS: TestKvrocksCommitExperiment/preconditions_reject_before_transaction (0.01s)
+    --- PASS: TestKvrocksCommitExperiment/delayed_expiry_then_incr_persist (0.00s)
+    --- PASS: TestKvrocksCommitExperiment/delayed_expiry_then_incr_extension (0.00s)
+=== RUN   TestKvrocksCommitExperiment
+=== RUN   TestKvrocksCommitExperiment/retry_exec_drop_before_true
+    sync_replay_test.go:161: fresh-connection retry=applied; duplicate did not increment; next value=43 sequence=2
+=== RUN   TestKvrocksCommitExperiment/retry_exec_drop_before_false
+    sync_replay_test.go:161: fresh-connection retry=duplicate; duplicate did not increment; next value=43 sequence=2
+=== RUN   TestKvrocksCommitExperiment/preconditions_reject_before_transaction
+=== RUN   TestKvrocksCommitExperiment/delayed_expiry_then_incr_persist
+    sync_replay_test.go:195: normal commands, no execution errors: delayed replay value=1 permanent; source before deadline value=42 permanent; MULTI alone does not preserve historical expiry
+=== RUN   TestKvrocksCommitExperiment/delayed_expiry_then_incr_extension
+    sync_replay_test.go:209: expiry extension succeeded but retained value=1, not source value=42; first-stage PEXPIRE support also needs expiry-aware replay
+--- PASS: TestKvrocksCommitExperiment (0.04s)
+    --- PASS: TestKvrocksCommitExperiment/retry_exec_drop_before_true (0.01s)
+    --- PASS: TestKvrocksCommitExperiment/retry_exec_drop_before_false (0.01s)
+    --- PASS: TestKvrocksCommitExperiment/preconditions_reject_before_transaction (0.01s)
+    --- PASS: TestKvrocksCommitExperiment/delayed_expiry_then_incr_persist (0.00s)
+    --- PASS: TestKvrocksCommitExperiment/delayed_expiry_then_incr_extension (0.00s)
+=== RUN   TestKvrocksCommitExperiment
+=== RUN   TestKvrocksCommitExperiment/retry_exec_drop_before_true
+    sync_replay_test.go:161: fresh-connection retry=applied; duplicate did not increment; next value=43 sequence=2
+=== RUN   TestKvrocksCommitExperiment/retry_exec_drop_before_false
+    sync_replay_test.go:161: fresh-connection retry=duplicate; duplicate did not increment; next value=43 sequence=2
+=== RUN   TestKvrocksCommitExperiment/preconditions_reject_before_transaction
+=== RUN   TestKvrocksCommitExperiment/delayed_expiry_then_incr_persist
+    sync_replay_test.go:195: normal commands, no execution errors: delayed replay value=1 permanent; source before deadline value=42 permanent; MULTI alone does not preserve historical expiry
+=== RUN   TestKvrocksCommitExperiment/delayed_expiry_then_incr_extension
+    sync_replay_test.go:209: expiry extension succeeded but retained value=1, not source value=42; first-stage PEXPIRE support also needs expiry-aware replay
+--- PASS: TestKvrocksCommitExperiment (0.04s)
+    --- PASS: TestKvrocksCommitExperiment/retry_exec_drop_before_true (0.01s)
+    --- PASS: TestKvrocksCommitExperiment/retry_exec_drop_before_false (0.01s)
+    --- PASS: TestKvrocksCommitExperiment/preconditions_reject_before_transaction (0.01s)
+    --- PASS: TestKvrocksCommitExperiment/delayed_expiry_then_incr_persist (0.00s)
+    --- PASS: TestKvrocksCommitExperiment/delayed_expiry_then_incr_extension (0.00s)
+PASS
+
+Redis03 original semantics phase, count=1:
+=== RUN   TestKvrocksCommitExperiment
+=== RUN   TestKvrocksCommitExperiment/reply_loss_and_checkpoint_readback
+    sync_kvrocks_test.go:194: EXEC response discarded; readback found value=1 checkpoint=1; no duplicate INCR issued
+=== RUN   TestKvrocksCommitExperiment/disconnect_before_exec
+=== RUN   TestKvrocksCommitExperiment/unsafe_generic_transaction_runtime_error
+    sync_kvrocks_test.go:215: COUNTEREXAMPLE: INCR failed but checkpoint advanced; generic MULTI is unsafe
+=== RUN   TestKvrocksCommitExperiment/unsafe_script_error_inside_exec
+    sync_kvrocks_test.go:229: COUNTEREXAMPLE: script failed after INCR, value committed without checkpoint; Lua does not imply rollback
+=== RUN   TestKvrocksCommitExperiment/watch_conflict_prevents_commit
+--- PASS: TestKvrocksCommitExperiment (0.03s)
+    --- PASS: TestKvrocksCommitExperiment/reply_loss_and_checkpoint_readback (0.01s)
+    --- PASS: TestKvrocksCommitExperiment/disconnect_before_exec (0.00s)
+    --- PASS: TestKvrocksCommitExperiment/unsafe_generic_transaction_runtime_error (0.00s)
+    --- PASS: TestKvrocksCommitExperiment/unsafe_script_error_inside_exec (0.01s)
+    --- PASS: TestKvrocksCommitExperiment/watch_conflict_prevents_commit (0.01s)
+PASS
+redis-pilot-g6-commit-nsXnBj
+exited 0
+redis-sentinel Up 3 months
+redis-galaxy-2 Up 2 weeks
+redis-test-v7 Up 11 days
+kvrocks-test-kv Up 2 weeks
+active
+23dfcbbf620cbe4b123be543a7d987e5f4ef0e71c62885bad67d4743d4a90427  /tmp/redis-pilot-g6-commit.nsXnBj/gateway-replay-20260908.test
+
+Local TestSync real Redis race regression before cleanup fix:
+--- FAIL: TestSyncCaptureRedis (0.19s)
+    sync_capture_test.go:399: captured 8 records; restart resumed once; source backlog loss rejected
+    testing.go:1369: TempDir RemoveAll cleanup: unlinkat /var/folders/10/0kdfh84n3xbcqckl4cbm_6v80000gn/T/TestSyncCaptureRedis616150989/001: directory not empty
+FAIL
+FAIL	gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/internal/gateway	3.351s
+FAIL
+
+Local TestSync real Redis race regression, count=5, after graceful cleanup fix:
+ok  	gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/internal/gateway	4.808s
+
+Final local TestSync real Redis race regression, count=5, strict shutdown EOF check:
+ok  	gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/internal/gateway	5.694s
+
+Final local gateway package race, count=1 (external integration opt-ins absent):
+ok  	gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/internal/gateway	3.832s

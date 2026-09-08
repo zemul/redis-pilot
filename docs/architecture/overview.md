@@ -15,6 +15,12 @@
 - [Redis / Kvrocks 冷热混合存储预研](hot-cold-storage-research.md) — 未实现的探索方向、冷热网关与同步思路、风险、待定项和原型验收阶段；不改变当前范围
 - [冷热网关设计与实现计划](hot-cold-gateway-design.md) — G1～G3 基础已实现；G4 已做受限环境复测，正式性能验收和冷热协调待做
 - [网关控制面接入](gateway-control-plane.md) — G5a 草稿和 G5c 最小状态上报闭环已实现；配置应用确认、Proxy 切流待做
+- [网关异步同步路线](gateway-async-sync.md) — G6a-1 已完成隔离复制捕获/续传原型；冷层应用、淘汰和回温未实现
+- [Kvrocks 冷层提交实验](gateway-kvrocks-commit.md) — G6a-2 正常/异常提交与强杀恢复验证；已确认通用事务包装存在错误窗口
+- [回放边界验证](gateway-replay-validation.md) — G6a-3 无 TTL 计数器重试探针通过；延迟过期回放仍需专门处理，未接生产应用器
+- [无 TTL String 应用原型](gateway-string-apply.md) — G6a-4 小规模真实 RDB/PSYNC 日志应用到 Kvrocks、重复回放和状态偏差拒绝；未接运行服务
+- [待确认项恢复](gateway-pending-recovery.md) — G6a-5 不再全量核对冷层，单项 intent 恢复与旧请求晚到防护；未接运行服务
+- [分段日志与安全回收](gateway-segmented-journal.md) — G6a-6 checkpoint 按段定位、保留 pending 证据的回收与冷回退水位保护；物理磁盘治理和服务接线仍待做
 - [网关独立部署](gateway-deployment.md) — 二进制 + systemd，与 Agent 解耦；构建入口及模板已提供
 - [产品优化路线图](../ROADMAP.md) — Web/H5 信息架构与 P1～P5 优先级
 
