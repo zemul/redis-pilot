@@ -161,9 +161,9 @@ func TestDrainAndDeadline(t *testing.T) {
 				t.Fatal("missing forced drain metric")
 			}
 			if timeout {
-				_, err := s.admission.enter("x")
-				requireBarrierError(t, err, errKeyBarrierUncertain)
-				requireBarrierAccounting(t, s.admission, 1, 1, 0)
+				testKeyRequest(t, s.admission, "x").settle(true)
+				requireBarrierError(t, testKeyBarrier(t, s.admission, "x").cancel(), nil)
+				requireBarrierAccounting(t, s.admission, 0, 0, 0)
 			} else {
 				requireBarrierAccounting(t, s.admission, 0, 0, 0)
 			}
@@ -216,7 +216,7 @@ func TestBatchFlushFailureNoReplay(t *testing.T) {
 	if metricValue(s.errors.WithLabelValues("backend_write")) != 1 || metricValue(s.uncertain) != 2 || metricValue(s.inflight) != 0 {
 		t.Fatal("failure metrics / cleanup incorrect")
 	}
-	_, err := s.admission.enter("x")
-	requireBarrierError(t, err, errKeyBarrierUncertain)
-	requireBarrierAccounting(t, s.admission, 1, 1, 0)
+	testKeyRequest(t, s.admission, "x").settle(true)
+	requireBarrierError(t, testKeyBarrier(t, s.admission, "x").cancel(), nil)
+	requireBarrierAccounting(t, s.admission, 0, 0, 0)
 }

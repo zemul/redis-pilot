@@ -12,30 +12,9 @@
 - [可观测性架构](observability.md) — P1 指标、慢查询、告警的数据边界和查询链路
 - [异常记录功能](health-incidents.md) — 异常检测、持续/恢复状态机、关键时间线、数据模型与页面设计
 - [实例管理页操作设计](instance-management-ui.md) — standalone、主从实例组与节点的展示层级、操作归属和验收标准
-- [Redis / Kvrocks 冷热混合存储预研](hot-cold-storage-research.md) — 未实现的探索方向、冷热网关与同步思路、风险、待定项和原型验收阶段；不改变当前范围
-- [冷热网关设计与实现计划](hot-cold-gateway-design.md) — G1～G3 基础已实现；G4 已做受限环境复测，正式性能验收和冷热协调待做
-- [网关控制面接入](gateway-control-plane.md) — G5a 草稿和 G5c 最小状态上报闭环已实现；配置应用确认、Proxy 切流待做
-- [网关异步同步路线](gateway-async-sync.md) — G6a-1 已完成隔离复制捕获/续传原型；冷层应用、淘汰和回温未实现
-- [Kvrocks 冷层提交实验](gateway-kvrocks-commit.md) — G6a-2 正常/异常提交与强杀恢复验证；已确认通用事务包装存在错误窗口
-- [回放边界验证](gateway-replay-validation.md) — G6a-3 无 TTL 计数器重试探针通过；延迟过期回放仍需专门处理，未接生产应用器
-- [无 TTL String 应用原型](gateway-string-apply.md) — G6a-4 小规模真实 RDB/PSYNC 日志应用到 Kvrocks、重复回放和状态偏差拒绝；未接运行服务
-- [待确认项恢复](gateway-pending-recovery.md) — G6a-5 不再全量核对冷层，单项 intent 恢复与旧请求晚到防护；未接运行服务
-- [分段日志与安全回收](gateway-segmented-journal.md) — G6a-6 checkpoint 按段定位、保留 pending 证据的回收与冷回退水位保护；物理磁盘治理和服务接线仍待做
-- [同步资源保护](gateway-sync-resources.md) — G6a-7 捕获磁盘水位/保守积压阈值、视图预算与显式孤儿清理
-- [隔离持续同步循环](gateway-sync-runner.md) — G6a-8 捕获/应用/确认/清理调度、受控重连与资源暂停；未接运行服务
-- [同步器启停与观测](gateway-sync-lifecycle.md) — G6a-9 固定本地尾部的优雅停止、强制中断和只读指标；长测及服务接入待做
-- [独立同步服务入口](syncer-service.md) — G6a-10 独立二进制、兼容单任务配置、只读观测与 systemd 模板；静态多任务后续见 G6a-11
-- [同步服务静态多任务](syncer-multitask.md) — G6a-11 单进程 1～8 个隔离任务、独立元数据与持久身份绑定；Server 自动调度、分布式接管和 Cluster 迁移仍待做
-- [同步器固定登记与上报](syncer-control-plane.md) — G6a-12 本地任务归属登记、重启保留、离线与冲突观测；不下发任务、不自动接管
-- [同步器进度采样](syncer-progress.md) — G6a-13 源端/持久捕获/冷层应用/日志清理确认分开观测、同历史差值与过期分类；不启用业务保护动作
-- [Gateway 单 key 操作屏障](gateway-key-barrier.md) — G6b-1 进程内准入、在途排空与不确定结果隔离基础；未接业务请求、不执行淘汰，持久协议待做
-- [内部降冷复制标记实验](gateway-eviction-envelope.md) — G6b-2a 真实 Redis 复制格式、部分失败/丢回复与严格记录组识别；冷层精确确认和持久意图仍待做
-- [持久操作意图与准备标记](gateway-eviction-intent.md) — G6b-2b 单操作本地日志、准备事件持久定位和强杀重开验证；无冷层 ACK，不允许业务淘汰
-- [Kvrocks 精确提交确认](gateway-cold-confirmation.md) — G6b-2c 源日志证明、受控前缀应用、WATCH 下冷确认提交及本地落盘/重连核对；真实后端验证通过，未接业务淘汰
-- [Gateway 与同步器确认通信](gateway-confirmation-rpc.md) — G6b-2d 显式隔离确认模式、HTTP 会话绑定、双端持久记录与真实进程恢复；未接持续任务状态机和业务请求
-- [持续同步中的准备屏障与确认](gateway-live-confirmation.md) — G6b-2e 运行中识别准备事件、保持冷应用位置、继续有界捕获、确认/重启恢复与保持屏障的停止；尚无真实业务准入和热删除
-- [Gateway 请求屏障接线](gateway-request-admission.md) — G6b-2f-1 内部 Service/Pipeline 准入、多 key 原子取得和结果不确定时隔离；尚未开放配置、持久启动恢复及准备管理入口
-- [网关独立部署](gateway-deployment.md) — 二进制 + systemd，与 Agent 解耦；构建入口及模板已提供
+- [冷热存储现行设计](hot-cold-gateway-design.md) — 当前架构、职责、数据路径与恢复原则
+- [冷热存储实现进度](hot-cold-status.md) — 可运行/实验/未实现能力及下一项验收
+- [冷热组件部署运维](gateway-deployment.md) — 独立二进制、systemd、开发限制与历史部署事实
 - [产品优化路线图](../ROADMAP.md) — Web/H5 信息架构与 P1～P5 优先级
 
 ---

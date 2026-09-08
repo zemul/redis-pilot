@@ -70,6 +70,11 @@ func (s *Service) admitRequest(q *request) {
 	if s.admission == nil || q.local != nil {
 		return
 	}
+	if s.preparation != nil && !hotPreparationCommand(q.args) {
+		q.local = []byte("-ERR command outside hot preparation replay subset\r\n")
+		s.rejects.WithLabelValues("preparation_subset").Inc()
+		return
+	}
 	keys, err := requestKeys(q.args)
 	if err == nil {
 		q.admitted, err = s.admission.enterMany(keys)

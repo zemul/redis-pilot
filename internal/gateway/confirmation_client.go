@@ -28,6 +28,7 @@ type IsolatedConfirmationGateway struct {
 	barrier  *keyBarrier
 	gate     chan struct{}
 	closed   bool
+	borrowed bool // Preparation controller owns the binding lock and barrier set.
 }
 
 // OpenIsolatedConfirmationGateway restores protection BEFORE permitting any
@@ -39,16 +40,24 @@ func OpenIsolatedConfirmationGateway(o IsolatedConfirmationGatewayOptions) (*Iso
 // Internal construction supports isolated tests starting an operation. The
 // live Service does not call this until all relevant requests use the barrier.
 func openConfirmationGateway(o IsolatedConfirmationGatewayOptions, intent *evictionIntent, barriers *keyBarrierSet) (*IsolatedConfirmationGateway, error) {
+	token, err := validateConfirmationGateway(o)
+	if err != nil {
+		return nil, err
+	}
+	return openConfirmationGatewayValidated(o, intent, barriers, token)
+}
+
+func validateConfirmationGateway(o IsolatedConfirmationGatewayOptions) (string, error) {
 	u, err := url.Parse(o.Endpoint)
 	if err != nil || u.Scheme != "http" || u.User != nil || u.Path != "" || u.RawPath != "" || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || u.Opaque != "" ||
 		syncCanonicalEndpoint(u.Host) != u.Host || u.Host == "" || u.Host == o.Binding.Source || u.Host == o.Binding.Cold || o.Binding.Validate() != nil ||
 		!syncAbsolutePath(o.OperationDir) || !syncAbsolutePath(o.TokenFile) || o.Timeout <= 0 || o.Timeout > 15*time.Second {
-		return nil, errConfirmationRPC
+		return "", errConfirmationRPC
 	}
-	token, err := confirmationToken(o.TokenFile)
-	if err != nil {
-		return nil, err
-	}
+	return confirmationToken(o.TokenFile)
+}
+
+func openConfirmationGatewayValidated(o IsolatedConfirmationGatewayOptions, intent *evictionIntent, barriers *keyBarrierSet, token string) (*IsolatedConfirmationGateway, error) {
 	lock, err := openConfirmationBinding(o.OperationDir, o.Binding)
 	if err != nil {
 		return nil, err
@@ -167,8 +176,12 @@ func (g *IsolatedConfirmationGateway) Close() {
 		return
 	}
 	g.closed = true
-	g.barriers.close()
+	if !g.borrowed {
+		g.barriers.close()
+	}
 	g.op.close()
-	g.lock.Close()
+	if !g.borrowed {
+		g.lock.Close()
+	}
 	g.client.CloseIdleConnections()
 }

@@ -120,7 +120,7 @@ func TestKeyBarrierCancelBeforeDispatchAndStaleHandles(t *testing.T) {
 	}
 }
 
-func TestKeyBarrierUnknownOutcomeNeverReopens(t *testing.T) {
+func TestKeyBarrierUnknownOutcomeOnlyHoldsExistingTransition(t *testing.T) {
 	for _, reserve := range []bool{false, true} {
 		g := testKeyBarrierSet(t, 2, 2, 2)
 		r1 := testKeyRequest(t, g, "k")
@@ -137,12 +137,22 @@ func TestKeyBarrierUnknownOutcomeNeverReopens(t *testing.T) {
 		}
 		r2.settle(true)
 		r1.settle(true) // A late success callback cannot clear quarantine.
-		_, err := g.enter("k")
-		requireBarrierError(t, err, errKeyBarrierUncertain)
-		_, err = g.reserve("k")
-		requireBarrierError(t, err, errKeyBarrierUncertain)
+		if reserve {
+			_, err := g.enter("k")
+			requireBarrierError(t, err, errKeyBarrierUncertain)
+			_, err = g.reserve("k")
+			requireBarrierError(t, err, errKeyBarrierUncertain)
+		} else {
+			testKeyRequest(t, g, "k").settle(true)
+			requireBarrierError(t, testKeyBarrier(t, g, "k").cancel(), nil)
+		}
 		testKeyRequest(t, g, "x").settle(true)
-		requireBarrierAccounting(t, g, 1, 1, 0)
+		requireBarrierError(t, testKeyBarrier(t, g, "x").cancel(), nil)
+		if reserve {
+			requireBarrierAccounting(t, g, 1, 1, 0)
+		} else {
+			requireBarrierAccounting(t, g, 0, 0, 0)
+		}
 	}
 }
 
@@ -170,12 +180,12 @@ func TestKeyBarrierBudgetsAndBinaryKeys(t *testing.T) {
 	_, err = g.reserve(strings.Repeat("x", (64<<10)+1))
 	requireBarrierError(t, err, errKeyBarrierKey)
 	requireBarrierAccounting(t, g, 0, 0, 0)
-	// Empty keys still consume an entry; uncertainty is never evicted for space.
+	// Unknown ordinary outcomes cannot accumulate per-key memory indefinitely.
 	g = testKeyBarrierSet(t, 1, 10, 2)
 	testKeyRequest(t, g, "").settle(false)
-	_, err = g.reserve("x")
-	requireBarrierError(t, err, errKeyBarrierBudget)
-	requireBarrierAccounting(t, g, 1, 0, 0)
+	requireBarrierError(t, testKeyBarrier(t, g, "x").cancel(), nil)
+	requireBarrierAccounting(t, g, 0, 0, 0)
+	testKeyRequest(t, g, "x").settle(true)
 }
 
 func TestKeyBarrierCloseWakesButDoesNotAuthorize(t *testing.T) {
@@ -287,4 +297,17 @@ func TestKeyBarrierKeyLengthBoundary(t *testing.T) {
 	_, err := g.enter(key + "x")
 	requireBarrierError(t, err, errKeyBarrierKey)
 	requireBarrierAccounting(t, g, 0, 0, 0)
+}
+
+func TestKeyBarrierRestoreOnlyProtectsOperationKey(t *testing.T) {
+	g := testKeyBarrierSet(t, 2, 100, 4)
+	testKeyRequest(t, g, "ordinary").settle(false)
+	requireBarrierError(t, testKeyBarrier(t, g, "new").cancel(), nil)
+	b, err := g.restore("operation")
+	requireBarrierError(t, err, nil)
+	requireBarrierError(t, b.cancel(), errKeyBarrierDispatched)
+	_, err = g.enter("operation")
+	requireBarrierError(t, err, errKeyBarrierBusy)
+	testKeyRequest(t, g, "ordinary").settle(true)
+	requireBarrierAccounting(t, g, 1, len("operation"), 0)
 }

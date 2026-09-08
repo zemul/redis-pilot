@@ -160,7 +160,9 @@ func (g *keyBarrierSet) enterMany(keys [][]byte) ([]*keyRequest, error) {
 
 // settle(true) requires a definitive backend completion or proof that nothing
 // was dispatched. Client cancellation/socket close alone is not that proof.
-// An unknown outcome quarantines the key, even if other requests later finish.
+// An unknown ordinary outcome is not replayed and does not quarantine ordinary
+// access or future reservations. Only a transition already waiting for this
+// request retains uncertainty: a lost reply is not proof its drain completed.
 func (r *keyRequest) settle(known bool) {
 	g := r.set
 	g.mu.Lock()
@@ -172,7 +174,7 @@ func (r *keyRequest) settle(known bool) {
 	e := r.entry
 	e.active--
 	g.active--
-	if !known {
+	if !known && e.barrier != nil {
 		e.uncertain = true
 	}
 	if e.barrier != nil && (e.active == 0 || e.uncertain) {
@@ -184,13 +186,26 @@ func (r *keyRequest) settle(known bool) {
 // reserve closes admission immediately, before existing requests drain. This
 // prevents continuous writers from slipping between a check and the barrier.
 func (g *keyBarrierSet) reserve(key string) (*keyBarrier, error) {
+	return g.reserveKey(key, false)
+}
+
+// Durable operation recovery restores a possibly dispatched barrier. It never
+// authorizes a new transition or deletion.
+func (g *keyBarrierSet) restore(key string) (*keyBarrier, error) {
+	return g.reserveKey(key, true)
+}
+
+func (g *keyBarrierSet) reserveKey(key string, restore bool) (*keyBarrier, error) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
+	if g.closed {
+		return nil, errKeyBarrierClosed
+	}
 	e, err := g.entryLocked(key)
 	if err != nil {
 		return nil, err
 	}
-	b := &keyBarrier{set: g, entry: e, wake: make(chan struct{})}
+	b := &keyBarrier{set: g, entry: e, wake: make(chan struct{}), dispatched: restore}
 	e.barrier = b
 	if e.active == 0 {
 		b.signalLocked()
@@ -264,12 +279,20 @@ func (g *keyBarrierSet) removeIdleLocked(e *keyBarrierEntry) {
 // close is terminal for this set. Late completions may drain accounting, but
 // never reopen admission. Constructing a new set is NOT crash recovery.
 func (g *keyBarrierSet) close() {
+	g.closeQuiescent()
+}
+
+// Only a newly closed set without ANY retained state can support a clean boot
+// latch. Held barriers and uncertain keys must survive via reconciliation.
+func (g *keyBarrierSet) closeQuiescent() bool {
 	g.mu.Lock()
 	defer g.mu.Unlock()
+	clean := !g.closed && len(g.entries) == 0 && g.active == 0
 	g.closed = true
 	for _, e := range g.entries {
 		if e.barrier != nil {
 			e.barrier.signalLocked()
 		}
 	}
+	return clean
 }

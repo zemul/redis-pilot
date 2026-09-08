@@ -6,6 +6,8 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"os"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -18,32 +20,35 @@ import (
 type Service struct {
 	// Immutable after sessions start. Kept internal until durable startup and
 	// preparation orchestration can safely install and restore the same set.
-	admission        *keyBarrierSet
-	reporter         *heartbeatReporter
-	heartbeats       *prometheus.CounterVec
-	lastHeartbeatAck prometheus.Gauge
-	cfg              Config
-	rejected         prometheus.Counter
-	registry         *prometheus.Registry
-	draining         atomic.Bool
-	backendReady     atomic.Bool
-	serving          atomic.Bool
-	frontendPassword string
-	backendPassword  string
-	uncertain        prometheus.Counter
-	sessionsMu       sync.Mutex
-	sessions         map[*sessionControl]struct{}
-	budgetMu         sync.Mutex
-	reserved         int64
-	active           prometheus.Gauge
-	bufferReserved   prometheus.Gauge
-	inflight         prometheus.Gauge
-	rejects          *prometheus.CounterVec
-	errors           *prometheus.CounterVec
-	completed        *prometheus.CounterVec
-	duration         prometheus.Histogram
-	batchSize        prometheus.Histogram
-	drainDuration    prometheus.Histogram
+	admission          *keyBarrierSet
+	admissionBoot      *admissionRunOptions   // Internal, immutable before serve.
+	preparationOptions *hotPreparationOptions // Internal only; no YAML switch.
+	preparation        *hotPreparation
+	reporter           *heartbeatReporter
+	heartbeats         *prometheus.CounterVec
+	lastHeartbeatAck   prometheus.Gauge
+	cfg                Config
+	rejected           prometheus.Counter
+	registry           *prometheus.Registry
+	draining           atomic.Bool
+	backendReady       atomic.Bool
+	serving            atomic.Bool
+	frontendPassword   string
+	backendPassword    string
+	uncertain          prometheus.Counter
+	sessionsMu         sync.Mutex
+	sessions           map[*sessionControl]struct{}
+	budgetMu           sync.Mutex
+	reserved           int64
+	active             prometheus.Gauge
+	bufferReserved     prometheus.Gauge
+	inflight           prometheus.Gauge
+	rejects            *prometheus.CounterVec
+	errors             *prometheus.CounterVec
+	completed          *prometheus.CounterVec
+	duration           prometheus.Histogram
+	batchSize          prometheus.Histogram
+	drainDuration      prometheus.Histogram
 }
 
 func NewService(c Config) (*Service, error) {
@@ -75,6 +80,10 @@ func NewService(c Config) (*Service, error) {
 }
 func (s *Service) Handler() http.Handler {
 	m := http.NewServeMux()
+	if s.preparation != nil {
+		m.Handle(hotPreparationPath, s.preparation)
+		m.Handle(hotPreparationPath+"/confirm", s.preparation)
+	}
 	m.HandleFunc("/livez", func(w http.ResponseWriter, r *http.Request) {
 		if s.draining.Load() {
 			http.Error(w, "draining", 503)
@@ -106,6 +115,41 @@ func (s *Service) Run(ctx context.Context) error {
 	return s.serve(ctx, data, admin)
 }
 func (s *Service) serve(ctx context.Context, data, admin net.Listener) error {
+	if s.preparationOptions != nil && s.admissionBoot == nil {
+		return errAdmissionRun
+	}
+	var boot *admissionRun
+	if s.admissionBoot != nil {
+		if s.cfg.Mode != "passthrough" || s.admission != nil || s.cfg.RedisAddress != s.admissionBoot.Binding.Source ||
+			s.cfg.GatewayID != s.admissionBoot.Binding.GatewayID {
+			return errAdmissionRun
+		}
+		var err error
+		boot, err = openAdmissionRun(*s.admissionBoot, nil)
+		if err != nil {
+			return err
+		}
+		defer boot.close() // Early exits never record clean.
+		s.admission = boot.barriers
+		if s.preparationOptions == nil {
+			// Disabling preparation must not silently skip a surviving operation.
+			if _, err := os.Lstat(filepath.Join(s.admissionBoot.Dir, "confirmation-operation.log")); !errors.Is(err, os.ErrNotExist) {
+				return errAdmissionRun
+			}
+		}
+	}
+	if s.preparationOptions != nil {
+		o := s.preparationOptions.Confirmation
+		if o.OperationDir != s.admissionBoot.Dir || o.Binding != s.admissionBoot.Binding {
+			return errAdmissionRun
+		}
+		var err error
+		s.preparation, err = openHotPreparation(s, *s.preparationOptions)
+		if err != nil {
+			return err
+		}
+		defer s.preparation.Close()
+	}
 	work, cancelWork := context.WithCancel(context.Background())
 	defer cancelWork()
 	var workers sync.WaitGroup
@@ -169,6 +213,10 @@ func (s *Service) serve(ctx context.Context, data, admin net.Listener) error {
 	}
 	s.sessionsMu.Unlock()
 	data.Close()
+	if s.preparation != nil {
+		s.preparation.stopping.Store(true)
+		s.preparation.cancel()
+	}
 	cancelProbe()
 	shutdown, cancel := context.WithTimeout(context.Background(), s.cfg.ShutdownTimeout)
 	defer cancel()
@@ -193,8 +241,14 @@ func (s *Service) serve(ctx context.Context, data, admin net.Listener) error {
 	}
 	cancelWork()
 	s.drainDuration.Observe(time.Since(drainStart).Seconds())
+	if s.preparation != nil {
+		s.preparation.Close()
+	}
 	if errors.Is(cause, http.ErrServerClosed) || errors.Is(cause, net.ErrClosed) {
-		return nil
+		cause = nil
+	}
+	if boot != nil {
+		cause = errors.Join(cause, boot.finish())
 	}
 	return cause
 }

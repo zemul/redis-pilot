@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -94,7 +95,9 @@ func TestKeyBarrierManyAtomicRollback(t *testing.T) {
 				testKeyBarrier(t, g, "b")
 				want = errKeyBarrierBusy
 			case "uncertain":
-				testKeyRequest(t, g, "b").settle(false)
+				r := testKeyRequest(t, g, "b")
+				testKeyBarrier(t, g, "b")
+				r.settle(false)
 				want = errKeyBarrierUncertain
 			case "bytes":
 				keys[1] = []byte("bbb")
@@ -303,14 +306,14 @@ func TestGuardedBatchOutcomes(t *testing.T) {
 			}
 			for _, key := range []string{"a", "b"} {
 				h, err := s.admission.enter(key)
-				unknown := mode == "local_client_failure" || (key == "b" && (mode == "lost_reply" || mode == "client_failure"))
-				if unknown {
-					requireBarrierError(t, err, errKeyBarrierUncertain)
-				} else if err != nil {
+				if err != nil {
 					t.Fatal(err)
 				} else {
 					h.settle(true)
 				}
+			}
+			if mode == "local_client_failure" || mode == "lost_reply" || mode == "client_failure" {
+				requireBarrierError(t, testKeyBarrier(t, s.admission, "a").cancel(), nil)
 			}
 		})
 	}
@@ -350,10 +353,9 @@ func TestGuardedMultiKeyUnknownAndClosedSet(t *testing.T) {
 	settleRequest(q, false)
 	settleRequest(q, true)
 	requireBarrierError(t, b.beginDispatch(), errKeyBarrierUncertain)
-	for _, key := range []string{"a", "b"} {
-		_, err := s.admission.enter(key)
-		requireBarrierError(t, err, errKeyBarrierUncertain)
-	}
+	testKeyRequest(t, s.admission, "a").settle(true)
+	_, err := s.admission.enter("b")
+	requireBarrierError(t, err, errKeyBarrierUncertain)
 	s.admission.close()
 	for _, args := range [][]string{{"PING"}, {"GET", "other"}} {
 		q := request{args: admissionArgs(args...)}
@@ -397,4 +399,56 @@ func TestKeyBarrierManyConcurrentReserve(t *testing.T) {
 	}
 	wg.Wait()
 	requireBarrierAccounting(t, g, 0, 0, 0)
+}
+
+func TestGuardedLostINCRReplyDoesNotBlockOrReplay(t *testing.T) {
+	var value, calls atomic.Int32
+	value.Store(41)
+	addr := fakeBackend(t, func(c net.Conn, args [][]byte) bool {
+		switch string(args[0]) {
+		case "INFO":
+			infoReply(c, "master")
+			return true
+		case "INCR":
+			n := value.Add(1)
+			if calls.Add(1) == 1 {
+				return false
+			} // Executed, reply lost.
+			if n != 43 {
+				t.Error("unexpected replay", n)
+			}
+			return writeAll(c, []byte(":43\r\n")) == nil
+		case "GET":
+			if value.Load() != 42 {
+				t.Error("unknown INCR was replayed")
+			}
+			return writeAll(c, []byte("$2\r\n42\r\n")) == nil
+		}
+		t.Error("unexpected command")
+		return false
+	})
+	s, _ := NewService(passConfig(addr))
+	s.admission = testKeyBarrierSet(t, 2, 100, 4)
+	c, r, _ := startSession(t, s)
+	if err := writeAll(c, encodeCommand("INCR", "counter")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.ReadFrame(); err == nil {
+		t.Fatal("fabricated first reply")
+	}
+	c2, r2, _ := startSession(t, s)
+	if err := writeAll(c2, encodeCommand("GET", "counter")); err != nil {
+		t.Fatal(err)
+	}
+	expect(t, r2, "$2\r\n42\r\n")
+	if err := writeAll(c2, encodeCommand("INCR", "counter")); err != nil {
+		t.Fatal(err)
+	}
+	expect(t, r2, ":43\r\n")
+	if calls.Load() != 2 {
+		t.Fatal("unexpected INCR count", calls.Load())
+	}
+	requireBarrierError(t, testKeyBarrier(t, s.admission, "counter").cancel(), nil)
+	requireBarrierError(t, testKeyBarrier(t, s.admission, "other").cancel(), nil)
+	requireBarrierAccounting(t, s.admission, 0, 0, 0)
 }

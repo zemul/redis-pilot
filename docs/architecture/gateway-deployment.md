@@ -1,8 +1,10 @@
-# Gateway 独立二进制部署
+# 冷热组件部署与运维
+
+现行运行入口，更新：2026-09-08。架构与支持边界见 [现行设计](hot-cold-gateway-design.md)，能力状态见 [实现进度](hot-cold-status.md)。以下安装步骤、模板与历史部署记录不等于当前线上版本；本轮仅整理文档，没有部署或核实远端状态。
 
 Gateway 是独立数据面进程，与 Proxy 一样由运维部署二进制、由 systemd 管理生命周期。
 Agent 仅管理本机 Redis/Kvrocks 容器，不安装、启停或采集 Gateway 专属状态。
-Server 保留配置草稿；Gateway 登记及健康上报的最小闭环已实现但未部署，配置拉取和已应用版本确认尚未实现。
+Server 保留配置草稿；Gateway 登记及健康上报的最小闭环已有代码，实际部署版本须另查，配置拉取和已应用版本确认尚未实现。
 当前服务仍为单后端透传原型，没有冷热协调能力。
 
 ## 构建与安装
@@ -19,7 +21,7 @@ Server 保留配置草稿；Gateway 登记及健康上报的最小闭环已实�
 4. 将构建产物安装到 `/opt/redis-gateway/redis-gateway`，权限 0755。将 [配置示例](../examples/gateway-passthrough.yaml) 复制为 `/etc/redis-gateway/gateway.yaml` 并调整后端、端口和容量预算。
 5. 设置 `allow_unauthenticated: false`，配置独立的 `frontend_password_file`；后端有密码时设置 `backend_password_file`。凭据文件使用绝对路径，服务账号持有、权限 0600；配置目录 root:redis-gateway、0750，配置文件 root:redis-gateway、0640。不要把真实凭据加入仓库或命令行。
 6. 以服务账号运行 `redis-gateway -config /etc/redis-gateway/gateway.yaml -check-config`，确认本地配置和凭据可读。此检查不代表后端连通、角色正确或业务就绪。
-7. 安装 [systemd 模板](../examples/redis-gateway.service) 到 `/etc/systemd/system/redis-gateway.service`，执行 `systemctl daemon-reload`、`systemctl start redis-gateway`。验收后再决定是否 `systemctl enable redis-gateway`。
+7. 安装 [systemd 模板](../examples/redis-gateway.service) 到 `/etc/systemd/system/redis-gateway.service`，执行 `systemctl daemon-reload`、`systemctl start redis-gateway`。确认保留的部署验收后执行 `systemctl enable redis-gateway`，满足开机启动要求；一次性测试实例不设置自启动。
 
 示例 buffer_budget 是应用层保守预留预算，不是实际 RSS 上限。应按测试连接数、最大命令和机器余量调整；本模板不施加压测用的 CPU 配额。生产资源预算与 systemd 内存限制待容量测试后确定。
 
@@ -31,8 +33,21 @@ Server 保留配置草稿；Gateway 登记及健康上报的最小闭环已实�
 - 升级前保留旧二进制与配置，检查新配置，停止服务，再替换二进制并启动、验收；失败恢复旧版本。当前不提供滚动升级、自动切流或无损重试保证，客户端遇到不确定写入不能盲目重试。
 - Server 草稿创建、修改、删除均不会启停该服务，草稿 revision 也不是进程已应用版本。
 
-G5c 由 Gateway 直接与 Server 通信，配置与边界见 [登记与心跳](gateway-heartbeat.md)；不通过 Agent 转发，配置应用确认仍待后续实现。
+G5c 由 Gateway 直接与 Server 通信，配置与边界见 [登记与心跳](archive/hot-cold/gateway-heartbeat.md)；不通过 Agent 转发，配置应用确认仍待后续实现。
 多网关归属、分片 fencing、高可用与切流仍待实现，不能把复制 systemd 服务理解为完成高可用。
+
+## 独立同步器：当前可运行范围
+
+- 通过 `make syncer` / `make syncer-linux` 构建 `bin/redis-syncer`；独立二进制，不由 Gateway 或 Agent 启动，不加入普通部署目标。
+- 普通隔离任务使用 `redis-syncer -config /绝对路径/syncer.yaml`，先用同一参数加 `-check-config` 检查配置与凭据。参考 [单任务示例](../examples/syncer-isolated.yaml) 与 [多任务示例](../examples/syncer-multitask.yaml)；检查成功不证明后端/持久状态可用。
+- 源/冷目标需符合当前 loopback 隔离限制，每任务独占冷 DB，日志目录与身份固定。不得通过清空目录、删除冷元数据或更换 task_id 绕过恢复检查。
+- 使用独立账号与 [systemd 模板](../examples/redis-syncer.service)，安装前核对路径、权限、日志磁盘预算与停止超时；保留部署验收后开启自启动。模板当前 `Restart=no`，仅开机启动不等于故障自愈；自动恢复策略仍待完成，不能直接宣称自动接管。
+- `/status`、`/livez`、`/metrics` 用于观测；可选 Server 心跳不下发任务、不授权写入，也不改变任务归属。增减静态任务目前需要受控重启。
+- `-confirmation-config` 是另一个显式实验入口，与普通配置互斥，固定单任务/单未完成操作；live 实验可持续捕获，但确认边界尚无自动收尾。不能把普通同步器部署步骤当作完整冷热服务启动方法。
+
+内部准备接口没有公开 Gateway YAML 开关。当前不要接入只有部分数据的热层，不进行业务切流，不启动自动淘汰。远端部署位置、自动拉起策略、资源预算与生产配置验收需在功能闭环后确认。
+
+配置字段和早期实验细节保留在 [同步器阶段归档](archive/hot-cold/syncer-service.md) 与 [静态多任务归档](archive/hot-cold/syncer-multitask.md)，现状优先以实现进度为准。
 
 ## 开发机部署记录（2026-09-07）
 

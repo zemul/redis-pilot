@@ -11,23 +11,7 @@ import (
 
 // Probe only. Unlike the earlier removal script, this emits a preparation
 // marker and never deletes or rewrites the business key. No cold ACK implied.
-const evictionPrepareProbeScript = `
-redis.replicate_commands()
-if #KEYS ~= 2 or #ARGV ~= 2 then return redis.error_reply('ERR prepare arguments') end
-if redis.call('TYPE', KEYS[1]).ok ~= 'string'
-   or redis.call('PTTL', KEYS[1]) ~= -1
-   or redis.call('GET', KEYS[1]) ~= ARGV[1] then
-  return redis.error_reply('ERR prepare key changed')
-end
-if redis.call('EXISTS', KEYS[2]) ~= 0 then
-  if redis.call('TYPE', KEYS[2]).ok == 'string'
-     and redis.call('PTTL', KEYS[2]) == -1
-     and redis.call('GET', KEYS[2]) == ARGV[2] then return 2 end
-  return redis.error_reply('ERR prepare marker conflict')
-end
-redis.call('SET', KEYS[2], ARGV[2])
-return 1
-`
+const evictionPrepareProbeScript = hotPreparationScript
 
 func TestEvictionOperationRedisPrepare(t *testing.T) {
 	addr := syncTestRedis(t)
