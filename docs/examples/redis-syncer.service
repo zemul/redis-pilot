@@ -1,0 +1,28 @@
+[Unit]
+Description=Redis Pilot isolated synchronization worker
+After=network.target
+
+[Service]
+Type=simple
+User=redis-syncer
+Group=redis-syncer
+WorkingDirectory=/opt/redis-syncer
+ExecStartPre=/opt/redis-syncer/redis-syncer -config /etc/redis-syncer/syncer.yaml -check-config
+ExecStart=/opt/redis-syncer/redis-syncer -config /etc/redis-syncer/syncer.yaml
+# An uncertain commit, history gap, or corrupt journal requires explicit review.
+# Boot startup is independent of restarting a failed synchronization task.
+Restart=no
+KillSignal=SIGTERM
+# Longer than the example's 10s drain budget plus HTTP shutdown and cleanup.
+TimeoutStopSec=30s
+StateDirectory=redis-syncer
+StateDirectoryMode=0700
+UMask=0077
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

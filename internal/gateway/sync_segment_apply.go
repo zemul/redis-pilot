@@ -72,6 +72,9 @@ func (v *syncSegmentView) preflight(ctx context.Context, checkpoint syncApplyChe
 }
 
 func (target syncColdTarget) applySegments(ctx context.Context, journal *syncSegments) (syncPosition, error) {
+	if err := target.checkJournalIdentity(journal); err != nil {
+		return syncPosition{}, err
+	}
 	journal.applyMu.Lock()
 	defer journal.applyMu.Unlock()
 	var confirmed syncPosition
@@ -80,6 +83,13 @@ func (target syncColdTarget) applySegments(ctx context.Context, journal *syncSeg
 		return confirmed, err
 	}
 	defer v.close()
+	return target.applySegmentView(ctx, v, v.end)
+}
+
+// Caller holds journal.applyMu and owns the view. The confirmation path stops
+// BEFORE its preparation marker; the ordinary applier still consumes v.end.
+func (target syncColdTarget) applySegmentView(ctx context.Context, v *syncSegmentView, end syncApplyCheckpoint) (syncPosition, error) {
+	var confirmed syncPosition
 	c, closeClient, err := target.open(ctx)
 	if err != nil {
 		return confirmed, err
@@ -98,14 +108,14 @@ func (target syncColdTarget) applySegments(ctx context.Context, journal *syncSeg
 		if v.floor != v.base || v.confirmed.Version != 0 {
 			return confirmed, errSyncHistoryGap
 		}
-		if err := v.preflight(ctx, v.base); err != nil {
+		if err := v.preflightThrough(ctx, v.base, end); err != nil {
 			return confirmed, err
 		}
 		initial, err := decodeSyncRDB(v.anchor.Data)
 		if err != nil {
 			return confirmed, err
 		}
-		args := []string{"MSET", syncPendingCPKey, v.base.encode(), syncAnchorKey, v.base.encode()}
+		args := []string{"MSET", c.pendingCheckpointKey(), v.base.encode(), c.anchorKey(), v.base.encode()}
 		for key, value := range initial {
 			if len(key) > syncPendingValueLimit || len(value) > syncPendingValueLimit {
 				return confirmed, errSyncUnsupported
@@ -133,7 +143,7 @@ func (target syncColdTarget) applySegments(ctx context.Context, journal *syncSeg
 		return confirmed, err
 	}
 	oldCheckpoint := meta.checkpoint
-	if err := v.preflight(ctx, oldCheckpoint); err != nil {
+	if err := v.preflightThrough(ctx, oldCheckpoint, end); err != nil {
 		return confirmed, err
 	}
 	meta, err = c.reconcilePending(meta)
@@ -141,7 +151,7 @@ func (target syncColdTarget) applySegments(ctx context.Context, journal *syncSeg
 		return confirmed, err
 	}
 	confirmed = meta.checkpoint.Position
-	err = v.walkFrom(oldCheckpoint, func(r syncRecord, previous, next syncApplyCheckpoint) error {
+	err = v.walkThrough(oldCheckpoint, end, func(r syncRecord, previous, next syncApplyCheckpoint) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
@@ -166,7 +176,7 @@ func (target syncColdTarget) applySegments(ctx context.Context, journal *syncSeg
 	if err != nil {
 		return confirmed, err
 	}
-	if meta.checkpoint != v.end {
+	if meta.checkpoint != end {
 		return confirmed, errSyncHistoryGap
 	}
 	return confirmed, nil
@@ -176,6 +186,9 @@ func (target syncColdTarget) applySegments(ctx context.Context, journal *syncSeg
 // this runs; cold apply/GC on this journal are serialized. The experimental
 // cold DB must still be exclusively owned: WATCH is not a distributed lease.
 func (target syncColdTarget) pruneSegments(ctx context.Context, journal *syncSegments) error {
+	if err := target.checkJournalIdentity(journal); err != nil {
+		return err
+	}
 	journal.applyMu.Lock()
 	defer journal.applyMu.Unlock()
 	v, err := journal.pendingView()

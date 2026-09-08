@@ -90,8 +90,8 @@ func kvCommitRunnerExperiments(t *testing.T, coldAddr string, cold *kvCommitClie
 	if err != nil || !strings.Contains(string(info), "redis_version:7.2.5\r\n") {
 		t.Fatal("expected isolated Redis 7.2.5 source", err)
 	}
-	hotCheck := &syncColdClient{hot.c, hot.r, 5 * time.Second}
-	coldCheck := &syncColdClient{cold.c, cold.r, 5 * time.Second}
+	hotCheck := &syncColdClient{conn: hot.c, reader: hot.r, timeout: 5 * time.Second}
+	coldCheck := &syncColdClient{conn: cold.c, reader: cold.r, timeout: 5 * time.Second}
 	for _, c := range []*syncColdClient{hotCheck, coldCheck} {
 		keys, err := c.keys()
 		if err != nil || len(keys) != 0 {

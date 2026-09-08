@@ -24,6 +24,8 @@ var syncRunnerMetricErrors = []string{
 	"journal_capacity", "resource_pressure", "source_transport", "cold_connection",
 	"unsupported_record", "canceled", "unclassified_failure", "shutdown_timeout",
 	"shutdown_incomplete", "shutdown_aborted", "unknown",
+	"credential_file", "journal_open", "journal_close",
+	"task_identity",
 }
 
 type syncRunnerCollector struct {

@@ -155,7 +155,7 @@ func kvCommitPendingExperiments(t *testing.T, addr string, c *kvCommitClient) {
 	}
 	first, _ := openFixture(t, one)
 	second, _ := openFixture(t, two)
-	client := &syncColdClient{c.c, c.r, 5 * time.Second}
+	client := &syncColdClient{conn: c.c, reader: c.r, timeout: 5 * time.Second}
 	keys, err := client.keys()
 	if err != nil || len(keys) != 0 {
 		t.Fatal("pending experiment requires new empty DB", err)

@@ -53,6 +53,7 @@ type syncRunnerStatus struct {
 	StopRequested                              bool
 	ResourcesObserved                          bool
 	ResourceUpdatedAt                          time.Time
+	Progress                                   syncProgressSnapshot
 }
 
 type syncRunner struct {
@@ -111,6 +112,10 @@ func syncRunnerReason(err error) string {
 		return "shutdown_aborted"
 	case errors.Is(err, errSyncShutdownIncomplete):
 		return "shutdown_incomplete"
+	case errors.Is(err, errSyncCredentialFile):
+		return "credential_file"
+	case errors.Is(err, errSyncTaskIdentity):
+		return "task_identity"
 	case syncOnlyCancellation(err):
 		return "canceled"
 	default:
@@ -126,13 +131,23 @@ func (r *syncRunner) validate(j *syncSegments) error {
 	if j == nil {
 		return errors.New("replication loop requires an open journal")
 	}
+	j.mu.Lock()
+	identity := cloneSyncTaskIdentity(j.manifest.Identity)
+	j.mu.Unlock()
+	if identity != nil {
+		if identity.TaskID != r.target.taskID || identity.Source != r.source.address || identity.Cold != r.target.address {
+			return errSyncTaskIdentity
+		}
+	} else if r.target.taskID != "" {
+		return errSyncTaskIdentity
+	}
 	if err := r.config.validate(); err != nil {
 		return err
 	}
 	if err := r.source.validate(); err != nil {
 		return err
 	}
-	if _, err := readPassword(r.source.passwordFile); err != nil {
+	if _, err := syncReadPassword(r.source.passwordFile); err != nil {
 		return err
 	}
 	host, port, err := net.SplitHostPort(r.target.address)
@@ -160,6 +175,9 @@ func (r *syncRunner) validate(j *syncSegments) error {
 // journal has no safe history to apply: validate the target and require it empty
 // before allowing first capture; bootstrap rechecks emptiness under WATCH later.
 func (target syncColdTarget) drainSegments(ctx context.Context, j *syncSegments) (syncPosition, error) {
+	if err := target.checkJournalIdentity(j); err != nil {
+		return syncPosition{}, err
+	}
 	position := j.durablePosition()
 	if position.History == "" {
 		c, closeClient, err := target.open(ctx)
@@ -384,6 +402,9 @@ func (r *syncRunner) run(ctx context.Context, j *syncSegments) (result error) {
 		r.update(func(s *syncRunnerStatus) {
 			s.Captured, s.Applied, s.Confirmed, s.Resources = captured, applied, confirmed, resources
 			s.ResourcesObserved, s.ResourceUpdatedAt = true, time.Now()
+			if err == nil || errors.Is(err, errSyncCapturePressure) {
+				recordSyncProgress(s, captured, applied, confirmed, resources, s.ResourceUpdatedAt)
+			}
 		})
 		if err != nil {
 			if !errors.Is(err, errSyncCapturePressure) {

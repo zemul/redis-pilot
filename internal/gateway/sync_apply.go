@@ -156,9 +156,11 @@ func planSyncPrefix(records []syncRecord) (map[string]string, []syncApplyStep, e
 }
 
 type syncColdClient struct {
-	conn    net.Conn
-	reader  *Reader
-	timeout time.Duration
+	conn            net.Conn
+	reader          *Reader
+	timeout         time.Duration
+	taskID          string
+	evictionReceipt bool // isolated confirmation path only, never a service option
 }
 
 func (c *syncColdClient) request(args ...string) ([]byte, error) {
@@ -246,6 +248,11 @@ func (c *syncColdClient) checkState(state map[string]string, cp syncApplyCheckpo
 // prove current state equality. Enumerate with bounded SCAN instead. Target
 // exclusivity is still required: SCAN is not a concurrent snapshot/fence.
 func (c *syncColdClient) keys() (map[string]bool, error) {
+	count, bytes := c.metadataScanBudget()
+	return c.scanKeys("", syncStateKeys+count, syncStateBytes+bytes)
+}
+
+func (c *syncColdClient) scanKeys(pattern string, maxKeys, maxKeyBytes int) (map[string]bool, error) {
 	keys := make(map[string]bool)
 	cursor := "0"
 	seen := make(map[string]bool)
@@ -255,7 +262,11 @@ func (c *syncColdClient) keys() (map[string]bool, error) {
 			return nil, errSyncTargetDrift
 		}
 		seen[cursor] = true
-		raw, err := c.request("SCAN", cursor, "COUNT", "64")
+		args := []string{"SCAN", cursor, "COUNT", "64"}
+		if pattern != "" {
+			args = append(args, "MATCH", pattern)
+		}
+		raw, err := c.request(args...)
 		if err != nil {
 			return nil, err
 		}
@@ -284,7 +295,7 @@ func (c *syncColdClient) keys() (map[string]bool, error) {
 			return nil, errSyncTargetDrift
 		}
 		n, err = r.count()
-		if err != nil || n < 0 || n > syncStateKeys+1 {
+		if err != nil || n < 0 || n > int64(maxKeys) {
 			return nil, errSyncTargetDrift
 		}
 		for i := int64(0); i < n; i++ {
@@ -292,11 +303,17 @@ func (c *syncColdClient) keys() (map[string]bool, error) {
 			if err != nil || key == nil {
 				return nil, errSyncTargetDrift
 			}
+			if c.rejectForeignMetadata(string(key)) {
+				return nil, errSyncTargetDrift
+			}
+			if pattern != "" && !strings.HasPrefix(string(key), syncMetadataPrefix) {
+				return nil, errSyncTargetDrift
+			}
 			if !keys[string(key)] {
 				keyBytes += len(key)
 			}
 			keys[string(key)] = true
-			if len(keys) > syncStateKeys+1 || keyBytes > syncStateBytes+len(syncCheckpointKey) {
+			if len(keys) > maxKeys || keyBytes > maxKeyBytes {
 				return nil, errSyncTargetDrift
 			}
 		}
@@ -314,11 +331,19 @@ func (c *syncColdClient) keys() (map[string]bool, error) {
 type syncColdTarget struct {
 	address, passwordFile string
 	timeout               time.Duration
+	taskID                string
+	evictionReceipt       bool
+	testDial              func(context.Context, string) (net.Conn, error) // fault injection only; never configured by a service
 }
 
 func (target syncColdTarget) open(ctx context.Context) (*syncColdClient, func(), error) {
 	if err := ctx.Err(); err != nil {
 		return nil, nil, err
+	}
+	if target.taskID != "" {
+		if err := ValidateIsolatedSyncTaskID(target.taskID); err != nil {
+			return nil, nil, err
+		}
 	}
 	host, port, err := net.SplitHostPort(target.address)
 	ip := net.ParseIP(host)
@@ -326,11 +351,16 @@ func (target syncColdTarget) open(ctx context.Context) (*syncColdClient, func(),
 	if err != nil || pe != nil || p < 1 || p > 65535 || ip == nil || !ip.IsLoopback() || target.timeout <= 0 || target.timeout > 30*time.Second {
 		return nil, nil, errors.New("cold prototype requires bounded loopback target")
 	}
-	password, err := readPassword(target.passwordFile)
+	password, err := syncReadPassword(target.passwordFile)
 	if err != nil {
 		return nil, nil, err
 	}
-	conn, err := (&net.Dialer{Timeout: target.timeout}).DialContext(ctx, "tcp", target.address)
+	var conn net.Conn
+	if target.testDial != nil {
+		conn, err = target.testDial(ctx, target.address)
+	} else {
+		conn, err = (&net.Dialer{Timeout: target.timeout}).DialContext(ctx, "tcp", target.address)
+	}
 	if err != nil {
 		if classified := syncTransportFailure(ctx, errSyncColdConnect, "connect", err); classified != nil {
 			return nil, nil, classified
@@ -340,7 +370,7 @@ func (target syncColdTarget) open(ctx context.Context) (*syncColdClient, func(),
 	stop := context.AfterFunc(ctx, func() { conn.Close() })
 	closeClient := func() { stop(); conn.Close() }
 	r, _ := NewReader(conn, DefaultConfig().Limits)
-	c := &syncColdClient{conn, r, target.timeout}
+	c := &syncColdClient{conn: conn, reader: r, timeout: target.timeout, taskID: target.taskID, evictionReceipt: target.evictionReceipt}
 	fail := func(operation string, cause error) (*syncColdClient, func(), error) {
 		closeClient()
 		if classified := syncTransportFailure(ctx, errSyncColdConnect, operation, cause); classified != nil {
@@ -366,6 +396,12 @@ func (target syncColdTarget) open(ctx context.Context) (*syncColdClient, func(),
 			return fail("durability configuration", err)
 		}
 	}
+	if c.taskID != "" {
+		if err := c.checkMetadataOwnership(); err != nil {
+			closeClient()
+			return nil, nil, err
+		}
+	}
 	if err := ctx.Err(); err != nil {
 		closeClient()
 		return nil, nil, err
@@ -379,6 +415,9 @@ func (target syncColdTarget) open(ctx context.Context) (*syncColdClient, func(),
 // WATCH is a conflict detector here, not a distributed ownership/fencing lease.
 func (target syncColdTarget) apply(ctx context.Context, journal *syncJournal) (syncPosition, error) {
 	var confirmed syncPosition
+	if target.taskID != "" {
+		return confirmed, errors.New("legacy v1 apply does not support named sync tasks")
+	}
 	records, err := journal.applicationPrefix()
 	if err != nil {
 		return confirmed, err

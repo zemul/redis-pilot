@@ -75,7 +75,7 @@ func (s syncSource) capture(ctx context.Context, j syncCaptureLog) error {
 	if position.History != "" && position.Source != s.address {
 		return errors.New("replication journal belongs to another source")
 	}
-	password, err := readPassword(s.passwordFile)
+	password, err := syncReadPassword(s.passwordFile)
 	if err != nil {
 		return err
 	}

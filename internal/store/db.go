@@ -141,6 +141,21 @@ func (d *DB) Checkpoint() error {
 // migrate 执行幂等建表。新增字段时追加 ALTER TABLE，不删除旧表。
 func (d *DB) migrate() error {
 	stmts := []string{
+		`CREATE TABLE IF NOT EXISTS syncer_task_bindings (
+			task_id TEXT PRIMARY KEY,
+			syncer_id TEXT NOT NULL,
+			node_id TEXT NOT NULL,
+			identity_digest TEXT NOT NULL,
+			registered_ms INTEGER NOT NULL
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_syncer_task_owner ON syncer_task_bindings(syncer_id)`,
+		`CREATE TABLE IF NOT EXISTS syncer_observations (
+			syncer_id TEXT NOT NULL,
+			boot_id TEXT NOT NULL,
+			report TEXT NOT NULL,
+			received_ms INTEGER NOT NULL,
+			PRIMARY KEY(syncer_id, boot_id)
+		)`,
 		`CREATE TABLE IF NOT EXISTS gateway_observations (
 			gateway_id TEXT NOT NULL,
 			boot_id TEXT NOT NULL,

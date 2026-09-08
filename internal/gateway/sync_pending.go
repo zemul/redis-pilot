@@ -215,7 +215,7 @@ func (c *syncColdClient) pendingMeta() (syncPendingMeta, error) {
 	var m syncPendingMeta
 	values := make([]string, 3)
 	found := make([]bool, 3)
-	for i, key := range []string{syncPendingCPKey, syncAnchorKey, syncPendingKey} {
+	for i, key := range []string{c.pendingCheckpointKey(), c.anchorKey(), c.pendingKey()} {
 		var err error
 		values[i], found[i], err = c.get(key)
 		if err != nil {
@@ -285,7 +285,7 @@ func equalPendingValue(a, b syncPendingValue) bool {
 }
 
 func (c *syncColdClient) watchPending(cmd []string) error {
-	args := []string{"WATCH", syncPendingCPKey, syncPendingKey, syncAnchorKey}
+	args := []string{"WATCH", c.pendingCheckpointKey(), c.pendingKey(), c.anchorKey()}
 	if len(cmd) > 0 {
 		args = append(args, cmd[1])
 	}
@@ -360,7 +360,7 @@ func (c *syncColdClient) reconcilePending(meta syncPendingMeta) (syncPendingMeta
 		}
 		reply = "*2\r\n" + result + "+OK\r\n"
 	}
-	commands = append(commands, []string{"SET", syncPendingCPKey, p.Next.encode()})
+	commands = append(commands, []string{"SET", c.pendingCheckpointKey(), p.Next.encode()})
 	if err := c.pendingTxn(commands, reply); err != nil {
 		return meta, err
 	}
@@ -407,10 +407,10 @@ func (c *syncColdClient) preparePending(meta syncPendingMeta, r syncRecord, next
 		return meta, err
 	}
 	encoded := p.encode()
-	if len(encodeCommand("SET", syncPendingKey, encoded)) > DefaultConfig().Limits.MaxBytes {
+	if len(encodeCommand("SET", c.pendingKey(), encoded)) > DefaultConfig().Limits.MaxBytes {
 		return meta, errSyncUnsupported
 	}
-	if err := c.pendingTxn([][]string{{"SET", syncPendingKey, encoded}}, "*1\r\n+OK\r\n"); err != nil {
+	if err := c.pendingTxn([][]string{{"SET", c.pendingKey(), encoded}}, "*1\r\n+OK\r\n"); err != nil {
 		return meta, err
 	}
 	meta.pending = &p
@@ -421,6 +421,9 @@ func (c *syncColdClient) preparePending(meta syncPendingMeta, r syncRecord, next
 // target: unrelated external drift is NOT detected as it was in G6a-4.
 func (target syncColdTarget) applyPending(ctx context.Context, journal *syncJournal) (syncPosition, error) {
 	var confirmed syncPosition
+	if target.taskID != "" {
+		return confirmed, errors.New("unbound single-file pending apply does not support named sync tasks")
+	}
 	v, err := journal.pendingView()
 	if err != nil {
 		return confirmed, err
@@ -472,7 +475,7 @@ func (target syncColdTarget) applyPending(ctx context.Context, journal *syncJour
 		if len(keys) != 0 {
 			return confirmed, errSyncTargetDrift
 		}
-		args := []string{"MSET", syncPendingCPKey, base.encode(), syncAnchorKey, base.encode()}
+		args := []string{"MSET", c.pendingCheckpointKey(), base.encode(), c.anchorKey(), base.encode()}
 		for key, value := range initial {
 			args = append(args, key, value)
 		}

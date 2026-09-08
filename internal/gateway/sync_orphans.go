@@ -70,6 +70,7 @@ func (s *syncSegments) orphanManifestLocked() error {
 	}
 	m := s.manifest
 	if disk.Version != m.Version || disk.Generation != m.Generation || disk.Anchor != m.Anchor ||
+		!sameSyncTaskIdentity(disk.Identity, m.Identity) ||
 		disk.AnchorSize != m.AnchorSize || disk.Base != m.Base || disk.Floor != m.Floor ||
 		disk.Confirmed != m.Confirmed || len(disk.Segments) != len(m.Segments) ||
 		len(s.files) != len(m.Segments) {

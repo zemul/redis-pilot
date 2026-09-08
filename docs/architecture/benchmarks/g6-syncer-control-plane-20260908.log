@@ -1,0 +1,88 @@
+G6a-12 fixed local-task registration and observation reporting, 2026-09-08
+Base commit: ff2e6fe (G6a-9), branch dev.
+Working-tree base: uncommitted G6a-10 standalone and G6a-11 static multi-task work.
+Environment: local Darwin; Linux amd64 cross-compilation only.
+
+Scope:
+- Optional named-task reporter -> HTTP -> Server SQLite observations.
+- Stable task/syncer/node/identity bindings survive process and database reopen.
+- No task dispatch, execution authorization, lease, cold-write fencing, automatic
+  assignment, failover, Agent deployment or Gateway request-path change.
+- No remote deployment, real Redis/Kvrocks multi-backend test, long stability
+  test, throughput measurement, full lag alarm or Gateway protection claim.
+
+Protocol/storage coverage:
+- Per-syncer machine credentials; JWT cannot replace them, missing tokens deny.
+- Viewer-authenticated runtime GET; bounded report payload and fixed categories.
+- Atomic multi-task first registration; conflict rolls back all new bindings.
+- Persistent owner/identity checks across reboot and stale observations.
+- Sequence/content deduplication without freshness renewal for retained boots.
+- Concurrent out-of-order reports, bounded boot history and sticky binding count.
+- Duplicate live/stopping boots visible as conflict; terminal state protection.
+- Observations do not alter Proxy snapshot version or topology generation.
+- Historical boot pruning is not permanent anti-replay protection or fencing.
+
+Reporter/service coverage:
+- Stable syncer ID, new boot ID on restart, task identity digest canonicalization.
+- Same named tasks restart against SQLite without replacing recorded bindings.
+- Final reports follow all task joins; reporter is joined before Service returns.
+- HTTP failures do not stop task execution; requests have bounded timeout/body.
+- Correct ack sequence required; 401/409/503, malformed and oversized replies.
+- Redirects never forward credentials; transport ignores environment proxy.
+- Private token files: reject FIFO/symlink/hardlink/public/oversized/multiline.
+- Construction does not read tokens; check-config reads but never contacts Server
+  or creates journals. Actual startup rechecks credentials before task execution.
+- Legacy/local-only metrics preserved: report metrics registered only when enabled.
+
+Fixture limitations:
+  Reporter persistence/restart test uses real HTTP and SQLite with fake sync tasks.
+  Server router/auth/storage is tested separately against the shared report type.
+  This does not test real database replication, data resume or distributed takeover.
+  Existing CLI child-process lifecycle tests still use controlled RESP fixtures
+  with no RDB/business writes; they are not real Redis/Kvrocks acceptance runs.
+
+Targeted functional regression:
+  go test ./internal/syncer ./pkg/apitypes ./internal/store ./internal/server -run 'TestSyncer|TestMulti|TestService' -count=1 -timeout=120s
+  PASS; syncer 1.994s, apitypes 1.391s, store 1.197s, server 1.294s.
+
+Three-round targeted race regression:
+  go test -race ./internal/syncer ./internal/store ./internal/server ./pkg/apitypes -run 'TestSyncer|TestMulti|TestService' -count=3 -timeout=120s
+  PASS; syncer 4.482s, store 5.854s, server 8.075s, apitypes 1.372s.
+
+Project regression:
+  go test ./...
+  PASS; gateway 22.896s, server 56.836s, store 1.843s, syncer 2.232s,
+  cmd/syncer 1.050s, apitypes 1.090s; other packages passed/cached.
+
+Final full service/CLI race after endpoint and CLI check-config coverage:
+  go test -race ./internal/syncer ./cmd/syncer -count=3 -timeout=120s
+  PASS; syncer 3.756s, cmd/syncer 16.055s.
+  go vet ./internal/syncer ./internal/server ./internal/store ./pkg/apitypes ./cmd/syncer
+  PASS
+
+Final project rerun:
+  go test ./...
+  PASS; cmd/syncer 1.413s, syncer 0.613s, remaining tested packages cached.
+  git diff --check
+  PASS
+
+Build and read-only example checks (reporting remains opt-in in examples):
+  make syncer
+  PASS
+  bin/redis-syncer -config docs/examples/syncer-isolated.yaml -check-config
+  PASS; "isolated syncer configuration valid".
+  bin/redis-syncer -config docs/examples/syncer-multitask.yaml -check-config
+  PASS; "isolated syncer configuration valid".
+  Enabled-reporting check-config is covered by TestRunReportingCheckConfigNeverContactsServer.
+
+Linux artifact (compiled only, not deployed/run):
+  GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -o <temp-dir>/redis-syncer ./cmd/syncer
+  PASS; ELF 64-bit x86-64 statically linked.
+  Path: /tmp/redis-pilot-syncer-g6a12.kGzEa4/redis-syncer
+  SHA256: 908ba00d34e732e904b17bdb6310c26ce361a4bbf5445e6f54c720e4d2c4662c
+
+Delivery:
+  G6a-10/11/12 remain uncommitted on dev. No push or deployment.
+  Unrelated deploy/, dump.rdb and session/ content was not modified.
+  Next: coherent progress/lag observations and Gateway protection protocol;
+  authority-based assignment, manual handoff, and automatic takeover remain separate.

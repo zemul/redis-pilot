@@ -97,7 +97,7 @@ func TestSyncColdScan(t *testing.T) {
 				}
 			}()
 			r, _ := NewReader(front, DefaultConfig().Limits)
-			c := &syncColdClient{front, r, time.Second}
+			c := &syncColdClient{conn: front, reader: r, timeout: time.Second}
 			keys, err := c.keys()
 			front.Close()
 			<-done
@@ -333,7 +333,7 @@ func kvCommitApplyExperiments(t *testing.T, addr string, c *kvCommitClient) {
 	// Refuse to run destructive test setup on any pre-populated DB. Only
 	// delete the exact synthetic keys created by this test between cases.
 	assertEmpty := func() {
-		client := &syncColdClient{c.c, c.r, 5 * time.Second}
+		client := &syncColdClient{conn: c.c, reader: c.r, timeout: 5 * time.Second}
 		keys, err := client.keys()
 		if err != nil || len(keys) != 0 {
 			t.Fatal("dedicated target must be empty", err)

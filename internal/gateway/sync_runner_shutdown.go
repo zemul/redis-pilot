@@ -131,6 +131,9 @@ func (r *syncRunner) drainStopped(ctx context.Context, j *syncSegments, ops sync
 	r.update(func(s *syncRunnerStatus) {
 		s.Captured, s.Applied, s.Confirmed, s.Resources = target, applied, confirmed, resources
 		s.ResourcesObserved, s.ResourceUpdatedAt = true, time.Now()
+		if resourceErr == nil || errors.Is(resourceErr, errSyncCapturePressure) {
+			recordSyncProgress(s, target, applied, confirmed, resources, s.ResourceUpdatedAt)
+		}
 	})
 	if resourceErr != nil && !errors.Is(resourceErr, errSyncCapturePressure) {
 		return resourceErr

@@ -24,6 +24,15 @@
 - [同步资源保护](gateway-sync-resources.md) — G6a-7 捕获磁盘水位/保守积压阈值、视图预算与显式孤儿清理
 - [隔离持续同步循环](gateway-sync-runner.md) — G6a-8 捕获/应用/确认/清理调度、受控重连与资源暂停；未接运行服务
 - [同步器启停与观测](gateway-sync-lifecycle.md) — G6a-9 固定本地尾部的优雅停止、强制中断和只读指标；长测及服务接入待做
+- [独立同步服务入口](syncer-service.md) — G6a-10 独立二进制、兼容单任务配置、只读观测与 systemd 模板；静态多任务后续见 G6a-11
+- [同步服务静态多任务](syncer-multitask.md) — G6a-11 单进程 1～8 个隔离任务、独立元数据与持久身份绑定；Server 自动调度、分布式接管和 Cluster 迁移仍待做
+- [同步器固定登记与上报](syncer-control-plane.md) — G6a-12 本地任务归属登记、重启保留、离线与冲突观测；不下发任务、不自动接管
+- [同步器进度采样](syncer-progress.md) — G6a-13 源端/持久捕获/冷层应用/日志清理确认分开观测、同历史差值与过期分类；不启用业务保护动作
+- [Gateway 单 key 操作屏障](gateway-key-barrier.md) — G6b-1 进程内准入、在途排空与不确定结果隔离基础；未接业务请求、不执行淘汰，持久协议待做
+- [内部降冷复制标记实验](gateway-eviction-envelope.md) — G6b-2a 真实 Redis 复制格式、部分失败/丢回复与严格记录组识别；冷层精确确认和持久意图仍待做
+- [持久操作意图与准备标记](gateway-eviction-intent.md) — G6b-2b 单操作本地日志、准备事件持久定位和强杀重开验证；无冷层 ACK，不允许业务淘汰
+- [Kvrocks 精确提交确认](gateway-cold-confirmation.md) — G6b-2c 源日志证明、受控前缀应用、WATCH 下冷确认提交及本地落盘/重连核对；真实后端验证通过，未接业务淘汰
+- [Gateway 与同步器确认通信](gateway-confirmation-rpc.md) — G6b-2d 显式隔离确认模式、HTTP 会话绑定、双端持久记录与真实进程恢复；未接持续任务状态机和业务请求
 - [网关独立部署](gateway-deployment.md) — 二进制 + systemd，与 Agent 解耦；构建入口及模板已提供
 - [产品优化路线图](../ROADMAP.md) — Web/H5 信息架构与 P1～P5 优先级
 

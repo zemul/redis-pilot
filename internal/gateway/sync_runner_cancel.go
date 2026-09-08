@@ -19,6 +19,8 @@ func syncTerminalOutcome(err error) bool {
 		errSyncJournalCorrupt, errSyncJournalFull, errSyncUnsupported, errSyncHistoryGap,
 		errSyncRetryExhausted, errSyncPressureTimeout, errSyncRunnerBusy, errSyncViewLimit,
 		errSyncShutdownTimeout, errSyncShutdownAborted, errSyncShutdownIncomplete,
+		errSyncCredentialFile,
+		errSyncTaskIdentity,
 	} {
 		if errors.Is(err, terminal) {
 			return true

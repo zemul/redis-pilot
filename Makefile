@@ -14,13 +14,19 @@ DEPLOY_AGENTS := redis01 redis02 redis03
 
 .PHONY: all clean dashboard skills-embed $(BINS) build-linux deploy deploy-server deploy-agent deploy-cli deploy-proxy setup
 
-# Opt-in development artifact; not part of deploy and never restarts services.
-.PHONY: gateway gateway-linux
+# Opt-in development artifacts; not part of deploy and never restart services.
+.PHONY: gateway gateway-linux syncer syncer-linux
 gateway:
 	CGO_ENABLED=0 go build $(GOFLAGS) -ldflags '$(LDFLAGS)' -o $(OUT)/redis-gateway ./cmd/gateway
 
 gateway-linux:
 	GOOS=linux GOARCH=amd64 $(MAKE) gateway
+
+syncer:
+	CGO_ENABLED=0 go build $(GOFLAGS) -ldflags '$(LDFLAGS)' -o $(OUT)/redis-syncer ./cmd/syncer
+
+syncer-linux:
+	GOOS=linux GOARCH=amd64 $(MAKE) syncer
 
 all: $(BINS)
 

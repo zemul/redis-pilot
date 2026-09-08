@@ -1,0 +1,94 @@
+G6a-13 sampled sync progress, reporting and classification, 2026-09-08
+Base commit: ff2e6fe (G6a-9), branch dev.
+Working-tree base: G6a-10/11/12 uncommitted standalone/multi-task/registration work.
+Environment: local Darwin; Linux amd64 cross-compilation only.
+
+Scope:
+- Explicitly enabled, bounded, separate AUTH/INFO replication source probes.
+- Coherent cached local capture/apply/GC confirmation/resource observation.
+- Local snapshot is taken before source INFO; newer local progress cannot be
+  paired into an older source sample while that request is in flight.
+- Exact decimal-string positions/byte gaps in JSON; no secrets/endpoints/paths.
+- Optional task heartbeat progress, SQLite persistence, derived runtime views.
+- Worker/Server share conservative lineage/freshness/error classification.
+- Not execution authorization, an atomic barrier, cold health, or eviction proof.
+- No automatic warming/eviction/write rejection, failover or task assignment.
+- No real Redis/Kvrocks progress integration, deployment, Linux systemd run,
+  long stability run, throughput/latency result, trend alarm or notification.
+
+Coverage:
+- INFO role, replid and offset parsing; duplicates/malformed/oversized replies,
+  negative/overflow offsets, all-zero history, non-master sources and credentials.
+- Read-only AUTH/INFO transcript, no PSYNC/data writes/cold requests; connection
+  timeout/cancellation/close, cache-before-probe ordering and local source binding.
+- Distinguish applied from persistent GC confirmation, unknown GC from zero lag.
+- Same-history ordered comparison only; omit gaps on stale/unknown/error/uncertain
+  or mismatching samples; sample_aligned is explicitly not current cold health.
+- Large offsets above 2^53 and near int64 max round-trip without API precision loss.
+- Sample age is not refreshed by lifecycle updates or repeated heartbeats.
+- Server elapsed receive time, transport allowance, offline/conflict overrides.
+- 8-task reports remain within the existing 16KiB limit; old reports still valid.
+- Read-only status/metrics/check-config never trigger source probes.
+- Three independent in-flight samplers cancel and join alongside task shutdown.
+- Concurrent immutable cache snapshots, fixed metrics labels and omitted stale gaps.
+- Source/store/HTTP fixtures are controlled local tests, not real data replication.
+
+Review/test-driven corrections:
+- Compare identical retries using JSON wire values, not time.Time internal
+  monotonic/location state that is intentionally absent after SQLite decoding.
+- Capture Server receive time before waiting on the store mutex, so queuing does
+  not make old samples fresh; add conservative 3s reporting transport allowance.
+- Use 45s sample freshness to cover bounded sampling + heartbeat cadences, while
+  still aging cached samples independently from newly received heartbeats.
+- Do not publish fresh local progress after a non-pressure resource observation
+  failure; preserve the previous sample and its original age.
+
+Initial parser/adapter/type tests:
+  go test ./pkg/apitypes ./internal/gateway -run 'TestSyncProgress' -count=1 -timeout=120s
+  PASS; apitypes 1.236s, gateway 0.428s.
+
+Final three-round feature race regression:
+  go test -race ./pkg/apitypes ./internal/gateway ./internal/syncer ./internal/store ./internal/server ./cmd/syncer -run 'TestSyncProgress|TestSyncerProgress|TestRunReportingCheckConfig' -count=3 -timeout=120s
+  PASS; apitypes 2.377s, gateway 2.824s, syncer 3.375s,
+  store 3.706s, server 5.958s, cmd/syncer 1.535s.
+
+Full project regression:
+  go test ./...
+  PASS; gateway 21.183s, server 56.522s, store 3.360s, syncer 2.962s,
+  apitypes 1.638s, cmd/syncer 1.026s; remaining packages passed/cached.
+  go vet ./internal/gateway ./internal/syncer ./internal/store ./internal/server ./pkg/apitypes ./cmd/syncer
+  PASS
+
+Full kernel/service/CLI race regression:
+  go test -race ./internal/gateway ./internal/syncer ./cmd/syncer -count=1 -timeout=150s
+  PASS; gateway 23.291s, syncer 3.136s, cmd/syncer 7.239s.
+  Existing child-process lifecycle fixtures still return no RDB/business writes;
+  their success is not real database persistence/resume acceptance.
+
+Executable and read-only example checks:
+  make syncer
+  PASS
+  bin/redis-syncer -config docs/examples/syncer-isolated.yaml -check-config
+  PASS; "isolated syncer configuration valid".
+  bin/redis-syncer -config docs/examples/syncer-multitask.yaml -check-config
+  PASS; "isolated syncer configuration valid".
+  Source probes remain disabled in examples unless explicitly uncommented.
+  Enabled-progress check-config is covered in the CLI test above.
+
+Linux artifact (compile only, no deployment/runtime verification):
+  GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -o <temp-dir>/redis-syncer ./cmd/syncer
+  PASS; ELF 64-bit x86-64, statically linked.
+  Path: /tmp/redis-pilot-syncer-g6a13.yql6uJ/redis-syncer
+  SHA256: 846370558506bdbb02e33da7685843a911e52eabeb757819fc1bcd3f3b513416
+
+Final worktree check:
+  git diff --check
+  PASS
+  G6a-10/11/12/13 changes remain uncommitted on dev. No push or deployment.
+  Unrelated deploy/, dump.rdb and session/ content was not intentionally changed.
+
+Deferred:
+- Real source/cold progress sampling integration and hot-write tail latency tests.
+- Idle cold health probes, reliable last-advance/trend/stall alarms and notification.
+- Gateway protection decisions and operation barriers; no offset-only key eviction.
+- Authoritative task assignment, manual handoff, fencing and automatic takeover.

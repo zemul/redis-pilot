@@ -47,6 +47,7 @@ type syncSegmentManifest struct {
 	Floor      syncApplyCheckpoint `json:"floor"`
 	Confirmed  syncApplyCheckpoint `json:"confirmed"`
 	Segments   []syncSegmentIndex  `json:"segments"`
+	Identity   *syncTaskIdentity   `json:"identity,omitempty"` // v2 named tasks; absent preserves exact v1 encoding
 }
 
 type syncSegmentHeader struct {
@@ -144,7 +145,9 @@ func sameSyncLineage(a, b syncApplyCheckpoint) bool {
 }
 
 func (s *syncSegments) openFile(name string, flags int) (*os.File, error) {
-	fd, err := unix.Openat(int(s.dir.Fd()), name, flags|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0600)
+	// Expected files are regular. A replaced manifest/anchor FIFO must be
+	// rejected by fstat rather than block a task (and whole-service shutdown).
+	fd, err := unix.Openat(int(s.dir.Fd()), name, flags|unix.O_CLOEXEC|unix.O_NOFOLLOW|unix.O_NONBLOCK, 0600)
 	if err != nil {
 		return nil, err
 	}
@@ -234,6 +237,7 @@ func readSyncSegmentObject(f *os.File, magic string, v any, limit int64) error {
 
 func cloneSyncSegmentManifest(m syncSegmentManifest) syncSegmentManifest {
 	m.Segments = append([]syncSegmentIndex(nil), m.Segments...)
+	m.Identity = cloneSyncTaskIdentity(m.Identity)
 	return m
 }
 
@@ -242,8 +246,15 @@ func openSyncSegments(dir string, segmentLimit, totalLimit int64) (*syncSegments
 }
 
 func openSyncSegmentsWithPolicy(dir string, segmentLimit, totalLimit int64, policy syncResourcePolicy) (*syncSegments, error) {
+	return openSyncSegmentsForTask(dir, segmentLimit, totalLimit, policy, nil)
+}
+
+func openSyncSegmentsForTask(dir string, segmentLimit, totalLimit int64, policy syncResourcePolicy, identity *syncTaskIdentity) (*syncSegments, error) {
 	if err := policy.validate(); err != nil {
 		return nil, err
+	}
+	if identity != nil && !validSyncTaskIdentity(identity) {
+		return nil, errSyncTaskIdentity
 	}
 	if !filepath.IsAbs(dir) || segmentLimit < 1024 || segmentLimit > 16<<20 || totalLimit < segmentLimit || totalLimit > 1<<30 {
 		return nil, errors.New("invalid segmented replication path or capacity")
@@ -308,7 +319,11 @@ func openSyncSegmentsWithPolicy(dir string, segmentLimit, totalLimit int64, poli
 				return nil, errSyncJournalCorrupt
 			}
 		}
-		if err = s.publish(syncSegmentManifest{Version: 1}); err != nil {
+		version := 1
+		if identity != nil {
+			version = 2
+		}
+		if err = s.publish(syncSegmentManifest{Version: version, Identity: cloneSyncTaskIdentity(identity)}); err != nil {
 			return nil, err
 		}
 		ok = true
@@ -323,8 +338,15 @@ func openSyncSegmentsWithPolicy(dir string, segmentLimit, totalLimit int64, poli
 		return nil, err
 	}
 	m := &s.manifest
-	if m.Version != 1 || m.Generation == 0 || len(m.Segments) > syncSegmentCountLimit {
+	if !validSyncManifestIdentity(*m) || m.Generation == 0 || len(m.Segments) > syncSegmentCountLimit {
 		return nil, errSyncJournalCorrupt
+	}
+	// Check binding BEFORE opening/scanning active data files, fsyncing a
+	// recovered tail, or making any network request. Neither legacy -> named
+	// nor changing a named identity is an implicit migration, even for an
+	// empty manifest. Recovery must use the same task and configured endpoints.
+	if !sameSyncTaskIdentity(m.Identity, identity) {
+		return nil, errSyncTaskIdentity
 	}
 	zero := syncApplyCheckpoint{}
 	if m.Anchor == "" {
@@ -353,6 +375,9 @@ func openSyncSegmentsWithPolicy(dir string, segmentLimit, totalLimit int64, poli
 		return nil, errSyncJournalCorrupt
 	}
 	if !sameSyncLineage(m.Base, m.Floor) || m.Floor.Position.Offset < m.Base.Position.Offset || (m.Floor.Position.Offset == m.Base.Position.Offset && m.Floor != m.Base) {
+		return nil, errSyncJournalCorrupt
+	}
+	if m.Identity != nil && m.Base.Position.Source != m.Identity.Source {
 		return nil, errSyncJournalCorrupt
 	}
 	previous := m.Floor
@@ -449,6 +474,9 @@ func (s *syncSegments) append(r syncRecord) error {
 	}
 	if !utf8.ValidString(r.Position.Source) {
 		return errSyncJournalCorrupt
+	}
+	if s.manifest.Identity != nil && r.Position.Source != s.manifest.Identity.Source {
+		return errSyncTaskIdentity
 	}
 	if len(r.Data) > 8<<20 {
 		return errSyncJournalFull

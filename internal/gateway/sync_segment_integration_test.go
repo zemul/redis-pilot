@@ -72,7 +72,7 @@ func kvCommitSegmentExperiments(t *testing.T, addr string, c *kvCommitClient) {
 		}
 	}
 	one, two := read("phase1.log"), read("phase2.log")
-	client := &syncColdClient{c.c, c.r, 5 * time.Second}
+	client := &syncColdClient{conn: c.c, reader: c.r, timeout: 5 * time.Second}
 	keys, err := client.keys()
 	if err != nil || len(keys) != 0 {
 		t.Fatal("segment experiment requires new empty DB", err)
