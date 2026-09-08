@@ -13,6 +13,8 @@ G6a-1 已增加独立测试调用的复制捕获、日志恢复与 PSYNC 续传�
 
 G6a-5 增加 [单项 pending 恢复](gateway-pending-recovery.md)，G6a-6 增加 [分段定位与安全回收](gateway-segmented-journal.md)。这些仍是隔离同步原型；TTL、淘汰/回温、所有权、物理磁盘水位和运行服务接线未完成。
 
+G6a-7 已在隔离原型内补充 [磁盘水位、积压和孤儿清理](gateway-sync-resources.md)。仍未接自动调度或运行服务，生产阈值与长期同步故障时的热层限写策略待确认。
+
 ## 1. 目标与阶段边界
 
 最终目标是在不改 Redis / Kvrocks 引擎源码的优先预研方向下，由网关承担冷热协调。

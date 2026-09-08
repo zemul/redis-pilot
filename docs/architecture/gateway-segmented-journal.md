@@ -1,5 +1,7 @@
 # G6a-6：分段日志、checkpoint 定位与安全回收
 
+后续进展：[G6a-7 资源保护与孤儿清理](gateway-sync-resources.md) 已扩展本实现。本页保留 G6a-6 的原始验收边界；下述“未实现”的磁盘水位、视图数量限制和显式孤儿清理请结合后续文档阅读，自动调度/服务接线仍未完成。
+
 ## 本轮范围
 
 2026-09-08，在 G6a-5 单项 pending 协议旁增加独立分段日志和 `applySegments` / `pruneSegments` 实验入口。冷层仍使用相同的三个 v2 元数据 key、原生 String 与 WATCH/MULTI/EXEC 协议；没有增加 Server SQLite 的逐 key 状态，也没有修改 Redis/Kvrocks 引擎。

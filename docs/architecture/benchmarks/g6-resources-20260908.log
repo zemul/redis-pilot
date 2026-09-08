@@ -1,0 +1,212 @@
+G6a-7 local resource admission / bounded views / explicit orphan cleanup
+Date: 2026-09-08
+Base commit created at start of turn: ff1d296 (dev).
+G6a-7 changes remain uncommitted; no push or running-service deployment.
+
+Final test binary:
+  /tmp/redis-pilot-g6-resources-20260908.test
+  redis03:/tmp/redis-pilot-g6-apply.0eGQag/redis-pilot-g6-resources-20260908.test
+  SHA256 local and remote: ae36e4bf45873e20ef5fc63709c619c156474d299974ff1d86c8a7e9ae04e904
+  Build: CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go test -c ...
+
+Environment:
+  Reused isolated redis03 container redis-pilot-g6-apply-0eGQag.
+  Kvrocks 2.15.0, network none, no exposed host ports, memory 384 MiB.
+  Durability preconditions checked by test: write_options.sync=yes, disable_wal=no.
+  phase1.log / phase2.log are prior real Redis RDB/PSYNC fixtures.
+  Extra suffixes are synthetic test commands, not presented as real source capture.
+  Disk-low tests INJECT available-byte samples; they do not fill a real filesystem.
+
+Pre-final issue found and corrected:
+  TestSyncResourceBacklogZeroResumeNeedsNoStatusCall initially failed.
+  When resume-unconfirmed=0, using projected (current+next command) bytes for
+  the recovery threshold prevented direct resume after GC drained to zero.
+  Fix: recover based on current unconfirmed bytes, then check the next command
+  against the high admission limit. No status() call or restart is required.
+  Final target suite below includes this regression.
+
+Local final target suite:
+  go test -race ./internal/gateway -run '^TestSync(Resource|Orphan)' -count=3 -timeout=120s
+ok  	gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/internal/gateway	9.396s
+
+  Real local Redis is exercised by the resource PSYNC test via the existing
+  /opt/homebrew/bin/redis-server fixture. Child Redis/capture processes ended.
+
+Final whole gateway / project validation:
+  go test -race ./internal/gateway -count=1 -timeout=120s
+  go test ./...
+  go vet ./internal/gateway
+  git diff --check
+ok  	gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/internal/gateway	15.861s
+?   	gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/cmd/agent	[no test files]
+?   	gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/cmd/cli	[no test files]
+?   	gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/cmd/gateway	[no test files]
+?   	gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/cmd/proxy	[no test files]
+?   	gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/cmd/server	[no test files]
+ok  	gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/internal/agent	(cached)
+ok  	gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/internal/audit	(cached)
+ok  	gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/internal/cli	(cached)
+ok  	gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/internal/gateway	13.072s
+?   	gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/internal/logger	[no test files]
+?   	gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/internal/podman	[no test files]
+ok  	gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/internal/proxy/backend	(cached)
+?   	gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/internal/proxy/config	[no test files]
+ok  	gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/internal/proxy/discovery	(cached)
+ok  	gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/internal/proxy/metrics	(cached)
+ok  	gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/internal/proxy/proxysvc	(cached)
+ok  	gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/internal/proxy/readpool	(cached)
+?   	gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/internal/proxy/resp	[no test files]
+ok  	gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/internal/proxy/route	(cached)
+ok  	gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/internal/proxy/sentinel	(cached)
+?   	gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/internal/proxy/session	[no test files]
+?   	gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/internal/s3	[no test files]
+ok  	gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/internal/server	(cached)
+ok  	gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/internal/server/ai	(cached)
+ok  	gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/internal/server/metrics	(cached)
+ok  	gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/internal/state	(cached)
+ok  	gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/internal/store	(cached)
+ok  	gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/pkg/apitypes	(cached)
+ok  	gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/pkg/redisconf	(cached)
+?   	gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/test/correctness	[no test files]
+?   	gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/test/reliability	[no test files]
+
+  Combined command exit code: 0
+
+Remote cold integration:
+  podman exec --user 0 -e GATEWAY_TEST_KVROCKS_COMMIT=isolated -e GATEWAY_TEST_KVROCKS_ADDRESS=127.0.0.1:6666 -e GATEWAY_TEST_KVROCKS_PHASE=segments -e GATEWAY_TEST_SYNC_FIXTURE_DIR=/fixture redis-pilot-g6-apply-0eGQag /fixture/redis-pilot-g6-resources-20260908.test -test.run '^TestKvrocksCommitExperiment$' -test.v -test.count=3 -test.timeout=90s
+
+redis-pilot-g6-apply-0eGQag
+=== RUN   TestKvrocksCommitExperiment
+=== RUN   TestKvrocksCommitExperiment/real_fixture_gc_restart_and_suffix
+    sync_segment_integration_test.go:154: real Redis RDB/PSYNC fixture kept counter=42 then 43 across segmented GC/reopen
+=== RUN   TestKvrocksCommitExperiment/pending_after_gc_before
+    sync_segment_integration_test.go:195: post-GC unresolved/reply-loss/late-EXEC recovery did not duplicate INCR
+=== RUN   TestKvrocksCommitExperiment/pending_after_gc_reply
+    sync_segment_integration_test.go:195: post-GC unresolved/reply-loss/late-EXEC recovery did not duplicate INCR
+=== RUN   TestKvrocksCommitExperiment/pending_after_gc_late
+    sync_segment_integration_test.go:195: post-GC unresolved/reply-loss/late-EXEC recovery did not duplicate INCR
+=== RUN   TestKvrocksCommitExperiment/gc_rejects_after_drift
+=== RUN   TestKvrocksCommitExperiment/gc_rejects_cold_rollback_inside_retained_segment
+    sync_segment_integration_test.go:258: cold rollback rejected without data replay or snapshot replacement
+=== RUN   TestKvrocksCommitExperiment/gc_rejects_cold_rollback_below_floor
+    sync_segment_integration_test.go:258: cold rollback rejected without data replay or snapshot replacement
+=== RUN   TestKvrocksCommitExperiment/gc_rejects_cold_rollback_metadata_lost_empty_db
+    sync_segment_integration_test.go:258: cold rollback rejected without data replay or snapshot replacement
+=== RUN   TestKvrocksCommitExperiment/gc_process_sigkill_after_manifest
+    sync_segment_integration_test.go:335: real GC process SIGKILL after durable manifest/before deletion; explicit orphan cleanup removed leftovers, replay preserved counter
+=== RUN   TestKvrocksCommitExperiment/resource_disk_pressure_allows_cold_drain
+    sync_segment_integration_test.go:364: injected low availability stopped capture without ACK progress; real cold apply/GC drained; resumed one INCR
+=== RUN   TestKvrocksCommitExperiment/resource_unconfirmed_watermark_is_conservative
+    sync_segment_integration_test.go:392: cold apply alone did not release conservative backlog; durable GC confirmation did
+--- PASS: TestKvrocksCommitExperiment (2.18s)
+    --- PASS: TestKvrocksCommitExperiment/real_fixture_gc_restart_and_suffix (0.10s)
+    --- PASS: TestKvrocksCommitExperiment/pending_after_gc_before (0.21s)
+    --- PASS: TestKvrocksCommitExperiment/pending_after_gc_reply (0.21s)
+    --- PASS: TestKvrocksCommitExperiment/pending_after_gc_late (0.46s)
+    --- PASS: TestKvrocksCommitExperiment/gc_rejects_after_drift (0.17s)
+    --- PASS: TestKvrocksCommitExperiment/gc_rejects_cold_rollback_inside_retained_segment (0.18s)
+    --- PASS: TestKvrocksCommitExperiment/gc_rejects_cold_rollback_below_floor (0.18s)
+    --- PASS: TestKvrocksCommitExperiment/gc_rejects_cold_rollback_metadata_lost_empty_db (0.18s)
+    --- PASS: TestKvrocksCommitExperiment/gc_process_sigkill_after_manifest (0.21s)
+    --- PASS: TestKvrocksCommitExperiment/resource_disk_pressure_allows_cold_drain (0.09s)
+    --- PASS: TestKvrocksCommitExperiment/resource_unconfirmed_watermark_is_conservative (0.19s)
+=== RUN   TestKvrocksCommitExperiment
+=== RUN   TestKvrocksCommitExperiment/real_fixture_gc_restart_and_suffix
+    sync_segment_integration_test.go:154: real Redis RDB/PSYNC fixture kept counter=42 then 43 across segmented GC/reopen
+=== RUN   TestKvrocksCommitExperiment/pending_after_gc_before
+    sync_segment_integration_test.go:195: post-GC unresolved/reply-loss/late-EXEC recovery did not duplicate INCR
+=== RUN   TestKvrocksCommitExperiment/pending_after_gc_reply
+    sync_segment_integration_test.go:195: post-GC unresolved/reply-loss/late-EXEC recovery did not duplicate INCR
+=== RUN   TestKvrocksCommitExperiment/pending_after_gc_late
+    sync_segment_integration_test.go:195: post-GC unresolved/reply-loss/late-EXEC recovery did not duplicate INCR
+=== RUN   TestKvrocksCommitExperiment/gc_rejects_after_drift
+=== RUN   TestKvrocksCommitExperiment/gc_rejects_cold_rollback_inside_retained_segment
+    sync_segment_integration_test.go:258: cold rollback rejected without data replay or snapshot replacement
+=== RUN   TestKvrocksCommitExperiment/gc_rejects_cold_rollback_below_floor
+    sync_segment_integration_test.go:258: cold rollback rejected without data replay or snapshot replacement
+=== RUN   TestKvrocksCommitExperiment/gc_rejects_cold_rollback_metadata_lost_empty_db
+    sync_segment_integration_test.go:258: cold rollback rejected without data replay or snapshot replacement
+=== RUN   TestKvrocksCommitExperiment/gc_process_sigkill_after_manifest
+    sync_segment_integration_test.go:335: real GC process SIGKILL after durable manifest/before deletion; explicit orphan cleanup removed leftovers, replay preserved counter
+=== RUN   TestKvrocksCommitExperiment/resource_disk_pressure_allows_cold_drain
+    sync_segment_integration_test.go:364: injected low availability stopped capture without ACK progress; real cold apply/GC drained; resumed one INCR
+=== RUN   TestKvrocksCommitExperiment/resource_unconfirmed_watermark_is_conservative
+    sync_segment_integration_test.go:392: cold apply alone did not release conservative backlog; durable GC confirmation did
+--- PASS: TestKvrocksCommitExperiment (2.25s)
+    --- PASS: TestKvrocksCommitExperiment/real_fixture_gc_restart_and_suffix (0.10s)
+    --- PASS: TestKvrocksCommitExperiment/pending_after_gc_before (0.21s)
+    --- PASS: TestKvrocksCommitExperiment/pending_after_gc_reply (0.22s)
+    --- PASS: TestKvrocksCommitExperiment/pending_after_gc_late (0.46s)
+    --- PASS: TestKvrocksCommitExperiment/gc_rejects_after_drift (0.17s)
+    --- PASS: TestKvrocksCommitExperiment/gc_rejects_cold_rollback_inside_retained_segment (0.18s)
+    --- PASS: TestKvrocksCommitExperiment/gc_rejects_cold_rollback_below_floor (0.18s)
+    --- PASS: TestKvrocksCommitExperiment/gc_rejects_cold_rollback_metadata_lost_empty_db (0.18s)
+    --- PASS: TestKvrocksCommitExperiment/gc_process_sigkill_after_manifest (0.27s)
+    --- PASS: TestKvrocksCommitExperiment/resource_disk_pressure_allows_cold_drain (0.09s)
+    --- PASS: TestKvrocksCommitExperiment/resource_unconfirmed_watermark_is_conservative (0.19s)
+=== RUN   TestKvrocksCommitExperiment
+=== RUN   TestKvrocksCommitExperiment/real_fixture_gc_restart_and_suffix
+    sync_segment_integration_test.go:154: real Redis RDB/PSYNC fixture kept counter=42 then 43 across segmented GC/reopen
+=== RUN   TestKvrocksCommitExperiment/pending_after_gc_before
+    sync_segment_integration_test.go:195: post-GC unresolved/reply-loss/late-EXEC recovery did not duplicate INCR
+=== RUN   TestKvrocksCommitExperiment/pending_after_gc_reply
+    sync_segment_integration_test.go:195: post-GC unresolved/reply-loss/late-EXEC recovery did not duplicate INCR
+=== RUN   TestKvrocksCommitExperiment/pending_after_gc_late
+    sync_segment_integration_test.go:195: post-GC unresolved/reply-loss/late-EXEC recovery did not duplicate INCR
+=== RUN   TestKvrocksCommitExperiment/gc_rejects_after_drift
+=== RUN   TestKvrocksCommitExperiment/gc_rejects_cold_rollback_inside_retained_segment
+    sync_segment_integration_test.go:258: cold rollback rejected without data replay or snapshot replacement
+=== RUN   TestKvrocksCommitExperiment/gc_rejects_cold_rollback_below_floor
+    sync_segment_integration_test.go:258: cold rollback rejected without data replay or snapshot replacement
+=== RUN   TestKvrocksCommitExperiment/gc_rejects_cold_rollback_metadata_lost_empty_db
+    sync_segment_integration_test.go:258: cold rollback rejected without data replay or snapshot replacement
+=== RUN   TestKvrocksCommitExperiment/gc_process_sigkill_after_manifest
+    sync_segment_integration_test.go:335: real GC process SIGKILL after durable manifest/before deletion; explicit orphan cleanup removed leftovers, replay preserved counter
+=== RUN   TestKvrocksCommitExperiment/resource_disk_pressure_allows_cold_drain
+    sync_segment_integration_test.go:364: injected low availability stopped capture without ACK progress; real cold apply/GC drained; resumed one INCR
+=== RUN   TestKvrocksCommitExperiment/resource_unconfirmed_watermark_is_conservative
+    sync_segment_integration_test.go:392: cold apply alone did not release conservative backlog; durable GC confirmation did
+--- PASS: TestKvrocksCommitExperiment (2.17s)
+    --- PASS: TestKvrocksCommitExperiment/real_fixture_gc_restart_and_suffix (0.10s)
+    --- PASS: TestKvrocksCommitExperiment/pending_after_gc_before (0.21s)
+    --- PASS: TestKvrocksCommitExperiment/pending_after_gc_reply (0.20s)
+    --- PASS: TestKvrocksCommitExperiment/pending_after_gc_late (0.46s)
+    --- PASS: TestKvrocksCommitExperiment/gc_rejects_after_drift (0.17s)
+    --- PASS: TestKvrocksCommitExperiment/gc_rejects_cold_rollback_inside_retained_segment (0.18s)
+    --- PASS: TestKvrocksCommitExperiment/gc_rejects_cold_rollback_below_floor (0.18s)
+    --- PASS: TestKvrocksCommitExperiment/gc_rejects_cold_rollback_metadata_lost_empty_db (0.18s)
+    --- PASS: TestKvrocksCommitExperiment/gc_process_sigkill_after_manifest (0.21s)
+    --- PASS: TestKvrocksCommitExperiment/resource_disk_pressure_allows_cold_drain (0.09s)
+    --- PASS: TestKvrocksCommitExperiment/resource_unconfirmed_watermark_is_conservative (0.19s)
+PASS
+
+
+Linux local-storage tests in the same isolated container:
+  podman exec --user 0 redis-pilot-g6-apply-0eGQag /fixture/redis-pilot-g6-resources-20260908.test -test.run '^TestSync(Resource|Orphan)' -test.count=1 -test.timeout=60s
+PASS
+
+  No real Redis server is configured inside this Kvrocks container; source
+  capture coverage is from the separate local macOS real Redis test.
+  Linux tests are not a race binary (CGO_ENABLED=0).
+
+Final cleanup:
+  Experiments delete only their explicit synthetic key list and verify empty DB.
+  No FLUSHDB; existing redis-sentinel/redis-galaxy-2/redis-test-v7/kvrocks-test-kv untouched.
+  podman stop redis-pilot-g6-apply-0eGQag
+  Final inspect: exited 0 none
+  Existing containers running; redis-pilot-agent active.
+  Prior/current binaries, source fixtures and engine logs retained.
+  Test journal temporary directories are removed by the test harness.
+
+Guarantee boundaries:
+  LiveBytes is logical referenced file length, not physical occupancy.
+  Fstatfs is an instantaneous shared-filesystem sample, not quota/reservation.
+  UnconfirmedBytes is source offset minus last persisted GC confirmation,
+  conservatively including already-applied but not locally confirmed records.
+  GC remains ordered manifest-before-unlink; low admission watermark does not
+  disable cold apply/GC. Real ENOSPC/fsync failures still poison the log.
+  Explicit cleanup operates only in the dedicated owned namespace, preserves
+  referenced/unknown/unsafe files and can retry after partial deletion.
+  No automatic scheduling/reconnect, no production threshold/RPO choice,
+  no TTL/eviction/warming/service wiring, no new hot-path throttling policy.
+

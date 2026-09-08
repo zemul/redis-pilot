@@ -63,11 +63,14 @@ type syncSegments struct {
 	files    []*os.File
 	manifest syncSegmentManifest
 	anchor   syncRecord
-	// Logical capacity covers referenced anchor/segments only. Unreferenced
-	// crash leftovers, manifest files and unlinked bytes held by older views
-	// require a separate physical disk watermark/cleanup policy (not wired).
-	segmentLimit, totalLimit int64
-	poisoned                 bool
+	// Logical capacity covers referenced anchor/segments only. Physical free
+	// space is separately sampled; deleted files held by views still consume it.
+	segmentLimit, totalLimit  int64
+	poisoned                  bool
+	policy                    syncResourcePolicy
+	diskPaused, backlogPaused bool
+	views                     int
+	availableBytes            func() (uint64, error) // nil samples this directory's filesystem
 	// Test-only injected I/O boundaries. A returned error poisons the handle;
 	// close/reopen is mandatory, even if the last durable operation succeeded.
 	fault func(stage string) error
@@ -146,7 +149,9 @@ func (s *syncSegments) openFile(name string, flags int) (*os.File, error) {
 	}
 	f := os.NewFile(uintptr(fd), filepath.Join(s.dir.Name(), name))
 	st, err := f.Stat()
-	if err != nil || !st.Mode().IsRegular() || st.Mode().Perm()&0077 != 0 {
+	var raw unix.Stat_t
+	statErr := unix.Fstat(fd, &raw)
+	if err != nil || statErr != nil || !st.Mode().IsRegular() || st.Mode().Perm()&0077 != 0 || raw.Uid != uint32(os.Geteuid()) || raw.Nlink != 1 {
 		f.Close()
 		return nil, errSyncJournalCorrupt
 	}
@@ -232,6 +237,13 @@ func cloneSyncSegmentManifest(m syncSegmentManifest) syncSegmentManifest {
 }
 
 func openSyncSegments(dir string, segmentLimit, totalLimit int64) (*syncSegments, error) {
+	return openSyncSegmentsWithPolicy(dir, segmentLimit, totalLimit, defaultSyncResourcePolicy())
+}
+
+func openSyncSegmentsWithPolicy(dir string, segmentLimit, totalLimit int64, policy syncResourcePolicy) (*syncSegments, error) {
+	if err := policy.validate(); err != nil {
+		return nil, err
+	}
 	if !filepath.IsAbs(dir) || segmentLimit < 1024 || segmentLimit > 16<<20 || totalLimit < segmentLimit || totalLimit > 1<<30 {
 		return nil, errors.New("invalid segmented replication path or capacity")
 	}
@@ -245,7 +257,7 @@ func openSyncSegments(dir string, segmentLimit, totalLimit int64) (*syncSegments
 	if err != nil {
 		return nil, err
 	}
-	s := &syncSegments{dir: os.NewFile(uintptr(fd), dir), segmentLimit: segmentLimit, totalLimit: totalLimit}
+	s := &syncSegments{dir: os.NewFile(uintptr(fd), dir), segmentLimit: segmentLimit, totalLimit: totalLimit, policy: policy}
 	ok := false
 	defer func() {
 		if !ok {
@@ -253,7 +265,9 @@ func openSyncSegments(dir string, segmentLimit, totalLimit int64) (*syncSegments
 		}
 	}()
 	st, err := s.dir.Stat()
-	if err != nil || !st.IsDir() || st.Mode().Perm()&0077 != 0 {
+	var dirStat unix.Stat_t
+	statErr := unix.Fstat(fd, &dirStat)
+	if err != nil || statErr != nil || !st.IsDir() || st.Mode().Perm()&0077 != 0 || dirStat.Uid != uint32(os.Geteuid()) {
 		return nil, errors.New("segmented replication directory must be owner-only")
 	}
 	if created {
@@ -446,6 +460,9 @@ func (s *syncSegments) append(r syncRecord) error {
 		if int64(len(syncAnchorMagic)+len(b)) > s.totalLimit {
 			return errSyncJournalFull
 		}
+		if err := s.admitCapture(0, captureWriteBudget(int64(len(b)), int64(len(syncAnchorMagic)), true)); err != nil {
+			return err
+		}
 		name, err := syncSegmentName("anchor-")
 		if err != nil {
 			return err
@@ -505,6 +522,9 @@ func (s *syncSegments) append(r syncRecord) error {
 		if headerSize+int64(len(b)) > s.segmentLimit || s.bytesLocked()+headerSize+int64(len(b)) > s.totalLimit {
 			return errSyncJournalFull
 		}
+		if err := s.admitCapture(int64(len(r.Data)), captureWriteBudget(int64(len(b)), headerSize, true)); err != nil {
+			return err
+		}
 		s.poisoned = true
 		f, err := s.openFile(name, unix.O_CREAT|unix.O_EXCL|unix.O_RDWR)
 		if err != nil {
@@ -545,8 +565,13 @@ func (s *syncSegments) append(r syncRecord) error {
 		s.files = append(s.files, f)
 		keep = true
 		n++
-	} else if s.bytesLocked()+int64(len(b)) > s.totalLimit {
-		return errSyncJournalFull
+	} else {
+		if s.bytesLocked()+int64(len(b)) > s.totalLimit {
+			return errSyncJournalFull
+		}
+		if err := s.admitCapture(int64(len(r.Data)), captureWriteBudget(int64(len(b)), 0, false)); err != nil {
+			return err
+		}
 	}
 	s.poisoned = true
 	f := s.files[n-1]
@@ -596,6 +621,8 @@ type syncSegmentView struct {
 	lock                        *os.File
 	indexes                     []syncSegmentIndex
 	files                       []*os.File
+	registered                  bool
+	closeMu                     sync.Mutex
 }
 
 func syncSegmentDup(f *os.File) (*os.File, error) {
@@ -612,6 +639,9 @@ func (s *syncSegments) pendingView() (*syncSegmentView, error) {
 	if s.poisoned || s.manifest.Anchor == "" {
 		return nil, errSyncJournalCorrupt
 	}
+	if s.views >= s.policy.MaxViews {
+		return nil, errSyncViewLimit
+	}
 	v := &syncSegmentView{anchor: s.anchor, base: s.manifest.Base, floor: s.manifest.Floor, confirmed: s.manifest.Confirmed, end: s.endLocked(), owner: s, indexes: append([]syncSegmentIndex(nil), s.manifest.Segments...)}
 	v.anchor.Data = append([]byte(nil), s.anchor.Data...)
 	var err error
@@ -627,10 +657,22 @@ func (s *syncSegments) pendingView() (*syncSegmentView, error) {
 		}
 		v.files = append(v.files, dup)
 	}
+	s.views++
+	v.registered = true
 	return v, nil
 }
 
 func (v *syncSegmentView) close() error {
+	v.closeMu.Lock()
+	defer v.closeMu.Unlock()
+	// Failed construction calls close while owner.mu is already held. Such a
+	// view has not registered yet, so its partial descriptors need no callback.
+	if v.registered {
+		v.owner.mu.Lock()
+		defer v.owner.mu.Unlock()
+		v.owner.views--
+		v.registered = false
+	}
 	var errs []error
 	for _, f := range v.files {
 		errs = append(errs, f.Close())

@@ -21,6 +21,7 @@
 - [无 TTL String 应用原型](gateway-string-apply.md) — G6a-4 小规模真实 RDB/PSYNC 日志应用到 Kvrocks、重复回放和状态偏差拒绝；未接运行服务
 - [待确认项恢复](gateway-pending-recovery.md) — G6a-5 不再全量核对冷层，单项 intent 恢复与旧请求晚到防护；未接运行服务
 - [分段日志与安全回收](gateway-segmented-journal.md) — G6a-6 checkpoint 按段定位、保留 pending 证据的回收与冷回退水位保护；物理磁盘治理和服务接线仍待做
+- [同步资源保护](gateway-sync-resources.md) — G6a-7 捕获磁盘水位/保守积压阈值、视图预算与显式孤儿清理；未接自动调度和运行服务
 - [网关独立部署](gateway-deployment.md) — 二进制 + systemd，与 Agent 解耦；构建入口及模板已提供
 - [产品优化路线图](../ROADMAP.md) — Web/H5 信息架构与 P1～P5 优先级
 

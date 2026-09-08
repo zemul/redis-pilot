@@ -316,13 +316,80 @@ func kvCommitSegmentExperiments(t *testing.T, addr string, c *kvCommitClient) {
 			t.Fatal("GC manifest not preserved after process kill")
 		}
 		v.close()
+		// G6a-7: a real killed GC left retired files behind. Explicit cleanup
+		// removes only those unreferenced names; replay evidence stays intact.
+		cleaned, err := s.cleanupOrphans(context.Background())
+		if err != nil || cleaned.RemovedFiles == 0 {
+			t.Fatal("GC crash leftovers were not reclaimed", cleaned, err)
+		}
+		again, err := s.cleanupOrphans(context.Background())
+		if err != nil || again.RemovedFiles != 0 {
+			t.Fatal("orphan cleanup was not idempotent", again, err)
+		}
 		apply(t, s)
 		kvCommitGet(t, c, "seed-counter", "54")
 		appendSegmentCommand(t, s, "INCR", "seed-counter")
 		apply(t, s)
 		prune(t, s)
 		kvCommitGet(t, c, "seed-counter", "55")
-		t.Log("real GC process SIGKILL after durable new manifest/before old segment deletion; orphan files did not change replay history")
+		t.Log("real GC process SIGKILL after durable manifest/before deletion; explicit orphan cleanup removed leftovers, replay preserved counter")
+	})
+	t.Run("resource_disk_pressure_allows_cold_drain", func(t *testing.T) {
+		reset()
+		s, _ := fixture(t)
+		// Inject availability only; never fill the development host filesystem.
+		s.availableBytes = func() (uint64, error) { return 0, nil }
+		before := s.durablePosition()
+		raw := encodeCommand("INCR", "seed-counter")
+		position := before
+		position.Offset += int64(len(raw))
+		record := syncRecord{"command", position, raw}
+		if err := s.append(record); !errors.Is(err, errSyncCapturePressure) || s.durablePosition() != before || s.poisoned {
+			t.Fatal("pressure append changed durable capture or poisoned handle", err)
+		}
+		apply(t, s) // low capture watermark must not disable cold work
+		prune(t, s)
+		status, err := s.resourceStatus()
+		if !errors.Is(err, errSyncCapturePressure) || !status.DiskPaused || status.UnconfirmedBytes != 0 {
+			t.Fatal("bad pressure state after cold drain", status, err)
+		}
+		kvCommitGet(t, c, "seed-counter", "42")
+		s.availableBytes = func() (uint64, error) { return 1 << 40, nil }
+		if err := s.append(record); err != nil {
+			t.Fatal("capture did not resume", err)
+		}
+		apply(t, s)
+		prune(t, s)
+		kvCommitGet(t, c, "seed-counter", "43")
+		t.Log("injected low availability stopped capture without ACK progress; real cold apply/GC drained; resumed one INCR")
+	})
+	t.Run("resource_unconfirmed_watermark_is_conservative", func(t *testing.T) {
+		reset()
+		s, _ := fixture(t)
+		for i := 0; i < 12; i++ {
+			appendSegmentCommand(t, s, "INCR", "seed-counter")
+		}
+		// Test-only policy change before any concurrent operation: historical
+		// captured backlog is above this deliberately small configured limit.
+		s.policy.MaxUnconfirmedBytes, s.policy.ResumeUnconfirmedBytes = 100, 50
+		status, err := s.resourceStatus()
+		if !errors.Is(err, errSyncCapturePressure) || !status.BacklogPaused {
+			t.Fatal("backlog did not pause capture", status, err)
+		}
+		apply(t, s)
+		status, err = s.resourceStatus()
+		if !errors.Is(err, errSyncCapturePressure) || !status.BacklogPaused {
+			t.Fatal("cold apply without durable local confirmation prematurely released pressure", status, err)
+		}
+		prune(t, s)
+		status, err = s.resourceStatus()
+		if err != nil || status.BacklogPaused || status.UnconfirmedBytes != 0 {
+			t.Fatal("confirmed GC did not release backlog pressure", status, err)
+		}
+		appendSegmentCommand(t, s, "INCR", "seed-counter")
+		apply(t, s)
+		kvCommitGet(t, c, "seed-counter", "55")
+		t.Log("cold apply alone did not release conservative backlog; durable GC confirmation did")
 	})
 	reset()
 	keys, err = client.keys()
