@@ -61,6 +61,25 @@ func syncResourceStatusForTest(t *testing.T, s *syncSegments) syncResourceStatus
 	return status
 }
 
+func TestSyncResourceAvailabilityKnownDistinguishesFailedSample(t *testing.T) {
+	f := syncResourceFixture(t, defaultSyncResourcePolicy())
+	f.store.availableBytes = func() (uint64, error) { return 0, errors.New("sample unavailable") }
+	status, err := f.store.resourceStatus()
+	if !errors.Is(err, errSyncCapturePressure) || status.AvailableKnown || !status.DiskPaused {
+		t.Fatal("failed availability sample was presented as known", status, err)
+	}
+	f.store.availableBytes = func() (uint64, error) { return 0, nil }
+	status, err = f.store.resourceStatus()
+	if !errors.Is(err, errSyncCapturePressure) || !status.AvailableKnown || status.AvailableBytes != 0 {
+		t.Fatal("real zero availability was confused with a failed sample", status, err)
+	}
+	f.store.availableBytes = func() (uint64, error) { return 1 << 40, nil }
+	status, err = f.store.resourceStatus()
+	if err != nil || !status.AvailableKnown || status.DiskPaused {
+		t.Fatal("recovered availability was not observable", status, err)
+	}
+}
+
 func TestSyncResourcePolicy(t *testing.T) {
 	p := defaultSyncResourcePolicy()
 	if p.MinFreeBytes != 64<<20 || p.ResumeFreeBytes != 128<<20 || p.MaxUnconfirmedBytes != 64<<20 || p.ResumeUnconfirmedBytes != 32<<20 || p.MaxViews != 4 || p.MaxDirectoryEntries != 4096 {

@@ -1,0 +1,80 @@
+G6a-9 isolated runner graceful shutdown and read-only observations
+Date: 2026-09-08
+Base: 19bc7b3 (dev), G6a-8.
+G6a-9 changes remain uncommitted. No push or service deployment.
+
+User scope:
+  Continue implementation first; postpone long-running verification.
+  This turn ran local unit/race/project validation only.
+  No 4-hour/24-hour soak test, remote run, new automation, container start,
+  Gateway/Server/Proxy/Agent deployment or production traffic change.
+
+Implemented:
+  Per-run control; graceful shutdown separately cancels the capture root,
+  joins it and freezes the final durable local tail before draining cold.
+  Drain success requires exact lineage/position and GC confirmation, with
+  explicit empty-log and snapshot-only exceptions.
+  Deadline forces only its generation; manual caller cancellation has its own
+  shutdown_aborted category; pending/terminal errors are never replaced.
+  Done closes only after capture/ACK and both run ownership locks are released.
+  Read-only Prometheus collector: one snapshot per scrape, explicit registry,
+  fixed labels, validity for positions/lag/timestamps/disk availability.
+  No service HTTP/config registration or data-plane activation.
+
+Review fixes:
+  Publish stop request before canceling source; otherwise captureDone could
+  race ahead and be misclassified as ordinary cancellation.
+  Preserve errors.Join(terminal, context.Canceled): neither force-timeout nor
+  normal-stop classification may hide an uncertain/corrupt/full outcome.
+  Terminal markers also take precedence over source/cold retry markers.
+  Clear prior run/control observations on a failed new start.
+  Sampling failure reports AvailableKnown=false, distinct from actual zero.
+
+Pre-final test issue:
+  Initial whole-gateway race run failed in
+    TestSyncRunnerShutdownJoinedTerminalAndCancellationRemainFatal/final_drain_corrupt
+    sync_runner_shutdown_test.go:621: shutdown test did not reach controlled boundary
+  The fault test used a 35ms deadline that could expire while the final captured
+  frame was fsyncing, before reaching its intended cold-I/O boundary.
+  Corrected the test to wait on an explicit boundary and then force that exact
+  run with shutdown_timeout; separate actual deadline tests remain in place.
+  This fixes fault-injection timing; no terminal result assertion was relaxed.
+
+Final target verification:
+  go test -race ./internal/gateway -run '^TestSync(Runner|DrainCancellation|ResourceAvailabilityKnown)' -count=3 -timeout=120s
+  PASS, 15.916s.
+  Includes 15 top-level shutdown tests with fault subcases, 6 metrics tests,
+  previous runner/cancellation tests and real-zero/failed-sampling regression.
+
+Final whole gateway:
+  go test -race ./internal/gateway -count=1 -timeout=120s
+  PASS, 19.994s.
+
+Integration scope:
+  Added graceful_shutdown_confirms_frozen_tail to the opt-in real Redis/Kvrocks
+  runner suite. It verifies cold42 at graceful stop, source43 remaining outside
+  the stopped local journal, then explicit restart/PSYNC and graceful cold43.
+  NOT executed against real Kvrocks this turn. Prior G6a-8 results are not used
+  as acceptance evidence for this new case/version.
+
+Long-run, remote integration, throughput/latency and power-cut testing deferred.
+Existing deploy/, dump.rdb, session/ preserved and not included in task changes.
+
+Final project/tool validation:
+  go test ./...
+  PASS. Gateway 18.420s; Server 54.831s; remaining packages passed/cached or
+  have no test files. Opt-in remote/soak suites were not enabled.
+  go vet ./internal/gateway
+  PASS.
+  git diff --check
+  PASS.
+  Combined target-race / package-race / project-test / vet invocation exit: 0.
+
+Linux compile check (not uploaded or executed):
+  CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go test -c
+    -o /tmp/redis-pilot-g6-lifecycle-verified-20260908.test ./internal/gateway
+  PASS.
+  SHA256: 4d702ec0902406f751e35b07172be58d6b57445bd8bd251dae42d5da029644eb
+
+Read-only final review: lifecycle/cancellation findings resolved; no remaining
+blocking findings reported. This is not a production safety certification.

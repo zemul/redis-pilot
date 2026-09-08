@@ -47,6 +47,7 @@ func (p syncResourcePolicy) validate() error {
 
 type syncResourceStatus struct {
 	AvailableBytes   uint64
+	AvailableKnown   bool  // failed sampling is unknown, not zero free bytes
 	UnconfirmedBytes int64 // source bytes since last persisted GC confirmation, not exact cold lag
 	LiveBytes        int64 // referenced anchor + segment file lengths, not physical disk use
 	Views            int
@@ -128,6 +129,7 @@ func (s *syncSegments) resourceStatusLocked(rawBytes int64, writeBytes uint64) (
 		status.DiskPaused, status.BacklogPaused = true, s.backlogPaused
 		return status, fmt.Errorf("%w: cannot sample filesystem availability", errSyncCapturePressure)
 	}
+	status.AvailableKnown = true
 	threshold := s.policy.MinFreeBytes
 	if s.diskPaused {
 		threshold = s.policy.ResumeFreeBytes

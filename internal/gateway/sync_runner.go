@@ -48,16 +48,22 @@ type syncRunnerStatus struct {
 	SourceAttempts, SourceRetries, ColdRetries int
 	Resources                                  syncResourceStatus
 	LastError                                  string // fixed category, never credentials or remote response
+	StartedAt, UpdatedAt, FinishedAt           time.Time
+	DrainTarget                                syncPosition
+	StopRequested                              bool
+	ResourcesObserved                          bool
+	ResourceUpdatedAt                          time.Time
 }
 
 type syncRunner struct {
-	source syncSource
-	target syncColdTarget
-	config syncRunnerConfig
-	ops    *syncRunnerOps // isolated tests only; nil uses the real bounded protocol
-	runMu  sync.Mutex
-	mu     sync.Mutex
-	status syncRunnerStatus
+	source  syncSource
+	target  syncColdTarget
+	config  syncRunnerConfig
+	ops     *syncRunnerOps // isolated tests only; nil uses the real bounded protocol
+	runMu   sync.Mutex
+	mu      sync.Mutex
+	status  syncRunnerStatus
+	control *syncRunControl // only the published active/completed generation; guarded by mu
 }
 
 func (r *syncRunner) snapshot() syncRunnerStatus {
@@ -70,6 +76,7 @@ func (r *syncRunner) update(fn func(*syncRunnerStatus)) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	fn(&r.status)
+	r.status.UpdatedAt = time.Now()
 }
 
 func syncRunnerReason(err error) string {
@@ -98,7 +105,13 @@ func syncRunnerReason(err error) string {
 		return "cold_connection"
 	case errors.Is(err, errSyncUnsupported):
 		return "unsupported_record"
-	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+	case errors.Is(err, errSyncShutdownTimeout):
+		return "shutdown_timeout"
+	case errors.Is(err, errSyncShutdownAborted):
+		return "shutdown_aborted"
+	case errors.Is(err, errSyncShutdownIncomplete):
+		return "shutdown_incomplete"
+	case syncOnlyCancellation(err):
 		return "canceled"
 	default:
 		return "unclassified_failure"
@@ -106,7 +119,7 @@ func syncRunnerReason(err error) string {
 }
 
 func syncExpectedCaptureStop(err error) bool {
-	return err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, errSyncSourceTransport) || errors.Is(err, errSyncCapturePressure)
+	return !syncTerminalOutcome(err) && (err == nil || syncOnlyCancellation(err) || errors.Is(err, errSyncSourceTransport) || errors.Is(err, errSyncCapturePressure))
 }
 
 func (r *syncRunner) validate(j *syncSegments) error {
@@ -196,20 +209,46 @@ func syncRetryDelay(c syncRunnerConfig, failures int) time.Duration {
 }
 
 func (r *syncRunner) run(ctx context.Context, j *syncSegments) (result error) {
+	var control *syncRunControl
+	// Registered first, so completion is published only AFTER both ownership
+	// locks have been released and all capture/ACK work has joined.
+	defer func() {
+		if control != nil {
+			control.result = result
+			close(control.done)
+		}
+	}()
 	if !r.runMu.TryLock() {
 		return errSyncRunnerBusy
 	}
 	defer r.runMu.Unlock()
-	if err := r.validate(j); err != nil {
+	r.mu.Lock()
+	r.control = nil // shutdown during validation must not report a prior run's success
+	started := time.Now()
+	r.status = syncRunnerStatus{State: "starting", StartedAt: started, UpdatedAt: started}
+	r.mu.Unlock()
+	failStart := func(err error) error {
+		r.update(func(s *syncRunnerStatus) {
+			s.State, s.LastError, s.FinishedAt = "failed", syncRunnerReason(err), time.Now()
+		})
 		return err
 	}
+	if err := r.validate(j); err != nil {
+		return failStart(err)
+	}
 	if !j.runMu.TryLock() {
-		return errSyncRunnerBusy
+		return failStart(errSyncRunnerBusy)
 	}
 	defer j.runMu.Unlock()
-	r.update(func(s *syncRunnerStatus) { *s = syncRunnerStatus{State: "starting"} })
-	workCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
+	workCtx, cancel := context.WithCancelCause(ctx)
+	defer cancel(nil)
+	captureRoot, stopRoot := context.WithCancel(workCtx)
+	defer stopRoot()
+	control = &syncRunControl{stop: make(chan struct{}), done: make(chan struct{}), stopCapture: stopRoot, force: cancel}
+	r.mu.Lock()
+	now := time.Now()
+	r.control, r.status = control, syncRunnerStatus{State: "starting", StartedAt: started, UpdatedAt: now}
+	r.mu.Unlock()
 	ops := syncRunnerOps{
 		capture: func(ctx context.Context, j *syncSegments) error { return r.source.capture(ctx, j) },
 		drain:   r.target.drainSegments,
@@ -231,16 +270,22 @@ func (r *syncRunner) run(ctx context.Context, j *syncSegments) (result error) {
 		return err
 	}
 	defer func() {
-		cancel()
+		cancel(nil)
 		err := stopCapture()
-		if err != nil && !syncExpectedCaptureStop(err) && (result == nil || errors.Is(result, context.Canceled) || errors.Is(result, context.DeadlineExceeded)) {
+		if err != nil && !syncExpectedCaptureStop(err) && (result == nil || syncOnlyCancellation(result)) {
 			result = err
+		}
+		if cause := context.Cause(workCtx); syncOnlyCancellation(result) && (errors.Is(cause, errSyncShutdownTimeout) || errors.Is(cause, errSyncShutdownAborted)) {
+			result = cause
 		}
 		captured := j.durablePosition()
 		r.update(func(s *syncRunnerStatus) {
 			s.Captured, s.LastError = captured, syncRunnerReason(result)
+			s.FinishedAt = time.Now()
 			s.State = "failed"
-			if errors.Is(result, context.Canceled) || errors.Is(result, context.DeadlineExceeded) {
+			if result == nil {
+				s.State = "drained"
+			} else if syncOnlyCancellation(result) {
 				s.State = "stopped"
 			}
 		})
@@ -252,6 +297,17 @@ func (r *syncRunner) run(ctx context.Context, j *syncSegments) (result error) {
 	var pressurePosition syncPosition
 	var sourceFailures, coldFailures, pressureFailures int
 	var ready, capturePressurePending bool
+	finishGraceful := func() error {
+		stopRoot()
+		if err := stopCapture(); !syncExpectedCaptureStop(err) {
+			return err
+		}
+		// Includes a final complete frame that may have fsynced while the
+		// connection was being closed. Never freeze a stale status snapshot.
+		target := j.durablePosition()
+		r.update(func(s *syncRunnerStatus) { s.State, s.DrainTarget, s.Captured = "draining", target, target })
+		return r.drainStopped(workCtx, j, ops, target)
+	}
 	markPressure := func(now time.Time, prospective bool) {
 		if pressureSince.IsZero() {
 			pressureSince, pressurePosition = now, j.durablePosition()
@@ -262,19 +318,20 @@ func (r *syncRunner) run(ctx context.Context, j *syncSegments) (result error) {
 	// raced the cancellation still stop the run instead of being hidden.
 	stopForPause := func(now time.Time) error {
 		err := stopCapture()
-		switch {
-		case err == nil, errors.Is(err, context.Canceled), errors.Is(err, errSyncSourceTransport):
-			return nil
-		case errors.Is(err, errSyncCapturePressure):
-			markPressure(now, true)
-			return nil
-		default:
+		if !syncExpectedCaptureStop(err) {
 			return err
 		}
+		if errors.Is(err, errSyncCapturePressure) {
+			markPressure(now, true)
+		}
+		return nil
 	}
 	step := func(now time.Time) error {
 		if err := workCtx.Err(); err != nil {
 			return err
+		}
+		if control.requested() {
+			return errSyncGraceRequested
 		}
 		if !pressureSince.IsZero() && now.Sub(pressureSince) >= r.config.MaxPressure {
 			return errSyncPressureTimeout
@@ -292,7 +349,7 @@ func (r *syncRunner) run(ctx context.Context, j *syncSegments) (result error) {
 				r.update(func(s *syncRunnerStatus) { s.Applied = applied })
 			}
 			if err != nil {
-				if !errors.Is(err, errSyncColdConnect) {
+				if !errors.Is(err, errSyncColdConnect) || syncTerminalOutcome(err) {
 					return err
 				}
 				if stopErr := stopForPause(now); stopErr != nil {
@@ -310,6 +367,9 @@ func (r *syncRunner) run(ctx context.Context, j *syncSegments) (result error) {
 			applied, ready, coldFailures = position, true, 0
 			coldRetryAt = time.Time{}
 		}
+		if control.requested() {
+			return errSyncGraceRequested
+		}
 		if !now.Before(cleanupAt) {
 			if err := ops.cleanup(workCtx, j); err != nil {
 				return err
@@ -323,6 +383,7 @@ func (r *syncRunner) run(ctx context.Context, j *syncSegments) (result error) {
 		captured = j.durablePosition()
 		r.update(func(s *syncRunnerStatus) {
 			s.Captured, s.Applied, s.Confirmed, s.Resources = captured, applied, confirmed, resources
+			s.ResourcesObserved, s.ResourceUpdatedAt = true, time.Now()
 		})
 		if err != nil {
 			if !errors.Is(err, errSyncCapturePressure) {
@@ -339,7 +400,7 @@ func (r *syncRunner) run(ctx context.Context, j *syncSegments) (result error) {
 			pressureSince, capturePressurePending, pressureFailures = time.Time{}, false, 0
 		}
 		if captureDone == nil && !now.Before(sourceRetryAt) {
-			captureCtx, childCancel := context.WithCancel(workCtx)
+			captureCtx, childCancel := context.WithCancel(captureRoot)
 			captureCancel, captureDone, attemptStart = childCancel, make(chan error, 1), captured
 			done := captureDone
 			go func() { done <- ops.capture(captureCtx, j) }()
@@ -360,19 +421,33 @@ func (r *syncRunner) run(ctx context.Context, j *syncSegments) (result error) {
 		return nil
 	}
 	if err := step(time.Now()); err != nil {
+		if errors.Is(err, errSyncGraceRequested) {
+			return finishGraceful()
+		}
 		return err
 	}
 	for {
 		select {
 		case <-workCtx.Done():
 			return workCtx.Err()
+		case <-control.stop:
+			return finishGraceful()
 		case <-ticker.C:
 			if err := step(time.Now()); err != nil {
+				if errors.Is(err, errSyncGraceRequested) {
+					return finishGraceful()
+				}
 				return err
 			}
 		case err := <-captureDone:
 			captureCancel()
 			captureDone, captureCancel = nil, nil
+			if syncTerminalOutcome(err) {
+				return err
+			}
+			if control.requested() && syncExpectedCaptureStop(err) {
+				return finishGraceful()
+			}
 			if workCtx.Err() != nil && syncExpectedCaptureStop(err) {
 				return workCtx.Err()
 			}
@@ -398,6 +473,9 @@ func (r *syncRunner) run(ctx context.Context, j *syncSegments) (result error) {
 				return err
 			}
 			if err := step(now); err != nil {
+				if errors.Is(err, errSyncGraceRequested) {
+					return finishGraceful()
+				}
 				return err
 			}
 		}

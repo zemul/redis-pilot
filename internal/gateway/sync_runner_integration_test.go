@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -287,6 +288,52 @@ func kvCommitRunnerExperiments(t *testing.T, coldAddr string, cold *kvCommitClie
 		wait(t, r, func() bool { return value("runner-counter", "43") && confirmed(r) })
 		stopChecked(t, r, j, stop, "43")
 		t.Log("discarded real cold EXEC reply: loop stopped and joined capture; explicit restart reconciled42 and next INCR reached43")
+	})
+	t.Run("graceful_shutdown_confirms_frozen_tail", func(t *testing.T) {
+		reset()
+		hot.expect(t, "+OK\r\n", "SET", "runner-counter", "41")
+		j, _ := newLog(t)
+		r, stop := launch(t, j, coldAddr)
+		wait(t, r, func() bool { return value("runner-counter", "41") })
+		hot.expect(t, ":42\r\n", "INCR", "runner-counter")
+		info, err := hot.request("INFO", "replication")
+		if err != nil {
+			t.Fatal(err)
+		}
+		var offset int64 = -1
+		for _, line := range strings.Split(string(info), "\r\n") {
+			if strings.HasPrefix(line, "master_repl_offset:") {
+				offset, err = strconv.ParseInt(strings.TrimPrefix(line, "master_repl_offset:"), 10, 64)
+			}
+		}
+		if err != nil || offset < 0 {
+			t.Fatal("source offset missing", err)
+		}
+		wait(t, r, func() bool { return j.durablePosition().Offset >= offset })
+		grace := func(r *syncRunner, stop func() error, want string) {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if err := r.shutdown(ctx); err != nil {
+				t.Fatal("graceful shutdown failed", err)
+			}
+			if err := stop(); err != nil {
+				t.Fatal("run did not return graceful completion", err)
+			}
+			s := r.snapshot()
+			if s.State != "drained" || s.DrainTarget != j.durablePosition() || s.Applied != s.DrainTarget || s.Confirmed != s.DrainTarget || !s.StopRequested || s.FinishedAt.IsZero() || !value("runner-counter", want) {
+				t.Fatal("graceful tail was not confirmed", s)
+			}
+		}
+		grace(r, stop, "42")
+		frozen := j.durablePosition()
+		hot.expect(t, ":43\r\n", "INCR", "runner-counter")
+		if j.durablePosition() != frozen || !value("runner-counter", "42") {
+			t.Fatal("stopped runner continued to capture/apply")
+		}
+		r, stop = launch(t, j, coldAddr)
+		wait(t, r, func() bool { return value("runner-counter", "43") && confirmed(r) })
+		grace(r, stop, "43")
+		t.Log("graceful stop confirmed frozen local tail; later source writes waited for explicit restart")
 	})
 	t.Run("unsupported_ttl_stops_without_cold_expiry", func(t *testing.T) {
 		reset()

@@ -15,6 +15,8 @@ G6a-5 增加 [单项 pending 恢复](gateway-pending-recovery.md)，G6a-6 增加
 
 G6a-7 已在隔离原型内补充 [磁盘水位、积压和孤儿清理](gateway-sync-resources.md)，已提交 `2cb02e7`。G6a-8 增加 [隔离持续同步循环](gateway-sync-runner.md)，串联捕获、应用、确认回收、清理和有界重连；未接运行服务，生产阈值与长期同步故障时的热层限写策略待确认。
 
+G6a-8 已提交 `19bc7b3`；G6a-9 继续补充 [优雅停止与进度指标](gateway-sync-lifecycle.md)。按用户安排，持续运行长测后置；仍未接入正常服务启动和业务流量。
+
 ## 1. 目标与阶段边界
 
 最终目标是在不改 Redis / Kvrocks 引擎源码的优先预研方向下，由网关承担冷热协调。

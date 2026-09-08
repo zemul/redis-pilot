@@ -23,6 +23,7 @@
 - [分段日志与安全回收](gateway-segmented-journal.md) — G6a-6 checkpoint 按段定位、保留 pending 证据的回收与冷回退水位保护；物理磁盘治理和服务接线仍待做
 - [同步资源保护](gateway-sync-resources.md) — G6a-7 捕获磁盘水位/保守积压阈值、视图预算与显式孤儿清理
 - [隔离持续同步循环](gateway-sync-runner.md) — G6a-8 捕获/应用/确认/清理调度、受控重连与资源暂停；未接运行服务
+- [同步器启停与观测](gateway-sync-lifecycle.md) — G6a-9 固定本地尾部的优雅停止、强制中断和只读指标；长测及服务接入待做
 - [网关独立部署](gateway-deployment.md) — 二进制 + systemd，与 Agent 解耦；构建入口及模板已提供
 - [产品优化路线图](../ROADMAP.md) — Web/H5 信息架构与 P1～P5 优先级
 
