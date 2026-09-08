@@ -63,7 +63,7 @@ func (c ConfirmationConfig) Validate() error {
 	listen, ok := loopbackEndpoint(c.Listen, true)
 	source, _ := loopbackEndpoint(c.Options.Binding.Source, false)
 	cold, _ := loopbackEndpoint(c.Options.Binding.Cold, false)
-	if c.Mode != "isolated-confirmation" || !c.ConfirmExclusiveCold || !ok || listen == source || listen == cold || c.Options.Validate() != nil {
+	if (c.Mode != "isolated-confirmation" && c.Mode != "isolated-confirmation-live") || !c.ConfirmExclusiveCold || !ok || listen == source || listen == cold || c.Options.Validate() != nil {
 		return errors.New("invalid isolated confirmation configuration")
 	}
 	return nil
@@ -90,34 +90,60 @@ func RunConfirmation(ctx context.Context, c ConfirmationConfig) error {
 		return errors.New("confirmation listener unavailable")
 	}
 	defer listener.Close()
-	handler, err := gateway.NewIsolatedConfirmationServer(c.Options)
+	var handler *gateway.IsolatedConfirmationServer
+	if c.Mode == "isolated-confirmation-live" {
+		handler, err = gateway.NewLiveConfirmationServer(c.Options)
+	} else {
+		handler, err = gateway.NewIsolatedConfirmationServer(c.Options)
+	}
 	if err != nil {
 		return errors.New("confirmation storage unavailable")
 	}
 	defer handler.Close()
+	workCtx, cancelWork := context.WithCancel(ctx)
+	defer cancelWork()
 	server := &http.Server{Handler: handler, ReadHeaderTimeout: 2 * time.Second, ReadTimeout: 3 * time.Second,
 		WriteTimeout: c.Options.Timeout + 4*time.Second, IdleTimeout: 5 * time.Second, MaxHeaderBytes: 8192,
-		ErrorLog: log.New(io.Discard, "", 0), BaseContext: func(net.Listener) context.Context { return ctx }}
+		ErrorLog: log.New(io.Discard, "", 0), BaseContext: func(net.Listener) context.Context { return workCtx }}
 	done := make(chan error, 1)
 	go func() { done <- server.Serve(listener) }()
+	var runnerDone chan error
+	if c.Mode == "isolated-confirmation-live" {
+		runnerDone = make(chan error, 1)
+		go func() { runnerDone <- handler.RunLive(workCtx) }()
+	}
+	var result error
+	httpJoined, runnerJoined := false, runnerDone == nil
 	select {
 	case err := <-done:
-		server.Close()
+		httpJoined = true
 		if err != nil && !errors.Is(err, http.ErrServerClosed) {
-			return errors.New("confirmation listener stopped")
+			result = errors.New("confirmation listener stopped")
 		}
-		return nil
+	case err := <-runnerDone:
+		runnerJoined = true
+		if err != nil || workCtx.Err() == nil {
+			result = errors.New("live confirmation runner stopped")
+		}
 	case <-ctx.Done():
 	}
+	cancelWork()
 	shutdown, cancel := context.WithTimeout(context.Background(), c.Options.Timeout+4*time.Second)
 	defer cancel()
 	err = server.Shutdown(shutdown)
 	if err != nil {
 		server.Close()
 	}
-	<-done
+	if !httpJoined {
+		<-done
+	}
+	if !runnerJoined {
+		if err := <-runnerDone; err != nil {
+			result = errors.New("live confirmation runner failed")
+		}
+	}
 	if err != nil {
 		return errors.New("confirmation shutdown incomplete")
 	}
-	return nil
+	return result
 }

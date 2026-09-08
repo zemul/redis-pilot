@@ -6,8 +6,8 @@ import (
 	"sync"
 )
 
-// G6b-1 is an isolated, process-local admission primitive, NOT an eviction
-// protocol. There is deliberately no Service wiring, cold acknowledgement,
+// This is a process-local admission primitive, NOT an eviction
+// protocol. There is deliberately no cold acknowledgement,
 // backend I/O, persistence, or method to reopen a dispatched/uncertain key.
 // One set belongs to one shard and one executor. Missing entries mean idle,
 // not "the key exists in Redis". Residency must be established separately.
@@ -106,6 +106,56 @@ func (g *keyBarrierSet) enter(key string) (*keyRequest, error) {
 	e.active++
 	g.active++
 	return &keyRequest{set: g, entry: e}, nil
+}
+
+// enterMany admits one command atomically across all of its distinct keys.
+// A rejected command retains no handles or budget. Duplicate arguments still
+// go to Redis unchanged, but need only one admission per key for this command.
+func (g *keyBarrierSet) enterMany(keys [][]byte) ([]*keyRequest, error) {
+	// GET/SET/INCR are the common hot path; avoid a dedup map for one key.
+	if len(keys) == 1 {
+		r, err := g.enter(string(keys[0]))
+		if err != nil {
+			return nil, err
+		}
+		return []*keyRequest{r}, nil
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.closed {
+		return nil, errKeyBarrierClosed
+	}
+	seen := make(map[string]bool)
+	var admitted []*keyRequest
+	rollback := func(err error) ([]*keyRequest, error) {
+		for _, r := range admitted {
+			r.entry.active--
+			g.active--
+			g.removeIdleLocked(r.entry)
+		}
+		return nil, err
+	}
+	for _, raw := range keys {
+		if len(raw) > 64<<10 {
+			return rollback(errKeyBarrierKey)
+		}
+		key := string(raw)
+		if seen[key] {
+			continue
+		}
+		if g.active >= g.maxActive {
+			return rollback(errKeyBarrierBudget)
+		}
+		e, err := g.entryLocked(key)
+		if err != nil {
+			return rollback(err)
+		}
+		e.active++
+		g.active++
+		seen[e.key] = true
+		admitted = append(admitted, &keyRequest{set: g, entry: e})
+	}
+	return admitted, nil
 }
 
 // settle(true) requires a definitive backend completion or proof that nothing

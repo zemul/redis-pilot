@@ -2,6 +2,9 @@
 # Replace every identity/path/history, dedicate the backends, and stop capture
 # first. Both operation directories must be private (0700), and distinct.
 mode: isolated-confirmation
+# To keep capturing while holding/confirming a preparation barrier, use:
+# mode: isolated-confirmation-live
+# Both variants require exclusive takeover of an EXISTING named capture log.
 listen: "127.0.0.1:19301"
 confirm_exclusive_cold: true
 confirmation:

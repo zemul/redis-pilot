@@ -35,6 +35,10 @@ func evictionColdEnvironment(t *testing.T) (string, string) {
 }
 
 func newEvictionColdFixture(t *testing.T, root string, cleanup bool) *evictionColdFixture {
+	return newEvictionColdFixturePrepared(t, root, cleanup, true)
+}
+
+func newEvictionColdFixturePrepared(t *testing.T, root string, cleanup, prepare bool) *evictionColdFixture {
 	t.Helper()
 	hotAddr, coldAddr := evictionColdEnvironment(t)
 	f := &evictionColdFixture{hot: kvCommitConnect(t, hotAddr), cold: kvCommitConnect(t, coldAddr), root: root, target: syncColdTarget{address: coldAddr, taskID: "cold-confirm-probe", timeout: 2 * time.Second}}
@@ -88,8 +92,10 @@ func newEvictionColdFixture(t *testing.T, root string, cleanup bool) *evictionCo
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { f.op.close() })
-	f.hot.expect(t, ":1\r\n", "EVAL", evictionPrepareProbeScript, "2", "counter", f.intent.prepareKey(), "42", "prepare:"+f.intent.encode())
-	f.hot.expect(t, "+OK\r\n", "SET", "after-barrier", "not-applied")
+	if prepare {
+		f.hot.expect(t, ":1\r\n", "EVAL", evictionPrepareProbeScript, "2", "counter", f.intent.prepareKey(), "42", "prepare:"+f.intent.encode())
+		f.hot.expect(t, "+OK\r\n", "SET", "after-barrier", "not-applied")
+	}
 	raw, err := f.hot.request("INFO", "replication")
 	if err != nil {
 		t.Fatal(err)
@@ -124,7 +130,11 @@ func newEvictionColdFixture(t *testing.T, root string, cleanup bool) *evictionCo
 		return nil
 	})
 	v.close()
-	if err != nil || count != 1 {
+	want := 0
+	if prepare {
+		want = 1
+	}
+	if err != nil || count != want {
 		t.Fatal("prepare lookup", count, err)
 	}
 	if cleanup {

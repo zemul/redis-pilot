@@ -1,0 +1,71 @@
+G6b-2e live confirmation correctness verification — 2026-09-08
+Not a performance benchmark or a production deployment.
+
+Local:
+go test -race ./internal/gateway ./internal/syncer ./cmd/syncer \
+  -run '^TestLiveConfirmation|^TestConfirmation|^TestSyncRunner' -count=3
+PASS: gateway 20.488s; cmd/syncer 2.875s.
+internal/syncer: no tests selected by this filter (2.472s).
+External-backend-gated tests skip locally; no claim of real Kvrocks under race.
+
+go test ./... — PASS
+gateway 23.918s; server 57.820s; cmd/syncer 1.602s; syncer 0.616s;
+other packages passed or were cached. Backend-gated cases retain their skips.
+go vet ./internal/gateway ./internal/syncer ./cmd/syncer — PASS
+git diff --check — PASS
+
+Linux artifacts (CGO_ENABLED=0 GOOS=linux GOARCH=amd64):
+/tmp/redis-pilot-live-confirm-build.t7kpIC/gateway.test
+SHA256 94ed8e001f7932f2d8aead99f80b8d5cdc3fe00549f8b6ca53620ec0edd8e53c
+/tmp/redis-pilot-live-confirm-build.t7kpIC/redis-syncer
+SHA256 4f35c45e52c44df20a7931287b2cdac467f6de5e3f295a5fd5666f308f1b957b
+Remote copies: redis03:/tmp/redis-pilot-live-confirm.Fqiano/
+
+Dedicated containers, no host ports:
+redis-pilot-live-cold-Fqiano
+  110c8593956c021eb07dc0a40525d0780bd1fb13d3ce31b0ab15afad88bbf3f4
+  apache/kvrocks:2.15.0, network none, 512 MiB, 128 PIDs, synchronous WAL
+redis-pilot-live-hot-Fqiano
+  8e54b9c751df04fb2983d482d3d3a4837dd76592dc9af88a5d5478bfe6bfe092
+  redis:7.2.5, dedicated shared network namespace, 128 MiB, 64 PIDs
+
+Final command inside the dedicated cold container:
+GATEWAY_TEST_EVICTION_COLD=isolated
+GATEWAY_TEST_EVICTION_SOURCE=127.0.0.1:6379
+GATEWAY_TEST_EVICTION_TARGET=127.0.0.1:6666
+GATEWAY_TEST_CONFIRM_SYNCER_BINARY=/tmp/redis-syncer
+/tmp/gateway.test \
+  -test.run='^(TestLiveConfirmationProcessKvrocks|TestConfirmationProcessKvrocks)$' \
+  -test.count=3 -test.v -test.timeout=90s
+
+TestConfirmationProcessKvrocks: PASS 0.37s, 0.23s, 0.22s
+TestLiveConfirmationProcessKvrocks: PASS 0.80s, 0.89s, 0.89s
+PASS
+
+Live case per round:
+- Begin from a durable source prefix, launch actual redis-syncer live mode.
+- Observe normal apply/capture, then emit a preparation marker at runtime.
+- Concurrently write the suffix from another Redis connection.
+- Kill/restart before confirmation: recover waiting barrier without crossing it.
+- Drop an actual successful confirmation HTTP reply; explicitly retry/revalidate.
+- Run successive Gateway adapter child processes with their own local files.
+- Observe capture advancing while cold applied offset remains fixed.
+- Kill/restart after confirmation: require online receipt revalidation.
+- Reject old-boot and conflicting requests.
+- Write 100 suffix values of 8192 bytes to cross the 4 MiB journal's 512 KiB
+  conservative raw backlog threshold; observe stable paused capture/attempts.
+- Verify cold suffix key absent and hot counter still 42.
+- Gracefully stop while held, restart, recover held receipt and pressure pause.
+
+The earlier live smoke run also passed (0.90s); results above use final binaries.
+Temporary per-test source/operation directories are cleaned by the test suite.
+No real device power-loss, 5-minute pressure timeout, long load or Cluster test.
+Existing redis-sentinel, redis-galaxy-2, redis-test-v7 and kvrocks-test-kv were
+not upgraded/restarted; no Server/Agent/Proxy/Gateway route or deployment change.
+
+Cleanup verified:
+redis-pilot-live-hot-Fqiano running=false exit=0
+redis-pilot-live-cold-Fqiano running=false exit=0
+The original four containers retained their previous running uptimes.
+Dedicated containers/binaries retained, no autostart configured.
+No commit/push performed in this implementation turn.

@@ -16,6 +16,9 @@ import (
 
 // Service supports the isolated skeleton and single-backend G2 passthrough.
 type Service struct {
+	// Immutable after sessions start. Kept internal until durable startup and
+	// preparation orchestration can safely install and restore the same set.
+	admission        *keyBarrierSet
 	reporter         *heartbeatReporter
 	heartbeats       *prometheus.CounterVec
 	lastHeartbeatAck prometheus.Gauge

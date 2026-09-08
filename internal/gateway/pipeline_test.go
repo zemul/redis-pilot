@@ -104,6 +104,7 @@ func TestDrainAndDeadline(t *testing.T) {
 			cfg.RequestTimeout = time.Second
 			cfg.ShutdownTimeout = 150 * time.Millisecond
 			s, _ := NewService(cfg)
+			s.admission = testKeyBarrierSet(t, 4, 100, 4)
 			data, e := net.Listen("tcp", "127.0.0.1:0")
 			if e != nil {
 				t.Fatal(e)
@@ -159,6 +160,13 @@ func TestDrainAndDeadline(t *testing.T) {
 			if timeout && metricValue(s.errors.WithLabelValues("drain_timeout")) != 1 {
 				t.Fatal("missing forced drain metric")
 			}
+			if timeout {
+				_, err := s.admission.enter("x")
+				requireBarrierError(t, err, errKeyBarrierUncertain)
+				requireBarrierAccounting(t, s.admission, 1, 1, 0)
+			} else {
+				requireBarrierAccounting(t, s.admission, 0, 0, 0)
+			}
 		})
 	}
 }
@@ -190,6 +198,7 @@ func (c failedFlushConn) Write(p []byte) (int, error) { return len(p) / 2, io.Er
 func TestBatchFlushFailureNoReplay(t *testing.T) {
 	cfg := passConfig("127.0.0.1:1")
 	s, _ := NewService(cfg)
+	s.admission = testKeyBarrierSet(t, 4, 100, 4)
 	client, backend := net.Pipe()
 	defer client.Close()
 	defer backend.Close()
@@ -197,10 +206,17 @@ func TestBatchFlushFailureNoReplay(t *testing.T) {
 	r, _ := NewReader(c, cfg.Limits)
 	raw := encodeCommand("INCR", "x")
 	batch := []request{{raw: raw, started: time.Now()}, {raw: raw, started: time.Now()}}
+	for i := range batch {
+		batch[i].args = admissionArgs("INCR", "x")
+		s.admitRequest(&batch[i])
+	}
 	if s.executeBatch(context.Background(), c, r, batch, [][]byte{raw, raw}, func([]byte) bool { t.Error("unexpected response"); return true }) {
 		t.Fatal("flush failure accepted")
 	}
 	if metricValue(s.errors.WithLabelValues("backend_write")) != 1 || metricValue(s.uncertain) != 2 || metricValue(s.inflight) != 0 {
 		t.Fatal("failure metrics / cleanup incorrect")
 	}
+	_, err := s.admission.enter("x")
+	requireBarrierError(t, err, errKeyBarrierUncertain)
+	requireBarrierAccounting(t, s.admission, 1, 1, 0)
 }

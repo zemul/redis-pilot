@@ -36,11 +36,12 @@ func (c *sessionControl) prepareRead(d time.Duration) bool {
 func (c *sessionControl) admit() bool { c.mu.Lock(); defer c.mu.Unlock(); return !c.stopping }
 
 type request struct {
-	raw     []byte
-	args    [][]byte
-	local   []byte
-	quit    bool
-	started time.Time
+	admitted []*keyRequest
+	raw      []byte
+	args     [][]byte
+	local    []byte
+	quit     bool
+	started  time.Time
 }
 
 func (s *Service) session(ctx context.Context, client net.Conn) {
@@ -174,7 +175,9 @@ func (s *Service) session(ctx context.Context, client net.Conn) {
 			}
 		}
 		var raws [][]byte
-		for _, q := range batch {
+		for i := range batch {
+			q := &batch[i]
+			s.admitRequest(q)
 			if q.local == nil {
 				raws = append(raws, q.raw)
 			}
@@ -183,6 +186,7 @@ func (s *Service) session(ctx context.Context, client net.Conn) {
 			var e error
 			upstream, replies, e = s.openBackend(work)
 			if e != nil {
+				settleBatch(batch, true) // No business command was sent.
 				s.backendReady.Store(false)
 				s.errors.WithLabelValues("backend_init").Inc()
 				for _, q := range batch {
@@ -209,6 +213,10 @@ func (s *Service) session(ctx context.Context, client net.Conn) {
 }
 
 func (s *Service) executeBatch(ctx context.Context, c net.Conn, r *Reader, batch []request, raws [][]byte, send func([]byte) bool) bool {
+	dispatched := false
+	// Once the writer starts, every unread command is potentially executed.
+	// Definitive replies settle their own handles before client delivery.
+	defer func() { settleBatch(batch, !dispatched) }()
 	s.inflight.Add(float64(len(batch)))
 	defer s.inflight.Sub(float64(len(batch)))
 	s.batchSize.Observe(float64(len(batch)))
@@ -227,6 +235,7 @@ func (s *Service) executeBatch(ctx context.Context, c net.Conn, r *Reader, batch
 	}
 	c.SetDeadline(time.Now().Add(s.cfg.RequestTimeout))
 	written := make(chan error, 1)
+	dispatched = true
 	// Read replies concurrently: writing an entire large batch before reading
 	// could deadlock against Redis blocked on its own output buffer.
 	go func() {
@@ -270,6 +279,7 @@ func (s *Service) executeBatch(ctx context.Context, c net.Conn, r *Reader, batch
 				return false
 			}
 			remaining--
+			settleRequest(q, true)
 			result = "backend"
 		}
 		if bytes.HasPrefix(b, []byte("-MOVED ")) || bytes.HasPrefix(b, []byte("-ASK ")) {

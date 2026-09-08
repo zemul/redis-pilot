@@ -43,6 +43,14 @@ func TestConfirmationGatewayProcess(t *testing.T) {
 // Gateway adapter with its OWN files. The parent never opens the source log
 // while the child owns it. Requires new empty, isolated backends.
 func TestConfirmationProcessKvrocks(t *testing.T) {
+	testConfirmationProcessKvrocks(t, false)
+}
+
+func TestLiveConfirmationProcessKvrocks(t *testing.T) {
+	testConfirmationProcessKvrocks(t, true)
+}
+
+func testConfirmationProcessKvrocks(t *testing.T, live bool) {
 	binary := os.Getenv("GATEWAY_TEST_CONFIRM_SYNCER_BINARY")
 	if binary == "" {
 		t.Skip("requires explicit redis-syncer executable and isolated backends")
@@ -50,7 +58,7 @@ func TestConfirmationProcessKvrocks(t *testing.T) {
 	if !filepath.IsAbs(binary) {
 		t.Fatal("absolute syncer binary required")
 	}
-	f := newEvictionColdFixture(t, confirmationPrivateDir(t), true)
+	f := newEvictionColdFixturePrepared(t, confirmationPrivateDir(t), true, !live)
 	id := syncTaskIdentity{TaskID: f.target.taskID, Source: os.Getenv("GATEWAY_TEST_EVICTION_SOURCE"), Cold: f.target.address}
 	binding := confirmationTestBinding(id, f.intent)
 	if err := f.j.close(); err != nil {
@@ -68,6 +76,9 @@ func TestConfirmationProcessKvrocks(t *testing.T) {
 	o := IsolatedConfirmationOptions{Binding: binding, JournalDir: filepath.Join(f.root, "segments"), OperationDir: confirmationPrivateDir(t), TokenFile: token,
 		AllowUnauthenticated: true, SegmentBytes: 1 << 20, JournalBytes: 4 << 20, Timeout: 3 * time.Second}
 	config := map[string]any{"mode": "isolated-confirmation", "listen": address, "confirm_exclusive_cold": true, "confirmation": o}
+	if live {
+		config["mode"] = "isolated-confirmation-live"
+	}
 	raw, err := yaml.Marshal(config)
 	if err != nil {
 		t.Fatal(err)
@@ -133,6 +144,89 @@ func TestConfirmationProcessKvrocks(t *testing.T) {
 		return confirmationSession{}
 	}
 	session := start()
+	liveStatus := func() (confirmationLiveStatus, error) {
+		var result confirmationLiveStatus
+		req, _ := http.NewRequest("GET", endpoint+confirmationRPCPath+"/status", nil)
+		req.Header.Set("Authorization", "Bearer "+secret)
+		resp, err := client.Do(req)
+		if err != nil {
+			return result, err
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != 200 {
+			return result, errConfirmationRPC
+		}
+		err = decodeConfirmation(resp.Body, &result)
+		return result, err
+	}
+	waitLive := func(predicate func(confirmationLiveStatus) bool) confirmationLiveStatus {
+		deadline := time.Now().Add(6 * time.Second)
+		var last confirmationLiveStatus
+		for time.Now().Before(deadline) {
+			status, err := liveStatus()
+			if err == nil {
+				last = status
+				if predicate(status) {
+					return status
+				}
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		t.Fatalf("live state timeout: %+v", last)
+		return last
+	}
+	var stopWriter func()
+	if live {
+		waitLive(func(s confirmationLiveStatus) bool { return s.Barrier == "none" && s.SourceAttempts > 0 })
+		kvCommitGet(t, f.cold, "counter", "42")
+		f.hot.expect(t, ":1\r\n", "EVAL", evictionPrepareProbeScript, "2", "counter", f.intent.prepareKey(), "42", "prepare:"+f.intent.encode())
+		writer := kvCommitConnect(t, id.Source)
+		writeCtx, cancel := context.WithCancel(context.Background())
+		writerDone := make(chan error, 1)
+		go func() {
+			ticker := time.NewTicker(5 * time.Millisecond)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-writeCtx.Done():
+					writerDone <- nil
+					return
+				case <-ticker.C:
+					if _, err := writer.request("SET", "after-barrier", "continuous-suffix"); err != nil {
+						writerDone <- err
+						return
+					}
+				}
+			}
+		}()
+		stopped := false
+		stopWriter = func() {
+			if stopped {
+				return
+			}
+			stopped = true
+			cancel()
+			select {
+			case err := <-writerDone:
+				if err != nil {
+					t.Error("suffix writer", err)
+				}
+			case <-time.After(3 * time.Second):
+				writer.c.Close()
+				<-writerDone
+				t.Error("writer join timeout")
+			}
+		}
+		t.Cleanup(stopWriter)
+		waitLive(func(s confirmationLiveStatus) bool {
+			return s.Barrier == "waiting_confirmation" && s.CapturedOffset > s.AppliedOffset
+		})
+		// Restart BEFORE receiving any confirmation. The marker and local intent
+		// must recover while PSYNC continues capturing the concurrent suffix.
+		stop(true)
+		session = start()
+		waitLive(func(s confirmationLiveStatus) bool { return s.Barrier == "waiting_confirmation" })
+	}
 	// The runtime holds the real capture lock; it cannot race ordinary replay.
 	if j, err := openSyncSegmentsForTask(o.JournalDir, o.SegmentBytes, o.JournalBytes, defaultSyncResourcePolicy(), &id); err == nil {
 		j.close()
@@ -188,6 +282,13 @@ func TestConfirmationProcessKvrocks(t *testing.T) {
 			t.Fatal("real RPC confirmation", n, err)
 		}
 	}
+	if live {
+		first := waitLive(func(s confirmationLiveStatus) bool { return s.Barrier == "confirmed_held" })
+		waitLive(func(s confirmationLiveStatus) bool {
+			return s.CapturedOffset > first.CapturedOffset && s.AppliedOffset == first.AppliedOffset
+		})
+		stopWriter()
+	}
 	s, err := g.op.snapshot()
 	if err != nil || s.Receipt == nil {
 		t.Fatal("Gateway receipt missing", err)
@@ -228,6 +329,9 @@ func TestConfirmationProcessKvrocks(t *testing.T) {
 		t.Fatal("offline syncer accepted local receipt")
 	}
 	newSession := start()
+	if live {
+		waitLive(func(s confirmationLiveStatus) bool { return s.Barrier == "recorded_requires_revalidation" })
+	}
 	if newSession.BootID == session.BootID {
 		t.Fatal("boot not renewed")
 	}
@@ -252,6 +356,30 @@ func TestConfirmationProcessKvrocks(t *testing.T) {
 	var reply confirmationResponse
 	if confirmationCall(context.Background(), client, endpoint, secret, "POST", confirmationRequest{newSession, conflict}, &reply) == nil {
 		t.Fatal("conflicting intent accepted")
+	}
+	if live {
+		// Fill only the held suffix, not the filesystem. The live budget is
+		// bounded below the journal file cap, so capture must pause, not prune.
+		payload := strings.Repeat("x", 8192)
+		for n := 0; n < 100; n++ {
+			f.hot.expect(t, "+OK\r\n", "SET", "after-barrier", payload)
+		}
+		paused := waitLive(func(s confirmationLiveStatus) bool { return s.CapturePaused })
+		time.Sleep(150 * time.Millisecond)
+		stable := waitLive(func(s confirmationLiveStatus) bool { return s.CapturePaused })
+		if paused.CapturedOffset != stable.CapturedOffset || paused.AppliedOffset != stable.AppliedOffset || paused.SourceAttempts != stable.SourceAttempts {
+			t.Fatal("pressure did not stop capture/retries")
+		}
+		f.cold.expect(t, "$-1\r\n", "GET", "after-barrier")
+		kvCommitGet(t, f.hot, "counter", "42")
+		stop(false)
+		start()
+		waitLive(func(s confirmationLiveStatus) bool {
+			return s.Barrier == "recorded_requires_revalidation" && s.CapturePaused
+		})
+		stop(false)
+		t.Log("live mode: concurrent capture, first-marker hold, unconfirmed/confirmed process recovery, lost reply, source-log retention, bounded pressure and graceful held stop passed")
+		return
 	}
 	// Source lineage changes: old receipt must not become a cached success.
 	f.hot.expect(t, "+OK\r\n", "REPLICAOF", "127.0.0.1", "1")

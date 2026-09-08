@@ -66,6 +66,7 @@ func (o IsolatedConfirmationOptions) CheckCredentials() error {
 }
 
 type IsolatedConfirmationServer struct {
+	live        *confirmationLive // immutable pointer, mutable fields under gate
 	options     IsolatedConfirmationOptions
 	session     confirmationSession
 	token       string
@@ -130,6 +131,17 @@ func NewIsolatedConfirmationServer(o IsolatedConfirmationOptions) (*IsolatedConf
 }
 
 func (s *IsolatedConfirmationServer) Close() error {
+	// Cancel and join outside gate: the runner may be finishing a gated drain.
+	s.gate <- struct{}{}
+	var done chan struct{}
+	if s.live != nil && s.live.started {
+		s.live.cancel()
+		done = s.live.done
+	}
+	<-s.gate
+	if done != nil {
+		<-done
+	}
 	s.gate <- struct{}{}
 	defer func() { <-s.gate }()
 	if s.closed {
@@ -151,7 +163,8 @@ func (s *IsolatedConfirmationServer) ServeHTTP(w http.ResponseWriter, r *http.Re
 		fail(http.StatusUnauthorized)
 		return
 	}
-	if r.URL.Path != confirmationRPCPath || r.URL.RawQuery != "" {
+	statusRequest := s.live != nil && r.URL.Path == confirmationRPCPath+"/status" && r.Method == http.MethodGet
+	if (r.URL.Path != confirmationRPCPath && !statusRequest) || r.URL.RawQuery != "" {
 		fail(http.StatusNotFound)
 		return
 	}
@@ -171,6 +184,14 @@ func (s *IsolatedConfirmationServer) ServeHTTP(w http.ResponseWriter, r *http.Re
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
+	if statusRequest {
+		json.NewEncoder(w).Encode(s.liveStatus())
+		return
+	}
+	if s.live != nil && (!s.live.active || !s.live.ready || s.live.blocked || s.live.stopping.Load()) {
+		fail(http.StatusServiceUnavailable)
+		return
+	}
 	if r.Method == http.MethodGet {
 		json.NewEncoder(w).Encode(s.session)
 		return
@@ -184,18 +205,38 @@ func (s *IsolatedConfirmationServer) ServeHTTP(w http.ResponseWriter, r *http.Re
 		fail(http.StatusConflict)
 		return
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), s.options.Timeout)
-	defer cancel()
-	result, err := s.confirm(ctx, req)
-	if err != nil {
+	if s.live != nil && (s.live.held == nil || evictionHash(s.live.held.Intent) != evictionHash(req.Intent)) {
 		fail(http.StatusConflict)
 		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), s.options.Timeout)
+	defer cancel()
+	if s.live != nil {
+		s.live.verified = false
+		s.live.verifiedAt = time.Time{}
+	}
+	result, err := s.confirm(ctx, req)
+	if err != nil || (s.live != nil && s.live.stopping.Load()) {
+		fail(http.StatusConflict)
+		return
+	}
+	if s.live != nil {
+		s.live.verified = true
+		s.live.verifiedAt = time.Now()
+		s.live.held.Receipt = &result.Receipt
 	}
 	json.NewEncoder(w).Encode(result)
 }
 
 // The caller submits only intent, never source bytes or a claimed checkpoint.
 func (s *IsolatedConfirmationServer) preparation(i evictionIntent) (evictionPreparation, error) {
+	if s.live != nil && s.live.held != nil && evictionHash(s.live.held.Intent) == evictionHash(i) {
+		// The live lane already identified the first marker. confirmEviction
+		// will re-prove it from the source log; do not scan the held suffix.
+		p := *s.live.held.Prepare
+		p.Record.Data = bytes.Clone(p.Record.Data)
+		return p, nil
+	}
 	v, err := s.journal.pendingView()
 	if err != nil {
 		return evictionPreparation{}, err

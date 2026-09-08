@@ -52,6 +52,22 @@ func TestConfirmationConfigReadOnly(t *testing.T) {
 	if strings.Contains(output.String(), dir) {
 		t.Fatal("path leaked")
 	}
+	c.Mode = "isolated-confirmation-live"
+	liveRaw, err := yaml.Marshal(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, liveRaw, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if code := run(context.Background(), []string{"-confirmation-config", path, "-check-config"}, &output); code != 0 {
+		t.Fatal("live check-config", code)
+	}
+	for _, path := range []string{c.Options.OperationDir, c.Options.JournalDir} {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatal("live check created storage", err)
+		}
+	}
 	for _, extra := range []string{"unknown: secret\n", "---\nmode: isolated-confirmation\n", "confirmation: {}\n"} {
 		if err := os.WriteFile(path, append(bytes.Clone(raw), []byte(extra)...), 0600); err != nil {
 			t.Fatal(err)

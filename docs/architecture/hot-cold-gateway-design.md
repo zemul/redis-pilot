@@ -25,6 +25,10 @@ G6a-13 增加 [进度采样与异常分类](syncer-progress.md)：源端位置�
 
 ## 1. 目标与阶段边界
 
+G6b-2e 增加 [持续捕获期间的准备屏障与确认](gateway-live-confirmation.md)：同视图识别/应用边界，准备事件持久化，运行中 RPC 确认，未确认/已确认状态恢复及积压暂停。显式单任务 live 模式仍从已有固定历史日志启动，保持屏障期间暂停整条任务的冷应用；不自动解除、不删除热副本、未接业务请求。
+
+G6b-2f-1 已完成 [Gateway 请求入口的内部屏障接线](gateway-request-admission.md)：在真实 Service/session/Pipeline 路径按 key 准入，多 key 全部取得或整条拒绝，客户端断开及后端结果丢失时保留未知状态。尚未开放配置启用，需先补持久启动保护和准备管理入口；不扩大同步器命令白名单，不删除热数据。
+
 G6b-2d 已增加 [跨进程隔离确认](gateway-confirmation-rpc.md)：`redis-syncer` 显式确认模式、Gateway 客户端适配器、固定绑定/启动身份校验、双端独立落盘与真实进程重启验证。普通同步任务需先停止，确认模式只接已有捕获日志；持续同步状态机、Server 权威路由/授权、线上 Gateway 准入和热删除仍未接入。
 
 G6b-2c 已完成 [Kvrocks 精确提交确认的隔离闭环](gateway-cold-confirmation.md)：证明真实准备事件、应用它之前的业务前缀、WATCH 核验数据/进度后提交冷确认、本地 fsync 和重连重验；15 场景真实后端三轮及专用 Kvrocks 强杀恢复验证通过。仍无确认 RPC/服务接线、热删除、回温或业务切流。

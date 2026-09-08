@@ -57,14 +57,15 @@ type syncRunnerStatus struct {
 }
 
 type syncRunner struct {
-	source  syncSource
-	target  syncColdTarget
-	config  syncRunnerConfig
-	ops     *syncRunnerOps // isolated tests only; nil uses the real bounded protocol
-	runMu   sync.Mutex
-	mu      sync.Mutex
-	status  syncRunnerStatus
-	control *syncRunControl // only the published active/completed generation; guarded by mu
+	confirmation *IsolatedConfirmationServer // explicit live-confirmation mode only
+	source       syncSource
+	target       syncColdTarget
+	config       syncRunnerConfig
+	ops          *syncRunnerOps // isolated tests only; nil uses the real bounded protocol
+	runMu        sync.Mutex
+	mu           sync.Mutex
+	status       syncRunnerStatus
+	control      *syncRunControl // only the published active/completed generation; guarded by mu
 }
 
 func (r *syncRunner) snapshot() syncRunnerStatus {
@@ -275,6 +276,12 @@ func (r *syncRunner) run(ctx context.Context, j *syncSegments) (result error) {
 	if r.ops != nil {
 		ops = *r.ops
 	}
+	if r.confirmation != nil {
+		ops.drain = r.confirmation.drainLive
+		// Normal pruning is done only by drainLive before it sees a barrier.
+		// Retain source evidence and all suffix records while held.
+		ops.cleanup = func(context.Context, *syncSegments) error { return nil }
+	}
 	var captureDone chan error
 	var captureCancel context.CancelFunc
 	var attemptStart syncPosition
@@ -303,6 +310,9 @@ func (r *syncRunner) run(ctx context.Context, j *syncSegments) (result error) {
 			s.State = "failed"
 			if result == nil {
 				s.State = "drained"
+				if r.confirmation != nil {
+					s.State = "stopped"
+				}
 			} else if syncOnlyCancellation(result) {
 				s.State = "stopped"
 			}
@@ -324,6 +334,9 @@ func (r *syncRunner) run(ctx context.Context, j *syncSegments) (result error) {
 		// connection was being closed. Never freeze a stale status snapshot.
 		target := j.durablePosition()
 		r.update(func(s *syncRunnerStatus) { s.State, s.DrainTarget, s.Captured = "draining", target, target })
+		if r.confirmation != nil {
+			return r.confirmation.stopLive(workCtx, j, target)
+		}
 		return r.drainStopped(workCtx, j, ops, target)
 	}
 	markPressure := func(now time.Time, prospective bool) {
