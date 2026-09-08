@@ -1,0 +1,355 @@
+G6a-8 isolated continuous replication runner
+Date: 2026-09-08
+Base commit created at start of turn: 2cb02e7 (dev), G6a-7.
+No push or running-service deployment. G6a-8 changes remain uncommitted.
+
+Environment:
+  redis03, existing development services left untouched.
+  Cold container: redis-pilot-g6-apply-0eGQag (reused).
+    Apache Kvrocks 2.15.0, memory 384 MiB, network none, no host ports.
+    Internal address 127.0.0.1:6666; test checks sync=yes and disable_wal=no.
+    Read-only fixture mount: /tmp/redis-pilot-g6-apply.0eGQag -> /fixture.
+  Source container: redis-pilot-g6-runner-source-20260908 (new isolated fixture).
+    Redis 7.2.5, memory 64 MiB, pids-limit 64, /data tmpfs 16 MiB.
+    Shares cold container's isolated network namespace, no host ports.
+    Internal address 127.0.0.1:6391; noeviction, maxmemory 32 MiB.
+    save disabled, AOF disabled, rdbcompression no, repl-diskless-sync no.
+    Synthetic test data only; no hot-data durability claims from this fixture.
+    Redis image ID: ea5b3b2fa3e90748724861d2037b70bf9ed759e07751dd6786f77789bf562868
+    Container ID: 0dffee128f42bcd01dd404f650181875b20ee515bc9b82e8240da9aa5c8e0bb4
+
+Test scope:
+  Real source RDB + PSYNC -> local fsynced segments -> real cold pending apply.
+  Five subtests: automatic reconnect/reopen, resource pause/resume,
+  lost cold EXEC response/explicit recovery, unsupported TTL, real backlog gap.
+  Source writes during stopped capture are real writes, not appended fixtures.
+  Disk-low test injects available-byte samples; no actual filesystem exhaustion.
+  Backlog test changes only this dedicated source's backlog size and restores it.
+  No benchmark, throughput claim, power-cut test, production RPO or TTL support.
+
+Pre-final validation and findings:
+  Initial local runner race suite: PASS (3 repetitions, 8.700s).
+  Initial whole gateway race: PASS (16.946s).
+  Initial go test ./...: PASS; gateway 15.591s, server 54.305s.
+  Initial go vet ./internal/gateway and git diff --check: PASS.
+
+  Source cancellation review found that a prior blanket ctx.Err override could
+  hide a concurrent journal/protocol failure. It was removed; deterministic
+  tests retain corrupt/full/unsupported errors even when cancellation races.
+
+  First real five-case run: PASS, 0.80s.
+  Binary: /fixture/redis-pilot-g6-runner-e2e-20260908.test
+  SHA256 local/remote: c20ae350601196e817a7178a7a2416c2569d85e0b5105e1bf59183ec809f0401
+  Repeat count=3 on this binary: FAIL overall, one stop race in first repetition;
+  remaining two repetitions and all other subtests passed.
+  Actual failure:
+    sync_runner_integration_test.go:208:
+    read tcp 127.0.0.1:32912->127.0.0.1:6666: use of closed network connection
+  Cause: cancel interrupted a cold read/validation and returned raw network
+  error instead of context cancellation. This was a stop-result classification
+  issue, not a counter mismatch. The chained segments regression did NOT run
+  after this failed command. The failed binary is preserved, not overwritten.
+
+  Correction: only raw network read/write/EOF cancellation is normalized at the
+  runner drain boundary. Known terminal outcomes (especially uncertain EXEC)
+  and unknown wrapped failures remain failures. No extra retry authority added.
+  Added deterministic cancellation tests and direct DEL/SET cold assertions.
+
+  Second pre-final binary: /fixture/redis-pilot-g6-runner-final-20260908.test
+  SHA256 local/remote: 9b95f72e9f9f24537b7850077f629c780e54939bee58e9c9ce20aaffd0cc7f55
+  Repeat count=10: FAIL overall, 9 complete repetitions passed; repetition 4
+  correctly retained errSyncPendingUncertain when cancellation hit EXEC, but
+  the test's stop assertion incorrectly required context.Canceled only.
+  Actual failure: sync_runner_integration_test.go:189:
+    pending sync outcome uncertain; reopen and reconcile pending record
+  No production relaxation was made: immediate cancellation may interrupt a
+  transaction and MUST retain this terminal result. The test now checks failed
+  + cold_outcome_uncertain, then explicitly reconciles with a fresh bounded
+  context, checks the exact expected counter and zero leaked views. Other stop
+  errors still fail. Lost-response fault subtest still demands terminal failure
+  before its separate explicit restart. This is not a silent auto-retry.
+
+Final integration binary:
+  Local: /tmp/redis-pilot-g6-runner-verified-20260908.test
+  Remote: /tmp/redis-pilot-g6-apply.0eGQag/redis-pilot-g6-runner-verified-20260908.test
+  SHA256: 3fc5b834971a4643e433d8a1425c3d40e42b2d906bd9b30e8624143fe5b11f80
+  Build: CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go test -c ... ./internal/gateway
+
+Final integration invocation (inside the cold container, --user 0):
+  GATEWAY_TEST_KVROCKS_COMMIT=isolated
+  GATEWAY_TEST_KVROCKS_ADDRESS=127.0.0.1:6666
+  GATEWAY_TEST_KVROCKS_PHASE=runner
+  GATEWAY_TEST_RUNNER_SOURCE=127.0.0.1:6391
+  /fixture/redis-pilot-g6-runner-verified-20260908.test
+    -test.run '^TestKvrocksCommitExperiment$' -test.v -test.count=10 -test.timeout=120s
+
+Then prior regression phase on the same binary:
+  GATEWAY_TEST_KVROCKS_PHASE=segments
+  GATEWAY_TEST_SYNC_FIXTURE_DIR=/fixture
+  -test.run '^TestKvrocksCommitExperiment$' -test.v -test.count=1 -test.timeout=90s
+
+Combined remote invocation exit code: 0.
+Runner: all five cases passed in all ten repetitions (50 subtest passes).
+Segments/resource/orphan regression: all eleven cases passed, 2.24s.
+The final runner output includes three cancel-during-EXEC cases whose terminal
+status was retained and then explicitly reconciled without counter duplication.
+
+Raw final remote output:
+3fc5b834971a4643e433d8a1425c3d40e42b2d906bd9b30e8624143fe5b11f80  /tmp/redis-pilot-g6-apply.0eGQag/redis-pilot-g6-runner-verified-20260908.test
+=== RUN   TestKvrocksCommitExperiment
+=== RUN   TestKvrocksCommitExperiment/continuous_capture_reconnect_and_restart
+    sync_runner_integration_test.go:232: cancel interrupted EXEC; terminal outcome retained and explicitly reconciled
+    sync_runner_integration_test.go:233: real Redis 41->42; killed replica connection then automatic PSYNC reached43; stopped/reopened runner consumed offline write44 exactly once
+=== RUN   TestKvrocksCommitExperiment/pressure_pauses_and_resumes_real_source
+    sync_runner_integration_test.go:255: injected low availability paused capture without busy reconnect; actual Redis offline write synchronized after recovery
+=== RUN   TestKvrocksCommitExperiment/uncertain_cold_commit_stops_then_explicit_restart
+    sync_runner_integration_test.go:289: discarded real cold EXEC reply: loop stopped and joined capture; explicit restart reconciled42 and next INCR reached43
+=== RUN   TestKvrocksCommitExperiment/unsupported_ttl_stops_without_cold_expiry
+    sync_runner_integration_test.go:307: real Redis propagated TTL command was rejected; no automatic skip or cold expiry replay
+=== RUN   TestKvrocksCommitExperiment/real_backlog_gap_never_replaces_cold_history
+    sync_runner_integration_test.go:335: actual Redis backlog overflow forced FULLRESYNC; loop stopped and preserved prior cold/history without snapshot replacement
+=== NAME  TestKvrocksCommitExperiment
+    sync_runner_integration_test.go:344: isolated continuous runner completed against 127.0.0.1:6391 and 127.0.0.1:6666
+--- PASS: TestKvrocksCommitExperiment (0.81s)
+    --- PASS: TestKvrocksCommitExperiment/continuous_capture_reconnect_and_restart (0.19s)
+    --- PASS: TestKvrocksCommitExperiment/pressure_pauses_and_resumes_real_source (0.20s)
+    --- PASS: TestKvrocksCommitExperiment/uncertain_cold_commit_stops_then_explicit_restart (0.18s)
+    --- PASS: TestKvrocksCommitExperiment/unsupported_ttl_stops_without_cold_expiry (0.11s)
+    --- PASS: TestKvrocksCommitExperiment/real_backlog_gap_never_replaces_cold_history (0.13s)
+=== RUN   TestKvrocksCommitExperiment
+=== RUN   TestKvrocksCommitExperiment/continuous_capture_reconnect_and_restart
+    sync_runner_integration_test.go:233: real Redis 41->42; killed replica connection then automatic PSYNC reached43; stopped/reopened runner consumed offline write44 exactly once
+=== RUN   TestKvrocksCommitExperiment/pressure_pauses_and_resumes_real_source
+    sync_runner_integration_test.go:255: injected low availability paused capture without busy reconnect; actual Redis offline write synchronized after recovery
+=== RUN   TestKvrocksCommitExperiment/uncertain_cold_commit_stops_then_explicit_restart
+    sync_runner_integration_test.go:289: discarded real cold EXEC reply: loop stopped and joined capture; explicit restart reconciled42 and next INCR reached43
+=== RUN   TestKvrocksCommitExperiment/unsupported_ttl_stops_without_cold_expiry
+    sync_runner_integration_test.go:307: real Redis propagated TTL command was rejected; no automatic skip or cold expiry replay
+=== RUN   TestKvrocksCommitExperiment/real_backlog_gap_never_replaces_cold_history
+    sync_runner_integration_test.go:335: actual Redis backlog overflow forced FULLRESYNC; loop stopped and preserved prior cold/history without snapshot replacement
+=== NAME  TestKvrocksCommitExperiment
+    sync_runner_integration_test.go:344: isolated continuous runner completed against 127.0.0.1:6391 and 127.0.0.1:6666
+--- PASS: TestKvrocksCommitExperiment (0.91s)
+    --- PASS: TestKvrocksCommitExperiment/continuous_capture_reconnect_and_restart (0.29s)
+    --- PASS: TestKvrocksCommitExperiment/pressure_pauses_and_resumes_real_source (0.20s)
+    --- PASS: TestKvrocksCommitExperiment/uncertain_cold_commit_stops_then_explicit_restart (0.18s)
+    --- PASS: TestKvrocksCommitExperiment/unsupported_ttl_stops_without_cold_expiry (0.10s)
+    --- PASS: TestKvrocksCommitExperiment/real_backlog_gap_never_replaces_cold_history (0.13s)
+=== RUN   TestKvrocksCommitExperiment
+=== RUN   TestKvrocksCommitExperiment/continuous_capture_reconnect_and_restart
+    sync_runner_integration_test.go:233: real Redis 41->42; killed replica connection then automatic PSYNC reached43; stopped/reopened runner consumed offline write44 exactly once
+=== RUN   TestKvrocksCommitExperiment/pressure_pauses_and_resumes_real_source
+    sync_runner_integration_test.go:255: injected low availability paused capture without busy reconnect; actual Redis offline write synchronized after recovery
+=== RUN   TestKvrocksCommitExperiment/uncertain_cold_commit_stops_then_explicit_restart
+    sync_runner_integration_test.go:289: discarded real cold EXEC reply: loop stopped and joined capture; explicit restart reconciled42 and next INCR reached43
+=== RUN   TestKvrocksCommitExperiment/unsupported_ttl_stops_without_cold_expiry
+    sync_runner_integration_test.go:307: real Redis propagated TTL command was rejected; no automatic skip or cold expiry replay
+=== RUN   TestKvrocksCommitExperiment/real_backlog_gap_never_replaces_cold_history
+    sync_runner_integration_test.go:335: actual Redis backlog overflow forced FULLRESYNC; loop stopped and preserved prior cold/history without snapshot replacement
+=== NAME  TestKvrocksCommitExperiment
+    sync_runner_integration_test.go:344: isolated continuous runner completed against 127.0.0.1:6391 and 127.0.0.1:6666
+--- PASS: TestKvrocksCommitExperiment (0.90s)
+    --- PASS: TestKvrocksCommitExperiment/continuous_capture_reconnect_and_restart (0.30s)
+    --- PASS: TestKvrocksCommitExperiment/pressure_pauses_and_resumes_real_source (0.18s)
+    --- PASS: TestKvrocksCommitExperiment/uncertain_cold_commit_stops_then_explicit_restart (0.20s)
+    --- PASS: TestKvrocksCommitExperiment/unsupported_ttl_stops_without_cold_expiry (0.10s)
+    --- PASS: TestKvrocksCommitExperiment/real_backlog_gap_never_replaces_cold_history (0.13s)
+=== RUN   TestKvrocksCommitExperiment
+=== RUN   TestKvrocksCommitExperiment/continuous_capture_reconnect_and_restart
+    sync_runner_integration_test.go:233: real Redis 41->42; killed replica connection then automatic PSYNC reached43; stopped/reopened runner consumed offline write44 exactly once
+=== RUN   TestKvrocksCommitExperiment/pressure_pauses_and_resumes_real_source
+    sync_runner_integration_test.go:255: injected low availability paused capture without busy reconnect; actual Redis offline write synchronized after recovery
+=== RUN   TestKvrocksCommitExperiment/uncertain_cold_commit_stops_then_explicit_restart
+    sync_runner_integration_test.go:289: discarded real cold EXEC reply: loop stopped and joined capture; explicit restart reconciled42 and next INCR reached43
+=== RUN   TestKvrocksCommitExperiment/unsupported_ttl_stops_without_cold_expiry
+    sync_runner_integration_test.go:307: real Redis propagated TTL command was rejected; no automatic skip or cold expiry replay
+=== RUN   TestKvrocksCommitExperiment/real_backlog_gap_never_replaces_cold_history
+    sync_runner_integration_test.go:335: actual Redis backlog overflow forced FULLRESYNC; loop stopped and preserved prior cold/history without snapshot replacement
+=== NAME  TestKvrocksCommitExperiment
+    sync_runner_integration_test.go:344: isolated continuous runner completed against 127.0.0.1:6391 and 127.0.0.1:6666
+--- PASS: TestKvrocksCommitExperiment (0.91s)
+    --- PASS: TestKvrocksCommitExperiment/continuous_capture_reconnect_and_restart (0.30s)
+    --- PASS: TestKvrocksCommitExperiment/pressure_pauses_and_resumes_real_source (0.20s)
+    --- PASS: TestKvrocksCommitExperiment/uncertain_cold_commit_stops_then_explicit_restart (0.17s)
+    --- PASS: TestKvrocksCommitExperiment/unsupported_ttl_stops_without_cold_expiry (0.10s)
+    --- PASS: TestKvrocksCommitExperiment/real_backlog_gap_never_replaces_cold_history (0.13s)
+=== RUN   TestKvrocksCommitExperiment
+=== RUN   TestKvrocksCommitExperiment/continuous_capture_reconnect_and_restart
+    sync_runner_integration_test.go:233: real Redis 41->42; killed replica connection then automatic PSYNC reached43; stopped/reopened runner consumed offline write44 exactly once
+=== RUN   TestKvrocksCommitExperiment/pressure_pauses_and_resumes_real_source
+    sync_runner_integration_test.go:255: injected low availability paused capture without busy reconnect; actual Redis offline write synchronized after recovery
+=== RUN   TestKvrocksCommitExperiment/uncertain_cold_commit_stops_then_explicit_restart
+    sync_runner_integration_test.go:289: discarded real cold EXEC reply: loop stopped and joined capture; explicit restart reconciled42 and next INCR reached43
+=== RUN   TestKvrocksCommitExperiment/unsupported_ttl_stops_without_cold_expiry
+    sync_runner_integration_test.go:307: real Redis propagated TTL command was rejected; no automatic skip or cold expiry replay
+=== RUN   TestKvrocksCommitExperiment/real_backlog_gap_never_replaces_cold_history
+    sync_runner_integration_test.go:335: actual Redis backlog overflow forced FULLRESYNC; loop stopped and preserved prior cold/history without snapshot replacement
+=== NAME  TestKvrocksCommitExperiment
+    sync_runner_integration_test.go:344: isolated continuous runner completed against 127.0.0.1:6391 and 127.0.0.1:6666
+--- PASS: TestKvrocksCommitExperiment (1.01s)
+    --- PASS: TestKvrocksCommitExperiment/continuous_capture_reconnect_and_restart (0.30s)
+    --- PASS: TestKvrocksCommitExperiment/pressure_pauses_and_resumes_real_source (0.24s)
+    --- PASS: TestKvrocksCommitExperiment/uncertain_cold_commit_stops_then_explicit_restart (0.23s)
+    --- PASS: TestKvrocksCommitExperiment/unsupported_ttl_stops_without_cold_expiry (0.11s)
+    --- PASS: TestKvrocksCommitExperiment/real_backlog_gap_never_replaces_cold_history (0.13s)
+=== RUN   TestKvrocksCommitExperiment
+=== RUN   TestKvrocksCommitExperiment/continuous_capture_reconnect_and_restart
+    sync_runner_integration_test.go:233: real Redis 41->42; killed replica connection then automatic PSYNC reached43; stopped/reopened runner consumed offline write44 exactly once
+=== RUN   TestKvrocksCommitExperiment/pressure_pauses_and_resumes_real_source
+    sync_runner_integration_test.go:255: injected low availability paused capture without busy reconnect; actual Redis offline write synchronized after recovery
+=== RUN   TestKvrocksCommitExperiment/uncertain_cold_commit_stops_then_explicit_restart
+    sync_runner_integration_test.go:289: discarded real cold EXEC reply: loop stopped and joined capture; explicit restart reconciled42 and next INCR reached43
+=== RUN   TestKvrocksCommitExperiment/unsupported_ttl_stops_without_cold_expiry
+    sync_runner_integration_test.go:307: real Redis propagated TTL command was rejected; no automatic skip or cold expiry replay
+=== RUN   TestKvrocksCommitExperiment/real_backlog_gap_never_replaces_cold_history
+    sync_runner_integration_test.go:335: actual Redis backlog overflow forced FULLRESYNC; loop stopped and preserved prior cold/history without snapshot replacement
+=== NAME  TestKvrocksCommitExperiment
+    sync_runner_integration_test.go:344: isolated continuous runner completed against 127.0.0.1:6391 and 127.0.0.1:6666
+--- PASS: TestKvrocksCommitExperiment (0.91s)
+    --- PASS: TestKvrocksCommitExperiment/continuous_capture_reconnect_and_restart (0.29s)
+    --- PASS: TestKvrocksCommitExperiment/pressure_pauses_and_resumes_real_source (0.19s)
+    --- PASS: TestKvrocksCommitExperiment/uncertain_cold_commit_stops_then_explicit_restart (0.19s)
+    --- PASS: TestKvrocksCommitExperiment/unsupported_ttl_stops_without_cold_expiry (0.10s)
+    --- PASS: TestKvrocksCommitExperiment/real_backlog_gap_never_replaces_cold_history (0.13s)
+=== RUN   TestKvrocksCommitExperiment
+=== RUN   TestKvrocksCommitExperiment/continuous_capture_reconnect_and_restart
+    sync_runner_integration_test.go:233: real Redis 41->42; killed replica connection then automatic PSYNC reached43; stopped/reopened runner consumed offline write44 exactly once
+=== RUN   TestKvrocksCommitExperiment/pressure_pauses_and_resumes_real_source
+    sync_runner_integration_test.go:255: injected low availability paused capture without busy reconnect; actual Redis offline write synchronized after recovery
+=== RUN   TestKvrocksCommitExperiment/uncertain_cold_commit_stops_then_explicit_restart
+    sync_runner_integration_test.go:289: discarded real cold EXEC reply: loop stopped and joined capture; explicit restart reconciled42 and next INCR reached43
+=== RUN   TestKvrocksCommitExperiment/unsupported_ttl_stops_without_cold_expiry
+    sync_runner_integration_test.go:307: real Redis propagated TTL command was rejected; no automatic skip or cold expiry replay
+=== RUN   TestKvrocksCommitExperiment/real_backlog_gap_never_replaces_cold_history
+    sync_runner_integration_test.go:335: actual Redis backlog overflow forced FULLRESYNC; loop stopped and preserved prior cold/history without snapshot replacement
+=== NAME  TestKvrocksCommitExperiment
+    sync_runner_integration_test.go:344: isolated continuous runner completed against 127.0.0.1:6391 and 127.0.0.1:6666
+--- PASS: TestKvrocksCommitExperiment (0.91s)
+    --- PASS: TestKvrocksCommitExperiment/continuous_capture_reconnect_and_restart (0.30s)
+    --- PASS: TestKvrocksCommitExperiment/pressure_pauses_and_resumes_real_source (0.18s)
+    --- PASS: TestKvrocksCommitExperiment/uncertain_cold_commit_stops_then_explicit_restart (0.19s)
+    --- PASS: TestKvrocksCommitExperiment/unsupported_ttl_stops_without_cold_expiry (0.10s)
+    --- PASS: TestKvrocksCommitExperiment/real_backlog_gap_never_replaces_cold_history (0.13s)
+=== RUN   TestKvrocksCommitExperiment
+=== RUN   TestKvrocksCommitExperiment/continuous_capture_reconnect_and_restart
+    sync_runner_integration_test.go:233: real Redis 41->42; killed replica connection then automatic PSYNC reached43; stopped/reopened runner consumed offline write44 exactly once
+=== RUN   TestKvrocksCommitExperiment/pressure_pauses_and_resumes_real_source
+    sync_runner_integration_test.go:255: injected low availability paused capture without busy reconnect; actual Redis offline write synchronized after recovery
+=== RUN   TestKvrocksCommitExperiment/uncertain_cold_commit_stops_then_explicit_restart
+    sync_runner_integration_test.go:289: discarded real cold EXEC reply: loop stopped and joined capture; explicit restart reconciled42 and next INCR reached43
+=== RUN   TestKvrocksCommitExperiment/unsupported_ttl_stops_without_cold_expiry
+    sync_runner_integration_test.go:307: real Redis propagated TTL command was rejected; no automatic skip or cold expiry replay
+=== RUN   TestKvrocksCommitExperiment/real_backlog_gap_never_replaces_cold_history
+    sync_runner_integration_test.go:335: actual Redis backlog overflow forced FULLRESYNC; loop stopped and preserved prior cold/history without snapshot replacement
+=== NAME  TestKvrocksCommitExperiment
+    sync_runner_integration_test.go:344: isolated continuous runner completed against 127.0.0.1:6391 and 127.0.0.1:6666
+--- PASS: TestKvrocksCommitExperiment (0.91s)
+    --- PASS: TestKvrocksCommitExperiment/continuous_capture_reconnect_and_restart (0.30s)
+    --- PASS: TestKvrocksCommitExperiment/pressure_pauses_and_resumes_real_source (0.19s)
+    --- PASS: TestKvrocksCommitExperiment/uncertain_cold_commit_stops_then_explicit_restart (0.18s)
+    --- PASS: TestKvrocksCommitExperiment/unsupported_ttl_stops_without_cold_expiry (0.10s)
+    --- PASS: TestKvrocksCommitExperiment/real_backlog_gap_never_replaces_cold_history (0.14s)
+=== RUN   TestKvrocksCommitExperiment
+=== RUN   TestKvrocksCommitExperiment/continuous_capture_reconnect_and_restart
+    sync_runner_integration_test.go:232: cancel interrupted EXEC; terminal outcome retained and explicitly reconciled
+    sync_runner_integration_test.go:233: real Redis 41->42; killed replica connection then automatic PSYNC reached43; stopped/reopened runner consumed offline write44 exactly once
+=== RUN   TestKvrocksCommitExperiment/pressure_pauses_and_resumes_real_source
+    sync_runner_integration_test.go:255: injected low availability paused capture without busy reconnect; actual Redis offline write synchronized after recovery
+=== RUN   TestKvrocksCommitExperiment/uncertain_cold_commit_stops_then_explicit_restart
+    sync_runner_integration_test.go:289: discarded real cold EXEC reply: loop stopped and joined capture; explicit restart reconciled42 and next INCR reached43
+=== RUN   TestKvrocksCommitExperiment/unsupported_ttl_stops_without_cold_expiry
+    sync_runner_integration_test.go:307: real Redis propagated TTL command was rejected; no automatic skip or cold expiry replay
+=== RUN   TestKvrocksCommitExperiment/real_backlog_gap_never_replaces_cold_history
+    sync_runner_integration_test.go:335: actual Redis backlog overflow forced FULLRESYNC; loop stopped and preserved prior cold/history without snapshot replacement
+=== NAME  TestKvrocksCommitExperiment
+    sync_runner_integration_test.go:344: isolated continuous runner completed against 127.0.0.1:6391 and 127.0.0.1:6666
+--- PASS: TestKvrocksCommitExperiment (0.90s)
+    --- PASS: TestKvrocksCommitExperiment/continuous_capture_reconnect_and_restart (0.28s)
+    --- PASS: TestKvrocksCommitExperiment/pressure_pauses_and_resumes_real_source (0.21s)
+    --- PASS: TestKvrocksCommitExperiment/uncertain_cold_commit_stops_then_explicit_restart (0.18s)
+    --- PASS: TestKvrocksCommitExperiment/unsupported_ttl_stops_without_cold_expiry (0.10s)
+    --- PASS: TestKvrocksCommitExperiment/real_backlog_gap_never_replaces_cold_history (0.12s)
+=== RUN   TestKvrocksCommitExperiment
+=== RUN   TestKvrocksCommitExperiment/continuous_capture_reconnect_and_restart
+    sync_runner_integration_test.go:215: cancel interrupted EXEC; terminal outcome retained and explicitly reconciled
+    sync_runner_integration_test.go:233: real Redis 41->42; killed replica connection then automatic PSYNC reached43; stopped/reopened runner consumed offline write44 exactly once
+=== RUN   TestKvrocksCommitExperiment/pressure_pauses_and_resumes_real_source
+    sync_runner_integration_test.go:255: injected low availability paused capture without busy reconnect; actual Redis offline write synchronized after recovery
+=== RUN   TestKvrocksCommitExperiment/uncertain_cold_commit_stops_then_explicit_restart
+    sync_runner_integration_test.go:289: discarded real cold EXEC reply: loop stopped and joined capture; explicit restart reconciled42 and next INCR reached43
+=== RUN   TestKvrocksCommitExperiment/unsupported_ttl_stops_without_cold_expiry
+    sync_runner_integration_test.go:307: real Redis propagated TTL command was rejected; no automatic skip or cold expiry replay
+=== RUN   TestKvrocksCommitExperiment/real_backlog_gap_never_replaces_cold_history
+    sync_runner_integration_test.go:335: actual Redis backlog overflow forced FULLRESYNC; loop stopped and preserved prior cold/history without snapshot replacement
+=== NAME  TestKvrocksCommitExperiment
+    sync_runner_integration_test.go:344: isolated continuous runner completed against 127.0.0.1:6391 and 127.0.0.1:6666
+--- PASS: TestKvrocksCommitExperiment (0.91s)
+    --- PASS: TestKvrocksCommitExperiment/continuous_capture_reconnect_and_restart (0.30s)
+    --- PASS: TestKvrocksCommitExperiment/pressure_pauses_and_resumes_real_source (0.20s)
+    --- PASS: TestKvrocksCommitExperiment/uncertain_cold_commit_stops_then_explicit_restart (0.18s)
+    --- PASS: TestKvrocksCommitExperiment/unsupported_ttl_stops_without_cold_expiry (0.10s)
+    --- PASS: TestKvrocksCommitExperiment/real_backlog_gap_never_replaces_cold_history (0.13s)
+PASS
+=== RUN   TestKvrocksCommitExperiment
+=== RUN   TestKvrocksCommitExperiment/real_fixture_gc_restart_and_suffix
+    sync_segment_integration_test.go:154: real Redis RDB/PSYNC fixture kept counter=42 then 43 across segmented GC/reopen
+=== RUN   TestKvrocksCommitExperiment/pending_after_gc_before
+    sync_segment_integration_test.go:195: post-GC unresolved/reply-loss/late-EXEC recovery did not duplicate INCR
+=== RUN   TestKvrocksCommitExperiment/pending_after_gc_reply
+    sync_segment_integration_test.go:195: post-GC unresolved/reply-loss/late-EXEC recovery did not duplicate INCR
+=== RUN   TestKvrocksCommitExperiment/pending_after_gc_late
+    sync_segment_integration_test.go:195: post-GC unresolved/reply-loss/late-EXEC recovery did not duplicate INCR
+=== RUN   TestKvrocksCommitExperiment/gc_rejects_after_drift
+=== RUN   TestKvrocksCommitExperiment/gc_rejects_cold_rollback_inside_retained_segment
+    sync_segment_integration_test.go:258: cold rollback rejected without data replay or snapshot replacement
+=== RUN   TestKvrocksCommitExperiment/gc_rejects_cold_rollback_below_floor
+    sync_segment_integration_test.go:258: cold rollback rejected without data replay or snapshot replacement
+=== RUN   TestKvrocksCommitExperiment/gc_rejects_cold_rollback_metadata_lost_empty_db
+    sync_segment_integration_test.go:258: cold rollback rejected without data replay or snapshot replacement
+=== RUN   TestKvrocksCommitExperiment/gc_process_sigkill_after_manifest
+    sync_segment_integration_test.go:335: real GC process SIGKILL after durable manifest/before deletion; explicit orphan cleanup removed leftovers, replay preserved counter
+=== RUN   TestKvrocksCommitExperiment/resource_disk_pressure_allows_cold_drain
+    sync_segment_integration_test.go:364: injected low availability stopped capture without ACK progress; real cold apply/GC drained; resumed one INCR
+=== RUN   TestKvrocksCommitExperiment/resource_unconfirmed_watermark_is_conservative
+    sync_segment_integration_test.go:392: cold apply alone did not release conservative backlog; durable GC confirmation did
+--- PASS: TestKvrocksCommitExperiment (2.24s)
+    --- PASS: TestKvrocksCommitExperiment/real_fixture_gc_restart_and_suffix (0.10s)
+    --- PASS: TestKvrocksCommitExperiment/pending_after_gc_before (0.21s)
+    --- PASS: TestKvrocksCommitExperiment/pending_after_gc_reply (0.20s)
+    --- PASS: TestKvrocksCommitExperiment/pending_after_gc_late (0.46s)
+    --- PASS: TestKvrocksCommitExperiment/gc_rejects_after_drift (0.17s)
+    --- PASS: TestKvrocksCommitExperiment/gc_rejects_cold_rollback_inside_retained_segment (0.19s)
+    --- PASS: TestKvrocksCommitExperiment/gc_rejects_cold_rollback_below_floor (0.25s)
+    --- PASS: TestKvrocksCommitExperiment/gc_rejects_cold_rollback_metadata_lost_empty_db (0.18s)
+    --- PASS: TestKvrocksCommitExperiment/gc_process_sigkill_after_manifest (0.20s)
+    --- PASS: TestKvrocksCommitExperiment/resource_disk_pressure_allows_cold_drain (0.09s)
+    --- PASS: TestKvrocksCommitExperiment/resource_unconfirmed_watermark_is_conservative (0.19s)
+PASS
+
+Final local verification:
+  go test -race ./internal/gateway -count=1 -timeout=120s
+  PASS, 18.159s (final production code; later edit only integration assertions).
+  go test -race ./internal/gateway -run '^TestSync(Runner|DrainCancellation|Transport)' -count=3 -timeout=120s
+  PASS, 9.497s.
+  go test ./...
+  PASS; gateway 15.483s; other packages passed/cached or have no test files.
+  go vet ./internal/gateway
+  PASS.
+  git diff --check
+  PASS.
+
+Teardown:
+  Both dedicated source/cold SCAN 0 COUNT 100 returned cursor 0 + empty key list.
+  Only explicitly named synthetic test keys and protocol metadata were deleted;
+  no FLUSHDB, no existing dev instance data modified. Test data is disposable.
+  Source container stopped first, then cold container. Both are exited with no
+  restart policy. Images, binaries and fixtures retained for reproduction.
+  Containers have no host port bindings or service/autostart registrations.
+  Existing containers after teardown:
+    redis-sentinel Up 3 months
+    redis-galaxy-2 Up 2 weeks
+    redis-test-v7 Up 11 days
+    kvrocks-test-kv Up 2 weeks
+  redis-pilot-agent: active.
+  No Gateway, Server, Proxy or Agent binary deployment/restart performed.
+  Unrelated untracked deploy/, dump.rdb, session/ left untouched.

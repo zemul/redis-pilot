@@ -317,6 +317,9 @@ type syncColdTarget struct {
 }
 
 func (target syncColdTarget) open(ctx context.Context) (*syncColdClient, func(), error) {
+	if err := ctx.Err(); err != nil {
+		return nil, nil, err
+	}
 	host, port, err := net.SplitHostPort(target.address)
 	ip := net.ParseIP(host)
 	p, pe := strconv.Atoi(port)
@@ -329,30 +332,43 @@ func (target syncColdTarget) open(ctx context.Context) (*syncColdClient, func(),
 	}
 	conn, err := (&net.Dialer{Timeout: target.timeout}).DialContext(ctx, "tcp", target.address)
 	if err != nil {
-		return nil, nil, err
+		if classified := syncTransportFailure(ctx, errSyncColdConnect, "connect", err); classified != nil {
+			return nil, nil, classified
+		}
+		return nil, nil, errors.New("cannot connect to cold prototype")
 	}
 	stop := context.AfterFunc(ctx, func() { conn.Close() })
 	closeClient := func() { stop(); conn.Close() }
 	r, _ := NewReader(conn, DefaultConfig().Limits)
 	c := &syncColdClient{conn, r, target.timeout}
-	fail := func() (*syncColdClient, func(), error) {
+	fail := func(operation string, cause error) (*syncColdClient, func(), error) {
 		closeClient()
+		if classified := syncTransportFailure(ctx, errSyncColdConnect, operation, cause); classified != nil {
+			return nil, nil, classified
+		}
 		return nil, nil, errors.New("cold prototype requires writable standalone Kvrocks 2.15.0 with synchronous WAL")
 	}
 	if password != "" {
-		if c.expect("+OK\r\n", "AUTH", password) != nil {
-			return fail()
+		if err := c.expect("+OK\r\n", "AUTH", password); err != nil {
+			return fail("authentication", err)
 		}
 	}
 	info, err := c.request("INFO", "all")
-	if err != nil || !standaloneMaster(info) || !strings.Contains(string(info), "\r\nkvrocks_version:2.15.0\r\n") {
-		return fail()
+	if err != nil {
+		return fail("server information", err)
+	}
+	if !standaloneMaster(info) || !strings.Contains(string(info), "\r\nkvrocks_version:2.15.0\r\n") {
+		return fail("server information", nil)
 	}
 	for _, setting := range []struct{ key, value string }{{"rocksdb.write_options.sync", "yes"}, {"rocksdb.write_options.disable_wal", "no"}} {
 		want := fmt.Sprintf("*2\r\n$%d\r\n%s\r\n$%d\r\n%s\r\n", len(setting.key), setting.key, len(setting.value), setting.value)
-		if c.expect(want, "CONFIG", "GET", setting.key) != nil {
-			return fail()
+		if err := c.expect(want, "CONFIG", "GET", setting.key); err != nil {
+			return fail("durability configuration", err)
 		}
+	}
+	if err := ctx.Err(); err != nil {
+		closeClient()
+		return nil, nil, err
 	}
 	return c, closeClient, nil
 }

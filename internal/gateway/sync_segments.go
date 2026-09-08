@@ -58,6 +58,7 @@ type syncSegmentHeader struct {
 type syncSegments struct {
 	mu       sync.Mutex
 	applyMu  sync.Mutex // serializes the isolated applier and cold-confirmed GC
+	runMu    sync.Mutex // one continuous loop per journal; released only after capture joins
 	dir      *os.File
 	lock     *os.File
 	files    []*os.File

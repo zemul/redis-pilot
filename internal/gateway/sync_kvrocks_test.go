@@ -190,8 +190,11 @@ func TestKvrocksCommitExperiment(t *testing.T) {
 	case "segments":
 		kvCommitSegmentExperiments(t, addr, c)
 		return
+	case "runner":
+		kvCommitRunnerExperiments(t, addr, c)
+		return
 	default:
-		t.Fatal("expected explicit semantics/replay/apply/pending/segments/crash_prepare/crash_verify phase")
+		t.Fatal("expected explicit semantics/replay/apply/pending/segments/runner/crash_prepare/crash_verify phase")
 	}
 
 	t.Run("reply_loss_and_checkpoint_readback", func(t *testing.T) {

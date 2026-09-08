@@ -22,10 +22,25 @@ type syncSource struct {
 	maxSnapshot  int64
 }
 
+func (s syncSource) validate() error {
+	host, port, err := net.SplitHostPort(s.address)
+	p, e := strconv.Atoi(port)
+	ip := net.ParseIP(host)
+	if err != nil || e != nil || p < 1 || p > 65535 || ip == nil || !ip.IsLoopback() || s.timeout <= 0 || s.timeout > 30*time.Second || s.maxSnapshot < 9 || s.maxSnapshot > 8<<20 {
+		return errors.New("replication capture requires bounded settings and an isolated loopback source")
+	}
+	return nil
+}
+
 func syncLine(r *bufio.Reader) (string, error) {
 	line, err := r.ReadSlice('\n')
+	if len(line) > 1024 {
+		return "", errors.New("replication control line exceeds limit")
+	}
 	if err != nil {
-		return "", errors.New("invalid or interrupted replication control line")
+		// Preserve EOF, partial-read and network errors for the caller's
+		// narrow retry classification. ErrBufferFull remains a fatal limit.
+		return "", err
 	}
 	if string(line) == "\n" {
 		return "", nil
@@ -44,11 +59,17 @@ type syncCaptureLog interface {
 }
 
 func (s syncSource) capture(ctx context.Context, j syncCaptureLog) error {
-	host, port, err := net.SplitHostPort(s.address)
-	p, e := strconv.Atoi(port)
-	ip := net.ParseIP(host)
-	if err != nil || e != nil || p < 1 || p > 65535 || ip == nil || !ip.IsLoopback() || s.timeout <= 0 || s.timeout > 30*time.Second || s.maxSnapshot < 9 || s.maxSnapshot > 8<<20 {
-		return errors.New("replication capture requires bounded settings and an isolated loopback source")
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	failure := func(operation string, cause error) error {
+		if err := syncTransportFailure(ctx, errSyncSourceTransport, operation, cause); err != nil {
+			return err
+		}
+		return errors.New("replication " + operation + " failed")
+	}
+	if err := s.validate(); err != nil {
+		return err
 	}
 	position := j.durablePosition()
 	if position.History != "" && position.Source != s.address {
@@ -60,7 +81,7 @@ func (s syncSource) capture(ctx context.Context, j syncCaptureLog) error {
 	}
 	conn, err := (&net.Dialer{Timeout: s.timeout}).DialContext(ctx, "tcp", s.address)
 	if err != nil {
-		return errors.New("cannot connect to replication source")
+		return failure("connect", err)
 	}
 	defer conn.Close()
 	stop := context.AfterFunc(ctx, func() { conn.Close() })
@@ -70,16 +91,21 @@ func (s syncSource) capture(ctx context.Context, j syncCaptureLog) error {
 	send := func(args ...string) error {
 		writeMu.Lock()
 		defer writeMu.Unlock()
-		conn.SetWriteDeadline(time.Now().Add(s.timeout))
+		if err := conn.SetWriteDeadline(time.Now().Add(s.timeout)); err != nil {
+			return err
+		}
 		return writeAll(conn, encodeCommand(args...))
 	}
 	expectOK := func(args ...string) error {
 		if err := send(args...); err != nil {
-			return err
+			return failure("handshake write", err)
 		}
 		conn.SetReadDeadline(time.Now().Add(s.timeout))
 		line, err := syncLine(reader)
-		if err != nil || line != "+OK" {
+		if err != nil {
+			return failure("handshake read", err)
+		}
+		if line != "+OK" {
 			return errors.New("replication handshake rejected")
 		}
 		return nil
@@ -102,12 +128,12 @@ func (s syncSource) capture(ctx context.Context, j syncCaptureLog) error {
 		offset = strconv.FormatInt(position.Offset+1, 10)
 	}
 	if err = send("PSYNC", id, offset); err != nil {
-		return err
+		return failure("PSYNC write", err)
 	}
 	conn.SetReadDeadline(time.Now().Add(s.timeout))
 	line, err := syncLine(reader)
 	if err != nil {
-		return err
+		return failure("PSYNC read", err)
 	}
 	fields := strings.Fields(line)
 	switch {
@@ -123,7 +149,7 @@ func (s syncSource) capture(ctx context.Context, j syncCaptureLog) error {
 			conn.SetReadDeadline(time.Now().Add(s.timeout))
 			line, err = syncLine(reader)
 			if err != nil {
-				return err
+				return failure("snapshot header read", err)
 			}
 			if line != "" {
 				break
@@ -142,7 +168,7 @@ func (s syncSource) capture(ctx context.Context, j syncCaptureLog) error {
 		rdb := make([]byte, int(n))
 		conn.SetReadDeadline(time.Now().Add(s.timeout))
 		if _, err = io.ReadFull(reader, rdb); err != nil {
-			return errors.New("incomplete replication snapshot")
+			return failure("snapshot read", err)
 		}
 		position = syncPosition{Source: s.address, History: fields[1], Offset: base}
 		if err = j.append(syncRecord{Kind: "snapshot", Position: position, Data: rdb}); err != nil {
@@ -158,10 +184,11 @@ func (s syncSource) capture(ctx context.Context, j syncCaptureLog) error {
 	// ACK means captured-to-local-disk only, NOT applied or durable in Kvrocks.
 	ack := func() error { return send("REPLCONF", "ACK", strconv.FormatInt(j.durablePosition().Offset, 10)) }
 	if err = ack(); err != nil {
-		return err
+		return failure("ACK write", err)
 	}
 	ackCtx, cancel := context.WithCancel(ctx)
 	ackDone := make(chan struct{})
+	ackError := make(chan error, 1)
 	defer func() { cancel(); conn.Close(); <-ackDone }()
 	go func() {
 		defer close(ackDone)
@@ -172,7 +199,8 @@ func (s syncSource) capture(ctx context.Context, j syncCaptureLog) error {
 			case <-ackCtx.Done():
 				return
 			case <-ticker.C:
-				if ack() != nil {
+				if err := ack(); err != nil {
+					ackError <- err
 					conn.Close()
 					return
 				}
@@ -184,10 +212,14 @@ func (s syncSource) capture(ctx context.Context, j syncCaptureLog) error {
 		conn.SetReadDeadline(time.Now().Add(s.timeout))
 		raw, args, err := frames.ReadCommand()
 		if err != nil {
-			if ctx.Err() != nil {
-				return ctx.Err()
+			if isSyncTransportError(err) {
+				select {
+				case ackErr := <-ackError:
+					return failure("ACK write", ackErr)
+				default:
+				}
 			}
-			return errors.New("replication stream interrupted or invalid frame")
+			return failure("command read", err)
 		}
 		position.Offset += int64(len(raw))
 		if err = j.append(syncRecord{Kind: "command", Position: position, Data: raw}); err != nil {
@@ -195,7 +227,7 @@ func (s syncSource) capture(ctx context.Context, j syncCaptureLog) error {
 		}
 		if len(args) == 3 && strings.EqualFold(string(args[0]), "REPLCONF") && strings.EqualFold(string(args[1]), "GETACK") {
 			if err = ack(); err != nil {
-				return err
+				return failure("ACK write", err)
 			}
 		}
 	}

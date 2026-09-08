@@ -11,9 +11,9 @@
 
 G6a-1 已增加独立测试调用的复制捕获、日志恢复与 PSYNC 续传原型，见 [异步同步路线与验收](gateway-async-sync.md)。G6a-4 已在隔离实验中把真实 RDB/增量日志应用到 Kvrocks，见 [无 TTL String 应用原型](gateway-string-apply.md)；仍未接入运行服务，尚无可部署的冷热能力。
 
-G6a-5 增加 [单项 pending 恢复](gateway-pending-recovery.md)，G6a-6 增加 [分段定位与安全回收](gateway-segmented-journal.md)。这些仍是隔离同步原型；TTL、淘汰/回温、所有权、物理磁盘水位和运行服务接线未完成。
+G6a-5 增加 [单项 pending 恢复](gateway-pending-recovery.md)，G6a-6 增加 [分段定位与安全回收](gateway-segmented-journal.md)。这些仍是隔离同步原型；TTL、淘汰/回温、所有权和运行服务接线未完成。
 
-G6a-7 已在隔离原型内补充 [磁盘水位、积压和孤儿清理](gateway-sync-resources.md)。仍未接自动调度或运行服务，生产阈值与长期同步故障时的热层限写策略待确认。
+G6a-7 已在隔离原型内补充 [磁盘水位、积压和孤儿清理](gateway-sync-resources.md)，已提交 `2cb02e7`。G6a-8 增加 [隔离持续同步循环](gateway-sync-runner.md)，串联捕获、应用、确认回收、清理和有界重连；未接运行服务，生产阈值与长期同步故障时的热层限写策略待确认。
 
 ## 1. 目标与阶段边界
 
