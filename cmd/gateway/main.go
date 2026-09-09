@@ -17,7 +17,12 @@ var version = "dev"
 func main() {
 	file := flag.String("config", "", "gateway skeleton YAML configuration")
 	check := flag.Bool("check-config", false, "validate configuration and exit")
+	initState := flag.Bool("init-state", false, "initialize hot_cold state once in an empty private directory")
 	flag.Parse()
+	if *check && *initState {
+		slog.Error("check-config and init-state are mutually exclusive")
+		os.Exit(1)
+	}
 	c := gateway.DefaultConfig()
 	if *file != "" {
 		var err error
@@ -35,6 +40,14 @@ func main() {
 	}
 	if *check {
 		slog.Info("gateway configuration valid", "mode", c.Mode)
+		return
+	}
+	if *initState {
+		if err := s.InitializeHotCold(); err != nil {
+			slog.Error("hot_cold initialization failed", "error", err)
+			os.Exit(1)
+		}
+		slog.Info("hot_cold state initialized; normal startup will resume it")
 		return
 	}
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

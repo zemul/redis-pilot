@@ -49,13 +49,20 @@ func openConfirmationGateway(o IsolatedConfirmationGatewayOptions, intent *evict
 }
 
 func validateConfirmationGateway(o IsolatedConfirmationGatewayOptions) (string, error) {
+	if err := validateConfirmationGatewayShape(o); err != nil {
+		return "", err
+	}
+	return confirmationToken(o.TokenFile)
+}
+
+func validateConfirmationGatewayShape(o IsolatedConfirmationGatewayOptions) error {
 	u, err := url.Parse(o.Endpoint)
 	if err != nil || u.Scheme != "http" || u.User != nil || u.Path != "" || u.RawPath != "" || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || u.Opaque != "" ||
 		syncCanonicalEndpoint(u.Host) != u.Host || u.Host == "" || u.Host == o.Binding.Source || u.Host == o.Binding.Cold || o.Binding.Validate() != nil ||
 		!syncAbsolutePath(o.OperationDir) || !syncAbsolutePath(o.TokenFile) || o.Timeout <= 0 || o.Timeout > 15*time.Second {
-		return "", errConfirmationRPC
+		return errConfirmationRPC
 	}
-	return confirmationToken(o.TokenFile)
+	return nil
 }
 
 func openConfirmationGatewayValidated(o IsolatedConfirmationGatewayOptions, intent *evictionIntent, barriers *keyBarrierSet, token string) (*IsolatedConfirmationGateway, error) {

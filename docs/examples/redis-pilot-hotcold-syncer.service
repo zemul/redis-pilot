@@ -1,0 +1,28 @@
+[Unit]
+Description=Redis Pilot hot/cold development synchronization worker
+Wants=redis-pilot-hotcold-hot.service redis-pilot-hotcold-cold.service
+After=network.target redis-pilot-hotcold-hot.service redis-pilot-hotcold-cold.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=redis-syncer
+Group=redis-syncer
+WorkingDirectory=/opt/redis-pilot-hotcold
+ExecStartPre=/opt/redis-pilot-hotcold/redis-syncer -confirmation-config /etc/redis-pilot-hotcold/syncer.yaml -check-config
+ExecStart=/opt/redis-pilot-hotcold/redis-syncer -confirmation-config /etc/redis-pilot-hotcold/syncer.yaml
+# Retries preserve the same identity/journal; never delete or reinitialize state.
+Restart=on-failure
+RestartSec=3s
+TimeoutStopSec=30s
+StateDirectory=redis-pilot-hotcold-syncer
+StateDirectoryMode=0700
+UMask=0077
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

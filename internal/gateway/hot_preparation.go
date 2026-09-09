@@ -415,13 +415,36 @@ func (h *hotPreparation) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	stop := context.AfterFunc(h.ctx, cancel)
 	defer stop()
 	var req hotPreparationRequest
-	if decodeConfirmation(http.MaxBytesReader(w, r.Body, confirmationRPCMaxBytes), &req) != nil || !req.valid() {
+	body := http.MaxBytesReader(w, r.Body, confirmationRPCMaxBytes)
+	var decodeErr error
+	if r.URL.Path == hotPreparationPath+"/evict" {
+		decodeErr = decodeEvictionRequest(body, &req)
+	} else {
+		decodeErr = decodeConfirmation(body, &req)
+	}
+	if decodeErr != nil {
 		http.Error(w, "invalid operation", 400)
 		return
 	}
+	alreadyCold := false
+	if r.URL.Path == hotPreparationPath+"/evict" && req.OperationID == "" {
+		var err error
+		alreadyCold, err = h.assignOperationID(ctx, &req)
+		if err != nil {
+			http.Error(w, "operation allocation unavailable; no new eviction dispatched", 503)
+			return
+		}
+	}
+	if !req.valid() {
+		http.Error(w, "invalid operation", 400)
+		return
+	}
+	w.Header().Set("X-Operation-ID", req.OperationID)
 	var err error
 	if r.URL.Path == hotPreparationPath+"/evict" {
-		err = h.manualEvict(ctx, req)
+		if !alreadyCold {
+			err = h.manualEvict(ctx, req)
+		}
 	} else if r.URL.Path == hotPreparationPath+"/finish" {
 		err = h.requestFinish(ctx, req)
 	} else if h.finishing {
@@ -448,7 +471,14 @@ func (h *hotPreparation) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.URL.Path == hotPreparationPath+"/evict" {
-		w.Write([]byte("{\"state\":\"eviction_completed_or_already_rewarmed\"}\n"))
+		state := "eviction_completed_or_already_rewarmed"
+		if alreadyCold {
+			state = "already_cold"
+		}
+		json.NewEncoder(w).Encode(struct {
+			State       string `json:"state"`
+			OperationID string `json:"operation_id"`
+		}{state, req.OperationID})
 	} else if r.URL.Path == hotPreparationPath+"/finish" {
 		w.Write([]byte("{\"state\":\"finished_hot_retained\"}\n"))
 	} else {

@@ -22,8 +22,9 @@ type Service struct {
 	// preparation orchestration can safely install and restore the same set.
 	admission          *keyBarrierSet
 	admissionBoot      *admissionRunOptions   // Internal, immutable before serve.
-	preparationOptions *hotPreparationOptions // Internal only; no YAML switch.
+	preparationOptions *hotPreparationOptions // Immutable startup options from hot_cold or tests.
 	preparation        *hotPreparation
+	autoEviction       *autoEviction
 	reporter           *heartbeatReporter
 	heartbeats         *prometheus.CounterVec
 	lastHeartbeatAck   prometheus.Gauge
@@ -72,6 +73,13 @@ func NewService(c Config) (*Service, error) {
 	s.uncertain = prometheus.NewCounter(prometheus.CounterOpts{Name: "redis_pilot_gateway_upstream_result_unknown_total", Help: "Requests whose backend result is unknown after dispatch; includes reads."})
 	s.registry.MustRegister(s.uncertain)
 	s.initMetrics()
+	if err := s.configureHotCold(); err != nil {
+		return nil, err
+	}
+	if c.HotCold != nil && c.HotCold.AutoEviction != nil && c.HotCold.AutoEviction.Enabled {
+		options := c.HotCold.AutoEviction.resolved()
+		s.autoEviction = newAutoEviction(options, &redisAutoEviction{s: s, cfg: options}, s.registry)
+	}
 	s.reporter, err = newHeartbeatReporter(c)
 	if err != nil {
 		return nil, err
@@ -117,6 +125,11 @@ func (s *Service) Run(ctx context.Context) error {
 	return s.serve(ctx, data, admin)
 }
 func (s *Service) serve(ctx context.Context, data, admin net.Listener) error {
+	if s.cfg.HotCold != nil {
+		if err := s.verifyHotColdSource(ctx); err != nil {
+			return err
+		}
+	}
 	if s.preparationOptions != nil && s.admissionBoot == nil {
 		return errAdmissionRun
 	}
@@ -171,6 +184,16 @@ func (s *Service) serve(ctx context.Context, data, admin net.Listener) error {
 	if s.reporter != nil {
 		workers.Add(1)
 		go func() { defer workers.Done(); s.reporter.run(probeCtx, s) }()
+	}
+	if s.autoEviction != nil {
+		workspace := s.cfg.workspaceBytes()
+		if !s.acquireWorkspace(workspace) {
+			cancelProbe()
+			workers.Wait()
+			return errors.New("insufficient auto eviction buffer budget")
+		}
+		workers.Add(1)
+		go func() { defer workers.Done(); defer s.releaseWorkspace(workspace); s.autoEviction.run(probeCtx) }()
 	}
 	server := &http.Server{Handler: s.Handler(), ReadHeaderTimeout: 3 * time.Second, ReadTimeout: 5 * time.Second, WriteTimeout: 5 * time.Second, IdleTimeout: 30 * time.Second, MaxHeaderBytes: 8192}
 	done := make(chan error, 2)

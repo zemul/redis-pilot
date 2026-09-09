@@ -1,0 +1,43 @@
+2026-09-09 redis03 手动冷热配置部署验收（功能测试，不是性能压测）
+
+构建：dd7f504 + 本轮未提交工作区修改；version=dd7f504-hotcold-config-dev
+Gateway SHA256: 21068332fb8663e46603998237a97ae735ceee6e669ca6732511b361a85d0ace
+syncer SHA256: d9549a440653ee8d0329382b4c57ce577ccb3ac744ae4e2f240b1cc2d6980a9d
+本地与 redis03 二进制摘要一致。
+
+本地：
+PASS go test ./...
+PASS go test -race ./internal/gateway ./internal/syncer ./cmd/syncer
+PASS go vet ./internal/gateway ./internal/syncer ./cmd/gateway ./cmd/syncer
+PASS git diff --check
+
+部署：
+真实 Gateway / syncer 独立二进制 + systemd；专用 Redis / Kvrocks 容器。
+四个 redis-pilot-hotcold-* 单元 active、enabled，Gateway /readyz=ok。
+服务仅回环监听；凭据 0600，持久运行目录 0700。
+redis01 原 Server/Agent/Proxy/Gateway、redis02 Agent、redis03 Agent 均 active。
+未修改 Proxy 路由；未替换原有实例。
+
+真实链路：
+PASS 未认证 Gateway GET 拒绝。
+PASS SET 41 / INCR 42，冷库最终为 42。
+PASS key-only /evict 分配 counter ID=1、32KiB String ID=2（实际为32位十六进制）。
+PASS 降冷后热业务 key 不存在、冷数据保留。
+PASS 再请求 counter 降冷返回 already_cold 和原 ID=1。
+PASS 正常重启 Gateway、syncer，访问前仍为冷；GET 回温返回42。
+PASS AUTH/INCR/GET pipeline 返回 OK/43/43，冷库最终43。
+PASS 下一次降冷分配 ID=3。
+PASS 实际停止 Kvrocks 单元，Gateway 保持 active，独立热 key GET 成功。
+PASS 冷 key INCR 返回 TRYAGAIN（明确未执行），未生成错误热值。
+PASS 启动 Kvrocks，INCR 返回44、冷库最终44，再次降冷 ID=4。
+PASS SIGKILL Gateway 主进程，systemd 自动重启；冷 key INCR 返回45、冷库最终45。
+     首次 kill 命令对辅助进程报错，但日志确认主进程 status=9，PID更换且 NRestarts=1。
+PASS SIGKILL syncer 主进程，Gateway 写入继续；INCR 返回46，自动重启后冷库最终46。
+PASS 三个专用业务测试 key 通过 Gateway DEL，冷库删除确认；内部标记保留。
+
+本轮发现并修复：公共 /evict 原先复用了严格规范 JSON 解码器，普通带空格的
+key-only JSON 被拒绝。现独立解析公共请求，允许空格和字段顺序，仍拒绝重复/
+未知字段、无效 base64、非字符串及尾随数据；内部确认和持久证据解码不放宽。
+
+不覆盖：性能结论、长时间稳定性、整机重启、Redis 源重启/history 衔接、
+自动淘汰、TTL/完整命令语义、Cluster 扩容、Proxy 切流和生产高可用。
