@@ -19,16 +19,17 @@ type IsolatedConfirmationGatewayOptions struct {
 }
 
 type IsolatedConfirmationGateway struct {
-	options  IsolatedConfirmationGatewayOptions
-	client   *http.Client
-	token    string
-	lock     *os.File
-	op       *evictionOperation
-	barriers *keyBarrierSet
-	barrier  *keyBarrier
-	gate     chan struct{}
-	closed   bool
-	borrowed bool // Preparation controller owns the binding lock and barrier set.
+	options     IsolatedConfirmationGatewayOptions
+	client      *http.Client
+	token       string
+	lock        *os.File
+	op          *evictionOperation
+	barriers    *keyBarrierSet
+	barrier     *keyBarrier
+	gate        chan struct{}
+	closed      bool
+	borrowed    bool // Preparation controller owns the binding lock and barrier set.
+	hotRetained bool // Internal controller verified the retained source marker; no deletion authority.
 }
 
 // OpenIsolatedConfirmationGateway restores protection BEFORE permitting any
@@ -100,6 +101,14 @@ func openConfirmationGatewayValidated(o IsolatedConfirmationGatewayOptions, inte
 // Confirm never returns deletion authority and never reopens admission, even
 // on success. Retrying/reopening always revalidates through the remote service.
 func (g *IsolatedConfirmationGateway) Confirm(ctx context.Context) error {
+	return g.exchange(ctx, false)
+}
+
+func (g *IsolatedConfirmationGateway) Finish(ctx context.Context) error {
+	return g.exchange(ctx, true)
+}
+
+func (g *IsolatedConfirmationGateway) exchange(ctx context.Context, finish bool) error {
 	if ctx == nil {
 		return errConfirmationRPC
 	}
@@ -114,23 +123,31 @@ func (g *IsolatedConfirmationGateway) Confirm(ctx context.Context) error {
 	if g.closed {
 		return errConfirmationRPC
 	}
-	select {
-	case <-g.barrier.wake:
-	case <-ctx.Done():
-		return errConfirmationRPC
-	}
-	g.barriers.mu.Lock()
-	b := g.barrier
-	valid := !g.barriers.closed && b.entry.barrier == b && !b.entry.uncertain && b.entry.active == 0
-	if valid {
-		b.dispatched = true
-	} // a resumed confirmation remains protected
-	g.barriers.mu.Unlock()
-	if !valid {
-		return errConfirmationRPC
+	if !g.hotRetained {
+		select {
+		case <-g.barrier.wake:
+		case <-ctx.Done():
+			return errConfirmationRPC
+		}
+		g.barriers.mu.Lock()
+		b := g.barrier
+		valid := !g.barriers.closed && b.entry.barrier == b && !b.entry.uncertain && b.entry.active == 0
+		if valid {
+			b.dispatched = true
+		}
+		g.barriers.mu.Unlock()
+		if !valid {
+			return errConfirmationRPC
+		}
 	}
 	s, err := g.op.snapshot()
 	if err != nil {
+		return errConfirmationRPC
+	}
+	if finish && s.Receipt == nil {
+		return errConfirmationRPC
+	}
+	if !finish && s.Finished {
 		return errConfirmationRPC
 	}
 	var session confirmationSession
@@ -138,12 +155,12 @@ func (g *IsolatedConfirmationGateway) Confirm(ctx context.Context) error {
 		session.Version != 1 || session.BindingSHA256 != evictionHash(g.options.Binding) || !canonicalEvictionHex(session.BootID, 16) {
 		return errConfirmationRPC
 	}
-	req := confirmationRequest{Session: session, Intent: s.Intent}
+	req := confirmationRequest{Session: session, Intent: s.Intent, Finish: finish}
 	var reply confirmationResponse
 	if confirmationCall(ctx, g.client, g.options.Endpoint, g.token, http.MethodPost, req, &reply) != nil {
 		return errConfirmationRPC
 	}
-	if reply.Session != session || reply.RequestSHA256 != evictionHash(req) || !validEvictionPreparation(s, reply.Prepare) {
+	if reply.Finished != finish || reply.Session != session || reply.RequestSHA256 != evictionHash(req) || !validEvictionPreparation(s, reply.Prepare) {
 		return errConfirmationRPC
 	}
 	checked := copyEvictionOperationState(s)
@@ -165,6 +182,9 @@ func (g *IsolatedConfirmationGateway) Confirm(ctx context.Context) error {
 	g.op.mu.Unlock()
 	if err != nil || ctx.Err() != nil {
 		return errConfirmationRPC
+	}
+	if finish {
+		return g.op.recordFinished()
 	}
 	return nil
 }

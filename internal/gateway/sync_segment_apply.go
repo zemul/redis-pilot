@@ -211,7 +211,7 @@ func (target syncColdTarget) pruneSegments(ctx context.Context, journal *syncSeg
 	if meta.pending == nil || meta.checkpoint != meta.pending.Next {
 		return errSyncPendingUncertain
 	}
-	cmd, err := syncPendingCommand(meta.pending.Record.Data)
+	cmd, err := pendingRecordCommand(*meta.pending)
 	if err != nil {
 		return err
 	}

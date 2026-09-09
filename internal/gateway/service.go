@@ -83,6 +83,7 @@ func (s *Service) Handler() http.Handler {
 	if s.preparation != nil {
 		m.Handle(hotPreparationPath, s.preparation)
 		m.Handle(hotPreparationPath+"/confirm", s.preparation)
+		m.Handle(hotPreparationPath+"/finish", s.preparation)
 	}
 	m.HandleFunc("/livez", func(w http.ResponseWriter, r *http.Request) {
 		if s.draining.Load() {

@@ -38,6 +38,7 @@ type evictionOperationState struct {
 	Intent   evictionIntent       `json:"intent"`
 	Prepare  *evictionPreparation `json:"prepare,omitempty"`
 	Receipt  *evictionColdReceipt `json:"receipt,omitempty"`
+	Finished bool                 `json:"finished,omitempty"`
 }
 
 type evictionOperation struct {
@@ -67,6 +68,9 @@ func newEvictionIntent(task string, epoch uint64, history string, key, value []b
 }
 
 func (i evictionIntent) prepareKey() string {
+	if i.Version == 2 {
+		return syncMetadataPrefix + "{g6b-probe}:prepare:" + i.TaskID + ":current"
+	}
 	return syncMetadataPrefix + "{g6b-probe}:prepare:" + i.TaskID + ":" + i.OperationID
 }
 
@@ -152,7 +156,7 @@ func openEvictionOperation(path string, identity syncTaskIdentity, create *evict
 		if _, err := io.ReadFull(g.f, magic); err != nil || string(magic) != evictionOperationMagic {
 			return nil, errEvictionOperation
 		}
-		if readSyncSegmentFrame(g.f, &g.state, evictionOperationFrameLimit) != nil || g.state.Prepare != nil || g.state.Receipt != nil ||
+		if readSyncSegmentFrame(g.f, &g.state, evictionOperationFrameLimit) != nil || g.state.Prepare != nil || g.state.Receipt != nil || g.state.Finished ||
 			g.state.Identity != identity || !g.state.Intent.valid() || g.state.Intent.TaskID != identity.TaskID {
 			return nil, errEvictionOperation
 		}
@@ -169,6 +173,13 @@ func openEvictionOperation(path string, identity syncTaskIdentity, create *evict
 					return nil, errEvictionOperation
 				}
 				g.state.Receipt = &receipt
+				var finish operationFinish
+				if err := readSyncSegmentFrame(g.f, &finish, evictionOperationFrameLimit); err != io.EOF {
+					if err != nil || finish != finishFor(g.state) {
+						return nil, errEvictionOperation
+					}
+					g.state.Finished = true
+				}
 				var extra [1]byte
 				if n, err := g.f.Read(extra[:]); n != 0 || err != io.EOF {
 					return nil, errEvictionOperation

@@ -17,6 +17,7 @@ import (
 )
 
 type hotPreparationFixture struct {
+	markers                     map[string]string
 	h                           *hotPreparation
 	o                           hotPreparationOptions
 	mu                          sync.Mutex
@@ -25,13 +26,15 @@ type hotPreparationFixture struct {
 	drop                        bool
 	evals                       int
 	increments                  int
+	dropGet                     bool
+	finishFailures              int
 }
 
 func newHotPreparationFixture(t *testing.T) *hotPreparationFixture {
 	t.Helper()
 	id, intent, _ := evictionOperationFixtureData()
 	dir := confirmationPrivateDir(t)
-	f := &hotPreparationFixture{value: "value", ttl: ":-1\r\n", history: intent.History, policy: "noeviction", dir: dir}
+	f := &hotPreparationFixture{markers: make(map[string]string), value: "value", ttl: ":-1\r\n", history: intent.History, policy: "noeviction", dir: dir}
 	addr := fakeBackend(t, func(c net.Conn, args [][]byte) bool {
 		f.mu.Lock()
 		defer f.mu.Unlock()
@@ -47,7 +50,20 @@ func newHotPreparationFixture(t *testing.T) *hotPreparationFixture {
 			reply = append([]byte("*2\r\n"), syncTransportBulk("maxmemory-policy")...)
 			reply = append(reply, syncTransportBulk(f.policy)...)
 		case "GET":
+			if f.dropGet {
+				f.dropGet = false
+				return false
+			}
 			reply = syncTransportBulk(f.value)
+			if strings.HasPrefix(string(args[1]), syncMetadataPrefix) {
+				if marker, ok := f.markers[string(args[1])]; ok {
+					reply = syncTransportBulk(marker)
+				} else {
+					reply = []byte("$-1\r\n")
+				}
+			}
+		case "EXISTS":
+			reply = []byte(":0\r\n")
 		case "INCR":
 			n, err := strconv.Atoi(f.value)
 			if err != nil {
@@ -75,6 +91,7 @@ func newHotPreparationFixture(t *testing.T) *hotPreparationFixture {
 				t.Error("script/intent mismatch")
 				return false
 			}
+			f.markers[string(args[4])] = string(args[6])
 			if f.drop {
 				f.drop = false
 				return false
@@ -100,14 +117,24 @@ func newHotPreparationFixture(t *testing.T) *hotPreparationFixture {
 			w.WriteHeader(400)
 			return
 		}
+		f.mu.Lock()
+		failFinish := req.Finish && f.finishFailures > 0
+		if failFinish {
+			f.finishFailures--
+		}
+		f.mu.Unlock()
+		if failFinish {
+			w.WriteHeader(503)
+			return
+		}
 		before := syncPosition{Source: addr, History: intent.History, Offset: 100}
 		p := evictionPreparation{before, evictionTestRecords(before, [][]byte{req.Intent.prepareFrame()})[0]}
 		prev := syncApplyCheckpoint{2, before, strings.Repeat("b", 64)}
 		ack := evictionColdReceipt{1, evictionHash(id), evictionHash(req.Intent), prev, nextPendingCheckpoint(prev, p.Record)}
-		json.NewEncoder(w).Encode(confirmationResponse{session, evictionHash(req), p, ack})
+		json.NewEncoder(w).Encode(confirmationResponse{session, evictionHash(req), p, ack, req.Finish})
 	}))
 	t.Cleanup(syncer.Close)
-	f.o = hotPreparationOptions{IsolatedConfirmationGatewayOptions{binding, syncer.URL, secretFile(t, strings.Repeat("s", 32)), dir, 250 * time.Millisecond}, secretFile(t, strings.Repeat("a", 32)), true}
+	f.o = hotPreparationOptions{Confirmation: IsolatedConfirmationGatewayOptions{binding, syncer.URL, secretFile(t, strings.Repeat("s", 32)), dir, 250 * time.Millisecond}, AdminTokenFile: secretFile(t, strings.Repeat("a", 32)), ExclusiveHot: true}
 	cfg := passConfig(addr)
 	cfg.GatewayID = binding.GatewayID
 	s, err := NewService(cfg)
@@ -262,7 +289,7 @@ func TestHotPreparationPreconditionsAndConflict(t *testing.T) {
 	}
 }
 
-func TestHotPreparationDrainsAndRetainsUnknown(t *testing.T) {
+func TestHotPreparationDrainTimeoutAutomaticallyAbandons(t *testing.T) {
 	f := newHotPreparationFixture(t)
 	r := testKeyRequest(t, f.h.service.admission, "key")
 	req := hotPreparationRequest{strings.Repeat("1", 32), []byte("key")}
@@ -272,15 +299,130 @@ func TestHotPreparationDrainsAndRetainsUnknown(t *testing.T) {
 	if f.h.confirmation != nil {
 		t.Fatal("did not wait for in-flight request")
 	}
+	if f.h.request != nil || f.h.barrier != nil {
+		t.Fatal("unstarted preparation retained the key")
+	}
+	requireBarrierAccounting(t, f.h.service.admission, 1, len("key"), 1)
 	r.settle(false)
-	if w := hotPreparationPost(t, f.h, hotPreparationPath, req); w.Code != 503 {
+	testKeyRequest(t, f.h.service.admission, "key").settle(true)
+	req.OperationID = strings.Repeat("2", 32)
+	if w := hotPreparationPost(t, f.h, hotPreparationPath, req); w.Code != 200 {
 		t.Fatal(w.Code)
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if f.evals != 0 {
-		t.Fatal("unknown hot outcome allowed preparation")
+	if f.evals != 1 {
+		t.Fatal("next preparation did not execute exactly once")
 	}
+}
+
+func TestHotPreparationReadFailureAutomaticallyAbandons(t *testing.T) {
+	f := newHotPreparationFixture(t)
+	for i, ttl := range []string{":100\r\n", ":200\r\n"} {
+		f.mu.Lock()
+		f.ttl = ttl
+		f.mu.Unlock()
+		req := hotPreparationRequest{strings.Repeat(strconv.Itoa(i+1), 32), []byte("key")}
+		w := hotPreparationPost(t, f.h, hotPreparationPath, req)
+		if w.Code != 503 || !strings.Contains(w.Body.String(), "no operation held") {
+			t.Fatal(w.Code, w.Body.String())
+		}
+		if f.h.request != nil || f.h.barrier != nil || f.h.confirmation != nil || f.h.poisoned {
+			t.Fatal("read-only failure left an operation")
+		}
+		if _, err := os.Stat(filepath.Join(f.dir, "confirmation-operation.log")); !os.IsNotExist(err) {
+			t.Fatal("read-only failure created an intent", err)
+		}
+		testKeyRequest(t, f.h.service.admission, "key").settle(true)
+		requireBarrierAccounting(t, f.h.service.admission, 0, 0, 0)
+	}
+	f.mu.Lock()
+	f.ttl = ":-1\r\n"
+	f.mu.Unlock()
+	if w := hotPreparationPost(t, f.h, hotPreparationPath, hotPreparationRequest{strings.Repeat("3", 32), []byte("key")}); w.Code != 200 {
+		t.Fatal("next preparation requires manual reset", w.Code)
+	}
+}
+
+func TestHotPreparationBackendReadDisconnectAutomaticallyAbandons(t *testing.T) {
+	f := newHotPreparationFixture(t)
+	f.mu.Lock()
+	f.dropGet = true
+	f.mu.Unlock()
+	w := hotPreparationPost(t, f.h, hotPreparationPath, hotPreparationRequest{strings.Repeat("1", 32), []byte("key")})
+	if w.Code != 503 || !strings.Contains(w.Body.String(), "no operation held") {
+		t.Fatal(w.Code, w.Body.String())
+	}
+	requireBarrierAccounting(t, f.h.service.admission, 0, 0, 0)
+	c, r, _ := startSession(t, f.h.service)
+	if err := writeAll(c, encodeCommand("GET", "key")); err != nil {
+		t.Fatal(err)
+	}
+	expect(t, r, "$5\r\nvalue\r\n")
+	if w := hotPreparationPost(t, f.h, hotPreparationPath, hotPreparationRequest{strings.Repeat("2", 32), []byte("key")}); w.Code != 200 {
+		t.Fatal("connection recovery required manual reset", w.Code)
+	}
+}
+
+func TestHotPreparationUnknownDuringDrainAutomaticallyAbandons(t *testing.T) {
+	f := newHotPreparationFixture(t)
+	g := f.h.service.admission
+	r := testKeyRequest(t, g, "key")
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		f.h.gate <- struct{}{}
+		defer func() { <-f.h.gate }()
+		done <- f.h.prepare(ctx, hotPreparationRequest{strings.Repeat("1", 32), []byte("key")})
+	}()
+	for {
+		g.mu.Lock()
+		reserved := g.entries["key"] != nil && g.entries["key"].barrier != nil
+		g.mu.Unlock()
+		if reserved {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatal("preparation did not reserve key")
+		case <-time.After(time.Millisecond):
+		}
+	}
+	r.settle(false)
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("unknown drain reported preparation success")
+		}
+	case <-ctx.Done():
+		t.Fatal("preparation did not abandon")
+	}
+	// Synchronize with the controller's gate release before inspecting it.
+	f.h.gate <- struct{}{}
+	if f.h.request != nil || f.h.barrier != nil || f.h.confirmation != nil {
+		t.Error("unrecorded preparation retained uncertainty")
+	}
+	<-f.h.gate
+	testKeyRequest(t, g, "key").settle(true)
+	requireBarrierAccounting(t, g, 0, 0, 0)
+	if w := hotPreparationPost(t, f.h, hotPreparationPath, hotPreparationRequest{strings.Repeat("2", 32), []byte("key")}); w.Code != 200 {
+		t.Fatal("next operation did not recover", w.Code)
+	}
+}
+
+func TestHotPreparationAbandonPreservesLaterBarrier(t *testing.T) {
+	f := newHotPreparationFixture(t)
+	g := f.h.service.admission
+	old := testKeyBarrier(t, g, "key")
+	f.h.barrier = old
+	f.h.request = &hotPreparationRequest{strings.Repeat("1", 32), []byte("key")}
+	requireBarrierError(t, old.cancel(), nil)
+	current := testKeyBarrier(t, g, "key")
+	f.h.abandonUnrecorded()
+	_, err := g.enter("key")
+	requireBarrierError(t, err, errKeyBarrierBusy)
+	requireBarrierError(t, current.cancel(), nil)
 }
 
 func TestHotPreparationAuthenticationAndClose(t *testing.T) {

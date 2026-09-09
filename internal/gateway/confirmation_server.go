@@ -205,12 +205,25 @@ func (s *IsolatedConfirmationServer) ServeHTTP(w http.ResponseWriter, r *http.Re
 		fail(http.StatusConflict)
 		return
 	}
-	if s.live != nil && (s.live.held == nil || evictionHash(s.live.held.Intent) != evictionHash(req.Intent)) {
+	if !req.Finish && s.live != nil && (s.live.held == nil || evictionHash(s.live.held.Intent) != evictionHash(req.Intent)) {
 		fail(http.StatusConflict)
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), s.options.Timeout)
 	defer cancel()
+	if req.Finish {
+		if s.live == nil {
+			fail(http.StatusConflict)
+			return
+		}
+		result, err := s.finish(ctx, req)
+		if err != nil || s.live.stopping.Load() {
+			fail(http.StatusConflict)
+			return
+		}
+		json.NewEncoder(w).Encode(result)
+		return
+	}
 	if s.live != nil {
 		s.live.verified = false
 		s.live.verifiedAt = time.Time{}
@@ -226,6 +239,31 @@ func (s *IsolatedConfirmationServer) ServeHTTP(w http.ResponseWriter, r *http.Re
 		s.live.held.Receipt = &result.Receipt
 	}
 	json.NewEncoder(w).Encode(result)
+}
+
+// Called under server gate. Retry against the same operation remains valid
+// after its cold checkpoint advances; an old ID cannot finish a newer file.
+func (s *IsolatedConfirmationServer) finish(ctx context.Context, req confirmationRequest) (confirmationResponse, error) {
+	var zero confirmationResponse
+	op, err := openEvictionOperation(filepath.Join(s.options.OperationDir, "confirmation-operation.log"), s.options.Binding.identity(), nil, nil)
+	if err != nil {
+		return zero, err
+	}
+	defer op.close()
+	state, err := op.snapshot()
+	if err != nil || evictionHash(state.Intent) != evictionHash(req.Intent) || state.Receipt == nil || s.checkSource(ctx, state.Prepare.Record.Position.Offset) != nil {
+		return zero, errConfirmationRPC
+	}
+	if err := s.target.finishPreparation(ctx, s.journal, state); err != nil {
+		return zero, err
+	}
+	if err := op.recordFinished(); err != nil {
+		return zero, err
+	}
+	if s.live != nil && s.live.held != nil && evictionHash(s.live.held.Intent) == evictionHash(req.Intent) {
+		s.live.held, s.live.ready, s.live.verified = nil, false, false
+	}
+	return confirmationResponse{Session: s.session, RequestSHA256: evictionHash(req), Prepare: *state.Prepare, Receipt: *state.Receipt, Finished: true}, nil
 }
 
 // The caller submits only intent, never source bytes or a claimed checkpoint.

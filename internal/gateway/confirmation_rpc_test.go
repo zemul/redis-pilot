@@ -60,7 +60,7 @@ func TestConfirmationGatewayProtocol(t *testing.T) {
 					w.WriteHeader(400)
 					return
 				}
-				reply := confirmationResponse{session, evictionHash(req), p, ack}
+				reply := confirmationResponse{session, evictionHash(req), p, ack, false}
 				switch scenario {
 				case "bad_request_hash":
 					reply.RequestSHA256 = strings.Repeat("a", 64)

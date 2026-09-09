@@ -65,6 +65,7 @@ type confirmationSession struct {
 type confirmationRequest struct {
 	Session confirmationSession `json:"session"`
 	Intent  evictionIntent      `json:"intent"`
+	Finish  bool                `json:"finish,omitempty"`
 }
 
 type confirmationResponse struct {
@@ -72,6 +73,7 @@ type confirmationResponse struct {
 	RequestSHA256 string              `json:"request_sha256"`
 	Prepare       evictionPreparation `json:"prepare"`
 	Receipt       evictionColdReceipt `json:"receipt"`
+	Finished      bool                `json:"finished,omitempty"`
 }
 
 // Canonical bounded JSON rejects duplicate/unknown fields as well as extra

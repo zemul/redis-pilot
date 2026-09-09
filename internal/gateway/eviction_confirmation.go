@@ -189,7 +189,10 @@ func (c *syncColdClient) confirmEvictionReceipt(ctx context.Context, v *syncSegm
 		return err
 	}
 	if exists && old != ack.encode() {
-		return errEvictionConfirmation
+		finished, ok := parseFinishedColdReceipt(old)
+		if !ok || s.Receipt != nil || finished.IdentitySHA256 != ack.IdentitySHA256 || !sameSyncLineage(finished.Prepared, ack.Previous) || finished.Prepared.Position.Offset > ack.Previous.Position.Offset {
+			return errEvictionConfirmation
+		}
 	}
 	// A recovered local ACK requires its cold counterpart still to exist.
 	if s.Receipt != nil && !exists {

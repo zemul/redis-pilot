@@ -1,0 +1,94 @@
+Date: 2026-09-09
+Scope: internal retained-hot preparation completion; NOT eviction or rewarming.
+Working-tree implementation, not a committed/deployed release.
+
+Local validation:
+  go test ./...
+  PASS: gateway 29.084s; server 58.811s; remaining packages passed/cached/no tests.
+  go test -race ./internal/gateway ./internal/syncer ./cmd/syncer
+  PASS: gateway 26.276s; other two packages cached.
+  go test -race ./internal/gateway -run 'TestHotPreparation|TestFinish|TestOperationFinished|TestLiveConfirmation' -count=3
+  PASS: 13.790s.
+  go vet ./internal/gateway ./internal/syncer ./cmd/syncer
+  PASS.
+  git diff --check
+  PASS.
+  Environment-gated real-backend tests are skipped by the local suite;
+  the separate opt-in run below supplies real-backend evidence.
+
+Dedicated remote test environment:
+  Host: redis03.
+  New containers, no host ports, shared isolated network namespace:
+    redis-pilot-finish-cold-20260909: apache/kvrocks:2.15.0, 512 MiB cap
+    redis-pilot-finish-hot-20260909: redis:7.2.5, 128 MiB cap
+  Redis: noeviction, no AOF, no configured scheduled snapshots.
+  Kvrocks: WAL enabled; rocksdb.write_options.sync=yes.
+  Linux amd64 CGO-disabled gateway.test and redis-syncer built from workspace.
+  Gateway Service runs inside the test process; syncer is a separate executable.
+  This is not a production deployment, durability SLA, or performance benchmark.
+
+Remote test configuration:
+  GATEWAY_TEST_EVICTION_COLD=isolated
+  GATEWAY_TEST_EVICTION_SOURCE=127.0.0.1:6379
+  GATEWAY_TEST_EVICTION_TARGET=127.0.0.1:6666
+  GATEWAY_TEST_CONFIRM_SYNCER_BINARY=/tmp/redis-syncer
+  Each following test ran with -test.count=3, all PASS:
+
+  TestConfirmationProcessKvrocks
+    0.32s, 0.29s, 0.29s
+    Duplicate/restart/old session/history rejection baseline.
+  TestLiveConfirmationProcessKvrocks
+    0.81s, 1.05s, 0.89s
+    Capture/held suffix/restart/lost reply/pressure/graceful-stop baseline.
+  TestHotPreparationServiceKvrocks
+    0.33s, 0.48s, 0.34s
+    Actual Service RESP/HTTP preparation and held-key recovery baseline.
+  TestHotPreparationFinishServiceKvrocks
+    1.81s, 1.79s, 1.80s
+    Persist finish while syncer offline, restart Gateway, restart syncer,
+    drop the first successful finish response; background worker resumes.
+    Suffix reaches cold; same directory completes two distinct operations.
+    INCR results remain 43 then 44, not replayed; hot/cold both retain values.
+    Old finish cannot release next operation; duplicate finish succeeds.
+    Old operation ID is rejected; delayed old EVAL fails changed-value check;
+    repeated current EVAL returns existing-marker no-op (2).
+  TestFinishColdCommittedLocalMissingKvrocks
+    0.20s, 0.31s, 0.19s
+    Construct durable crash window with actual cold completion but no local
+    terminal frame; reopen live server, drain, verify local terminal recovery
+    and suffix application without a second finish request.
+    This is controlled crash-state reconstruction, not random process-kill timing.
+
+Local fault cases additionally cover:
+  Canceled finish HTTP context still leaves retryable durable intent.
+  Finish transient failure and Gateway controller reopen.
+  Finish persistence failure before write / after write / after fsync:
+  complete surviving frames revalidated/fsynced and operation released.
+
+Issues found and corrected during this run:
+  Old version-rejection test assumed pending version 2 was always invalid;
+  version 2 is now restricted control-only data, unknown version test uses 3.
+  Idle finishing worker contended with new requests; changed to wake only
+  for requested/persisted finishing and back off only while work remains.
+  Cold terminal/local unfinished restart originally had no reconciliation;
+  now exact receipt plus proved checkpoint restores the local terminal frame.
+  New recovery test setup needed valid segment budget and pre-existing binding;
+  fixed fixture setup, without weakening production binding checks.
+  Delayed EVAL test initially expected marker no-op despite changed value;
+  actual script checks value first. Assert changed-value rejection and also
+  assert same-value existing-marker no-op; neither emits another marker SET.
+
+Cleanup:
+  Fixture removes only its own test keys after stopping its syncer.
+  Both newly created containers stopped and inspected: running=false.
+  Containers/binaries retained for inspection; no autostart configured.
+  Existing long-running Redis/Kvrocks/Gateway/syncer services not replaced.
+  No commit or push performed.
+
+Known incomplete boundaries:
+  No public hot/cold configuration, deletion, cold read, rewarming, TTL, Cluster.
+  Unrequested prepared operations do not yet select automatic completion policy.
+  Per-operation source markers retained for stale EVAL safety: source metadata
+  growth and safe GC unresolved; atomic-replace orphan temp cleanup also pending.
+  Ordinary asynchronous replication loss window, FULLRESYNC replacement,
+  arbitrary task failures/corruption and multi-owner recovery not certified.

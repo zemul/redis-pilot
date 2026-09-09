@@ -12,7 +12,7 @@ import (
 )
 
 // Owned by the server gate; capture never acquires this gate. The first held
-// barrier has no release transition in this stage, including after a receipt.
+// barrier is released only after a durable hot-retained completion.
 type confirmationLive struct {
 	stopping                        atomic.Bool // visible without waiting behind an in-flight RPC
 	runner                          *syncRunner
@@ -35,6 +35,8 @@ func NewLiveConfirmationServer(o IsolatedConfirmationOptions) (*IsolatedConfirma
 	r := s.probe.runner
 	r.confirmation = s
 	s.live = &confirmationLive{runner: r, done: make(chan struct{})}
+	s.target.evictionReceipt = true
+	r.target.evictionReceipt = true
 	// A held lane cannot reclaim its suffix. Use a conservative backlog budget
 	// below the file cap; the existing hard cap still fails closed for unusual
 	// frame overhead/oversized commands and is not a disk reservation.
@@ -46,10 +48,14 @@ func NewLiveConfirmationServer(o IsolatedConfirmationOptions) (*IsolatedConfirma
 // Find the first barrier in the SAME immutable view that will be applied.
 // A marker appended concurrently cannot slip into an unbounded second view.
 func liveConfirmationBoundary(ctx context.Context, v *syncSegmentView, binding ConfirmationBinding) (*evictionOperationState, syncApplyCheckpoint, error) {
+	return liveConfirmationBoundaryFrom(ctx, v, binding, v.floor)
+}
+
+func liveConfirmationBoundaryFrom(ctx context.Context, v *syncSegmentView, binding ConfirmationBinding, from syncApplyCheckpoint) (*evictionOperationState, syncApplyCheckpoint, error) {
 	var held *evictionOperationState
 	end := v.end
 	found := errors.New("live preparation found")
-	err := v.walkFrom(v.floor, func(r syncRecord, previous, _ syncApplyCheckpoint) error {
+	err := v.walkFrom(from, func(r syncRecord, previous, _ syncApplyCheckpoint) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
@@ -89,18 +95,35 @@ func (s *IsolatedConfirmationServer) liveOperation(held *evictionOperationState)
 			return nil, nil
 		}
 		create = &held.Intent
+		if held.Intent.Version == 2 && held.Intent.PreviousOperationID != strings.Repeat("0", 32) {
+			return nil, errSyncHistoryGap
+		}
 	} else if err != nil {
 		return nil, errConfirmationRPC
-	}
-	// A surviving operation must still have its exact marker in the source.
-	if held == nil {
-		return nil, errSyncHistoryGap
 	}
 	op, err := openEvictionOperation(path, s.options.Binding.identity(), create, nil)
 	if err != nil {
 		return nil, err
 	}
 	state, err := op.snapshot()
+	if err == nil && state.Finished {
+		op.close()
+		if held == nil {
+			return nil, nil
+		}
+		if held.Intent.Version != state.Intent.Version || (held.Intent.Version == 2 && held.Intent.PreviousOperationID != state.Intent.OperationID) {
+			return nil, errSyncHistoryGap
+		}
+		op, err = replaceFinishedOperation(path, s.options.Binding.identity(), held.Intent)
+		if err != nil {
+			return nil, err
+		}
+		state, err = op.snapshot()
+	}
+	if held == nil {
+		op.close()
+		return nil, errSyncHistoryGap
+	}
 	if err != nil || evictionHash(state.Intent) != evictionHash(held.Intent) {
 		op.close()
 		return nil, errConfirmationRPC
@@ -148,7 +171,51 @@ func (s *IsolatedConfirmationServer) drainLive(ctx context.Context, j *syncSegme
 			return syncPosition{}, err
 		}
 		defer v.close()
-		held, end, err = liveConfirmationBoundary(ctx, v, s.options.Binding)
+		c, closeClient, err := s.target.open(ctx)
+		if err != nil {
+			return syncPosition{}, err
+		}
+		meta, err := c.pendingMeta()
+		var terminal string
+		if err == nil {
+			var exists bool
+			terminal, exists, err = c.get(c.evictionReceiptKey())
+			if err == nil && exists {
+				err = c.expect(":-1\r\n", "PTTL", c.evictionReceiptKey())
+			}
+		}
+		closeClient()
+		if err != nil {
+			return syncPosition{}, err
+		}
+		from := v.base
+		if meta.checkpoint.Version != 0 {
+			if err := v.provePending(meta); err != nil {
+				return syncPosition{}, err
+			}
+			from = meta.checkpoint
+		}
+		// A cold completion can outlive the process that committed it. Restore
+		// the local terminal frame only from the exact receipt and a proved
+		// checkpoint; an ordinary prepared receipt is never completion.
+		if ack, ok := parseFinishedColdReceipt(terminal); ok {
+			path := filepath.Join(s.options.OperationDir, "confirmation-operation.log")
+			op, err := openEvictionOperation(path, s.options.Binding.identity(), nil, nil)
+			if err != nil {
+				return syncPosition{}, err
+			}
+			state, err := op.snapshot()
+			if err == nil && state.Receipt != nil && *state.Receipt == ack &&
+				validEvictionReceipt(state, ack) && sameSyncLineage(meta.checkpoint, ack.Prepared) &&
+				meta.checkpoint.Position.Offset >= ack.Prepared.Position.Offset {
+				err = op.recordFinished()
+			}
+			op.close()
+			if err != nil {
+				return syncPosition{}, err
+			}
+		}
+		held, end, err = liveConfirmationBoundaryFrom(ctx, v, s.options.Binding, from)
 		if err != nil {
 			return syncPosition{}, err
 		}

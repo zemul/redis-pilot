@@ -19,13 +19,14 @@ const evictionProbePrefix = syncMetadataPrefix + "{g6b-probe}:evict:"
 var errEvictionEnvelope = errors.New("eviction envelope does not match expected operation")
 
 type evictionIntent struct {
-	Version     int    `json:"version"`
-	TaskID      string `json:"task_id"`
-	OperationID string `json:"operation_id"`
-	Epoch       uint64 `json:"epoch"`
-	History     string `json:"history"`
-	Key         []byte `json:"key"` // base64 in JSON; preserves non-UTF-8/empty keys
-	ValueSHA256 string `json:"value_sha256"`
+	Version             int    `json:"version"`
+	TaskID              string `json:"task_id"`
+	OperationID         string `json:"operation_id"`
+	Epoch               uint64 `json:"epoch"`
+	History             string `json:"history"`
+	Key                 []byte `json:"key"` // base64 in JSON; preserves non-UTF-8/empty keys
+	ValueSHA256         string `json:"value_sha256"`
+	PreviousOperationID string `json:"previous_operation_id,omitempty"`
 }
 
 func canonicalEvictionHex(s string, size int) bool {
@@ -37,7 +38,11 @@ func canonicalEvictionHex(s string, size int) bool {
 }
 
 func (i evictionIntent) valid() bool {
-	return i.Version == 1 && ValidateIsolatedSyncTaskID(i.TaskID) == nil &&
+	versionOK := i.Version == 1 && i.PreviousOperationID == ""
+	if i.Version == 2 {
+		versionOK = canonicalEvictionHex(i.PreviousOperationID, 16) && i.PreviousOperationID < i.OperationID
+	}
+	return versionOK && ValidateIsolatedSyncTaskID(i.TaskID) == nil &&
 		canonicalEvictionHex(i.OperationID, 16) && i.OperationID != strings.Repeat("0", 32) &&
 		i.Epoch > 0 && canonicalEvictionHex(i.History, 20) && i.History != strings.Repeat("0", 40) &&
 		i.Key != nil && len(i.Key) <= 64<<10 && !bytes.HasPrefix(i.Key, []byte(syncMetadataPrefix)) &&

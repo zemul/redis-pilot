@@ -335,7 +335,7 @@ func testConfirmationProcessKvrocks(t *testing.T, live bool) {
 	if newSession.BootID == session.BootID {
 		t.Fatal("boot not renewed")
 	}
-	old := confirmationRequest{session, f.intent}
+	old := confirmationRequest{session, f.intent, false}
 	data, _ := json.Marshal(old)
 	req, _ := http.NewRequest("POST", endpoint+confirmationRPCPath, bytes.NewReader(data))
 	req.Header.Set("Authorization", "Bearer "+secret)
@@ -354,7 +354,7 @@ func testConfirmationProcessKvrocks(t *testing.T, live bool) {
 	conflict := f.intent
 	conflict.OperationID = strings.Repeat("b", 32)
 	var reply confirmationResponse
-	if confirmationCall(context.Background(), client, endpoint, secret, "POST", confirmationRequest{newSession, conflict}, &reply) == nil {
+	if confirmationCall(context.Background(), client, endpoint, secret, "POST", confirmationRequest{newSession, conflict, false}, &reply) == nil {
 		t.Fatal("conflicting intent accepted")
 	}
 	if live {

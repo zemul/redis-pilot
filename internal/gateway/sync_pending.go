@@ -133,14 +133,14 @@ func nextPendingCheckpoint(prev syncApplyCheckpoint, record syncRecord) syncAppl
 }
 
 func validatePending(p syncPending) error {
-	if p.Version != 1 || p.Previous.Version != 2 || p.Next.Version != 2 || p.Record.Kind != "command" || len(p.encode()) > syncPendingEncodedLimit {
+	if (p.Version != 1 && p.Version != 2) || p.Previous.Version != 2 || p.Next.Version != 2 || p.Record.Kind != "command" || len(p.encode()) > syncPendingEncodedLimit {
 		return errSyncTargetDrift
 	}
 	check := syncJournal{position: p.Previous.Position}
 	if check.check(p.Record) != nil || nextPendingCheckpoint(p.Previous, p.Record) != p.Next {
 		return errSyncTargetDrift
 	}
-	cmd, err := syncPendingCommand(p.Record.Data)
+	cmd, err := pendingRecordCommand(p)
 	if err != nil {
 		return err
 	}
@@ -152,6 +152,28 @@ func validatePending(p syncPending) error {
 		return errSyncTargetDrift
 	}
 	return nil
+}
+
+// Version 2 is only a completed, no-business-effect preparation marker.
+// Normal source parsing still rejects it; only the finish transaction creates it.
+func pendingRecordCommand(p syncPending) ([]string, error) {
+	if p.Version == 1 {
+		return syncPendingCommand(p.Record.Data)
+	}
+	if p.Version != 2 || p.Before.Exists || len(p.Before.Data) != 0 || p.After.Exists || len(p.After.Data) != 0 {
+		return nil, errSyncUnsupported
+	}
+	r, _ := NewReader(bytes.NewReader(p.Record.Data), DefaultConfig().Limits)
+	frame, args, err := r.ReadCommand()
+	if err != nil || len(frame) != len(p.Record.Data) || len(args) != 3 {
+		return nil, errSyncUnsupported
+	}
+	var intent evictionIntent
+	payload, ok := strings.CutPrefix(string(args[2]), "prepare:")
+	if !ok || decodeConfirmation(strings.NewReader(payload), &intent) != nil || !intent.valid() || intent.History != p.Record.Position.History || !bytes.Equal(p.Record.Data, intent.prepareFrame()) {
+		return nil, errSyncUnsupported
+	}
+	return nil, nil
 }
 
 // An immutable-length view of durable capture. A duplicated fd keeps it alive
@@ -244,6 +266,9 @@ func (c *syncColdClient) pendingMeta() (syncPendingMeta, error) {
 		if len(values[2]) > syncPendingEncodedLimit || json.Unmarshal([]byte(values[2]), p) != nil || p.encode() != values[2] || validatePending(*p) != nil {
 			return m, errSyncTargetDrift
 		}
+		if p.Version == 2 && (!c.evictionReceipt || c.taskID == "") {
+			return m, errSyncTargetDrift
+		}
 		m.pending = p
 	}
 	return m, nil
@@ -314,7 +339,7 @@ func (c *syncColdClient) reconcilePending(meta syncPendingMeta) (syncPendingMeta
 		return meta, nil
 	}
 	p := *meta.pending
-	cmd, err := syncPendingCommand(p.Record.Data)
+	cmd, err := pendingRecordCommand(p)
 	if err != nil {
 		return meta, err
 	}

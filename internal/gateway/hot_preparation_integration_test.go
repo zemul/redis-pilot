@@ -68,7 +68,7 @@ func testHotPreparationRedis(t *testing.T, dropReply bool) {
 	binding := confirmationTestBinding(id, intent)
 	syncer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(503) }))
 	defer syncer.Close()
-	o := hotPreparationOptions{IsolatedConfirmationGatewayOptions{binding, syncer.URL, secretFile(t, strings.Repeat("s", 32)), confirmationPrivateDir(t), 2 * time.Second}, secretFile(t, strings.Repeat("a", 32)), true}
+	o := hotPreparationOptions{Confirmation: IsolatedConfirmationGatewayOptions{binding, syncer.URL, secretFile(t, strings.Repeat("s", 32)), confirmationPrivateDir(t), 2 * time.Second}, AdminTokenFile: secretFile(t, strings.Repeat("a", 32)), ExclusiveHot: true}
 	cfg := passConfig(addr)
 	cfg.GatewayID = binding.GatewayID
 	cfg.BackendPasswordFile = secretFile(t, "g4-backend-test")
@@ -109,6 +109,18 @@ func testHotPreparationRedis(t *testing.T, dropReply bool) {
 	} else {
 		expect(t, replies, ":42\r\n")
 	}
+	// Unsupported TTL is discovered before intent/prepare dispatch. Reject the
+	// attempt without retaining the key; the next attempt uses the SAME state.
+	backend.expect(t, ":1\r\n", "PEXPIRE", key, "60000")
+	failed := hotPreparationRequest{strings.Repeat("f", 32), []byte(key)}
+	if w := hotPreparationPost(t, h, hotPreparationPath, failed); w.Code != 503 || !strings.Contains(w.Body.String(), "no operation held") {
+		t.Fatal("unstarted TTL attempt remained held", w.Code, w.Body.String())
+	}
+	if err := writeAll(client, encodeCommand("GET", key)); err != nil {
+		t.Fatal(err)
+	}
+	expect(t, replies, "$2\r\n42\r\n")
+	backend.expect(t, ":1\r\n", "PERSIST", key)
 	req := hotPreparationRequest{strings.Repeat("1", 32), []byte(key)}
 	for attempt := 0; attempt < 2; attempt++ {
 		if w := hotPreparationPost(t, h, hotPreparationPath, req); w.Code != 200 {
