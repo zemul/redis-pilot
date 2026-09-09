@@ -67,13 +67,21 @@ func (v *syncSegmentView) walkThrough(from, end syncApplyCheckpoint, fn func(syn
 	return nil
 }
 func (v *syncSegmentView) preflightThrough(ctx context.Context, from, end syncApplyCheckpoint) error {
-	return v.walkThrough(from, end, func(r syncRecord, _, _ syncApplyCheckpoint) error {
+	complete, err := v.walkResidency(ctx, from, end, func(r syncRecord, _, _ syncApplyCheckpoint) error {
 		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if residencyRecord(r.Data) {
+			_, err := parseResidencyEnvelope(r.Data)
 			return err
 		}
 		_, err := syncPendingCommand(r.Data)
 		return err
 	})
+	if err == nil && complete != end {
+		return errResidencyIncomplete
+	}
+	return err
 }
 
 func (v *syncSegmentView) proveEvictionPreparation(s evictionOperationState) (evictionColdReceipt, error) {

@@ -46,6 +46,9 @@ func (v *syncSegmentView) provePending(meta syncPendingMeta) error {
 		return nil
 	}
 	p := meta.pending
+	if p.Version == 3 {
+		return v.proveResidencyPending(*p)
+	}
 	err := v.walkFrom(p.Previous, func(r syncRecord, previous, next syncApplyCheckpoint) error {
 		if previous != p.Previous || next != p.Next || r.Kind != p.Record.Kind || r.Position != p.Record.Position || !bytes.Equal(r.Data, p.Record.Data) {
 			return errSyncHistoryGap
@@ -151,7 +154,7 @@ func (target syncColdTarget) applySegmentView(ctx context.Context, v *syncSegmen
 		return confirmed, err
 	}
 	confirmed = meta.checkpoint.Position
-	err = v.walkThrough(oldCheckpoint, end, func(r syncRecord, previous, next syncApplyCheckpoint) error {
+	_, err = v.walkResidency(ctx, oldCheckpoint, end, func(r syncRecord, previous, next syncApplyCheckpoint) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}

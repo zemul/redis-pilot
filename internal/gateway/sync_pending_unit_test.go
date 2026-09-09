@@ -194,7 +194,7 @@ func TestSyncPendingValidateAndBinaryRoundTrip(t *testing.T) {
 
 func TestSyncPendingValidateRejectsMismatch(t *testing.T) {
 	for name, mutate := range map[string]func(*syncPending){
-		"pending_version":    func(p *syncPending) { p.Version = 3 },
+		"pending_version":    func(p *syncPending) { p.Version = 4 },
 		"previous_version":   func(p *syncPending) { p.Previous.Version++ },
 		"next_version":       func(p *syncPending) { p.Next.Version++ },
 		"record_kind":        func(p *syncPending) { p.Record.Kind = "snapshot" },

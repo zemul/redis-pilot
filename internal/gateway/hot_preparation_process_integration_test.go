@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -11,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"syscall"
@@ -35,7 +37,11 @@ func TestBoundedPreparationServiceKvrocks(t *testing.T) {
 	testHotPreparationServiceKvrocks(t, true, true)
 }
 
-func testHotPreparationServiceKvrocks(t *testing.T, finishFlow, bounded bool) {
+func TestManualResidencyServiceKvrocks(t *testing.T) {
+	testHotPreparationServiceKvrocks(t, true, true, true)
+}
+
+func testHotPreparationServiceKvrocks(t *testing.T, finishFlow, bounded bool, residency ...bool) {
 	binary := os.Getenv("GATEWAY_TEST_CONFIRM_SYNCER_BINARY")
 	if binary == "" {
 		t.Skip("requires explicit syncer executable and isolated backends")
@@ -205,6 +211,19 @@ func testHotPreparationServiceKvrocks(t *testing.T, finishFlow, bounded bool) {
 	boot := admissionRunOptions{dir, binding, true, 16, 4096, 32}
 	preparation := hotPreparationOptions{Confirmation: IsolatedConfirmationGatewayOptions{binding, relay.URL, tokenFile, dir, 3 * time.Second}, AdminTokenFile: adminTokenFile, ExclusiveHot: true}
 	preparation.BoundedMarkers = bounded
+	preparation.ManualResidency = len(residency) > 0 && residency[0]
+	var coldOffline atomic.Bool
+	if preparation.ManualResidency {
+		preparation.coldTestDial = func(ctx context.Context, addr string) (net.Conn, error) {
+			if coldOffline.Load() {
+				return nil, errors.New("injected cold connection outage")
+			}
+			return (&net.Dialer{}).DialContext(ctx, "tcp", addr)
+		}
+	}
+	if preparation.ManualResidency {
+		defer func() { stopSyncer(true); f.hot.request("DEL", residencyKey(binding.TaskID, []byte("counter"))) }()
+	}
 	cfg := passConfig(id.Source)
 	cfg.GatewayID = binding.GatewayID
 	cfg.RequestTimeout = time.Second
@@ -452,6 +471,178 @@ func testHotPreparationServiceKvrocks(t *testing.T, finishFlow, bounded bool) {
 		}
 		if code := post(hotPreparationPath, request); code != 503 {
 			t.Fatal("old prepare ID reused", code)
+		}
+		if preparation.ManualResidency {
+			if code := post(hotPreparationPath+"/evict", second); code != 200 {
+				t.Fatal("manual eviction", code)
+			}
+			f.hot.expect(t, "$-1\r\n", "GET", "counter")
+			kvCommitGet(t, f.cold, "counter", "45")
+			// Kill/restart the independent syncer with a real hot deletion in
+			// its stream. It must commit the entire control group, not UNLINK.
+			stopSyncer(true)
+			startSyncer()
+			waitLive(func(s confirmationLiveStatus) bool { return s.Barrier == "none" && s.AppliedValid })
+			kvCommitGet(t, f.cold, "counter", "45")
+			// Restart Gateway while the value is genuinely cold. Its local
+			// Finished preparation must not imply that the business key is hot.
+			front.Close()
+			cancel()
+			select {
+			case err := <-gatewayDone:
+				joined = true
+				if err != nil {
+					t.Fatal(err)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("cold Gateway stop")
+			}
+			s, err = NewService(cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			s.admissionBoot, s.preparationOptions = &boot, &preparation
+			data, err = net.Listen("tcp", "127.0.0.1:0")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer data.Close()
+			admin, err = net.Listen("tcp", "127.0.0.1:0")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer admin.Close()
+			ctx, cancel = context.WithCancel(context.Background())
+			defer cancel()
+			gatewayDone, joined = make(chan error, 1), false
+			go func() { gatewayDone <- s.serve(ctx, data, admin) }()
+			front, err = net.DialTimeout("tcp", data.Addr().String(), time.Second)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer front.Close()
+			front.SetDeadline(time.Now().Add(30 * time.Second))
+			replies, _ = NewReader(front, cfg.Limits)
+			waitIdle()
+			f.hot.expect(t, "$-1\r\n", "GET", "counter")
+			coldOffline.Store(true)
+			writeAll(front, encodeCommand("INCR", "counter"))
+			expect(t, replies, "-TRYAGAIN cold key unavailable; command not executed\r\n")
+			writeAll(front, encodeCommand("GET", "after-barrier"))
+			expect(t, replies, "$14\r\nanother-suffix\r\n")
+			coldOffline.Store(false)
+			if err := writeAll(front, bytes.Join([][]byte{encodeCommand("GET", "counter"), encodeCommand("INCR", "counter"), encodeCommand("GET", "counter")}, nil)); err != nil {
+				t.Fatal(err)
+			}
+			expect(t, replies, "$2\r\n45\r\n")
+			expect(t, replies, ":46\r\n")
+			expect(t, replies, "$2\r\n46\r\n")
+			kvCommitGet(t, f.hot, "counter", "46")
+			deadline := time.Now().Add(5 * time.Second)
+			for time.Now().Before(deadline) {
+				raw, _ := f.cold.request("GET", "counter")
+				if string(raw) == "$2\r\n46\r\n" {
+					break
+				}
+				time.Sleep(20 * time.Millisecond)
+			}
+			kvCommitGet(t, f.cold, "counter", "46")
+			// Both old scripts are harmless after rewarming and a newer write.
+			f.hot.expect(t, ":3\r\n", "EVAL", residencyEvictScript, "3", "counter", lastState.Intent.prepareKey(), lastState.Intent.residencyKey(), "45", lastState.Intent.encode())
+			f.hot.expect(t, ":2\r\n", "EVAL", residencyWarmScript, "2", "counter", lastState.Intent.residencyKey(), "cold:"+lastState.Intent.encode(), "45")
+			kvCommitGet(t, f.hot, "counter", "46")
+			// Measure key allocations, not process RSS. The metadata overhead can
+			// exceed a tiny String; a large String should have a real net benefit.
+			largeKey := "manual-large-value"
+			largeMarker := residencyKey(binding.TaskID, []byte(largeKey))
+			defer func() { stopSyncer(true); f.hot.request("DEL", largeKey, largeMarker); f.cold.request("DEL", largeKey) }()
+			writeAll(front, encodeCommand("SET", largeKey, strings.Repeat("x", 32<<10)))
+			expect(t, replies, "+OK\r\n")
+			memory := func(key string) int64 {
+				raw, err := f.hot.request("MEMORY", "USAGE", key)
+				if err != nil || len(raw) < 4 || raw[0] != ':' {
+					t.Fatal("memory usage", err, string(raw))
+				}
+				n, err := strconv.ParseInt(strings.TrimSuffix(string(raw[1:]), "\r\n"), 10, 64)
+				if err != nil {
+					t.Fatal(err)
+				}
+				return n
+			}
+			beforeBytes := memory(largeKey)
+			largeReq := hotPreparationRequest{strings.Repeat("d", 31) + "e", []byte(largeKey)}
+			if code := post(hotPreparationPath+"/evict", largeReq); code != 200 {
+				t.Fatal("large eviction", code)
+			}
+			f.hot.expect(t, "$-1\r\n", "GET", largeKey)
+			metadataBytes := memory(largeMarker) + memory(lastState.Intent.prepareKey())
+			if beforeBytes <= metadataBytes {
+				t.Fatal("large key did not save key memory", beforeBytes, metadataBytes)
+			}
+			kvCommitGet(t, f.cold, largeKey, strings.Repeat("x", 32<<10))
+			t.Logf("32 KiB String key allocation: before=%d bytes, residency plus shared preparation markers=%d bytes; not RSS", beforeBytes, metadataBytes)
+			// A fresh ID runs prepare -> confirm -> finish -> eviction through
+			// one endpoint, not a manually orchestrated sequence of stages.
+			third := hotPreparationRequest{strings.Repeat("e", 32), []byte("counter")}
+			if code := post(hotPreparationPath+"/evict", third); code != 200 {
+				t.Fatal("complete manual endpoint", code)
+			}
+			f.hot.expect(t, "$-1\r\n", "GET", "counter")
+			results := make(chan string, 8)
+			for n := 0; n < 8; n++ {
+				go func() {
+					c, err := net.DialTimeout("tcp", data.Addr().String(), time.Second)
+					if err != nil {
+						results <- "dial failed"
+						return
+					}
+					defer c.Close()
+					c.SetDeadline(time.Now().Add(5 * time.Second))
+					if writeAll(c, encodeCommand("INCR", "counter")) != nil {
+						results <- "write failed"
+						return
+					}
+					r, _ := NewReader(c, cfg.Limits)
+					raw, err := r.ReadFrame()
+					if err != nil {
+						results <- "read failed"
+						return
+					}
+					results <- string(raw)
+				}()
+			}
+			seen := map[string]bool{}
+			for n := 0; n < 8; n++ {
+				raw := <-results
+				if seen[raw] {
+					t.Fatal("duplicate concurrent INCR", raw)
+				}
+				seen[raw] = true
+			}
+			for n := 47; n <= 54; n++ {
+				if !seen[":"+strconv.Itoa(n)+"\r\n"] {
+					t.Fatal("concurrent cold INCR", seen)
+				}
+			}
+			kvCommitGet(t, f.hot, "counter", "54")
+			fourth := hotPreparationRequest{strings.Repeat("f", 32), []byte("counter")}
+			if code := post(hotPreparationPath+"/evict", fourth); code != 200 {
+				t.Fatal("eviction before business DEL", code)
+			}
+			writeAll(front, encodeCommand("DEL", "counter"))
+			expect(t, replies, ":1\r\n")
+			writeAll(front, encodeCommand("GET", "counter"))
+			expect(t, replies, "$-1\r\n")
+			deadline = time.Now().Add(5 * time.Second)
+			for time.Now().Before(deadline) {
+				raw, _ := f.cold.request("GET", "counter")
+				if string(raw) == "$-1\r\n" {
+					break
+				}
+				time.Sleep(20 * time.Millisecond)
+			}
+			f.cold.expect(t, "$-1\r\n", "GET", "counter")
+			t.Log("manual eviction retained cold value; cold GET/INCR and pipeline order, syncer restart and stale scripts passed")
 		}
 		front.Close()
 		cancel()

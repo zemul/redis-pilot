@@ -55,9 +55,16 @@ func liveConfirmationBoundaryFrom(ctx context.Context, v *syncSegmentView, bindi
 	var held *evictionOperationState
 	end := v.end
 	found := errors.New("live preparation found")
-	err := v.walkFrom(from, func(r syncRecord, previous, _ syncApplyCheckpoint) error {
+	complete, err := v.walkResidency(ctx, from, v.end, func(r syncRecord, previous, _ syncApplyCheckpoint) error {
 		if err := ctx.Err(); err != nil {
 			return err
+		}
+		if residencyRecord(r.Data) {
+			e, err := parseResidencyEnvelope(r.Data)
+			if err != nil || !binding.accepts(e.intent) {
+				return errSyncUnsupported
+			}
+			return nil
 		}
 		reader, _ := NewReader(bytes.NewReader(r.Data), DefaultConfig().Limits)
 		_, argv, err := reader.ReadCommand()
@@ -83,6 +90,8 @@ func liveConfirmationBoundaryFrom(ctx context.Context, v *syncSegmentView, bindi
 	})
 	if errors.Is(err, found) {
 		err = nil
+	} else if err == nil {
+		end = complete
 	}
 	return held, end, err
 }

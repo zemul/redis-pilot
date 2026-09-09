@@ -845,6 +845,12 @@ func (s *syncSegments) prune(v *syncSegmentView, meta syncPendingMeta) error {
 		}
 		return stop
 	})
+	if p.Version == 3 {
+		err = v.proveResidencyPending(*p)
+		if err == nil {
+			err = stop
+		}
+	}
 	if !errors.Is(err, stop) {
 		if err == nil {
 			return errSyncHistoryGap
@@ -853,7 +859,9 @@ func (s *syncSegments) prune(v *syncSegmentView, meta syncPendingMeta) error {
 	}
 	keepID := ""
 	for _, idx := range v.indexes {
-		if p.Next.Position.Offset > idx.Start.Position.Offset && p.Next.Position.Offset <= idx.End.Position.Offset {
+		// A residency pending item spans multiple source records/segments.
+		// Retain its FIRST record, not just the segment containing EXEC.
+		if p.Previous.Position.Offset >= idx.Start.Position.Offset && p.Previous.Position.Offset < idx.End.Position.Offset {
 			keepID = idx.ID
 			break
 		}

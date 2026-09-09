@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -44,6 +45,9 @@ type hotPreparationOptions struct {
 	ExclusiveHot       bool          // Operator prerequisite, NOT distributed fencing.
 	PreparationTimeout time.Duration // Internal inactivity fallback; zero uses 30s.
 	BoundedMarkers     bool          // Opt-in v2; ordered operation IDs, no mixed-format migration.
+	ManualResidency    bool          // Internal single-key operations; not a production cluster switch.
+	ColdPasswordFile   string
+	coldTestDial       func(context.Context, string) (net.Conn, error) // test-only transport fault injection
 }
 
 type hotPreparationRequest struct {
@@ -82,6 +86,9 @@ type hotPreparation struct {
 // barrier before the returned controller can process management requests.
 // The caller must also hold the durable boot latch before admitting traffic.
 func openHotPreparation(s *Service, o hotPreparationOptions) (*hotPreparation, error) {
+	if o.ManualResidency && !o.BoundedMarkers {
+		return nil, errConfirmationRPC
+	}
 	if o.PreparationTimeout == 0 {
 		o.PreparationTimeout = 30 * time.Second
 	}
@@ -102,6 +109,10 @@ func openHotPreparation(s *Service, o hotPreparationOptions) (*hotPreparation, e
 	}
 	lock, err := openConfirmationBinding(o.Confirmation.OperationDir, o.Confirmation.Binding)
 	if err != nil {
+		return nil, err
+	}
+	if err := checkResidencyLatch(o.Confirmation.OperationDir, o.Confirmation.Binding, o.ManualResidency); err != nil {
+		lock.Close()
 		return nil, err
 	}
 	workspace := s.cfg.workspaceBytes()
@@ -395,7 +406,7 @@ func (h *hotPreparation) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}{state})
 		return
 	}
-	if r.Method != http.MethodPost || (r.URL.Path != hotPreparationPath && r.URL.Path != hotPreparationPath+"/confirm" && r.URL.Path != hotPreparationPath+"/finish") {
+	if r.Method != http.MethodPost || (r.URL.Path != hotPreparationPath && r.URL.Path != hotPreparationPath+"/confirm" && r.URL.Path != hotPreparationPath+"/finish" && r.URL.Path != hotPreparationPath+"/evict") {
 		http.Error(w, "unsupported operation", 405)
 		return
 	}
@@ -409,7 +420,9 @@ func (h *hotPreparation) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var err error
-	if r.URL.Path == hotPreparationPath+"/finish" {
+	if r.URL.Path == hotPreparationPath+"/evict" {
+		err = h.manualEvict(ctx, req)
+	} else if r.URL.Path == hotPreparationPath+"/finish" {
 		err = h.requestFinish(ctx, req)
 	} else if h.finishing {
 		err = errConfirmationRPC
@@ -428,10 +441,15 @@ func (h *hotPreparation) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if h.request == nil {
 			message = "preparation not started; no operation held"
 		}
+		if r.URL.Path == hotPreparationPath+"/evict" {
+			message = "eviction not confirmed; retry the same operation ID; key access remains guarded"
+		}
 		http.Error(w, message, 503)
 		return
 	}
-	if r.URL.Path == hotPreparationPath+"/finish" {
+	if r.URL.Path == hotPreparationPath+"/evict" {
+		w.Write([]byte("{\"state\":\"eviction_completed_or_already_rewarmed\"}\n"))
+	} else if r.URL.Path == hotPreparationPath+"/finish" {
 		w.Write([]byte("{\"state\":\"finished_hot_retained\"}\n"))
 	} else {
 		w.Write([]byte("{\"state\":\"held\"}\n"))

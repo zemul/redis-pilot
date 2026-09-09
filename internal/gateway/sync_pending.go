@@ -133,11 +133,19 @@ func nextPendingCheckpoint(prev syncApplyCheckpoint, record syncRecord) syncAppl
 }
 
 func validatePending(p syncPending) error {
-	if (p.Version != 1 && p.Version != 2) || p.Previous.Version != 2 || p.Next.Version != 2 || p.Record.Kind != "command" || len(p.encode()) > syncPendingEncodedLimit {
+	if (p.Version != 1 && p.Version != 2 && p.Version != 3) || p.Previous.Version != 2 || p.Next.Version != 2 || p.Record.Kind != "command" || len(p.encode()) > syncPendingEncodedLimit {
 		return errSyncTargetDrift
 	}
 	check := syncJournal{position: p.Previous.Position}
-	if check.check(p.Record) != nil || nextPendingCheckpoint(p.Previous, p.Record) != p.Next {
+	next := nextPendingCheckpoint(p.Previous, p.Record)
+	if p.Version == 3 {
+		var err error
+		next, err = residencyNext(p.Previous, p.Record)
+		if err != nil {
+			return err
+		}
+	}
+	if check.check(p.Record) != nil || next != p.Next {
 		return errSyncTargetDrift
 	}
 	cmd, err := pendingRecordCommand(p)
@@ -159,6 +167,10 @@ func validatePending(p syncPending) error {
 func pendingRecordCommand(p syncPending) ([]string, error) {
 	if p.Version == 1 {
 		return syncPendingCommand(p.Record.Data)
+	}
+	if p.Version == 3 && !p.Before.Exists && len(p.Before.Data) == 0 && !p.After.Exists && len(p.After.Data) == 0 {
+		_, err := parseResidencyEnvelope(p.Record.Data)
+		return nil, err
 	}
 	if p.Version != 2 || p.Before.Exists || len(p.Before.Data) != 0 || p.After.Exists || len(p.After.Data) != 0 {
 		return nil, errSyncUnsupported
@@ -266,7 +278,7 @@ func (c *syncColdClient) pendingMeta() (syncPendingMeta, error) {
 		if len(values[2]) > syncPendingEncodedLimit || json.Unmarshal([]byte(values[2]), p) != nil || p.encode() != values[2] || validatePending(*p) != nil {
 			return m, errSyncTargetDrift
 		}
-		if p.Version == 2 && (!c.evictionReceipt || c.taskID == "") {
+		if p.Version >= 2 && (!c.evictionReceipt || c.taskID == "") {
 			return m, errSyncTargetDrift
 		}
 		m.pending = p
@@ -405,6 +417,9 @@ func (c *syncColdClient) reconcilePending(meta syncPendingMeta) (syncPendingMeta
 }
 
 func (c *syncColdClient) preparePending(meta syncPendingMeta, r syncRecord, next syncApplyCheckpoint) (syncPendingMeta, error) {
+	if residencyRecord(r.Data) {
+		return c.prepareResidencyPending(meta, r, next)
+	}
 	cmd, err := syncPendingCommand(r.Data)
 	if err != nil {
 		return meta, err

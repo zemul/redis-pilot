@@ -41,6 +41,7 @@ type request struct {
 	args     [][]byte
 	local    []byte
 	quit     bool
+	guarded  bool
 	started  time.Time
 }
 
@@ -123,6 +124,10 @@ func (s *Service) session(ctx context.Context, client net.Conn) {
 		size := len(first.raw)
 	collect:
 		for len(batch) < s.cfg.MaxPipeline && size < s.cfg.MaxBatchBytes {
+			// Preserve pipeline order when a cold miss needs a warm-up retry.
+			if s.preparation != nil && s.preparation.options.ManualResidency {
+				break collect
+			}
 			select {
 			case q, ok := <-input:
 				if !ok {
@@ -178,6 +183,7 @@ func (s *Service) session(ctx context.Context, client net.Conn) {
 		for i := range batch {
 			q := &batch[i]
 			s.admitRequest(q)
+			s.guardResidency(q)
 			if q.local == nil {
 				raws = append(raws, q.raw)
 			}
@@ -273,6 +279,9 @@ func (s *Service) executeBatch(ctx context.Context, c net.Conn, r *Reader, batch
 		if b == nil {
 			var e error
 			b, e = r.ReadFrame()
+			if e == nil && q.guarded {
+				b, e = s.residencyReply(ctx, c, r, q, b)
+			}
 			if e != nil {
 				s.backendReady.Store(false)
 				s.errors.WithLabelValues("backend_read").Inc()
