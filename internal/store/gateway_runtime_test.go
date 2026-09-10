@@ -15,6 +15,23 @@ func heartbeatFixture() apitypes.GatewayHeartbeat {
 	return apitypes.GatewayHeartbeat{GatewayID: "gw", BootID: "boot1", Sequence: 1, NodeID: "node", ClusterID: "cluster", ShardIDs: []string{"shard0", "shard1"}, BuildVersion: "test", LocalConfigDigest: strings.Repeat("a", 64), Mode: "passthrough", Serving: true, BackendReady: true}
 }
 
+func TestCacheGatewayObservationReady(t *testing.T) {
+	d, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	v := heartbeatFixture()
+	v.Mode = "cache"
+	if err := d.SaveGatewayHeartbeat(v); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := d.ListGatewayObservations()
+	if err != nil || len(rows) != 1 || rows[0].Status != "ready" {
+		t.Fatalf("cache observation %+v %v", rows, err)
+	}
+}
+
 func TestGatewayHeartbeatPersistenceSequenceAndFreshness(t *testing.T) {
 	dir := t.TempDir()
 	d, err := Open(dir)

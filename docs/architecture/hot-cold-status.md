@@ -1,40 +1,50 @@
 # 冷热缓存实现状态
 
-更新：2026-09-10。方向已改为 Kvrocks 权威存储 + Redis 缓存；本轮只清理旧实现，不交付新缓存链路。目标契约见 [设计](hot-cold-gateway-design.md)。
+更新：2026-09-10。本轮实现新的 mode: cache；尚未提交，不代表正式发布或旧开发链路已切换。设计见 [冷热设计](hot-cold-gateway-design.md)。
 
-## 保留能力
+## 已接入开发代码
 
-- Gateway 独立二进制及 systemd 模板、配置校验。
-- 固定单后端开发透传：RESP2、有限命令白名单、前后端独立认证、Pipeline 保序、超时、排空、内存预算、指标。
-- Gateway 配置草稿、直接向 Server 上报心跳和运行观测。
-- 原 Server/Agent/Proxy 的实例管理能力不变。
+- 固定单 Gateway + 热 Redis + 冷 Kvrocks，DB 0；独立前后端凭据、配置检查、预算、指标和心跳。
+- invalidate / update_existing 两种写后策略；后者首版同步重建已有完整小缓存，不是原地镜像命令。
+- 五种类型的有界完整缓存；默认 64KiB、256 个元素、4 个加载；大对象和带业务 TTL 的对象不缓存。
+- 写冷、热失效/更新与同 key 回填串行；热失败换命名空间，冷结果未知用冷层 token CAS 隔离迟到写，重启启用新缓存代次。
+- Redis 自身 allkeys-lru；热层禁用持久化，不恢复旧缓存。无同步器、主动淘汰器、布隆过滤器或全量 key 目录。
+- BLPOP/BRPOP 的有界独立冷连接，仅允许固定 cold_only_prefixes；这些 key 不会缓存。
+- 新模式 Pipeline 按连接顺序逐条完成；普通 passthrough 行为保持不变。
 
-当前仍只有 skeleton/passthrough 模式，监听限 loopback；不支持 Cluster 冷热缓存。透传命令支持不等于新缓存语义已经实现。
+## 当前命令矩阵
 
-## 本轮移除
+| 类别 | 允许命令与选项 |
+| --- | --- |
+| 连接 | AUTH、QUIT、PING、ECHO |
+| 通用 | 单 key DEL/UNLINK/EXISTS/TYPE/TTL/PTTL |
+| String | GET、STRLEN、普通 SET（不带选项）、INCR/DECR/INCRBY/DECRBY、APPEND |
+| Hash | HGET/HMGET/HGETALL/HLEN/HKEYS/HVALS/HEXISTS、HSET/HDEL/HINCRBY |
+| List | LLEN/LINDEX/LRANGE、LPUSH/RPUSH/LPUSHX/RPUSHX、单元素 LPOP/RPOP、LSET/LTRIM/LREM |
+| Set | SMEMBERS/SCARD/SISMEMBER、SADD/SREM、单元素 SPOP |
+| ZSet | ZCARD/ZSCORE/ZRANK/ZREVRANK/ZCOUNT、按排名 ZRANGE/ZREVRANGE（可 WITHSCORES）、基础 ZADD/ZREM/ZINCRBY |
+| 阻塞 | BLPOP/BRPOP，1～16 个冷层专用 key，timeout (0,60] 秒 |
 
-- redis-syncer 可执行入口、构建目标、服务、配置示例、同步任务上报 API/类型/存储代码。
-- RDB/PSYNC 捕获、复制身份和位点、分段日志、回放、pending/checkpoint、精确冷确认。
-- Gateway 旧准备/驻留标记、旧请求屏障、手动降冷、主动水位淘汰及专属测试。
-- 旧 hot_cold/state_dir 配置与 -init-state 入口；旧配置应明确失败，不能默默退回透传。
-- 旧阶段归档和专属实验记录；保留通用透传基准记录，但它们不是新链路的性能验收。
+更新已有缓存的写命令：SET、INCR/DECR/INCRBY/DECRBY、HSET/HDEL/HINCRBY、SADD/SREM、基础 ZADD/ZREM/ZINCRBY。其他写退回失效。复杂类型未缓存时不主动创建；普通 SET 允许建立小缓存。
 
-已有 SQLite 中的历史同步器表不执行 DROP，现存服务、持久状态和 Redis/Kvrocks 业务数据未修改。既有未跟踪 deploy/、dump.rdb、session/ 原样保留。旧已提交源码与文档可通过 Git 提交 19d35ec 查回；未提交的旧源重启调查测试随废弃方案移除。
+未支持的命令、额外选项、内部保留 key 都明确拒绝。不是“Kvrocks 支持就直接透传”。原有透传模式有自己的白名单，不受此表扩展。
 
-## 下一项完整功能
+## 尚未完成
 
-实现单 Gateway、固定端点的 GET/SET/DEL/INCR 缓存闭环：
-写冷后失效热、读热未命中查冷、有界按需回填、同 key 读写协调、失效失败绕过及 Gateway 崩溃后的缓存恢复。完成完整功能和故障测试后再部署验证。
+- 原地增量更新、连接池、吞吐/延迟压测、长期稳定性与生产资源验收。
+- 动态阻塞 key 的缓存绕过/恢复、无限阻塞、更多阻塞命令、队列前缀策略迁移。
+- 业务 TTL 写命令/选项、Hash 字段过期、多 key、事务、Lua。
+- 分片、扩缩容、多 Gateway、Cluster 路由/故障切换，冷库回滚或备份恢复后的重新建立边界。
+- 自动部署/切换旧开发链路；当前不允许直接替换旧 PSYNC 模式服务。
 
-尚未实现：新缓存配置与模式、写后策略开关、Redis LRU 接入、Hash/ZSet 完整缓存、TTL、可选空值缓存、多 Gateway、Cluster 和扩容。全量布隆过滤器暂不做。
+## 测试与环境边界
 
-## 清理验证
+本地 Redis 测试验证共享协议与协调算法；另在 redis03 的独立 Kvrocks 2.15.0 实例进行真实冷层测试，不把 Redis 替身结果冒充 Kvrocks 结果。五种类型、两种策略、整数精度、Pipeline、并发计数、迟到写/CAS、丢写回复、失效失败、冷连接故障与恢复、队列等待与超时均已连续三轮通过。本地 cache 测试通过 race 检查。
 
-- go test ./...、go vet ./... 通过。
-- Gateway、Store、Server 的全套 race 测试（count=1）通过。
-- 本地 Redis 7.2.5 的直接接入、Proxy → Gateway、未知写结果及慢读资源回收集成测试通过；不是新缓存链路或性能验收。
-- 新增旧 hot_cold/state_dir 配置拒绝、旧同步器 API 不再注册的回归检查；文档本地链接与 git diff --check 通过。
+另有独立 Gateway 二进制 SIGKILL 后重启的测试，不仅是对象重建；测试在进程停止期间更改冷值，验证存活的旧热缓存不会被新进程复用。该测试不等于冷库宕机恢复、整机重启或在线故障切换验收。
 
-## 开发环境边界
+全仓 go test ./...、go vet ./... 已通过；Gateway、Store、共享 API 类型的 race 检查通过。未进行吞吐/延迟压测，不能据此承诺热写性能。
 
-本轮没有连接或操作 redis01-03。redis03 上此前部署的旧 Gateway/同步器可能仍按原配置运行；源码删除不会停止远端进程。新二进制不能直接覆盖旧冷热部署。切换前必须核对数据与同步完成情况，保留备份，停止旧写入/同步路径并受控建立新缓存，具体迁移步骤待新链路实现后验证。
+Kvrocks 2.15.0 的脚本状态回复、阻塞超时 nil 回复与 Redis RESP2 存在形状差异，已在新模式转换并验证。
+
+此前旧同步代码/阶段文档已在 c0a3a26 清理，历史可从 19d35ec 查回。旧 SQLite 观测表未 DROP；既有未跟踪 deploy/、dump.rdb、session/ 原样保留。redis01-03 原有服务、旧冷热数据和 Proxy 路由没有切换。

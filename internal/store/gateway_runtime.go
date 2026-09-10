@@ -108,7 +108,7 @@ func (d *DB) ListGatewayObservations() ([]apitypes.GatewayObservation, error) {
 			v.Status = "stale"
 		case v.Draining:
 			v.Status = "draining"
-		case v.Mode == "passthrough" && v.Serving && v.BackendReady:
+		case (v.Mode == "passthrough" || v.Mode == "cache") && v.Serving && v.BackendReady:
 			v.Status = "ready"
 		default:
 			v.Status = "unready"

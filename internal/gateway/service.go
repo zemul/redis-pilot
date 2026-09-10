@@ -16,6 +16,7 @@ import (
 
 // Service supports the isolated skeleton and single-backend passthrough.
 type Service struct {
+	cache            *cacheRuntime
 	reporter         *heartbeatReporter
 	heartbeats       *prometheus.CounterVec
 	lastHeartbeatAck prometheus.Gauge
@@ -49,7 +50,7 @@ func NewService(c Config) (*Service, error) {
 	}
 	s := &Service{cfg: c, registry: prometheus.NewRegistry(), sessions: make(map[*sessionControl]struct{})}
 	var err error
-	if c.Mode == "passthrough" {
+	if c.Mode == "passthrough" || c.Mode == "cache" {
 		s.frontendPassword, err = readPassword(c.FrontendPasswordFile)
 		if err != nil {
 			return nil, err
@@ -64,6 +65,12 @@ func NewService(c Config) (*Service, error) {
 	s.uncertain = prometheus.NewCounter(prometheus.CounterOpts{Name: "redis_pilot_gateway_upstream_result_unknown_total", Help: "Requests whose backend result is unknown after dispatch; includes reads."})
 	s.registry.MustRegister(s.uncertain)
 	s.initMetrics()
+	if c.Cache != nil {
+		s.cache, err = newCacheRuntime(s)
+		if err != nil {
+			return nil, err
+		}
+	}
 	s.reporter, err = newHeartbeatReporter(c)
 	if err != nil {
 		return nil, err
@@ -80,7 +87,7 @@ func (s *Service) Handler() http.Handler {
 		io.WriteString(w, "ok\n")
 	})
 	m.HandleFunc("/readyz", func(w http.ResponseWriter, r *http.Request) {
-		if s.cfg.Mode == "passthrough" && s.serving.Load() && !s.draining.Load() && s.backendReady.Load() {
+		if s.cfg.Mode != "skeleton" && s.serving.Load() && !s.draining.Load() && s.backendReady.Load() {
 			io.WriteString(w, "ok\n")
 			return
 		}
@@ -103,6 +110,17 @@ func (s *Service) Run(ctx context.Context) error {
 	return s.serve(ctx, data, admin)
 }
 func (s *Service) serve(ctx context.Context, data, admin net.Listener) error {
+	if s.cache != nil {
+		workspace := s.cfg.workspaceBytes()
+		if !s.acquireWorkspace(workspace) {
+			return errors.New("insufficient cache recovery budget")
+		}
+		defer s.releaseWorkspace(workspace)
+		if err := s.cache.start(ctx); err != nil {
+			return err
+		}
+		defer s.cache.close()
+	}
 	work, cancelWork := context.WithCancel(context.Background())
 	defer cancelWork()
 	var workers sync.WaitGroup
@@ -119,6 +137,10 @@ func (s *Service) serve(ctx context.Context, data, admin net.Listener) error {
 		workers.Add(1)
 		go func() { defer workers.Done(); defer s.releaseWorkspace(probeBytes); s.probe(probeCtx) }()
 	}
+	if s.cache != nil {
+		workers.Add(1)
+		go func() { defer workers.Done(); s.cache.probe(probeCtx) }()
+	}
 	if s.reporter != nil {
 		workers.Add(1)
 		go func() { defer workers.Done(); s.reporter.run(probeCtx, s) }()
@@ -133,7 +155,7 @@ func (s *Service) serve(ctx context.Context, data, admin net.Listener) error {
 				done <- e
 				return
 			}
-			if s.cfg.Mode == "passthrough" {
+			if s.cfg.Mode != "skeleton" {
 				select {
 				case slots <- struct{}{}:
 					workers.Add(1)

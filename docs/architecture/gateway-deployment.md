@@ -1,12 +1,28 @@
 # Gateway 部署与运维
 
-更新：2026-09-10。当前只提供单后端开发透传，不提供新的冷热缓存部署。目标设计见 [冷热设计](hot-cold-gateway-design.md)，实现边界见 [状态](hot-cold-status.md)。
+更新：2026-09-10。当前提供单后端开发透传与固定端点的 cache 开发模式，不自动升级旧冷热链路。设计见 [冷热设计](hot-cold-gateway-design.md)，实现边界见 [状态](hot-cold-status.md)。
 
 ## 进程职责
 
 Gateway 是独立宿主机二进制，由 systemd 管理并开启开机启动。Agent 只管理 Redis/Kvrocks 容器，不负责部署或启停 Gateway。Server 的草稿和心跳不等于自动下发配置或 Proxy 切流。
 
-同步器已从源码和部署示例移除。不要对旧冷热实例直接安装本轮二进制；它不能处理部分热数据集。
+同步器已从源码和部署示例移除。不要对旧冷热实例直接安装本轮二进制；新模式要求冷层保存完整数据，不能把部分热数据集当成权威存储。
+
+## 新 cache 模式（隔离开发）
+
+参考 [配置示例](../examples/gateway-cache.yaml)，示例地址不是已部署服务。准备独立 Redis/Kvrocks 和三个独立凭据文件（前端、热后端、冷后端）。冷库需配置并验证 WAL/刷盘和备份策略；Gateway 成功返回不等于任意宕机下零丢写。
+
+- 热 Redis 必须配置 maxmemory > 0、allkeys-lru、appendonly no、save 空，且只允许 Gateway 修改。热库配置不合格或不可用时自动绕过，不修改数据库配置来强行启动。
+- 冷层必须独占，业务不能旁路访问。Gateway 启动会在冷层保留前缀下绑定 owner token 与冷层专用前缀策略；这是正常运行元数据，不是复制日志。
+- lock_file 父目录需服务账号持有、0700；启动创建 0600 锁文件。[新模式 systemd 模板](../examples/redis-gateway-cache.service) 已配置 StateDirectory=redis-gateway-cache、0700 和独立路径，避免 ProtectSystem=strict 下无法写锁；安装并验收后 enable，不能覆盖旧服务。
+- write_policy 为 invalidate 或 update_existing，其他值拒绝。缓存字节数、元素数、加载并发、缓存 TTL、hot_timeout 和阻塞并发可配置；参数约束在 -check-config 检查，检查本身不创建锁或修改后端。
+- cold_only_prefixes 为 BLPOP/BRPOP 队列范围，该范围所有读写永久绕过缓存。前缀集合绑定在冷库，原地修改会拒绝启动；不能删元数据绕过旧阻塞请求的生命周期检查。
+- 正常进程重启使用同一锁路径即可，无 -init-state，无全量扫描、清缓存或同步追赶。新进程采用新 token；不支持不同主机/锁路径部署重叠写者。
+- 新模式每连接 Pipeline 保序执行，不做多后端流水线并发。不支持的命令明确拒绝。
+
+启动检查 /livez、/readyz 和 /metrics。ready 主要反映冷层可用性；热层异常允许降级服务。指标 redis_pilot_gateway_cache_events_total 的固定 outcome 包含 hit、cold_request、filled、load_skipped、load_limited、invalidated、update_attempt、hot_bypass、cold_result_unknown、epoch_ready、blocking_completed、blocking_unknown，不含 key 标签。加载跳过不一定是错误，可能是大对象或 TTL 对象。
+
+本轮真实冷层验收使用 redis03 新建的独立测试容器（Kvrocks 19491），测试运行器内启动一次性 Redis；不是新 Gateway 的常驻 systemd 部署，没有更新旧服务。测试容器在验收后停止，保留用于排查；旧服务和业务数据不变。
 
 ## 当前透传部署
 

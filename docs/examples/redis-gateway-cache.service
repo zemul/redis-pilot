@@ -1,0 +1,28 @@
+[Unit]
+Description=Redis Pilot development cache gateway
+After=network.target
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=redis-gateway
+Group=redis-gateway
+WorkingDirectory=/opt/redis-gateway-cache
+ExecStartPre=/opt/redis-gateway-cache/redis-gateway -config /etc/redis-gateway-cache/gateway.yaml -check-config
+ExecStart=/opt/redis-gateway-cache/redis-gateway -config /etc/redis-gateway-cache/gateway.yaml
+Restart=on-failure
+RestartSec=3s
+KillSignal=SIGTERM
+TimeoutStopSec=20s
+StateDirectory=redis-gateway-cache
+StateDirectoryMode=0700
+UMask=0077
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

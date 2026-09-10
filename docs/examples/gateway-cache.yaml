@@ -1,0 +1,45 @@
+# New cache mode. Dedicated, complete cold database; never point at a live
+# retired PSYNC tiering deployment without a separate migration procedure.
+gateway_id: gateway-cache-dev
+service_id: cache-dev
+shard_id: cache-dev-0
+mode: cache
+listen: 127.0.0.1:17479
+admin_listen: 127.0.0.1:19400
+redis_address: 127.0.0.1:19490
+frontend_password_file: /etc/redis-gateway-cache/frontend.secret
+backend_password_file: /etc/redis-gateway-cache/hot.secret
+allow_unauthenticated: false
+connect_timeout: 200ms
+request_timeout: 3s
+client_idle_timeout: 90s
+shutdown_timeout: 10s
+max_connections: 16
+max_pipeline: 8
+max_batch_bytes: 262144
+buffer_budget_bytes: 134217728
+limits:
+  max_bytes: 262144
+  max_elements: 4096
+  max_depth: 16
+cache:
+  cold_address: 127.0.0.1:19491
+  cold_password_file: /etc/redis-gateway-cache/cold.secret
+  exclusive_backends: true
+  # Existing service-owned 0700 parent, lock file created 0600 at startup.
+  lock_file: /var/lib/redis-gateway-cache/owner.lock
+  write_policy: invalidate # or update_existing
+  max_object_bytes: 65536
+  max_object_elements: 256
+  # Optional per-type overrides; omitted fields inherit the limits above.
+  types:
+    hash:
+      max_bytes: 65536
+      max_elements: 256
+  max_loads: 4
+  ttl: 5m # cache lifetime, not business TTL
+  hot_timeout: 100ms
+  max_blocking: 4
+  # These keys NEVER use hot cache, including nonblocking reads/writes.
+  # Bound in cold metadata; removing/changing prefixes in place is rejected.
+  cold_only_prefixes: ["queue:"]

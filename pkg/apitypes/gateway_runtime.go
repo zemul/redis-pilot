@@ -53,7 +53,7 @@ func (v GatewayHeartbeat) Validate() error {
 		seen[id] = true
 	}
 	digest, err := hex.DecodeString(v.LocalConfigDigest)
-	if err != nil || len(digest) != 32 || (v.Mode != "skeleton" && v.Mode != "passthrough") {
+	if err != nil || len(digest) != 32 || (v.Mode != "skeleton" && v.Mode != "passthrough" && v.Mode != "cache") {
 		return invalid
 	}
 	return nil

@@ -10,7 +10,7 @@
 
 Gateway 属于数据面，独立二进制由 systemd 管理；Agent 不安装或启停 Gateway。新方向为 Kvrocks 权威存储、Redis 可丢弃缓存，Gateway 负责写冷后失效热、读回填与一致性协调。Server 负责配置和观测，不进入逐请求协调路径。
 
-当前只保留单后端开发透传、认证、Pipeline、预算、指标和心跳；旧同步器、准备/确认与主动降冷代码已移除。新缓存链路、缓存失效故障恢复、多 Gateway 与 Cluster 尚未实现，不能以透传能力代替冷热语义验收。
+当前保留单后端开发透传，并新增固定冷热端点的 cache 开发模式：五种类型小对象完整缓存、两种写后策略、token 隔离与有限的冷层专用队列阻塞请求。旧同步器、准备/确认与主动降冷代码已移除；多 Gateway、Cluster、扩缩容与完整 Redis 命令语义尚未实现，不能以透传能力代替冷热验收。
 
 本节不再叠加阶段记录。具体契约见 [现行设计](hot-cold-gateway-design.md)，已实现范围和下一项验收见 [实现进度](hot-cold-status.md)，运行方式见 [部署运维](gateway-deployment.md)。
 

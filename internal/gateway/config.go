@@ -16,6 +16,7 @@ import (
 
 // Config describes the isolated single-backend development gateway.
 type Config struct {
+	Cache                *CacheConfig       `yaml:"cache"`
 	ControlPlane         ControlPlaneConfig `yaml:"control_plane"`
 	BuildVersion         string             `yaml:"-"` // supplied by the executable, not YAML
 	GatewayID            string             `yaml:"gateway_id"`
@@ -84,16 +85,19 @@ func DecodeConfig(r io.Reader) (Config, error) {
 }
 
 func (c Config) Validate() error {
+	if err := c.validateCache(); err != nil {
+		return err
+	}
 	if err := c.validateControlPlane(); err != nil {
 		return err
 	}
 	if c.GatewayID == "" || c.ServiceID == "" || c.ShardID == "" {
 		return errors.New("gateway/service/shard IDs must not be empty")
 	}
-	if c.Mode != "skeleton" && c.Mode != "passthrough" {
-		return errors.New("mode must be skeleton or passthrough; hybrid is unavailable")
+	if c.Mode != "skeleton" && c.Mode != "passthrough" && c.Mode != "cache" {
+		return errors.New("mode must be skeleton, passthrough or cache")
 	}
-	if c.Mode == "passthrough" {
+	if c.Mode == "passthrough" || c.Mode == "cache" {
 		if c.MaxPipeline < 1 || c.MaxPipeline > 64 || c.MaxBatchBytes < c.Limits.MaxBytes || c.MaxBatchBytes > 64<<20 || c.BufferBudgetBytes < c.workspaceBytes()+c.probeWorkspaceBytes() || c.BufferBudgetBytes > 8<<30 {
 			return errors.New("invalid pipeline/batch/buffer limits; budget must fit one session workspace")
 		}

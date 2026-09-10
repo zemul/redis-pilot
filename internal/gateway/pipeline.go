@@ -165,13 +165,35 @@ func (s *Service) session(ctx context.Context, client net.Conn) {
 				quit = true
 			case !authed:
 				q.local = []byte("-NOAUTH Authentication required.\r\n")
-			case !forwardCommands[cmd]:
+			case s.cache == nil && !forwardCommands[cmd]:
 				q.local = []byte("-ERR command not supported by gateway passthrough\r\n")
 			}
 			if quit {
 				batch = batch[:i+1]
 				break
 			}
+		}
+		if s.cache != nil {
+			s.batchSize.Observe(float64(len(batch)))
+			for _, q := range batch {
+				b := q.local
+				result := "local"
+				if b == nil {
+					s.inflight.Inc()
+					b = s.cache.execute(work, q.args)
+					s.inflight.Dec()
+					result = "cache_mode"
+				}
+				if !send(b) {
+					return
+				}
+				s.completed.WithLabelValues(result).Inc()
+				s.duration.Observe(time.Since(q.started).Seconds())
+			}
+			if quit {
+				return
+			}
+			continue
 		}
 		var raws [][]byte
 		for _, q := range batch {
