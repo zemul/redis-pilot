@@ -11,7 +11,7 @@ type cacheCommand struct {
 }
 
 // No arbitrary pass-through: every accepted business command has one key.
-// Advanced SET/ZADD options, multi-key, scripting and blocking commands are
+// Unlisted SET/ZADD options, multi-key, scripting and blocking commands are
 // deliberately rejected until their entire consistency path is implemented.
 func classifyCacheCommand(args [][]byte) (cacheCommand, bool) {
 	if len(args) < 2 || len(args[1]) > 4096 || strings.HasPrefix(string(args[1]), cachePrefix) {
@@ -27,6 +27,12 @@ func classifyCacheCommand(args [][]byte) (cacheCommand, bool) {
 	case "HGET", "HEXISTS", "LINDEX", "SISMEMBER", "ZSCORE", "ZRANK", "ZREVRANK":
 		c.cacheRead = true
 		return c, l == 3
+	case "EXPIRE", "PEXPIRE":
+		c.write, c.update = true, true
+		return c, l == 3
+	case "PERSIST":
+		c.write, c.update = true, true
+		return c, l == 2
 	case "HMGET":
 		c.cacheRead = true
 		return c, l >= 3
@@ -42,7 +48,7 @@ func classifyCacheCommand(args [][]byte) (cacheCommand, bool) {
 		c.write = true
 		c.update = true
 		c.create = true
-		return c, l == 3
+		return c, validCacheSet(args)
 	case "DEL", "UNLINK":
 		c.write = true
 		return c, l == 2
@@ -100,6 +106,36 @@ func classifyCacheCommand(args [][]byte) (cacheCommand, bool) {
 
 const cachePrefix = "__pilot_cache_v1__:"
 
+func validCacheSet(args [][]byte) bool {
+	if len(args) < 3 {
+		return false
+	}
+	condition, expiration := false, false
+	for i := 3; i < len(args); i++ {
+		switch strings.ToUpper(string(args[i])) {
+		case "NX", "XX":
+			if condition {
+				return false
+			}
+			condition = true
+		case "KEEPTTL":
+			if expiration {
+				return false
+			}
+			expiration = true
+		case "EX", "PX":
+			if expiration || i+1 >= len(args) {
+				return false
+			}
+			expiration = true
+			i++ // Numeric validation belongs to the cold engine.
+		default:
+			return false
+		}
+	}
+	return true
+}
+
 const cacheClaimScript = `
 local old = redis.call('GET', KEYS[1])
 if old == ARGV[2] then return 1 end
@@ -125,18 +161,19 @@ const cachePublishScript = `
 redis.call('DEL',KEYS[1],KEYS[2])
 local cmd=ARGV[1]
 local a={cmd,KEYS[1]}
-for i=3,#ARGV do a[#a+1]=ARGV[i] end
+for i=4,#ARGV do a[#a+1]=ARGV[i] end
 redis.call(unpack(a))
 redis.call('PEXPIRE',KEYS[1],ARGV[2])
-redis.call('SET',KEYS[2],'complete','PX',ARGV[2])
+redis.call('SET',KEYS[2],ARGV[3],'PX',ARGV[2])
 return 1`
 
 const cacheReadScript = `
-if redis.call('GET',KEYS[2]) ~= 'complete' or redis.call('EXISTS',KEYS[1])==0 then return {0} end
+local deadline=redis.call('GET',KEYS[2])
+if not deadline or redis.call('EXISTS',KEYS[1])==0 then return {0} end
 local a={ARGV[1],KEYS[1]}
 for i=2,#ARGV do a[#a+1]=ARGV[i] end
-return {1,redis.pcall(unpack(a))}`
+return {1,redis.pcall(unpack(a)),deadline}`
 
 const cachePresentScript = `
-if redis.call('GET',KEYS[2])=='complete' and redis.call('EXISTS',KEYS[1])==1 then return 1 end
+if redis.call('EXISTS',KEYS[2])==1 and redis.call('EXISTS',KEYS[1])==1 then return 1 end
 return 0`

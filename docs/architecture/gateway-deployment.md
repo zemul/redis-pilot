@@ -20,7 +20,7 @@ Gateway 是独立宿主机二进制，由 systemd 管理并开启开机启动。
 - 正常进程重启使用同一锁路径即可，无 -init-state，无全量扫描、清缓存或同步追赶。新进程采用新 token；不支持不同主机/锁路径部署重叠写者。
 - 新模式每连接 Pipeline 保序执行，不做多后端流水线并发。不支持的命令明确拒绝。
 
-启动检查 /livez、/readyz 和 /metrics。ready 主要反映冷层可用性；热层异常允许降级服务。指标 redis_pilot_gateway_cache_events_total 的固定 outcome 包含 hit、cold_request、filled、load_skipped、load_limited、invalidated、update_attempt、hot_bypass、cold_result_unknown、epoch_ready、blocking_completed、blocking_unknown，不含 key 标签。加载跳过不一定是错误，可能是大对象或 TTL 对象。
+启动检查 /livez、/readyz 和 /metrics。ready 主要反映冷层可用性；热层异常允许降级服务。指标 redis_pilot_gateway_cache_events_total 的固定 outcome 包含 hit、cold_request、filled、load_skipped、load_limited、invalidated、update_attempt、hot_bypass、cold_result_unknown、epoch_ready、blocking_completed、blocking_unknown，不含 key 标签。加载跳过不一定是错误，可能是大对象或回填期间已到期的对象。
 
 本轮真实冷层验收使用 redis03 新建的独立测试容器（Kvrocks 19491），测试运行器内启动一次性 Redis；不是新 Gateway 的常驻 systemd 部署，没有更新旧服务。测试容器在验收后停止，保留用于排查；旧服务和业务数据不变。
 

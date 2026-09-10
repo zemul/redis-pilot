@@ -22,6 +22,7 @@ import (
 )
 
 type cacheRuntime struct {
+	origin          time.Time
 	s               *Service
 	cfg             CacheConfig
 	coldPassword    string
@@ -44,6 +45,7 @@ func newCacheRuntime(s *Service) (*cacheRuntime, error) {
 		return nil, err
 	}
 	r := &cacheRuntime{s: s, cfg: o, coldPassword: p, guard: cachePrefix + "owner", loads: make(chan struct{}, o.MaxLoads), blocking: make(chan struct{}, o.MaxBlocking)}
+	r.origin = time.Now()
 	for i := range r.keys {
 		r.keys[i] = make(chan struct{}, 1)
 	}
@@ -277,9 +279,13 @@ func (r *cacheRuntime) execute(parent context.Context, args [][]byte) []byte {
 				r.hotFailed()
 				hot.Close()
 				hot = nil
-			} else if string(parts[0]) == ":1\r\n" && len(parts) == 2 {
-				r.events.WithLabelValues("hit").Inc()
-				return parts[1]
+			} else if string(parts[0]) == ":1\r\n" && len(parts) == 3 {
+				stamp, valid := frameString(parts[2])
+				deadline, e := strconv.ParseInt(stamp, 10, 64)
+				if valid && e == nil && time.Since(r.origin).Nanoseconds() < deadline {
+					r.events.WithLabelValues("hit").Inc()
+					return parts[1]
+				}
 			}
 		} else {
 			present = string(b) == ":1\r\n"
@@ -330,6 +336,11 @@ func (r *cacheRuntime) execute(parent context.Context, args [][]byte) []byte {
 	}
 	// Error replies can follow partially effective engine commands. Invalidate
 	// writes even on a server error; never assume an error implies no mutation.
+	// Confirmed conditional no-ops must not publish the requested value.
+	if (cmd.name == "SET" && string(b) == "$-1\r\n") ||
+		((cmd.name == "EXPIRE" || cmd.name == "PEXPIRE" || cmd.name == "PERSIST") && string(b) == ":0\r\n") {
+		return b
+	}
 	if cmd.write {
 		if hot != nil {
 			x, e := hot.call(ctx, "DEL", data, complete)
@@ -351,9 +362,9 @@ func (r *cacheRuntime) execute(parent context.Context, args [][]byte) []byte {
 	return b
 }
 
-// snapshot returns a native Redis creation command only for a complete,
-// non-expiring, small object. TTL-bearing business keys bypass this version.
-func (r *cacheRuntime) snapshot(ctx context.Context, c *cacheConn, key []byte) ([]string, error) {
+// The deadline starts before PTTL is sent, conservatively charging network
+// and snapshot time against the remaining business lifetime.
+func (r *cacheRuntime) snapshot(ctx context.Context, c *cacheConn, key []byte, deadline *time.Time) ([]string, error) {
 	b, err := c.call(ctx, "TYPE", string(key))
 	if err != nil {
 		return nil, err
@@ -362,9 +373,18 @@ func (r *cacheRuntime) snapshot(ctx context.Context, c *cacheConn, key []byte) (
 	if !ok {
 		return nil, errors.New("invalid type")
 	}
+	started := time.Now()
 	b, err = c.call(ctx, "PTTL", string(key))
-	if err != nil || string(b) != ":-1\r\n" {
-		return nil, errors.New("expiring or absent object")
+	remaining, valid := frameString(b)
+	ms, parseErr := strconv.ParseInt(remaining, 10, 64)
+	if err != nil || !valid || parseErr != nil || ms < -1 || ms == 0 {
+		return nil, errors.New("expired or absent object")
+	}
+	if ms > 0 && ms <= r.cfg.TTL.Milliseconds() {
+		businessDeadline := started.Add(time.Duration(ms) * time.Millisecond)
+		if businessDeadline.Before(*deadline) {
+			*deadline = businessDeadline
+		}
 	}
 	countCmd, readCmd, create := "", "", ""
 	switch kind {
@@ -462,12 +482,20 @@ func (r *cacheRuntime) fill(ctx context.Context, cold, hot *cacheConn, key []byt
 		r.events.WithLabelValues("load_limited").Inc()
 		return
 	}
-	a, err := r.snapshot(ctx, cold, key)
+	deadline := time.Now().Add(r.cfg.TTL)
+	a, err := r.snapshot(ctx, cold, key, &deadline)
 	if err != nil {
 		r.events.WithLabelValues("load_skipped").Inc()
 		return
 	}
-	request := []string{"EVAL", cachePublishScript, "2", data, complete, a[0], strconv.FormatInt(r.cfg.TTL.Milliseconds(), 10)}
+	ttl := time.Until(deadline).Milliseconds()
+	if ttl <= 0 {
+		r.events.WithLabelValues("load_skipped").Inc()
+		return
+	}
+	// Redis TTL handles reclamation; a process-relative monotonic deadline in
+	// the marker also rejects delayed publishes/replies without clock syncing.
+	request := []string{"EVAL", cachePublishScript, "2", data, complete, a[0], strconv.FormatInt(ttl, 10), strconv.FormatInt(deadline.Sub(r.origin).Nanoseconds(), 10)}
 	request = append(request, a[1:]...)
 	b, err := hot.call(ctx, request...)
 	if err != nil || string(b) != ":1\r\n" {

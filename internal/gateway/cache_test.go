@@ -34,7 +34,7 @@ func TestCacheConfigAndCommands(t *testing.T) {
 	if _, err := DecodeConfig(strings.NewReader(base + "  types:\n    unknown:\n      max_bytes: 32768\n")); err == nil {
 		t.Fatal("unknown type accepted")
 	}
-	for _, args := range [][]string{{"MSET", "a", "1", "b", "2"}, {"SET", "a", "1", "NX"}, {"BLPOP", "a", "0"}, {"EVAL", "return 1", "0"}, {"GET", cachePrefix + "owner"}, {"DEL", "a", "b"}} {
+	for _, args := range [][]string{{"MSET", "a", "1", "b", "2"}, {"SET", "a", "1", "NX", "XX"}, {"SET", "a", "1", "PX", "2", "KEEPTTL"}, {"SET", "a", "1", "EX"}, {"SET", "a", "1", "GET"}, {"BLPOP", "a", "0"}, {"EVAL", "return 1", "0"}, {"GET", cachePrefix + "owner"}, {"DEL", "a", "b"}} {
 		if _, ok := classifyCacheCommand(cacheArgs(args...)); ok {
 			t.Fatal("unsupported command accepted", args)
 		}
@@ -462,8 +462,8 @@ func TestCacheComplexBoundsAndImmutableQueuePolicy(t *testing.T) {
 		t.Fatal(string(b), err)
 	}
 	cacheExec(t, s, "$1\r\nx\r\n", "GET", "expiring")
-	if metricValue(s.cache.events.WithLabelValues("filled")) != fills {
-		t.Fatal("expiring object cached")
+	if metricValue(s.cache.events.WithLabelValues("filled")) != fills+1 {
+		t.Fatal("expiring small object not cached")
 	}
 	cacheExec(t, s, ":1\r\n", "DEL", "expiring")
 	s.cache.close()
