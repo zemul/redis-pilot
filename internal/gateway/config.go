@@ -16,8 +16,6 @@ import (
 
 // Config describes the isolated single-backend development gateway.
 type Config struct {
-	StateDir             string             `yaml:"state_dir"`
-	HotCold              *HotColdConfig     `yaml:"hot_cold"`
 	ControlPlane         ControlPlaneConfig `yaml:"control_plane"`
 	BuildVersion         string             `yaml:"-"` // supplied by the executable, not YAML
 	GatewayID            string             `yaml:"gateway_id"`
@@ -86,9 +84,6 @@ func DecodeConfig(r io.Reader) (Config, error) {
 }
 
 func (c Config) Validate() error {
-	if err := c.validateHotCold(); err != nil {
-		return err
-	}
 	if err := c.validateControlPlane(); err != nil {
 		return err
 	}

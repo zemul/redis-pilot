@@ -17,6 +17,15 @@ import (
 
 const heartbeatToken = "gateway-test-token-long-enough"
 
+func TestRetiredSyncerRoutesRemoved(t *testing.T) {
+	s := newTestServer(t, "")
+	for _, route := range s.Router().Routes() {
+		if strings.HasPrefix(route.Path, "/api/v1/syncer/") {
+			t.Fatalf("retired syncer route still registered: %s %s", route.Method, route.Path)
+		}
+	}
+}
+
 func serverHeartbeatFixture() apitypes.GatewayHeartbeat {
 	return apitypes.GatewayHeartbeat{GatewayID: "gw", BootID: "boot", Sequence: 1, NodeID: "node", ClusterID: "cluster", ShardIDs: []string{"shard0"}, BuildVersion: "test", LocalConfigDigest: strings.Repeat("b", 64), Mode: "passthrough", Serving: true, BackendReady: true}
 }

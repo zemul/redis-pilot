@@ -1,4 +1,4 @@
-# G1 only: loopback listeners; no business forwarding or storage connections.
+# Skeleton only: loopback listeners; no business forwarding or storage connections.
 gateway_id: gateway-local
 service_id: test
 shard_id: test-0

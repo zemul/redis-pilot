@@ -23,6 +23,20 @@ func TestConfig(t *testing.T) {
 	}
 }
 
+// Retired tiering configuration must not silently serve a partial hot database
+// through the remaining single-backend passthrough mode.
+func TestRetiredTieringConfigRejected(t *testing.T) {
+	base := "mode: passthrough\nredis_address: 127.0.0.1:16390\nallow_unauthenticated: true\n"
+	if _, err := DecodeConfig(strings.NewReader(base)); err != nil {
+		t.Fatal(err)
+	}
+	for _, field := range []string{"hot_cold: {}\n", "hot_cold: null\n", "state_dir: /old/state\n", "state_dir: ''\n", "hot_cold:\n  auto_eviction:\n    enabled: true\n"} {
+		if _, err := DecodeConfig(strings.NewReader(base + field)); err == nil {
+			t.Fatalf("retired config accepted: %s", field)
+		}
+	}
+}
+
 func reader(t *testing.T, s string, l Limits) *Reader {
 	t.Helper()
 	r, e := NewReader(strings.NewReader(s), l)
