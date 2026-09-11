@@ -36,6 +36,9 @@ type cacheRuntime struct {
 	loads           chan struct{}
 	blocking        chan struct{}
 	events          *prometheus.CounterVec
+	scriptsMu       sync.Mutex
+	scripts         map[string]string
+	scriptBytes     int
 }
 
 func newCacheRuntime(s *Service) (*cacheRuntime, error) {
@@ -219,9 +222,44 @@ func (r *cacheRuntime) acquire(ctx context.Context, key []byte) (func(), error) 
 	}
 }
 
+// Use the same buckets as single-key commands, deduplicate collisions, and
+// acquire in a global order. Sorting key names alone cannot order lock buckets.
+func (r *cacheRuntime) acquireKeys(ctx context.Context, keys [][]byte) (func(), error) {
+	var needed [256]bool
+	for _, key := range keys {
+		h := sha256.Sum256(key)
+		needed[h[0]] = true
+	}
+	held := make([]int, 0, len(r.keys))
+	release := func() {
+		for i := len(held) - 1; i >= 0; i-- {
+			<-r.keys[held[i]]
+		}
+	}
+	for i, want := range needed {
+		if !want {
+			continue
+		}
+		select {
+		case r.keys[i] <- struct{}{}:
+			held = append(held, i)
+		case <-ctx.Done():
+			release()
+			return nil, ctx.Err()
+		}
+	}
+	return release, nil
+}
+
 func (r *cacheRuntime) execute(parent context.Context, args [][]byte) []byte {
 	if len(args) > 0 {
 		n := strings.ToUpper(string(args[0]))
+		if n == "SCRIPT" {
+			return r.scriptCommand(parent, args)
+		}
+		if n == "EVAL" || n == "EVALSHA" || n == "EVAL_RO" || n == "EVALSHA_RO" {
+			return r.executeScript(parent, args)
+		}
 		if n == "PING" && len(args) == 1 {
 			return []byte("+PONG\r\n")
 		}
@@ -230,6 +268,12 @@ func (r *cacheRuntime) execute(parent context.Context, args [][]byte) []byte {
 		}
 		if n == "BLPOP" || n == "BRPOP" {
 			return r.block(parent, args)
+		}
+		if n == "MGET" || n == "MSET" || n == "MSETNX" || (len(args) > 2 && (n == "DEL" || n == "UNLINK" || n == "EXISTS")) {
+			return r.executeMulti(parent, n, args)
+		}
+		if p, ok := classifyCacheCross(args); ok {
+			return r.executeCross(parent, args, p)
 		}
 	}
 	cmd, ok := classifyCacheCommand(args)
@@ -290,7 +334,7 @@ func (r *cacheRuntime) execute(parent context.Context, args [][]byte) []byte {
 				hot = nil
 			} else if string(parts[0]) == ":1\r\n" && len(parts) == 2 {
 				r.events.WithLabelValues("hit").Inc()
-				return parts[1]
+				return cacheReply(cmd, args, parts[1])
 			}
 		}
 	}
@@ -318,6 +362,17 @@ func (r *cacheRuntime) execute(parent context.Context, args [][]byte) []byte {
 		}
 		return []byte("-ERR cold result unknown; command was not retried\r\n")
 	}
+	if cmd.name == "SET" && len(b) > 0 && b[0] != '-' {
+		parts, e := frameParts(b)
+		if e != nil || len(parts) != 2 || (string(parts[1]) != ":0\r\n" && string(parts[1]) != ":1\r\n") {
+			r.uncertainEpoch(token)
+			return []byte("-ERR invalid cold SET confirmation; command was not retried\r\n")
+		}
+		b = parts[0]
+		if string(parts[1]) == ":0\r\n" {
+			return b
+		}
+	}
 	if cmd.exactInteger && len(b) > 0 && b[0] == '$' {
 		v, ok := frameString(b)
 		if !ok {
@@ -327,7 +382,7 @@ func (r *cacheRuntime) execute(parent context.Context, args [][]byte) []byte {
 	}
 	// Kvrocks 2.15 scripting returns some statuses as bulk strings. Restore
 	// the native public command's RESP2 shape.
-	if cmd.name == "SET" || cmd.name == "LSET" || cmd.name == "LTRIM" {
+	if (cmd.name == "SET" && !cacheSetGet(args)) || cmd.name == "SETEX" || cmd.name == "PSETEX" || cmd.name == "HMSET" || cmd.name == "LSET" || cmd.name == "LTRIM" {
 		if v, ok := frameString(b); ok && v == "OK" {
 			b = []byte("+OK\r\n")
 		}
@@ -337,18 +392,18 @@ func (r *cacheRuntime) execute(parent context.Context, args [][]byte) []byte {
 			b = []byte("+" + v + "\r\n")
 		}
 	}
+	b = cacheReply(cmd, args, b)
 	// Error replies can follow partially effective engine commands. Invalidate
 	// writes even on a server error; never assume an error implies no mutation.
 	// Confirmed conditional no-ops must not publish the requested value.
-	if (cmd.name == "SET" && string(b) == "$-1\r\n") ||
-		((cmd.name == "EXPIRE" || cmd.name == "PEXPIRE" || cmd.name == "PERSIST") && string(b) == ":0\r\n") {
+	if (cmd.name == "SETNX" || cmd.name == "HSETNX" || cmd.name == "EXPIRE" || cmd.name == "PEXPIRE" || cmd.name == "EXPIREAT" || cmd.name == "PEXPIREAT" || cmd.name == "PERSIST") && string(b) == ":0\r\n" {
 		return b
 	}
 	if cmd.write {
 		if !leased && !r.coldOnly(args[1]) {
 			r.hotFailed()
 		}
-		if hot != nil && len(b) > 0 && b[0] != '-' && r.cfg.WritePolicy == "update_existing" && cmd.name != "DEL" && cmd.name != "UNLINK" {
+		if hot != nil && len(b) > 0 && b[0] != '-' && r.cfg.WritePolicy == "update_existing" && cmd.name != "DEL" && cmd.name != "UNLINK" && cmd.name != "GETDEL" {
 			r.updateHot(ctx, cold, hot, cmd, args, b)
 			return b
 		}

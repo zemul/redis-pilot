@@ -15,9 +15,11 @@ Gateway 属于数据面：读写路由、缓存更新、回填、一致性协调
 | 配置 | 处理方式 |
 | --- | --- |
 | invalidate（默认） | 冷层执行修改，随后删除热缓存 |
-| update_existing | 冷层执行修改后，原子检查热 key 存在并增量更新；缺失时不创建残缺对象；成功 SET 可以直接缓存完整新值 |
+| update_existing | 冷层执行修改后，原子检查热 key 存在并增量更新；缺失时不创建残缺对象；成功的全值字符串写入可以直接缓存完整新值 |
 
-更新模式不再整对象重读/重建。HSET/HDEL、集合增删、列表确定性修改等增量执行；INCR/DECR/INCRBY/DECRBY 用冷层返回的最终字符串 SET，HINCRBY 用最终值 HSET，ZINCRBY 用最终分数 ZADD，SPOP 用冷层选中的成员 SREM，LPOP/RPOP 检查热侧弹出结果与冷侧一致。不能简单让随机或非幂等命令在两库各自计算。EXPIRE/PEXPIRE/PERSIST 按冷层剩余 TTL 更新缓存有效期。DEL/UNLINK、写命令错误或安全更新失败仍清理/隔离缓存。
+更新模式的正常局部写不再整对象重读/重建。HSET/HDEL、集合增删、列表确定性修改等增量执行；INCR/DECR/INCRBY/DECRBY 用冷层返回的最终字符串 SET，HINCRBY 用最终值 HSET，ZINCRBY 用最终分数 ZADD，SPOP 用冷层选中的成员 SREM，LPOP/RPOP 检查热侧弹出结果与冷侧一致。不能简单让随机或非幂等命令在两库各自计算。EXPIRE/PEXPIRE/PERSIST 按冷层剩余 TTL 更新缓存有效期。DEL/UNLINK、写命令错误或安全更新失败仍清理/隔离缓存。
+
+扩展规则：HMSET/HSETNX 转为对应字段 HSET；INCRBYFLOAT/HINCRBYFLOAT 使用冷引擎最终字符串并在同一冷脚本内规范化存储值（String 保留 TTL）；ZADD 条件/INCR 完全由冷层决定，再只读取涉及成员的最终分数更新热层，XX 忽略的新成员不创建。SPOP count/ZPOPMIN/MAX 使用冷层实际选中的成员；LPOP/RPOP count 比较完整二进制弹出数组。GETDEL 清理热层；SETNX/SETEX/PSETEX/GETSET 成功时可以新建完整 String 缓存。正常局部写不重建 Hash/List/Set/ZSet。
 
 缓存更新失败时，冷层已成功的业务不重做。确认清理或隔离热层后仍可返回冷层成功结果。已删除 max_object_bytes、max_object_elements 和 cache.types 单对象准入配置，不再因为对象大而清理已有完整缓存或拒绝回温。LRU、到期和资源故障仍可能导致对象离开缓存，不承诺永久驻留。
 
@@ -31,15 +33,39 @@ Gateway 属于数据面：读写路由、缓存更新、回填、一致性协调
 
 同 key 锁覆盖冷读取、所有回温批次、完整性校验和失败处理，不允许业务读写穿插。首批创建原 key，后续脚本仅在 key 仍存在时追加；每批使用同一绝对过期时间，不重新计时。命令报错删除半成品；异常回复或网络结果不确定时立即隔离热层，清空恢复前不能命中。无需临时 key 或常驻 complete 标记。LRU 正常淘汰整个 key，下一次读冷层并回温。更新模式的存在性检查与局部修改在同一脚本中完成，防止先检查、后被淘汰、再 HSET 创建残缺 Hash。
 
-支持 SET EX/PX、NX/XX、KEEPTTL（过期选项互斥、条件选项互斥），以及无条件 EXPIRE/PEXPIRE/PERSIST。所有条件与业务过期时间由冷层执行；明确未生效的条件写不更新缓存。默认 SET 清除业务 TTL，KEEPTTL 保留它。TTL/PTTL 始终查冷层。
+支持 SET EX/PX/EXAT/PXAT、NX/XX、GET、KEEPTTL，以及 GETEX 和条件 EXPIRE/PEXPIRE/EXPIREAT/PEXPIREAT（NX/XX/GT/LT）、PERSIST。条件与业务过期由冷层执行；未生效的条件写不更新缓存。SET GET 的 nil 不能当作未写入：无条件/NX 创建新 key 成功也返回 nil；固定冷脚本根据真实结果与选项回传是否生效，不使用可能过期的事前 EXISTS。旧值为字符串 OK 时保留 bulk 回复。默认 SET 清除业务 TTL，KEEPTTL 保留它。TTL/PTTL/EXPIRETIME/PEXPIRETIME 始终查冷层。
 
-带业务 TTL 的完整小对象允许回温。发送 PTTL 前记录单调时间，以该时刻加剩余 TTL 作为保守截止时间，和缓存默认 5 分钟上限取较早者；快照、网络耗时均扣除。发布前读取热 Redis TIME，用收到回复时剩余生命周期计算热服务器自身的绝对过期时间；脚本检查已到期则跳过，否则 PEXPIREAT，避免迟到回填重新开始计时。不需要每 key 截止时间标记，也不要求两个服务器时钟完全相同，但不保证时钟突跳、外部直接修改 TTL 的语义。热读按 Redis 执行时的过期判断返回，不承诺数据在客户端收到回复时仍未到期。Hash 字段 TTL 尚未支持。
+Kvrocks 2.15 不原生接受条件 EXPIRE，在 owner 校验的同一冷脚本内比较绝对截止时间，再调用无条件过期命令，不在 Go 层拆成读、判断、写。为避免 Lua double 在极大整数上误判，条件值及涉及的毫秒截止时间限定在 ±(2^53−1)，超界返回明确错误。浮点计算仍是冷引擎语义，不实现另一套 Redis 浮点运算器。
+
+HSCAN/SSCAN/ZSCAN 固定使用冷层游标，不读热层、不因扫描触发回温。翻页期间发生 LRU/回温也不会切换引擎。MATCH/COUNT 细节遵循冷引擎，不提供快照扫描。LPOS/随机成员/空数组等回复差异按命令语法规范化。完整命令与选项矩阵只维护在 [实现状态](hot-cold-status.md)。
+
+带业务 TTL 的完整对象允许回温。发送 PTTL 前记录单调时间，以该时刻加剩余 TTL 作为保守截止时间，和缓存默认 5 分钟上限取较早者；快照、网络耗时均扣除。发布前读取热 Redis TIME，用收到回复时剩余生命周期计算热服务器自身的绝对过期时间；脚本检查已到期则跳过，否则 PEXPIREAT，避免迟到回填重新开始计时。不需要每 key 截止时间标记，也不要求两个服务器时钟完全相同，但不保证时钟突跳、外部直接修改 TTL 的语义。热读按 Redis 执行时的过期判断返回，不承诺数据在客户端收到回复时仍未到期。Hash 字段 TTL 尚未支持。
 
 ## 同 key 协调与热层恢复
 
 当前使用固定 256 个锁桶：同 key 的读、写、冷读取和回填完整串行；不同桶并发，哈希碰撞会保守串行。锁等待有请求截止时间，不维护全量 key 目录。此处的锁桶不是集群 slot，也不提供分布式归属。
 
-每个普通业务命令通过固定内部 EVAL 执行：检查冷层 owner token，再执行白名单命令。用户 Lua 不能透传。INCR/DECR/INCRBY/DECRBY/HINCRBY 使用冷层最终字符串转回整数回复，避免 Lua double 丢失大于 2^53 的整数精度。
+MGET/MSET/MSETNX、多 key DEL/UNLINK/EXISTS 使用同一组锁桶：先验证全部 key，桶编号去重并升序获取，逆序释放；等待超时撤销已获取的部分锁，不能只按业务 key 字典序排序。MGET 全命中时热侧一次原子读；有任何缺失或冷层专用 key 则整批冷侧原子读，不混拼各层的结果。多 key EXISTS 只查冷。冷读 MGET 按原生规则将非 String/不存在返回 nil，其他 String 可以在持锁期间回温，重复 key 只回温一次。
+
+MSET/MSETNX/多 key DEL/UNLINK 在一个 owner 校验脚本中执行一次冷层原生命令，不能拆成单 key 循环。MSETNX 返回 0 时整批不更新缓存；MSET 清除旧业务 TTL。成功后删除模式统一删热，更新模式的 MSET/MSETNX 逐 key 发布完整 String（重复 key 使用最后值），DEL/UNLINK 始终删热。所有 key 的锁保持到缓存处理结束或热层已隔离，阻止单 key 请求观察到一半更新；任意热失败不允许旧缓存继续服务。冷结果未知不重放。这个原子性依赖当前单 Gateway、单冷后端前提，不能直接扩展成跨节点事务。
+
+每个普通业务命令通过固定内部 EVAL 执行：检查冷层 owner token，再执行白名单命令。用户 Lua 使用下述受保护执行入口，不裸透传。INCR/DECR/INCRBY/DECRBY/HINCRBY 使用冷层最终字符串转回整数回复，避免 Lua double 丢失大于 2^53 的整数精度。
+
+## 跨 key、事务与 Lua
+
+RENAME/RENAMENX、SMOVE、LMOVE/RPOPLPUSH 和集合运算统一提取全部读写 key、复用升序锁桶，在冷层原子执行后保持锁直到缓存处理完成。更新模式下 RENAME 直接移动已有完整缓存；来源缺失则清理目标，不重新扫描大 Hash。列表移动使用冷层实际弹出的元素校验热侧；仅对已有完整目标增量插入。来源/目标属于冷层专用前缀时保守清理可缓存一侧。STORE 命令本来就替换整个目标，单独执行时可重新加载原本已驻留的目标；事务/脚本内则失效目标，避免先回填最终状态、再重放后续修改造成重复作用。普通 Hash 字段更新不受这个例外影响。
+
+SCAN 固定查冷层，逐页过滤内部保留前缀，不把 Redis 缓存目录当成全库目录；不会为扫描回温。COUNT 为提示，游标必须原样传回，MATCH/TYPE 依赖所部署的冷引擎。Gateway 也支持 KEYS 并过滤控制 key，但现有 Proxy 安全策略仍拒绝 KEYS，业务建议使用 SCAN。
+
+MULTI/EXEC/DISCARD/WATCH/UNWATCH 是每条前端连接的状态，不跨连接共享。Gateway 有界排队，语法/命令检查失败标记 EXECABORT，DISCARD/断连丢弃未执行队列；执行错误不回滚之前成功的命令，后续命令继续，这是 Redis 的事务语义。EXEC 时同时持有全部操作与 WATCH key 的锁，使用冷层原生 WATCH/MULTI/EXEC，并在事务中执行一个受保护的命令体；读全部来自同一冷层执行序列，提交后才更新/清理缓存。更新模式中的 HSET/HINCRBY 等仍按操作结果增量维护已有大 Hash，不通过全删来冒充支持事务。前后端网络结果未知不重试 EXEC。
+
+Kvrocks 2.15 的 WATCH 不会因自然过期而按 Redis 预期中止：建立 WATCH 时，在 key 锁内读取冷层绝对到期时间；EXEC 的单个冷执行体先一次性检查全部到期时间，再执行整批，避免逐命令判断导致半批执行。写冲突仍由原生 WATCH 判断；私有 owner 同样被 WATCH，隔离跨重启/恢复的迟到 EXEC。到期时间落在捕获与 WATCH 之间时允许保守中止，客户端应按 WATCH 冲突重试整项业务。无每对象版本 key、事务日志 key 或全量版本目录。超过精确毫秒范围的 WATCH 到期时间拒绝，而非近似比较。
+
+EVAL/EVALSHA（含 _RO）在冷层完整执行，不在热层重复运行脚本。调用方必须通过 KEYS 声明所有访问 key；沙箱仅开放本状态矩阵的业务命令、PING/ECHO/TIME、常用 Lua 基础库和受保护 redis.call/pcall，拒绝未声明 key、控制 key、管理/阻塞/嵌套脚本命令。用户源通过 loadstring/setfenv 进入独立环境，不能通过 _G/getfenv/加载字节码/字符串元表绕过保护。脚本源码和声明 key 不属于“任意 Redis 扩展都兼容”的承诺。
+
+脚本写操作在可能修改数据前登记保守记录，成功后记录实际命令结果；记录与交给用户 Lua 的返回表分离，避免用户改表篡改缓存更新依据。更新模式只把这些已确认效果应用到热层，不重算随机弹出或自增；脚本先写后报错、缓存处理失败、返回超协议预算等场景同样清理或隔离热层。Kvrocks 的嵌套状态回复差异在脚本边界显式编码为 RESP2，再按协议限制验证。SCRIPT LOAD/EXISTS/FLUSH 管理 Gateway 的有界源码缓存；重启后 EVALSHA 可以 NOSCRIPT，客户端应 LOAD/EVAL。源码总量不超过 max_batch_bytes，Lua 命令次数及事务条目数受 limits.max_elements 约束，展开后的事务也受帧预算约束。长脚本仍占用冷引擎执行时间，客户端超时不代表脚本已取消。
+
+Proxy 保持整个事务的专用连接：依据后端结果维护 MULTI/WATCH 状态，事务内 UNWATCH 的 QUEUED 不解 pin，PING/ECHO 不本地应答，阻塞类命令不走普通阻塞完成后的解 pin 分支。本地安全拒绝也会使后端队列报错，防止此前排队写被 EXEC 意外提交。
 
 - 启动：持有本地私有 flock，读取旧 owner，通过比较交换设置随机新 token；热层默认禁用，清空成功后才启用。
 - 冷请求结果未知：不重放请求；把本地 token 置为待确认新代次，后续冷 CAS 确认后才恢复请求。迟到旧命令因 token 不匹配而拒绝执行。CAS 可安全重试，迟到旧 CAS 不能覆盖新 token。
@@ -62,6 +88,6 @@ Gateway 属于数据面：读写路由、缓存更新、回填、一致性协调
 
 ## 后续边界
 
-多 key、事务、用户 Lua、任意阻塞命令、EXAT/PXAT、EXPIRE 条件选项、字段缓存、大对象白名单、全量布隆过滤器均不在当前命令范围。有限单 key 支持不等于五种类型的所有命令兼容。
+除上述基础批量命令外的多 key 操作、事务、用户 Lua、任意阻塞命令、Hash 字段 TTL、位图/Bitfield/HyperLogLog 均不在当前命令范围；字段缓存、大对象白名单、全量布隆过滤器未引入。当前完成的是明确矩阵内的单 key 和基础批量路径，不等于所有 Redis 版本或所有引擎极端语义完全一致。验收基线为热 Redis 7.2.5 + 冷 Kvrocks 2.15.0。
 
 后端路由与冷热请求已分离；当前连接按操作建立，尚未做连接池和吞吐优化。分片、冷热独立扩缩容、MOVED/ASK、跨 slot Pipeline、多 Gateway 接管和旧写者隔离待单独设计。不能把固定锁桶当成这些能力。

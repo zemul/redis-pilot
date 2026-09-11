@@ -34,7 +34,7 @@ func TestCacheConfigAndCommands(t *testing.T) {
 	if _, err := DecodeConfig(strings.NewReader(base + "  types:\n    unknown:\n      max_bytes: 32768\n")); err == nil {
 		t.Fatal("unknown type accepted")
 	}
-	for _, args := range [][]string{{"MSET", "a", "1", "b", "2"}, {"SET", "a", "1", "NX", "XX"}, {"SET", "a", "1", "PX", "2", "KEEPTTL"}, {"SET", "a", "1", "EX"}, {"SET", "a", "1", "GET"}, {"BLPOP", "a", "0"}, {"EVAL", "return 1", "0"}, {"GET", cachePrefix + "owner"}, {"DEL", "a", "b"}} {
+	for _, args := range [][]string{{"MSET", "a", "1", "b", "2"}, {"SET", "a", "1", "NX", "XX"}, {"SET", "a", "1", "PX", "2", "KEEPTTL"}, {"SET", "a", "1", "EX"}, {"SET", "a", "1", "GET", "GET"}, {"BLPOP", "a", "0"}, {"EVAL", "return 1", "0"}, {"GET", cachePrefix + "owner"}, {"DEL", "a", "b"}} {
 		if _, ok := classifyCacheCommand(cacheArgs(args...)); ok {
 			t.Fatal("unsupported command accepted", args)
 		}
@@ -267,6 +267,10 @@ func TestCacheBlockingColdOnly(t *testing.T) {
 // A transparent RESP fault relay. Returning true drops the command before
 // dispatch; a hook may delay dispatch to exercise late-command fencing.
 func cacheFaultRelay(t *testing.T, target string, hook func([][]byte) bool) string {
+	return cacheFaultRelayHooks(t, target, hook, nil)
+}
+
+func cacheFaultRelayHooks(t *testing.T, target string, hook func([][]byte) bool, after func([][]byte, []byte) bool) string {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -300,13 +304,16 @@ func cacheFaultRelay(t *testing.T, target string, hook func([][]byte) bool) stri
 					if e != nil {
 						return
 					}
-					if hook(args) {
+					if hook != nil && hook(args) {
 						return
 					}
 					if writeAll(up, raw) != nil {
 						return
 					}
 					b, e := replies.ReadFrame()
+					if e == nil && after != nil && after(args, b) {
+						return
+					}
 					if e != nil || writeAll(client, b) != nil {
 						return
 					}

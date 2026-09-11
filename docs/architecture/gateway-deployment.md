@@ -1,6 +1,6 @@
 # Gateway 部署与运维
 
-更新：2026-09-10。当前提供单后端开发透传与固定端点的 cache 开发模式，不自动升级旧冷热链路。设计见 [冷热设计](hot-cold-gateway-design.md)，实现边界见 [状态](hot-cold-status.md)。
+更新：2026-09-12。当前提供单后端开发透传与固定端点的 cache 开发模式，不自动升级旧冷热链路。设计见 [冷热设计](hot-cold-gateway-design.md)，实现边界见 [状态](hot-cold-status.md)。
 
 ## 进程职责
 
@@ -18,10 +18,14 @@ Gateway 是独立宿主机二进制，由 systemd 管理并开启开机启动。
 - 热层现在使用原始 key，一个对象一个正式缓存 key。Gateway 启动或热层异常后会先隔离旧操作，CLIENT KILL TYPE normal SKIPME yes，再 FLUSHDB SYNC，确认后恢复。热 Redis 必须整个实例专用，不能混入其他数据或接入会自动重连重放的中间代理。该流程会断开热 Redis 的运维普通连接，清空仅限热 DB 0，绝不对冷库执行 FLUSHDB。
 - write_policy 为 invalidate 或 update_existing，其他值拒绝。加载并发、缓存 TTL、hot_timeout、阻塞并发及通用协议/资源预算可配置；单对象 max_object_bytes、max_object_elements、cache.types 已移除，旧配置需删除这些字段。参数约束在 -check-config 检查，检查本身不创建锁或修改后端。
 - cold_only_prefixes 为 BLPOP/BRPOP 队列范围，该范围所有读写永久绕过缓存。前缀集合绑定在冷库，原地修改会拒绝启动；不能删元数据绕过旧阻塞请求的生命周期检查。
-- 正常进程重启使用同一锁路径即可，无 -init-state，无全量扫描、清缓存或同步追赶。新进程采用新 token；不支持不同主机/锁路径部署重叠写者。
+- 正常进程重启使用同一锁路径即可，无 -init-state、人工清理、全量扫描或同步追赶。新进程采用新 token，自动清空专用热缓存后再启用热读写；不支持不同主机/锁路径部署重叠写者。
 - 新模式每连接 Pipeline 保序执行，不做多后端流水线并发。不支持的命令明确拒绝。
 
-启动检查 /livez、/readyz 和 /metrics。ready 主要反映冷层可用性；热层异常允许降级服务。指标 redis_pilot_gateway_cache_events_total 的固定 outcome 包含 hit、cold_request、filled、load_skipped、load_limited、invalidated、update_attempt、hot_bypass、cold_result_unknown、epoch_ready、blocking_completed、blocking_unknown，不含 key 标签。加载跳过不一定是错误，可能是大对象或回填期间已到期的对象。
+启动检查 /livez、/readyz 和 /metrics。ready 主要反映冷层可用性；热层异常允许降级服务。指标 redis_pilot_gateway_cache_events_total 的固定 outcome 包含 hit、cold_request、filled、load_skipped、load_limited、invalidated、updated、update_miss、hot_bypass、cold_result_unknown、epoch_ready、blocking_completed、blocking_unknown，不含 key 标签。加载跳过可能是并发预算、帧限制、超时或回填期间到期，不存在单对象大小准入阈值。
+
+2026-09-12 单 key 及基础批量命令扩展已部署至 redis03 的独立 cache 栈，未修改 redis01 原 Proxy 或旧冷热数据库。scripts/verify-cache-dev.py 在真实 Proxy 17480 → Gateway 17479 → Redis/Kvrocks 上同时验收 invalidate/update_existing 的新增命令、MGET/MSET/MSETNX、多 key DEL/UNLINK/EXISTS、原生缓存内容、重复 key、随机弹出结果、条件 TTL、重启和故障恢复；执行后恢复默认 invalidate 并清理本轮测试 key，不清空冷库。完整命令、引擎版本及边界见 [状态矩阵](hot-cold-status.md)。
+
+同日继续部署跨 key 运算、RENAME、列表移动、SCAN、事务和受保护 Lua。Proxy 同步修复事务连接保持、PING/ECHO 排队和本地拒绝必须中止事务的问题。完整故障验收两种策略通过；verify-cache-dev.py 新增 --commands-only 可只复验命令矩阵，仍切换两种策略并在收尾恢复 invalidate、清理本轮业务测试 key。临时 pilot-cache-advanced-cold（19492）仅用于独立 Kvrocks 测试，不属于常驻部署；验收结束停止并自动删除容器。未更改冷层持久化/备份设置，也未做生产性能或长期稳定性背书。
 
 此前进程内验收使用临时容器 pilot-cache-cold-test-20260910，现已停止。2026-09-10 进一步部署独立常驻栈，和旧冷热数据库隔离：
 

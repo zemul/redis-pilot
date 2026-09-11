@@ -97,6 +97,8 @@ func (s *Service) session(ctx context.Context, client net.Conn) {
 		}
 	}()
 	authed := s.frontendPassword == ""
+	cacheClient := &cacheSession{r: s.cache}
+	defer cacheClient.close()
 	var pending *request
 	send := func(b []byte) bool {
 		client.SetWriteDeadline(time.Now().Add(s.cfg.RequestTimeout))
@@ -180,7 +182,7 @@ func (s *Service) session(ctx context.Context, client net.Conn) {
 				result := "local"
 				if b == nil {
 					s.inflight.Inc()
-					b = s.cache.execute(work, q.args)
+					b = cacheClient.execute(work, q.args)
 					s.inflight.Dec()
 					result = "cache_mode"
 				}

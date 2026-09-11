@@ -33,13 +33,13 @@ const (
 
 // Config 是 session 创建参数。
 type Config struct {
-	Group             string // group 名称（用于指标）
-	MasterAddr        string
-	ReplicaAddrs      []string
-	Password          string        // group 密码（D7：空=不鉴权）
-	ConnectTimeout    time.Duration // 建连超时（§15: 3s）
-	MasterReadWeight  int           // master 读权重（默认 0）
-	MaxRequestBytes   int           // 单条命令最大字节数（D13，默认 16MB）
+	Group            string // group 名称（用于指标）
+	MasterAddr       string
+	ReplicaAddrs     []string
+	Password         string        // group 密码（D7：空=不鉴权）
+	ConnectTimeout   time.Duration // 建连超时（§15: 3s）
+	MasterReadWeight int           // master 读权重（默认 0）
+	MaxRequestBytes  int           // 单条命令最大字节数（D13，默认 16MB）
 }
 
 // Session 管理一条客户端连接的生命周期。
@@ -54,10 +54,12 @@ type Session struct {
 	replicaPools map[string]*backend.Pool // addr -> pool（proxysvc 传入的每会话快照，只读，不与拓扑更新共享同一 map）
 	readPool     *readpool.Pool           // 选择逻辑（per-session）
 
-	mode          Mode
-	authed        bool
-	exclusiveConn *backend.UpstreamConn // EXCLUSIVE 模式下的独占连接
-	pinnedBySelect bool                 // SELECT 触发的永久 pin，事务结束后不释放连接
+	mode           Mode
+	authed         bool
+	exclusiveConn  *backend.UpstreamConn // EXCLUSIVE 模式下的独占连接
+	pinnedBySelect bool                  // SELECT 触发的永久 pin，事务结束后不释放连接
+	inMulti        bool                  // Confirmed by the backend, not guessed from the request.
+	watching       bool
 
 	// Pipeline read-ahead: command read from buffer but not yet processed
 	// (because it couldn't be batched with the previous group).
@@ -128,9 +130,33 @@ func (s *Session) Serve() error {
 		s.metrics.IncCommand(s.cfg.Group, route.NormalizeCommand(firstArg(argv)))
 
 		d := route.Classify(argv)
+		// Subscription mode cannot be returned to an ordinary pooled connection
+		// by EXEC. Reject and poison the transaction instead of entering relay.
+		if s.inMulti && d.Class == route.ClassSubscribe {
+			d.Class = route.ClassDeny
+		}
+		// PING/ECHO queue inside MULTI, and blocking operations in a
+		// transaction must not enter the standalone blocking/unpin path.
+		cmd := strings.ToUpper(string(firstArg(argv)))
+		if s.inMulti && (cmd == "PING" || cmd == "ECHO" || d.Class == route.ClassBlocking) {
+			if err := s.forwardExclusive(raw, d, firstArg(argv)); err != nil {
+				return err
+			}
+			continue
+		}
 
 		switch d.Class {
 		case route.ClassDeny:
+			if s.inMulti {
+				// A local rejection must poison the backend queue as well;
+				// otherwise EXEC would silently commit its earlier commands.
+				if err := s.exclusiveConn.Writer().WriteRaw([]byte("*1\r\n$3\r\nSET\r\n")); err != nil {
+					return err
+				}
+				if _, err := s.exclusiveConn.Recv(); err != nil {
+					return err
+				}
+			}
 			s.clientWriter.WriteError("ERR command not allowed: " + string(argv[0]))
 
 		case route.ClassConnState:
@@ -172,7 +198,7 @@ func (s *Session) Serve() error {
 			if err := s.forwardAndRelay(raw, s.masterPool, d, argv[0]); err != nil {
 				return err
 			}
-			if !d.Pin {
+			if !d.Pin && !s.inMulti && !s.watching {
 				// EXEC/DISCARD/UNWATCH：退出事务模式
 				if s.pinnedBySelect {
 					// SELECT 触发的永久 pin：保持独占连接，仅退出事务状态
@@ -347,7 +373,34 @@ func (s *Session) forwardAndRelay(raw []byte, pool *backend.Pool, d route.Decisi
 		return err
 	}
 	s.observeCommand(start, kindOf(d.Class), firstArg)
+	s.observeTransactionReply(string(firstArg), resp)
 	return s.clientWriter.WriteRaw(resp)
+}
+
+func (s *Session) observeTransactionReply(command string, reply []byte) {
+	n := strings.ToUpper(command)
+	switch n {
+	case "MULTI":
+		if string(reply) == "+OK\r\n" {
+			s.inMulti = true
+		}
+	case "WATCH":
+		if string(reply) == "+OK\r\n" {
+			s.watching = true
+		}
+	case "UNWATCH":
+		if string(reply) == "+OK\r\n" {
+			s.watching = false
+		}
+	case "DISCARD":
+		if string(reply) == "+OK\r\n" {
+			s.inMulti, s.watching = false, false
+		}
+	case "EXEC":
+		if len(reply) > 0 && (reply[0] == '*' || strings.HasPrefix(string(reply), "-EXECABORT")) {
+			s.inMulti, s.watching = false, false
+		}
+	}
 }
 
 // forwardBatchAndRelay forwards a batch of commands to the same pool,
@@ -408,6 +461,7 @@ func (s *Session) forwardExclusive(raw []byte, d route.Decision, firstArg []byte
 		return err
 	}
 	s.observeCommand(start, kindOf(d.Class), firstArg)
+	s.observeTransactionReply(string(firstArg), resp)
 	return s.clientWriter.WriteRaw(resp)
 }
 
@@ -463,6 +517,7 @@ func (s *Session) handleConnState(argv [][]byte, raw []byte, d route.Decision) e
 		}
 		s.mode = ModeNormal
 		s.pinnedBySelect = false
+		s.inMulti, s.watching = false, false
 		s.authed = s.cfg.Password == ""
 		return s.clientWriter.WriteSimpleString("RESET")
 

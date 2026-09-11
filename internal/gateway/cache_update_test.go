@@ -15,6 +15,9 @@ import (
 func TestCacheLargeHashIncrementalNotRebuilt(t *testing.T) {
 	s, hotAddr, coldAddr := cacheTestSetup(t, "update_existing")
 	s.cfg.RequestTimeout = 5 * time.Second
+	// This is a cache-residency assertion, not a 50ms overload/failover test.
+	// Race instrumentation and concurrent compilation can pause the test host.
+	s.cache.cfg.HotTimeout = 500 * time.Millisecond
 	cold, err := s.cache.connect(context.Background(), false)
 	if err != nil {
 		t.Fatal(err)
@@ -50,6 +53,18 @@ func TestCacheLargeHashIncrementalNotRebuilt(t *testing.T) {
 	cacheExec(t, s, ":0\r\n", "HSET", key, "f0", "new")
 	cacheExec(t, s, ":1\r\n", "HDEL", key, "f1")
 	cacheExec(t, s, ":9007199254740993\r\n", "HINCRBY", key, "counter", "9007199254740993")
+	cacheExec(t, s, "+OK\r\n", "HMSET", key, "f2", "1.25", "f3", "updated")
+	cacheExec(t, s, ":0\r\n", "HSETNX", key, "f2", "ignored")
+	cacheExec(t, s, "$4\r\n1.75\r\n", "HINCRBYFLOAT", key, "f2", "0.5")
+	cacheExec(t, s, ":0\r\n", "EVAL", `return redis.call('HSET',KEYS[1],'f4','script-updated')`, "1", key)
+	tx := &cacheSession{r: s.cache}
+	for _, a := range [][]string{{"MULTI"}, {"HSET", key, "f5", "transaction-updated"}, {"EXEC"}} {
+		b := tx.execute(context.Background(), cacheArgs(a...))
+		if len(b) == 0 || b[0] == '-' {
+			t.Fatalf("transaction %v: %q", a, b)
+		}
+	}
+	tx.close()
 	if scans.Load() != 0 || deletes.Load() != 0 || metricValue(s.cache.events.WithLabelValues("filled")) != fills {
 		t.Fatal("incremental update scanned/deleted/rebuilt entire Hash")
 	}
@@ -64,6 +79,9 @@ func TestCacheLargeHashIncrementalNotRebuilt(t *testing.T) {
 	}{
 		{[]string{"HLEN", key}, ":5000\r\n"},
 		{[]string{"HGET", key, "f0"}, "$3\r\nnew\r\n"},
+		{[]string{"HGET", key, "f2"}, "$4\r\n1.75\r\n"},
+		{[]string{"HGET", key, "f4"}, "$14\r\nscript-updated\r\n"},
+		{[]string{"HGET", key, "f5"}, "$19\r\ntransaction-updated\r\n"},
 		{[]string{"HGET", key, "counter"}, "$16\r\n9007199254740993\r\n"},
 		{[]string{"HGET", key, "f4999"}, "$100\r\n" + strings.Repeat("v", 100) + "\r\n"},
 	} {
