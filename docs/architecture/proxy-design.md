@@ -188,6 +188,8 @@ v1 语义：**一旦 SELECT，该 client 永久 pin 为 EXCLUSIVE 直到连接�
 
 ## 7. 独占升级生命周期
 
+实现补充（2026-09-10）：空闲 EXCLUSIVE 连接没有 readLoop，无法及时感知后端重启。复用前发送有 connectTimeout 上限的 PING，只有 PONG 才交给业务；断连、超时或异常回复则关闭并新建连接。探活不持有池锁，成功后清除 deadline，不影响后续阻塞命令的等待语义。这仅重试连接建立，不重放已发送的业务命令；探活通过后仍可能发生网络故障。
+
 ### 7.1 触发 pin
 收到 BLOCKING / TXN（`MULTI`）/ SUBSCRIBE / `SELECT` 时：
 1. 为目标后端（阻塞与事务一律 master）取一条上游连接（从池取或新建），标 EXCLUSIVE，

@@ -6,8 +6,8 @@ import (
 )
 
 type cacheCommand struct {
-	name                                           string
-	write, cacheRead, update, create, exactInteger bool
+	name                           string
+	write, cacheRead, exactInteger bool
 }
 
 // No arbitrary pass-through: every accepted business command has one key.
@@ -28,10 +28,10 @@ func classifyCacheCommand(args [][]byte) (cacheCommand, bool) {
 		c.cacheRead = true
 		return c, l == 3
 	case "EXPIRE", "PEXPIRE":
-		c.write, c.update = true, true
+		c.write = true
 		return c, l == 3
 	case "PERSIST":
-		c.write, c.update = true, true
+		c.write = true
 		return c, l == 2
 	case "HMGET":
 		c.cacheRead = true
@@ -46,20 +46,16 @@ func classifyCacheCommand(args [][]byte) (cacheCommand, bool) {
 		return c, l == 2 // authoritative expiration only
 	case "SET":
 		c.write = true
-		c.update = true
-		c.create = true
 		return c, validCacheSet(args)
 	case "DEL", "UNLINK":
 		c.write = true
 		return c, l == 2
 	case "INCR", "DECR":
 		c.write = true
-		c.update = true
 		c.exactInteger = true
 		return c, l == 2
 	case "INCRBY", "DECRBY":
 		c.write = true
-		c.update = true
 		c.exactInteger = true
 		return c, l == 3
 	case "APPEND":
@@ -67,15 +63,12 @@ func classifyCacheCommand(args [][]byte) (cacheCommand, bool) {
 		return c, l == 3
 	case "HSET":
 		c.write = true
-		c.update = true
 		return c, l >= 4 && l%2 == 0
 	case "HDEL", "SADD", "SREM", "ZREM":
 		c.write = true
-		c.update = true
 		return c, l >= 3
 	case "HINCRBY":
 		c.write = true
-		c.update = true
 		c.exactInteger = true
 		return c, l == 4
 	case "LPUSH", "RPUSH", "LPUSHX", "RPUSHX":
@@ -89,7 +82,6 @@ func classifyCacheCommand(args [][]byte) (cacheCommand, bool) {
 		return c, l == 4
 	case "ZADD":
 		c.write = true
-		c.update = true
 		for i := 2; i < l; i += 2 {
 			if _, err := strconv.ParseFloat(string(args[i]), 64); err != nil {
 				return c, false
@@ -98,7 +90,6 @@ func classifyCacheCommand(args [][]byte) (cacheCommand, bool) {
 		return c, l >= 4 && l%2 == 0 // numeric score validation remains in Kvrocks
 	case "ZINCRBY":
 		c.write = true
-		c.update = true
 		return c, l == 4
 	}
 	return c, false
@@ -155,25 +146,33 @@ if ARGV[3]=='integer' then
 end
 return result`
 
-// The completion marker is published last. If building runs out of memory or
-// fails halfway, readers will not mistake the partial object for a full cache.
+// The Gateway's same-key lock protects the original business key throughout
+// loading and publication. Clean partial writes on error; transport uncertainty
+// disables the entire hot layer until server-side fencing and flush succeed.
 const cachePublishScript = `
-redis.call('DEL',KEYS[1],KEYS[2])
+redis.replicate_commands()
+redis.call('DEL',KEYS[1])
+` + cacheBuildBody
+
+const cacheAppendScript = `
+redis.replicate_commands()
+if redis.call('EXISTS',KEYS[1])==0 then return 0 end
+` + cacheBuildBody
+
+const cacheBuildBody = `
+local now=redis.call('TIME')
+if tonumber(now[1])*1000+math.floor(tonumber(now[2])/1000)>=tonumber(ARGV[2]) then return 0 end
 local cmd=ARGV[1]
 local a={cmd,KEYS[1]}
-for i=4,#ARGV do a[#a+1]=ARGV[i] end
-redis.call(unpack(a))
-redis.call('PEXPIRE',KEYS[1],ARGV[2])
-redis.call('SET',KEYS[2],ARGV[3],'PX',ARGV[2])
+for i=3,#ARGV do a[#a+1]=ARGV[i] end
+local result=redis.pcall(unpack(a))
+if type(result)=='table' and result.err then redis.call('DEL',KEYS[1]); return result end
+local expiry=redis.pcall('PEXPIREAT',KEYS[1],ARGV[2])
+if type(expiry)=='table' and expiry.err then redis.call('DEL',KEYS[1]); return expiry end
 return 1`
 
 const cacheReadScript = `
-local deadline=redis.call('GET',KEYS[2])
-if not deadline or redis.call('EXISTS',KEYS[1])==0 then return {0} end
+if redis.call('EXISTS',KEYS[1])==0 then return {0} end
 local a={ARGV[1],KEYS[1]}
 for i=2,#ARGV do a[#a+1]=ARGV[i] end
-return {1,redis.pcall(unpack(a)),deadline}`
-
-const cachePresentScript = `
-if redis.call('EXISTS',KEYS[2])==1 and redis.call('EXISTS',KEYS[1])==1 then return 1 end
-return 0`
+return {1,redis.pcall(unpack(a))}`

@@ -27,11 +27,15 @@ func startTestRedis(t *testing.T) (addr string, cleanup func()) {
 				r := resp.NewReader(conn)
 				w := resp.NewWriter(conn)
 				for {
-					_, _, err := r.ReadCommand()
+					_, args, err := r.ReadCommand()
 					if err != nil {
 						return
 					}
-					w.WriteSimpleString("OK")
+					if len(args) > 0 && string(args[0]) == "PING" {
+						w.WriteSimpleString("PONG")
+					} else {
+						w.WriteSimpleString("OK")
+					}
 					w.Flush()
 				}
 			}(conn)
@@ -55,6 +59,43 @@ func TestPool_RoundTrip(t *testing.T) {
 	}
 	if string(resp) != "+OK\r\n" {
 		t.Errorf("response = %q, want +OK\\r\\n", string(resp))
+	}
+}
+
+func TestPool_ExclusiveDeadOrStalledIdle(t *testing.T) {
+	for _, stalled := range []bool{false, true} {
+		t.Run(map[bool]string{false: "dead", true: "stalled"}[stalled], func(t *testing.T) {
+			addr, cleanup := startTestRedis(t)
+			defer cleanup()
+			pool := NewPool(addr, "", 25*time.Millisecond, 4, time.Minute)
+			defer pool.Close()
+			client, server := net.Pipe()
+			defer server.Close()
+			if !stalled {
+				server.Close()
+			}
+			old := newUpstreamConn(client, addr)
+			pool.ReleaseExclusive(old)
+			started := time.Now()
+			next, err := pool.AcquireExclusive()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer next.Close()
+			if next == old || !old.IsClosed() {
+				t.Fatal("stale exclusive connection reused")
+			}
+			if time.Since(started) > time.Second {
+				t.Fatal("unbounded idle probe")
+			}
+			if err = next.Writer().WriteCommand([][]byte{[]byte("PING")}); err != nil {
+				t.Fatal(err)
+			}
+			b, err := next.Recv()
+			if err != nil || string(b) != "+PONG\r\n" {
+				t.Fatalf("replacement unusable: %q %v", b, err)
+			}
+		})
 	}
 }
 
@@ -137,8 +178,8 @@ func TestPool_AcquireExclusive(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Recv failed: %v", err)
 	}
-	if string(data) != "+OK\r\n" {
-		t.Errorf("response = %q, want +OK", string(data))
+	if string(data) != "+PONG\r\n" {
+		t.Errorf("response = %q, want +PONG", string(data))
 	}
 
 	// 归还

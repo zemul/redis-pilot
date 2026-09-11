@@ -122,17 +122,36 @@ func (p *Pool) RoundTripBatch(raws [][]byte) ([][]byte, error) {
 // 优先从空闲池取，否则新建。
 func (p *Pool) AcquireExclusive() (*UpstreamConn, error) {
 	p.mu.Lock()
-	defer p.mu.Unlock()
 
 	// 优先复用空闲连接
 	if len(p.idle) > 0 {
 		conn := p.idle[len(p.idle)-1]
 		p.idle = p.idle[:len(p.idle)-1]
-		return conn, nil
+		p.mu.Unlock()
+		// Idle exclusive connections have no readLoop to notice a backend
+		// restart. Probe before sending ANY business command; never replay a
+		// blocking pop/transaction after an ambiguous transport failure.
+		timeout := p.connectTimeout
+		if timeout <= 0 {
+			timeout = 3 * time.Second
+		}
+		conn.Conn().SetDeadline(time.Now().Add(timeout))
+		err := conn.Writer().WriteCommand([][]byte{[]byte("PING")})
+		var reply []byte
+		if err == nil {
+			reply, err = conn.Recv()
+		}
+		conn.Conn().SetDeadline(time.Time{})
+		if err == nil && string(reply) == "+PONG\r\n" {
+			return conn, nil
+		}
+		conn.Close()
+		return p.dial()
 	}
+	p.mu.Unlock()
 
 	// 新建
-	return p.dialLocked()
+	return p.dial()
 }
 
 // ReleaseExclusive 归还独占连接到空闲池（§7.2）。

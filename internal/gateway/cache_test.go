@@ -28,8 +28,8 @@ func TestCacheConfigAndCommands(t *testing.T) {
 			t.Fatal("invalid cache config accepted", extra)
 		}
 	}
-	if _, err := DecodeConfig(strings.NewReader(base + "  types:\n    hash:\n      max_bytes: 32768\n      max_elements: 128\n")); err != nil {
-		t.Fatal(err)
+	if _, err := DecodeConfig(strings.NewReader(base + "  types:\n    hash:\n      max_bytes: 32768\n      max_elements: 128\n")); err == nil {
+		t.Fatal("removed per-object settings accepted")
 	}
 	if _, err := DecodeConfig(strings.NewReader(base + "  types:\n    unknown:\n      max_bytes: 32768\n")); err == nil {
 		t.Fatal("unknown type accepted")
@@ -100,7 +100,7 @@ func cacheTestSetup(t *testing.T, policy string) (*Service, string, string) {
 	if err := os.Chmod(dir, 0700); err != nil {
 		t.Fatal(err)
 	}
-	cfg.Cache = &CacheConfig{ColdAddress: cold, ColdPasswordFile: secret, ExclusiveBackends: true, LockFile: filepath.Join(dir, "owner.lock"), WritePolicy: policy, MaxObjectBytes: 1024, MaxObjectElements: 16, ColdOnlyPrefixes: []string{"queue:"}}
+	cfg.Cache = &CacheConfig{ColdAddress: cold, ColdPasswordFile: secret, ExclusiveBackends: true, LockFile: filepath.Join(dir, "owner.lock"), WritePolicy: policy, ColdOnlyPrefixes: []string{"queue:"}}
 	s, err := NewService(cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -170,8 +170,8 @@ func TestCacheBoundsRestartAndFencing(t *testing.T) {
 	hits := metricValue(s.cache.events.WithLabelValues("hit"))
 	cacheExec(t, s, want, "GET", "large")
 	cacheExec(t, s, want, "GET", "large")
-	if metricValue(s.cache.events.WithLabelValues("hit")) != hits {
-		t.Fatal("large object was cached")
+	if metricValue(s.cache.events.WithLabelValues("hit")) != hits+1 {
+		t.Fatal("large object was not cached")
 	}
 	cacheExec(t, s, "+OK\r\n", "SET", "restart", "old")
 	cacheExec(t, s, "$3\r\nold\r\n", "GET", "restart")
@@ -328,7 +328,7 @@ func TestCacheHotInvalidationFailureRecovers(t *testing.T) {
 	})
 	s.cfg.RedisAddress = relay
 	cacheExec(t, s, "+OK\r\n", "SET", "fault", "new")
-	if !dropped.Load() || s.cache.hotGeneration.Load() == 0 {
+	if !dropped.Load() || s.cache.hotReady.Load() {
 		t.Fatal("invalidation fault not isolated")
 	}
 	cacheExec(t, s, "$3\r\nnew\r\n", "GET", "fault")
@@ -447,8 +447,8 @@ func TestCacheComplexBoundsAndImmutableQueuePolicy(t *testing.T) {
 	cacheExec(t, s, ":1\r\n", "HSET", "wide-hash", "f", big)
 	fills := metricValue(s.cache.events.WithLabelValues("filled"))
 	cacheExec(t, s, ":1\r\n", "HLEN", "wide-hash")
-	if metricValue(s.cache.events.WithLabelValues("filled")) != fills {
-		t.Fatal("oversize hash cached")
+	if metricValue(s.cache.events.WithLabelValues("filled")) != fills+1 {
+		t.Fatal("large hash was not cached")
 	}
 	cacheExec(t, s, ":1\r\n", "DEL", "wide-hash")
 	// Already-expiring cold objects are never published with a longer cache TTL.
@@ -462,7 +462,7 @@ func TestCacheComplexBoundsAndImmutableQueuePolicy(t *testing.T) {
 		t.Fatal(string(b), err)
 	}
 	cacheExec(t, s, "$1\r\nx\r\n", "GET", "expiring")
-	if metricValue(s.cache.events.WithLabelValues("filled")) != fills+1 {
+	if metricValue(s.cache.events.WithLabelValues("filled")) != fills+2 {
 		t.Fatal("expiring small object not cached")
 	}
 	cacheExec(t, s, ":1\r\n", "DEL", "expiring")

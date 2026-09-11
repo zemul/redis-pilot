@@ -1,8 +1,8 @@
 [Unit]
 Description=Redis Pilot development cache gateway
 After=network.target
-StartLimitIntervalSec=60
-StartLimitBurst=5
+# Keep retrying after prolonged cold-backend outages; RestartSec bounds rate.
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple

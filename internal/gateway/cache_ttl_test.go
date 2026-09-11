@@ -52,7 +52,7 @@ func TestCacheTTLDelayedPublish(t *testing.T) {
 	})
 	s.cfg.RedisAddress = relay
 	// Permit the deliberately delayed publication to finish, so the test
-	// exercises the marker deadline, not merely the hot timeout fallback.
+	// exercises the absolute expiry, not merely the hot timeout fallback.
 	s.cache.cfg.HotTimeout = 500 * time.Millisecond
 	cacheExec(t, s, "$1\r\nx\r\n", "GET", "ttl-delay")
 	cacheExec(t, s, "$-1\r\n", "GET", "ttl-delay")
@@ -64,10 +64,10 @@ func TestCacheTTLCollectionsAndRenewal(t *testing.T) {
 			s, _, _ := cacheTestSetup(t, policy)
 			for _, cmd := range [][]string{{"HSET", "ttl-h", "f", "v"}, {"RPUSH", "ttl-l", "v"}, {"SADD", "ttl-s", "v"}, {"ZADD", "ttl-z", "1", "v"}} {
 				cacheExec(t, s, ":1\r\n", cmd...)
-				cacheExec(t, s, ":1\r\n", "PEXPIRE", cmd[1], "100")
+				cacheExec(t, s, ":1\r\n", "PEXPIRE", cmd[1], "500")
 				cacheExec(t, s, ":1\r\n", "EXISTS", cmd[1])
 			}
-			time.Sleep(130 * time.Millisecond)
+			time.Sleep(550 * time.Millisecond)
 			for _, key := range []string{"ttl-h", "ttl-l", "ttl-s", "ttl-z"} {
 				cacheExec(t, s, ":0\r\n", "EXISTS", key)
 			}

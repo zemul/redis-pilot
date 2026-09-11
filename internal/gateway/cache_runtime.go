@@ -4,14 +4,12 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -22,7 +20,6 @@ import (
 )
 
 type cacheRuntime struct {
-	origin          time.Time
 	s               *Service
 	cfg             CacheConfig
 	coldPassword    string
@@ -31,7 +28,10 @@ type cacheRuntime struct {
 	mu              sync.Mutex
 	token, previous string
 	settled         bool
-	hotGeneration   atomic.Uint64
+	hotMu           sync.RWMutex
+	hotStateMu      sync.Mutex
+	hotFailures     uint64
+	hotReady        atomic.Bool
 	keys            [256]chan struct{}
 	loads           chan struct{}
 	blocking        chan struct{}
@@ -45,7 +45,6 @@ func newCacheRuntime(s *Service) (*cacheRuntime, error) {
 		return nil, err
 	}
 	r := &cacheRuntime{s: s, cfg: o, coldPassword: p, guard: cachePrefix + "owner", loads: make(chan struct{}, o.MaxLoads), blocking: make(chan struct{}, o.MaxBlocking)}
-	r.origin = time.Now()
 	for i := range r.keys {
 		r.keys[i] = make(chan struct{}, 1)
 	}
@@ -166,11 +165,15 @@ func (r *cacheRuntime) uncertainEpoch(token string) {
 	r.previous = r.token
 	r.token = rand.Text()
 	r.settled = false
+	r.hotFailed()
 	r.events.WithLabelValues("cold_result_unknown").Inc()
 }
 
 func (r *cacheRuntime) hotFailed() {
-	r.hotGeneration.Add(1)
+	r.hotStateMu.Lock()
+	defer r.hotStateMu.Unlock()
+	r.hotFailures++
+	r.hotReady.Store(false)
 	r.events.WithLabelValues("hot_bypass").Inc()
 }
 
@@ -192,6 +195,9 @@ func (r *cacheRuntime) probe(ctx context.Context) {
 			}
 		}
 		r.s.backendReady.Store(err == nil)
+		if err == nil {
+			r.recoverHot(ctx)
+		}
 		t := time.NewTimer(2 * time.Second)
 		select {
 		case <-ctx.Done():
@@ -211,12 +217,6 @@ func (r *cacheRuntime) acquire(ctx context.Context, key []byte) (func(), error) 
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}
-}
-
-func (r *cacheRuntime) hotKeys(token string, key []byte) (string, string) {
-	h := sha256.Sum256(key)
-	k := fmt.Sprintf("%s%s:%d:%s", cachePrefix, token, r.hotGeneration.Load(), hex.EncodeToString(h[:]))
-	return k + ":data", k + ":complete"
 }
 
 func (r *cacheRuntime) execute(parent context.Context, args [][]byte) []byte {
@@ -247,9 +247,20 @@ func (r *cacheRuntime) execute(parent context.Context, args [][]byte) []byte {
 	if err != nil {
 		return []byte("-TRYAGAIN cold recovery unavailable; command not sent\r\n")
 	}
-	data, complete := r.hotKeys(token, args[1])
+	r.recoverHot(ctx)
+	// Recovery drains hot users, not cold-only traffic. A write which bypassed
+	// hot must invalidate readiness again if it overlaps recovery.
+	leased := r.hotMu.TryRLock()
+	if leased && !r.hotReady.Load() {
+		r.hotMu.RUnlock()
+		leased = false
+	}
+	if leased {
+		defer r.hotMu.RUnlock()
+	}
+	data := string(args[1])
 	var hot *cacheConn
-	if !r.coldOnly(args[1]) {
+	if leased && !r.coldOnly(args[1]) {
 		hot, err = r.connect(ctx, true)
 		if err != nil {
 			r.hotFailed()
@@ -257,10 +268,8 @@ func (r *cacheRuntime) execute(parent context.Context, args [][]byte) []byte {
 			defer hot.Close()
 		}
 	}
-	present := false
-	if hot != nil && (cmd.cacheRead || (cmd.write && r.cfg.WritePolicy == "update_existing")) {
-		script := cachePresentScript
-		a := []string{"EVAL", script, "2", data, complete}
+	if hot != nil && cmd.cacheRead {
+		a := []string{"EVAL", cacheReadScript, "1", data}
 		if cmd.cacheRead {
 			a[1] = cacheReadScript
 			a = append(a, cmd.name)
@@ -279,16 +288,10 @@ func (r *cacheRuntime) execute(parent context.Context, args [][]byte) []byte {
 				r.hotFailed()
 				hot.Close()
 				hot = nil
-			} else if string(parts[0]) == ":1\r\n" && len(parts) == 3 {
-				stamp, valid := frameString(parts[2])
-				deadline, e := strconv.ParseInt(stamp, 10, 64)
-				if valid && e == nil && time.Since(r.origin).Nanoseconds() < deadline {
-					r.events.WithLabelValues("hit").Inc()
-					return parts[1]
-				}
+			} else if string(parts[0]) == ":1\r\n" && len(parts) == 2 {
+				r.events.WithLabelValues("hit").Inc()
+				return parts[1]
 			}
-		} else {
-			present = string(b) == ":1\r\n"
 		}
 	}
 	r.events.WithLabelValues("cold_request").Inc()
@@ -342,8 +345,15 @@ func (r *cacheRuntime) execute(parent context.Context, args [][]byte) []byte {
 		return b
 	}
 	if cmd.write {
+		if !leased && !r.coldOnly(args[1]) {
+			r.hotFailed()
+		}
+		if hot != nil && len(b) > 0 && b[0] != '-' && r.cfg.WritePolicy == "update_existing" && cmd.name != "DEL" && cmd.name != "UNLINK" {
+			r.updateHot(ctx, cold, hot, cmd, args, b)
+			return b
+		}
 		if hot != nil {
-			x, e := hot.call(ctx, "DEL", data, complete)
+			x, e := hot.call(ctx, "DEL", data)
 			if e != nil || len(x) == 0 || x[0] == '-' {
 				r.hotFailed()
 				hot.Close()
@@ -352,155 +362,8 @@ func (r *cacheRuntime) execute(parent context.Context, args [][]byte) []byte {
 				r.events.WithLabelValues("invalidated").Inc()
 			}
 		}
-		if len(b) > 0 && b[0] != '-' && hot != nil && r.cfg.WritePolicy == "update_existing" && ((cmd.update && present) || cmd.create) {
-			r.fill(ctx, cold, hot, args[1], data, complete)
-			r.events.WithLabelValues("update_attempt").Inc()
-		}
 	} else if cmd.cacheRead && len(b) > 0 && b[0] != '-' && hot != nil {
-		r.fill(ctx, cold, hot, args[1], data, complete)
+		r.fill(ctx, cold, hot, args[1], data)
 	}
 	return b
-}
-
-// The deadline starts before PTTL is sent, conservatively charging network
-// and snapshot time against the remaining business lifetime.
-func (r *cacheRuntime) snapshot(ctx context.Context, c *cacheConn, key []byte, deadline *time.Time) ([]string, error) {
-	b, err := c.call(ctx, "TYPE", string(key))
-	if err != nil {
-		return nil, err
-	}
-	kind, ok := frameString(b)
-	if !ok {
-		return nil, errors.New("invalid type")
-	}
-	started := time.Now()
-	b, err = c.call(ctx, "PTTL", string(key))
-	remaining, valid := frameString(b)
-	ms, parseErr := strconv.ParseInt(remaining, 10, 64)
-	if err != nil || !valid || parseErr != nil || ms < -1 || ms == 0 {
-		return nil, errors.New("expired or absent object")
-	}
-	if ms > 0 && ms <= r.cfg.TTL.Milliseconds() {
-		businessDeadline := started.Add(time.Duration(ms) * time.Millisecond)
-		if businessDeadline.Before(*deadline) {
-			*deadline = businessDeadline
-		}
-	}
-	countCmd, readCmd, create := "", "", ""
-	switch kind {
-	case "string":
-		countCmd, readCmd, create = "STRLEN", "GET", "SET"
-	case "hash":
-		countCmd, readCmd, create = "HLEN", "HGETALL", "HSET"
-	case "list":
-		countCmd, readCmd, create = "LLEN", "LRANGE", "RPUSH"
-	case "set":
-		countCmd, readCmd, create = "SCARD", "SMEMBERS", "SADD"
-	case "zset":
-		countCmd, readCmd, create = "ZCARD", "ZRANGE", "ZADD"
-	default:
-		return nil, errors.New("uncacheable type")
-	}
-	b, err = c.call(ctx, countCmd, string(key))
-	if err != nil {
-		return nil, err
-	}
-	str, ok := frameString(b)
-	n, e := strconv.Atoi(str)
-	objectLimits := r.cfg.objectLimits(kind)
-	limit := objectLimits.MaxElements
-	if kind == "string" {
-		limit = objectLimits.MaxBytes
-	}
-	if !ok || e != nil || n < 0 || n > limit {
-		return nil, errors.New("object exceeds element limit")
-	}
-	a := []string{readCmd, string(key)}
-	if kind == "list" || kind == "zset" {
-		a = append(a, "0", "-1")
-	}
-	if kind == "zset" {
-		a = append(a, "WITHSCORES")
-	}
-	// Abandon oversized snapshot frames, with a separate cap from business
-	// replies. The read-only connection is discarded after any decoder error.
-	c.reader.limits = Limits{MaxBytes: objectLimits.MaxBytes + 32*objectLimits.MaxElements + 1024, MaxElements: 2*objectLimits.MaxElements + 4, MaxDepth: 4}
-	b, err = c.call(ctx, a...)
-	if err != nil {
-		return nil, err
-	}
-	values := []string{}
-	if kind == "string" {
-		v, ok := frameString(b)
-		if !ok {
-			return nil, errors.New("invalid string")
-		}
-		values = append(values, v)
-	} else {
-		parts, e := frameParts(b)
-		if e != nil {
-			return nil, e
-		}
-		for _, part := range parts {
-			v, ok := frameString(part)
-			if !ok {
-				return nil, errors.New("invalid element")
-			}
-			values = append(values, v)
-		}
-		if len(values) == 0 {
-			return nil, errors.New("absent collection")
-		}
-		want := n
-		if kind == "hash" || kind == "zset" {
-			want *= 2
-		}
-		if len(values) != want {
-			return nil, errors.New("incomplete object")
-		}
-	}
-	size := 0
-	for _, v := range values {
-		size += len(v)
-	}
-	if size > objectLimits.MaxBytes {
-		return nil, errors.New("object exceeds byte limit")
-	}
-	if kind == "zset" {
-		for i := 0; i < len(values); i += 2 {
-			values[i], values[i+1] = values[i+1], values[i]
-		}
-	}
-	return append([]string{create}, values...), nil
-}
-
-func (r *cacheRuntime) fill(ctx context.Context, cold, hot *cacheConn, key []byte, data, complete string) {
-	select {
-	case r.loads <- struct{}{}:
-		defer func() { <-r.loads }()
-	default:
-		r.events.WithLabelValues("load_limited").Inc()
-		return
-	}
-	deadline := time.Now().Add(r.cfg.TTL)
-	a, err := r.snapshot(ctx, cold, key, &deadline)
-	if err != nil {
-		r.events.WithLabelValues("load_skipped").Inc()
-		return
-	}
-	ttl := time.Until(deadline).Milliseconds()
-	if ttl <= 0 {
-		r.events.WithLabelValues("load_skipped").Inc()
-		return
-	}
-	// Redis TTL handles reclamation; a process-relative monotonic deadline in
-	// the marker also rejects delayed publishes/replies without clock syncing.
-	request := []string{"EVAL", cachePublishScript, "2", data, complete, a[0], strconv.FormatInt(ttl, 10), strconv.FormatInt(deadline.Sub(r.origin).Nanoseconds(), 10)}
-	request = append(request, a[1:]...)
-	b, err := hot.call(ctx, request...)
-	if err != nil || string(b) != ":1\r\n" {
-		r.hotFailed()
-		return
-	}
-	r.events.WithLabelValues("filled").Inc()
 }
