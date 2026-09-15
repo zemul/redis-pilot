@@ -140,6 +140,10 @@ func (s *Service) serve(ctx context.Context, data, admin net.Listener) error {
 	if s.cache != nil {
 		workers.Add(1)
 		go func() { defer workers.Done(); s.cache.probe(probeCtx) }()
+		if shards := s.cache.shards; shards != nil && shards.workerConfig != nil {
+			workers.Add(1)
+			go func() { defer workers.Done(); _ = shards.runMigrationWorker(probeCtx, *shards.workerConfig) }()
+		}
 	}
 	if s.reporter != nil {
 		workers.Add(1)

@@ -102,9 +102,26 @@ type cacheConn struct {
 	net.Conn
 	reader *Reader
 	cfg    Config
+	shard  *cacheShardNode
 }
 
+func (c *cacheConn) migrationFrameBudget() int { return c.cfg.Limits.MaxBytes }
+
 func (c *cacheConn) call(ctx context.Context, args ...string) ([]byte, error) {
+	if c.shard != nil {
+		a := shardAdmissionFrom(ctx)
+		if a == nil || !a.live.Load() || a.node != c.shard {
+			return nil, errors.New("cold connection has no matching shard admission")
+		}
+		var err error
+		args, err = a.wrap(args)
+		if err != nil {
+			return nil, err
+		}
+		if len(encodeCommand(args...)) > c.cfg.Limits.MaxBytes {
+			return nil, errors.New("expanded shard command exceeds frame budget")
+		}
+	}
 	deadline := time.Now().Add(c.cfg.RequestTimeout)
 	if d, ok := ctx.Deadline(); ok && d.Before(deadline) {
 		deadline = d
@@ -122,21 +139,36 @@ func (c *cacheConn) call(ctx context.Context, args ...string) ([]byte, error) {
 }
 
 func (r *cacheRuntime) connect(ctx context.Context, hot bool) (*cacheConn, error) {
-	if hot {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, r.cfg.HotTimeout)
-		defer cancel()
+	if !hot && r.shards != nil {
+		a := shardAdmissionFrom(ctx)
+		if a == nil || a.runtime != r || !a.live.Load() {
+			return nil, errors.New("cold shard selection required")
+		}
+		c, err := r.connectAddress(ctx, false, a.node.node.Address, a.node.password)
+		if err == nil {
+			c.shard = a.node
+		}
+		return c, err
 	}
 	addr, password := r.cfg.ColdAddress, r.coldPassword
 	if hot {
 		addr, password = r.s.cfg.RedisAddress, r.s.backendPassword
+	}
+	return r.connectAddress(ctx, hot, addr, password)
+}
+
+func (r *cacheRuntime) connectAddress(ctx context.Context, hot bool, addr, password string) (*cacheConn, error) {
+	if hot {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, r.cfg.HotTimeout)
+		defer cancel()
 	}
 	c, err := (&net.Dialer{Timeout: r.s.cfg.ConnectTimeout}).DialContext(ctx, "tcp", addr)
 	if err != nil {
 		return nil, err
 	}
 	reader, _ := NewReader(c, r.s.cfg.Limits)
-	x := &cacheConn{c, reader, r.s.cfg}
+	x := &cacheConn{Conn: c, reader: reader, cfg: r.s.cfg}
 	if hot {
 		x.cfg.RequestTimeout = r.cfg.HotTimeout
 	}

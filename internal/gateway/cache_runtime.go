@@ -20,6 +20,7 @@ import (
 )
 
 type cacheRuntime struct {
+	shards          *cacheShards // internal opt-in, installed before start; no public configuration yet
 	s               *Service
 	cfg             CacheConfig
 	coldPassword    string
@@ -75,6 +76,14 @@ func (r *cacheRuntime) start(ctx context.Context) error {
 		return errors.New("cache ownership lock is held")
 	}
 	r.lock = f
+	if r.shards != nil {
+		if err := r.shards.start(ctx); err != nil {
+			r.close()
+			return err
+		}
+		r.s.backendReady.Store(true)
+		return nil
+	}
 	// One reserved cold key fences delayed requests from a previous process.
 	// No user data is copied or deleted when a new cache generation starts.
 	c, err := r.connect(ctx, false)
@@ -134,6 +143,9 @@ func (r *cacheRuntime) close() {
 // CAS retries are safe even when the prior confirmation was lost. An old CAS
 // cannot overwrite a newer token, and business writes never retry themselves.
 func (r *cacheRuntime) ensureEpoch(ctx context.Context) (string, error) {
+	if r.shards != nil {
+		return r.shards.epoch(ctx)
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.settled {
@@ -160,6 +172,10 @@ func (r *cacheRuntime) ensureEpoch(ctx context.Context) (string, error) {
 }
 
 func (r *cacheRuntime) uncertainEpoch(token string) {
+	if r.shards != nil {
+		r.shards.uncertain(token)
+		return
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.token != token || !r.settled {
@@ -181,6 +197,10 @@ func (r *cacheRuntime) hotFailed() {
 }
 
 func (r *cacheRuntime) probe(ctx context.Context) {
+	if r.shards != nil {
+		r.shards.probe(ctx)
+		return
+	}
 	for {
 		token, err := r.ensureEpoch(ctx)
 		if err == nil {
@@ -212,6 +232,9 @@ func (r *cacheRuntime) probe(ctx context.Context) {
 }
 
 func (r *cacheRuntime) acquire(ctx context.Context, key []byte) (func(), error) {
+	if a := shardAdmissionFrom(ctx); a != nil {
+		return a.reenter(r, [][]byte{key})
+	}
 	h := sha256.Sum256(key)
 	q := r.keys[h[0]]
 	select {
@@ -225,6 +248,9 @@ func (r *cacheRuntime) acquire(ctx context.Context, key []byte) (func(), error) 
 // Use the same buckets as single-key commands, deduplicate collisions, and
 // acquire in a global order. Sorting key names alone cannot order lock buckets.
 func (r *cacheRuntime) acquireKeys(ctx context.Context, keys [][]byte) (func(), error) {
+	if a := shardAdmissionFrom(ctx); a != nil {
+		return a.reenter(r, keys)
+	}
 	var needed [256]bool
 	for _, key := range keys {
 		h := sha256.Sum256(key)
@@ -252,6 +278,9 @@ func (r *cacheRuntime) acquireKeys(ctx context.Context, keys [][]byte) (func(), 
 }
 
 func (r *cacheRuntime) execute(parent context.Context, args [][]byte) []byte {
+	if r.shards != nil && shardAdmissionFrom(parent) == nil {
+		return r.shards.execute(parent, args)
+	}
 	if len(args) > 0 {
 		n := strings.ToUpper(string(args[0]))
 		if n == "SCRIPT" {

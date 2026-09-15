@@ -127,7 +127,11 @@ func (r *cacheRuntime) scriptCommand(parent context.Context, a [][]byte) []byte 
 func cacheBulk(s string) []byte { return []byte("$" + strconv.Itoa(len(s)) + "\r\n" + s + "\r\n") }
 
 func (r *cacheRuntime) userScriptArgs(a [][]byte, p cachePrepared, token string) []string {
-	out := []string{"EVAL", cacheUserScript, strconv.Itoa(len(p.keys) + 1), r.guard}
+	script := cacheUserScript
+	if r.shards != nil {
+		script = cacheShardedUserScript
+	}
+	out := []string{"EVAL", script, strconv.Itoa(len(p.keys) + 1), r.guard}
 	for _, k := range p.keys {
 		out = append(out, string(k))
 	}
@@ -276,7 +280,9 @@ func (r *cacheRuntime) finishUserScript(ctx context.Context, cold, hot *cacheCon
 // _G/getfenv/loadstring. Only the capability-limited redis facade is exposed.
 // Native Kvrocks/Redis still runs the whole script atomically. The transcript
 // records actual cold effects, never re-executes user code on hot Redis.
-const cacheUserScript = `
+const cacheUserScript = "local shardCursorsBlocked=false\n" + cacheUserScriptBody
+const cacheShardedUserScript = "local shardCursorsBlocked=true\n" + cacheUserScriptBody
+const cacheUserScriptBody = `
 if redis.replicate_commands then redis.replicate_commands() end
 if redis.call('GET',KEYS[1])~=ARGV[1] then return redis.error_reply('TRYAGAIN cache owner changed; script not executed') end
 local user,compile_error=loadstring(ARGV[2])
@@ -295,6 +301,7 @@ local function snapshot(v)
  local out={};for k,x in pairs(v) do out[k]=snapshot(x) end;return out
 end
 local function native(a)
+ if shardCursorsBlocked and (a[1]=='HSCAN' or a[1]=='SSCAN' or a[1]=='ZSCAN') then return raw.error_reply('ERR sharded object cursor is not enabled') end
  if (a[1]=='EXPIRE' or a[1]=='PEXPIRE' or a[1]=='EXPIREAT' or a[1]=='PEXPIREAT') and #a>3 then
   local ARGV={'',a[1],'normal',a[3]}
   for i=4,#a do ARGV[#ARGV+1]=a[i] end

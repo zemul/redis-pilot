@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"context"
+	"errors"
 	"strconv"
 	"strings"
 )
@@ -16,6 +17,7 @@ type cacheSession struct {
 	queue                [][][]byte
 	bytes                int
 	watchExpiry          map[string]int64
+	watchRevision        uint64
 }
 
 func (t *cacheSession) close() {
@@ -27,6 +29,7 @@ func (t *cacheSession) close() {
 	t.queue = nil
 	t.bytes = 0
 	t.watchExpiry = nil
+	t.watchRevision = 0
 }
 
 func (t *cacheSession) execute(parent context.Context, a [][]byte) []byte {
@@ -81,8 +84,21 @@ func (t *cacheSession) execute(parent context.Context, a [][]byte) []byte {
 		if t.broken {
 			return []byte("-TRYAGAIN WATCH connection lost; use UNWATCH before retrying\r\n")
 		}
-		release, e := t.r.acquireKeys(ctx, a[1:])
+		var release func()
+		var e error
+		if t.r.shards != nil {
+			keys := append([][]byte(nil), a[1:]...)
+			for k := range t.watchExpiry {
+				keys = append(keys, []byte(k))
+			}
+			ctx, release, e = t.r.shards.admit(ctx, keys, t.watchRevision)
+		} else {
+			release, e = t.r.acquireKeys(ctx, a[1:])
+		}
 		if e != nil {
+			if t.r.shards != nil {
+				return shardRuntimeError(e)
+			}
 			return []byte("-TRYAGAIN WATCH coordination timeout\r\n")
 		}
 		defer release()
@@ -119,6 +135,9 @@ func (t *cacheSession) execute(parent context.Context, a [][]byte) []byte {
 		if e != nil {
 			t.broken = true
 			return []byte("-TRYAGAIN WATCH connection lost\r\n")
+		}
+		if t.r.shards != nil && string(b) == "+OK\r\n" {
+			t.watchRevision = shardAdmissionFrom(ctx).revision
 		}
 		return b
 	}
@@ -370,6 +389,9 @@ func (t *cacheSession) exec(parent context.Context) []byte {
 		keys = append(keys, []byte(key))
 	}
 	for i, a := range t.queue {
+		if r.shards != nil && shardCursorOrBlocking(a) {
+			return []byte("-EXECABORT sharded cursor/blocking execution is not enabled\r\n")
+		}
 		if strings.EqualFold(string(a[0]), "UNWATCH") {
 			plans[i].kind = "local"
 			continue
@@ -381,11 +403,26 @@ func (t *cacheSession) exec(parent context.Context) []byte {
 		plans[i] = p
 		keys = append(keys, p.keys...)
 	}
-	release, e := r.acquireKeys(ctx, keys)
+	var release func()
+	var e error
+	if r.shards != nil {
+		ctx, release, e = r.shards.admit(ctx, keys, t.watchRevision)
+	} else {
+		release, e = r.acquireKeys(ctx, keys)
+	}
 	if e != nil {
+		if errors.Is(e, errShardWatchChanged) {
+			return []byte("*-1\r\n")
+		}
+		if r.shards != nil {
+			return shardRuntimeError(e)
+		}
 		return []byte("-TRYAGAIN transaction coordination timeout; not executed\r\n")
 	}
 	defer release()
+	if r.shards != nil && t.cold != nil && t.cold.shard != shardAdmissionFrom(ctx).node {
+		return []byte("*-1\r\n")
+	}
 	token, e := r.ensureEpoch(ctx)
 	if e != nil {
 		return []byte("-TRYAGAIN cold recovery unavailable; transaction not executed\r\n")
