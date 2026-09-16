@@ -14,6 +14,8 @@
 
 ## 常驻真实控制面验收（2026-09-16）
 
+后续短时稳定性：`scripts/soak-managed-dev.py` 经正式 Proxy 入口，在默认 invalidate、a+b 拓扑下运行 600 秒；两个客户端各用独立 String/Hash，串行 SET/GET/HSET/EXPIRE/HGET，每轮主动等待 100ms。完成 9349 轮，请求错误、读值不匹配、readyz 失败均为 0；结束删除本轮 4 个随机前缀 key，无服务重启或拓扑调整。五条命令整轮耗时 p50=26.87ms、p95=35.31ms、p99=44.65ms，不是单命令延迟或最大吞吐。采样 Gateway RSS 约 19MiB、Proxy 约 9.6–12.2MiB；日志在 redis01 `/opt/pilot-managed-stage.JwUn22/soak-600s.log`。只覆盖当前删除缓存模式的短时 String/Hash 写后读，不替代更新模式长稳、大对象压力、宿主机重启或生产容量验收。
+
 8020d47 已部署到 redis01 常驻 Server、主 discovery Proxy、redis-gateway，正式集群 managed-dev 使用 redis02 热 Redis/冷 a、redis03 冷 b；入口 10.70.100.67:16508，业务密码在 root 私有文件，不在文档中公开。此次不再使用 HTTP 控制夹具。拓扑、路径、专用后端初始化调优和开机配置见 [部署记录](gateway-deployment.md)。
 
 scripts/verify-managed-dev.py 从真实 Proxy 入口连续完成两轮 invalidate/update_existing 验收：五种类型、1000 字段 Hash 回温和增量缓存保留、持续字段写后立即读及未修改字段校验，跨机扩容/缩容、控制 Server 重启和 Gateway 重启。两轮各模式分别完成 229/568、229/565 次持续写后读循环，非吞吐测量。第二轮还验证从已有双冷拓扑重新开始；最终 revision=12、a+b、任务 complete、默认 invalidate，自己的随机前缀测试 key 已删除。

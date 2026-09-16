@@ -26,6 +26,8 @@ Gateway 的配置/机器凭据在 /etc/redis-gateway，私有运行状态在 /va
 
 两轮完整验收日志为 `/opt/pilot-managed-stage.JwUn22/acceptance-ready.log`、`acceptance-repeat.log`，最终 revision=12、a+b、任务 complete。本次配置并检查了开机启动，未执行三台主机实际重启，也未开展长时间稳定性或性能压测。
 
+后续可用 [短时稳定性脚本](../../scripts/soak-managed-dev.py)，在 redis01 传入同一 ingress.json。固定运行 600 秒、两个低负载客户端，仅操作自己的 4 个随机前缀 String/Hash key，结束清理，不重启服务或改变策略/拓扑。首次运行完成 9349 轮，错误/旧值/健康失败均为 0，日志为 `/opt/pilot-managed-stage.JwUn22/soak-600s.log`；这不是性能压测或长期稳定性背书。
+
 ## 跨主机后端（2026-09-16）
 
 Proxy 与 Gateway 仍同机回环连接；一个 Gateway 可连接多台服务器上的专用热 Redis / 冷 Kvrocks。不是多 Gateway HA，也不含副本自动切换。
