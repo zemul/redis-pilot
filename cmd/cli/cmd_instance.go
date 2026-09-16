@@ -125,6 +125,7 @@ Use ordinal names like order-1, order-2, cache-a, cache-b.`,
 		}
 		cpus, _ := cmd.Flags().GetFloat64("cpus")
 		password, _ := cmd.Flags().GetString("password")
+		disableProxy, _ := cmd.Flags().GetBool("disable-proxy")
 		group, _ := cmd.Flags().GetString("group")
 		replicaOf, _ := cmd.Flags().GetString("replica-of")
 		overrides, _ := cmd.Flags().GetString("config")
@@ -147,6 +148,7 @@ Use ordinal names like order-1, order-2, cache-a, cache-b.`,
 			"disk":           disk,
 			"cpus":           cpus,
 			"password":       password,
+			"disable_proxy":  disableProxy,
 		}
 		if replicaOf != "" {
 			req["replica_of"] = replicaOf
@@ -398,6 +400,7 @@ func init() {
 	instanceCreateCmd.Flags().String("disk", "", "Disk quota for capacity planning (e.g. 20Gi)")
 	instanceCreateCmd.Flags().Float64("cpus", 1, "CPU cores")
 	instanceCreateCmd.Flags().String("password", "", "Password")
+	instanceCreateCmd.Flags().Bool("disable-proxy", false, "Create dedicated standalone backend without a direct Proxy listener")
 	instanceCreateCmd.Flags().String("group", "", "Stable logical group name for master/standalone")
 	instanceCreateCmd.Flags().String("replica-of", "", "Master instance name or address")
 	instanceCreateCmd.Flags().String("config", "", "Config overrides (k=v,k=v)")

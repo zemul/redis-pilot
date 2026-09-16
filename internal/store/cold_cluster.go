@@ -1,0 +1,367 @@
+package store
+
+import (
+	"database/sql"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"reflect"
+	"sort"
+	"strconv"
+
+	"gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/pkg/apitypes"
+)
+
+var ErrColdInvalid = errors.New("invalid cold cluster request")
+var ErrColdConflict = errors.New("cold cluster state conflict")
+var ErrColdNotFound = errors.New("cold cluster not found")
+
+func coldInvalid(reason string) error { return fmt.Errorf("%w: %s", ErrColdInvalid, reason) }
+
+func coldResource(tx *sql.Tx, name, node, engine string) (string, error) {
+	var host, role, kind, actualEngine, desired, lock, group, proxy string
+	var port, count int
+	err := tx.QueryRow(`SELECT i.server,i.role,i.port,i.desired_state,i.lock,i.grp,g.type,g.engine,g.proxy FROM instances i JOIN instance_groups g ON i.grp=g.name WHERE i.name=?`, name).Scan(&host, &role, &port, &desired, &lock, &group, &kind, &actualEngine, &proxy)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", coldInvalid("instance not found")
+	}
+	if err != nil {
+		return "", err
+	}
+	if host != node || actualEngine != engine || kind != "standalone" || role != "master" || desired != "running" || port < 1 || port > 65535 || (lock != "null" && lock != "{}" && lock != "") {
+		return "", coldInvalid("requires an unlocked running standalone instance on the Gateway node with the correct engine")
+	}
+	var p *apitypes.ProxyConfig
+	if json.Unmarshal([]byte(proxy), &p) != nil || (p != nil && (p.AutoPort != 0 || p.MasterPort != 0)) {
+		return "", coldInvalid("backend group must not expose a direct Proxy listener")
+	}
+	if err := tx.QueryRow(`SELECT count(*) FROM instances WHERE grp=?`, group).Scan(&count); err != nil {
+		return "", err
+	}
+	if count != 1 {
+		return "", coldInvalid("backend group must contain exactly one instance")
+	}
+	return "127.0.0.1:" + strconv.Itoa(port), nil
+}
+
+func resolveColdShards(tx *sql.Tx, nodes []apitypes.ColdShard, host string) ([]apitypes.ColdShard, error) {
+	if len(nodes) < 1 || len(nodes) > 128 {
+		return nil, coldInvalid("requires 1..128 cold shards")
+	}
+	out := append([]apitypes.ColdShard(nil), nodes...)
+	ids, names, addrs := map[string]bool{}, map[string]bool{}, map[string]bool{}
+	for i := range out {
+		n := &out[i]
+		if !gatewayDraftName.MatchString(n.ID) || n.Instance == "" || ids[n.ID] || names[n.Instance] {
+			return nil, coldInvalid("duplicate or invalid shard/instance identity")
+		}
+		a, err := coldResource(tx, n.Instance, host, "kvrocks")
+		if err != nil {
+			return nil, err
+		}
+		if (n.Address != "" && n.Address != a) || addrs[a] {
+			return nil, coldInvalid("backend address mismatch or duplicate")
+		}
+		n.Address = a
+		ids[n.ID], names[n.Instance], addrs[a] = true, true, true
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out, nil
+}
+
+func loadColdCluster(q interface{ QueryRow(string, ...any) *sql.Row }, id string) (*apitypes.ColdCluster, error) {
+	var raw string
+	if err := q.QueryRow(`SELECT body FROM cold_clusters WHERE id=?`, id).Scan(&raw); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrColdNotFound
+		}
+		return nil, err
+	}
+	var c apitypes.ColdCluster
+	if err := json.Unmarshal([]byte(raw), &c); err != nil {
+		return nil, err
+	}
+	var taskRaw string
+	err := q.QueryRow(`SELECT body FROM cold_tasks WHERE cluster_id=? ORDER BY target_revision DESC LIMIT 1`, id).Scan(&taskRaw)
+	if err == nil {
+		c.Task = &apitypes.ColdTask{}
+		err = json.Unmarshal([]byte(taskRaw), c.Task)
+	}
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return nil, err
+	}
+	return &c, nil
+}
+func (d *DB) GetColdCluster(id string) (*apitypes.ColdCluster, error) {
+	return loadColdCluster(d.sql, id)
+}
+func (d *DB) ListColdClusters() ([]apitypes.ColdCluster, error) {
+	rows, err := d.sql.Query(`SELECT id FROM cold_clusters ORDER BY id`)
+	if err != nil {
+		return nil, err
+	}
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return nil, err
+	}
+	out := make([]apitypes.ColdCluster, 0, len(ids))
+	for _, id := range ids {
+		c, err := d.GetColdCluster(id)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *c)
+	}
+	return out, nil
+}
+
+func saveColdCluster(tx *sql.Tx, c *apitypes.ColdCluster) error {
+	v := *c
+	v.Task = nil
+	raw, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+	_, err = tx.Exec(`UPDATE cold_clusters SET body=? WHERE id=?`, raw, c.ID)
+	return err
+}
+func saveColdTask(tx *sql.Tx, t *apitypes.ColdTask) error {
+	raw, err := json.Marshal(t)
+	if err != nil {
+		return err
+	}
+	_, err = tx.Exec(`INSERT INTO cold_tasks(cluster_id,id,target_revision,body) VALUES(?,?,?,?) ON CONFLICT(cluster_id,id) DO UPDATE SET body=excluded.body`, t.ClusterID, t.ID, t.ToRevision, raw)
+	return err
+}
+func reserveCold(tx *sql.Tx, cluster, instance string) error {
+	var owner string
+	err := tx.QueryRow(`SELECT cluster_id FROM cold_resources WHERE instance=?`, instance).Scan(&owner)
+	if err == nil {
+		if owner == cluster {
+			return nil
+		}
+		return ErrColdConflict
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	_, err = tx.Exec(`INSERT INTO cold_resources(instance,cluster_id) VALUES(?,?)`, instance, cluster)
+	return err
+}
+
+func (d *DB) CreateColdCluster(spec apitypes.ColdClusterSpec) (*apitypes.ColdCluster, error) {
+	if !gatewayDraftName.MatchString(spec.ID) || !gatewayDraftName.MatchString(spec.GatewayID) || spec.NodeID == "" {
+		return nil, coldInvalid("invalid cluster, Gateway or node identity")
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	tx, err := d.sql.Begin()
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	var used int
+	if err := tx.QueryRow(`SELECT count(*) FROM cold_clusters WHERE id=? OR gateway_id=?`, spec.ID, spec.GatewayID).Scan(&used); err != nil {
+		return nil, err
+	}
+	if used != 0 {
+		return nil, ErrColdConflict
+	}
+	if err := tx.QueryRow(`SELECT count(*) FROM servers WHERE name=?`, spec.NodeID).Scan(&used); err != nil {
+		return nil, err
+	}
+	if used != 1 {
+		return nil, coldInvalid("Gateway node not found")
+	}
+	hot, err := coldResource(tx, spec.HotInstance, spec.NodeID, "redis")
+	if err != nil {
+		return nil, err
+	}
+	nodes, err := resolveColdShards(tx, spec.Shards, spec.NodeID)
+	if err != nil {
+		return nil, err
+	}
+	spec.Shards = nodes
+	for _, n := range nodes {
+		if n.Address == hot {
+			return nil, coldInvalid("hot and cold endpoints must differ")
+		}
+	}
+	c := &apitypes.ColdCluster{ColdClusterSpec: spec, HotAddress: hot, Revision: 1}
+	raw, _ := json.Marshal(c)
+	if _, err = tx.Exec(`INSERT INTO cold_clusters(id,gateway_id,body) VALUES(?,?,?)`, c.ID, c.GatewayID, raw); err != nil {
+		return nil, err
+	}
+	for _, name := range append([]string{spec.HotInstance}, coldNames(nodes)...) {
+		if err := reserveCold(tx, c.ID, name); err != nil {
+			return nil, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return c, nil
+}
+func coldNames(nodes []apitypes.ColdShard) []string {
+	out := make([]string, 0, len(nodes))
+	for _, n := range nodes {
+		out = append(out, n.Instance)
+	}
+	return out
+}
+
+func (d *DB) CreateColdTask(id string, req apitypes.ColdTaskRequest) (*apitypes.ColdTask, error) {
+	if !gatewayDraftName.MatchString(req.ID) || req.ExpectedRevision < 1 || req.ExpectedRevision >= 1<<53 {
+		return nil, coldInvalid("task ID and positive expected_revision required")
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	tx, err := d.sql.Begin()
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	c, err := loadColdCluster(tx, id)
+	if err != nil {
+		return nil, err
+	}
+	// Retry identity is checked before resolving resources that may since have
+	// been legitimately removed after completion.
+	var raw string
+	if err := tx.QueryRow(`SELECT body FROM cold_tasks WHERE cluster_id=? AND id=?`, id, req.ID).Scan(&raw); err == nil {
+		var old apitypes.ColdTask
+		if err := json.Unmarshal([]byte(raw), &old); err != nil {
+			return nil, err
+		}
+		want := append([]apitypes.ColdShard(nil), req.Shards...)
+		sort.Slice(want, func(i, j int) bool { return want[i].ID < want[j].ID })
+		got := append([]apitypes.ColdShard(nil), old.Target...)
+		for i := range got {
+			if i < len(want) && want[i].Address == "" {
+				got[i].Address = ""
+			}
+		}
+		if old.FromRevision == req.ExpectedRevision && reflect.DeepEqual(got, want) {
+			return &old, nil
+		}
+		return nil, ErrColdConflict
+	} else if !errors.Is(err, sql.ErrNoRows) {
+		return nil, err
+	}
+	if c.Revision != req.ExpectedRevision || (c.Task != nil && c.Task.Phase != "complete") {
+		return nil, ErrColdConflict
+	}
+	nodes, err := resolveColdShards(tx, req.Shards, c.NodeID)
+	if err != nil {
+		return nil, err
+	}
+	oldByID := map[string]apitypes.ColdShard{}
+	oldAddr := map[string]string{}
+	for _, n := range c.Shards {
+		oldByID[n.ID] = n
+		oldAddr[n.Address] = n.ID
+	}
+	changed := len(nodes) != len(c.Shards)
+	for _, n := range nodes {
+		if n.Address == c.HotAddress {
+			return nil, coldInvalid("hot endpoint reused")
+		}
+		if old, ok := oldByID[n.ID]; ok {
+			if old != n {
+				return nil, coldInvalid("retained shard identity/address cannot change")
+			}
+		} else {
+			changed = true
+		}
+		if prev, ok := oldAddr[n.Address]; ok && prev != n.ID {
+			return nil, coldInvalid("old address reused under another shard ID")
+		}
+		if err := reserveCold(tx, id, n.Instance); err != nil {
+			return nil, err
+		}
+	}
+	if !changed {
+		return nil, coldInvalid("membership is unchanged")
+	}
+	t := &apitypes.ColdTask{ID: req.ID, ClusterID: id, FromRevision: c.Revision, ToRevision: c.Revision + 1, Source: c.Shards, Target: nodes, Phase: "pending"}
+	if err := saveColdTask(tx, t); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return t, nil
+}
+
+func coldPhase(p string) int {
+	switch p {
+	case "pending":
+		return 0
+	case "active":
+		return 1
+	case "published":
+		return 2
+	case "complete":
+		return 3
+	}
+	return -1
+}
+func (d *DB) ReportColdTask(gateway, id string, r apitypes.ColdTaskReport) error {
+	if coldPhase(r.Phase) < 0 || r.Pages < 0 || r.Attempts < 0 {
+		return coldInvalid("invalid task progress")
+	}
+	switch r.ErrorCode {
+	case "", "waiting_configuration", "preflight_failed", "state_unavailable", "task_conflict", "migration_retry":
+	default:
+		return coldInvalid("unknown error code")
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	tx, err := d.sql.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	c, err := loadColdCluster(tx, id)
+	if err != nil {
+		return err
+	}
+	t := c.Task
+	if c.GatewayID != gateway || t == nil || t.ID != r.TaskID || t.ToRevision != r.ToRevision {
+		return ErrColdConflict
+	}
+	if coldPhase(r.Phase) < coldPhase(t.Phase) {
+		return nil
+	} // delayed report must not roll back publication
+	t.Phase, t.ErrorCode = r.Phase, r.ErrorCode
+	t.Pages = max(t.Pages, r.Pages)
+	t.Attempts = max(t.Attempts, r.Attempts)
+	if r.Phase == "complete" {
+		c.Revision, c.Shards = t.ToRevision, t.Target
+		if err := saveColdCluster(tx, c); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(`DELETE FROM cold_resources WHERE cluster_id=?`, id); err != nil {
+			return err
+		}
+		for _, name := range append([]string{c.HotInstance}, coldNames(c.Shards)...) {
+			if err := reserveCold(tx, id, name); err != nil {
+				return err
+			}
+		}
+	}
+	if err := saveColdTask(tx, t); err != nil {
+		return err
+	}
+	return tx.Commit()
+}

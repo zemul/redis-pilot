@@ -49,6 +49,7 @@ func init() {
 	rootCmd.AddCommand(sentinelCmd)
 	rootCmd.AddCommand(auditCmd)
 	rootCmd.AddCommand(configCmd)
+	rootCmd.AddCommand(newColdClusterCommand())
 	rootCmd.AddCommand(versionCmd)
 }
 

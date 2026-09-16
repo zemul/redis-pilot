@@ -1,0 +1,58 @@
+# Development-only, one effective Gateway, dedicated NEW empty cold databases.
+# First validate, then run once with -init-sharding-state; normal startup never
+# creates missing state. Do not add this flag to systemd ExecStart/ExecStartPre.
+gateway_id: gateway-sharded-dev
+service_id: sharded-dev
+shard_id: sharded-dev-entry
+mode: cache
+listen: 127.0.0.1:17579
+admin_listen: 127.0.0.1:19500
+redis_address: 127.0.0.1:19590
+frontend_password_file: /etc/redis-gateway-sharded/frontend.secret
+# Managed platform backends have no database passwords.
+connect_timeout: 200ms
+request_timeout: 3s
+client_idle_timeout: 90s
+shutdown_timeout: 10s
+max_connections: 16
+max_pipeline: 8
+max_batch_bytes: 262144
+buffer_budget_bytes: 134217728
+limits:
+  max_bytes: 262144
+  max_elements: 4096
+  max_depth: 16
+cache:
+  exclusive_backends: true
+  lock_file: /var/lib/redis-gateway-sharded/owner.lock
+  write_policy: update_existing # or invalidate
+  max_loads: 4
+  ttl: 5m
+  hot_timeout: 100ms
+  max_blocking: 4
+  cold_only_prefixes: ["queue:"]
+  # Mutually exclusive with cold_address and cold_password_file.
+  sharding:
+    # Parent must already exist, owned by the service user, mode 0700.
+    state_dir: /var/lib/redis-gateway-sharded/sharding
+    # At initialization, all listed nodes form HRW revision 1. Afterwards this
+    # is only an endpoint registry: adding/removing entries is NOT resharding.
+    nodes:
+      - id: cold-a
+        address: 127.0.0.1:19591
+      - id: cold-b
+        address: 127.0.0.1:19592
+    migration:
+      scan_count: 128
+      keys_per_second: 100
+      bytes_per_second: 16777216
+      step_timeout: 30s
+control_plane:
+  manage_shards: true
+  server_endpoint: https://pilot.example.internal
+  token_file: /etc/redis-gateway-sharded/control.secret
+  node_id: redis03
+  cluster_id: sharded-dev
+  shard_ids: [sharded-dev-entry]
+  heartbeat_interval: 5s
+  request_timeout: 2s

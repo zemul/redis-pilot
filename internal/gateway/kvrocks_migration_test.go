@@ -167,6 +167,11 @@ func migrationColdManaged(t *testing.T) (string, func()) {
 }
 
 func isolatedKvrocks(t *testing.T) (string, func(), func()) {
+	addr, stop, start, _ := isolatedKvrocksWithConfig(t)
+	return addr, stop, start
+}
+
+func isolatedKvrocksWithConfig(t *testing.T) (string, func(), func(), string) {
 	t.Helper()
 	binary := os.Getenv("GATEWAY_TEST_KVROCKS_SERVER")
 	if binary == "" {
@@ -208,7 +213,7 @@ func isolatedKvrocks(t *testing.T) (string, func(), func()) {
 		}
 	}
 	start()
-	return addr, stop, start
+	return addr, stop, start, config
 }
 
 func TestMigrationKvrocksColdProcessRecovery(t *testing.T) {

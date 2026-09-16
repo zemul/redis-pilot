@@ -14,7 +14,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// Config describes the isolated single-backend development gateway.
+// Config describes the isolated development gateway and optional cold sharding.
 type Config struct {
 	Cache                *CacheConfig       `yaml:"cache"`
 	ControlPlane         ControlPlaneConfig `yaml:"control_plane"`

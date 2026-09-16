@@ -420,6 +420,7 @@ type CreateInstanceRequest struct {
 	CPUs            float64           `json:"cpus"`
 	Disk            string            `json:"disk,omitempty"`
 	Password        string            `json:"password"`
+	DisableProxy    bool              `json:"disable_proxy,omitempty"` // dedicated standalone backend; no direct Proxy listener
 	ReplicaOf       string            `json:"replica_of,omitempty"`
 	ConfigOverrides map[string]string `json:"config_overrides,omitempty"`
 	NodeSelector    map[string]string `json:"node_selector,omitempty"` // 标签亲和：只调度到 labels 包含所有 kv 的节点

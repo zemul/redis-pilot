@@ -24,6 +24,7 @@ import (
 // Disabled unless ServerEndpoint is set. Placement is declared observation,
 // not a Server assignment, distributed lease, or permission to serve a shard.
 type ControlPlaneConfig struct {
+	ManageShards      bool          `yaml:"manage_shards"`
 	ServerEndpoint    string        `yaml:"server_endpoint"`
 	TokenFile         string        `yaml:"token_file"`
 	NodeID            string        `yaml:"node_id"`
@@ -35,6 +36,19 @@ type ControlPlaneConfig struct {
 
 func (c Config) validateControlPlane() error {
 	p := c.ControlPlane
+	if p.ManageShards && (p.ServerEndpoint == "" || c.Cache == nil || c.Cache.Sharding == nil || p.ClusterID != c.ServiceID) {
+		return errors.New("manage_shards requires cache.sharding and control_plane.cluster_id equal to service_id")
+	}
+	if p.ManageShards {
+		if c.BackendPasswordFile != "" {
+			return errors.New("managed platform backends do not use database passwords")
+		}
+		for _, n := range c.Cache.Sharding.Nodes {
+			if n.PasswordFile != "" {
+				return errors.New("managed platform backends do not use database passwords")
+			}
+		}
+	}
 	if p.ServerEndpoint == "" {
 		if p.TokenFile != "" || p.NodeID != "" || p.ClusterID != "" || len(p.ShardIDs) > 0 {
 			return errors.New("control_plane requires server_endpoint")

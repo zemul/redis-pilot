@@ -11,6 +11,7 @@ import (
 // CacheConfig is deliberately separate from the retired hot_cold protocol.
 // RedisAddress/BackendPasswordFile configure the disposable hot Redis.
 type CacheConfig struct {
+	Sharding          *ShardConfig  `yaml:"sharding"`
 	HotTimeout        time.Duration `yaml:"hot_timeout"`
 	ColdOnlyPrefixes  []string      `yaml:"cold_only_prefixes"`
 	MaxBlocking       int           `yaml:"max_blocking"`
@@ -67,7 +68,13 @@ func (c Config) validateCache() error {
 	if !o.ExclusiveBackends || !filepath.IsAbs(o.LockFile) || o.LockFile == "/" {
 		return errors.New("cache mode requires exclusive_backends and an absolute private lock_file")
 	}
-	for _, addr := range []string{c.RedisAddress, o.ColdAddress} {
+	addresses := []string{c.RedisAddress}
+	if o.Sharding == nil {
+		addresses = append(addresses, o.ColdAddress)
+	} else if err := c.validateSharding(); err != nil {
+		return err
+	}
+	for _, addr := range addresses {
 		h, p, err := net.SplitHostPort(addr)
 		n, e := strconv.Atoi(p)
 		ip := net.ParseIP(h)

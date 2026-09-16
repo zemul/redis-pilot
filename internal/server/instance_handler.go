@@ -292,6 +292,10 @@ func (s *Server) instanceCreate(c *gin.Context) {
 		return
 	}
 	req.Engine = strings.TrimSpace(req.Engine)
+	if req.DisableProxy && (req.Type != "standalone" || req.ReplicaOf != "" || req.Password != "") {
+		fail(c, http.StatusBadRequest, "disable_proxy requires a standalone instance without replica_of or Proxy password")
+		return
+	}
 	req.EngineVersion = strings.TrimSpace(req.EngineVersion)
 	if req.Engine != "redis" && req.Engine != "kvrocks" {
 		fail(c, http.StatusBadRequest, "engine must be redis or kvrocks")
@@ -442,9 +446,12 @@ func (s *Server) instanceCreate(c *gin.Context) {
 		req.Port = port
 
 		if role == "master" {
-			ec, err := allocProxyPorts(s.cfg.Ports, instances, req.Type == "replication")
-			if err != nil {
-				return err
+			var ec *apitypes.ProxyConfig
+			if !req.DisableProxy {
+				ec, err = allocProxyPorts(s.cfg.Ports, instances, req.Type == "replication")
+				if err != nil {
+					return err
+				}
 			}
 			now := time.Now().Format(time.RFC3339)
 			accessMode := req.AccessMode

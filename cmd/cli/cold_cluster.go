@@ -1,0 +1,70 @@
+package main
+
+import (
+	"bytes"
+	"encoding/json"
+	"errors"
+	"io"
+	"net/url"
+	"os"
+
+	"github.com/spf13/cobra"
+	"gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/pkg/apitypes"
+)
+
+func readColdRequest(path string, dst any) error {
+	if path == "" {
+		return errors.New("--file is required")
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	b, err := io.ReadAll(io.LimitReader(f, (64<<10)+1))
+	if err != nil {
+		return err
+	}
+	if len(b) > 64<<10 {
+		return errors.New("request exceeds 64KiB")
+	}
+	d := json.NewDecoder(bytes.NewReader(b))
+	d.DisallowUnknownFields()
+	if err := d.Decode(dst); err != nil {
+		return err
+	}
+	var extra any
+	if d.Decode(&extra) != io.EOF {
+		return errors.New("expected one JSON request")
+	}
+	return nil
+}
+
+func newColdClusterCommand() *cobra.Command {
+	root := &cobra.Command{Use: "cold-cluster", Short: "Manage cold-authoritative sharded clusters and migration tasks"}
+	root.AddCommand(&cobra.Command{Use: "list", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, args []string) error { return checkResp(client.Get("/api/v1/cold-clusters")) }})
+	root.AddCommand(&cobra.Command{Use: "get NAME", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+		return checkResp(client.Get("/api/v1/cold-clusters/" + url.PathEscape(args[0])))
+	}})
+	var createFile string
+	create := &cobra.Command{Use: "create", Short: "Register existing dedicated instances (does not deploy or route Proxy)", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, args []string) error {
+		var req apitypes.ColdClusterSpec
+		if err := readColdRequest(createFile, &req); err != nil {
+			return err
+		}
+		return checkResp(client.Post("/api/v1/cold-clusters", req))
+	}}
+	create.Flags().StringVar(&createFile, "file", "", "Cluster JSON specification")
+	root.AddCommand(create)
+	var taskFile string
+	migrate := &cobra.Command{Use: "migrate NAME", Short: "Request expansion/shrink; reuse the same task ID on retries", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+		var req apitypes.ColdTaskRequest
+		if err := readColdRequest(taskFile, &req); err != nil {
+			return err
+		}
+		return checkResp(client.Post("/api/v1/cold-clusters/"+url.PathEscape(args[0])+"/tasks", req))
+	}}
+	migrate.Flags().StringVar(&taskFile, "file", "", "JSON with id, expected_revision and target shards")
+	root.AddCommand(migrate)
+	return root
+}

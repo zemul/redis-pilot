@@ -508,6 +508,14 @@ func TestInstanceCreate_ServerNotFound(t *testing.T) {
 
 // TestInstanceCreate_WithFakeAgent 用 httptest 模拟 Agent，测试完整创建流程
 func TestInstanceCreate_WithFakeAgent(t *testing.T) {
+	for _, disabled := range []bool{false, true} {
+		t.Run(fmt.Sprint(disabled), func(t *testing.T) {
+			testInstanceCreateWithProxy(t, disabled)
+		})
+	}
+}
+
+func testInstanceCreateWithProxy(t *testing.T, disabled bool) {
 	var agentReq apitypes.CreateInstanceRequest
 	// 启动 fake agent
 	fakeAgent := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -537,15 +545,16 @@ func TestInstanceCreate_WithFakeAgent(t *testing.T) {
 	})
 
 	w := doAuthRequest(r, "POST", "/instance/create", apitypes.CreateInstanceRequest{
-		Name:     "redis-1",
-		Category: "cache",
-		Group:    "cache",
-		Engine:   "redis",
-		Type:     "standalone",
-		Server:   "srv1",
-		Port:     6379,
-		Memory:   "4Gi",
-		CPUs:     2,
+		Name:         "redis-1",
+		DisableProxy: disabled,
+		Category:     "cache",
+		Group:        "cache",
+		Engine:       "redis",
+		Type:         "standalone",
+		Server:       "srv1",
+		Port:         6379,
+		Memory:       "4Gi",
+		CPUs:         2,
 	})
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
@@ -565,6 +574,9 @@ func TestInstanceCreate_WithFakeAgent(t *testing.T) {
 	}
 	if instances.Groups["cache"].Type != "standalone" {
 		t.Fatalf("expected group type standalone, got %s", instances.Groups["cache"].Type)
+	}
+	if (instances.Groups["cache"].Proxy == nil) != disabled {
+		t.Fatalf("unexpected Proxy registration: disabled=%v group=%+v", disabled, instances.Groups["cache"])
 	}
 	if instances.Groups["cache"].EngineVersion != "7" {
 		t.Fatalf("expected default redis version 7, got group=%q", instances.Groups["cache"].EngineVersion)

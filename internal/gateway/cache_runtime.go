@@ -20,7 +20,8 @@ import (
 )
 
 type cacheRuntime struct {
-	shards          *cacheShards // internal opt-in, installed before start; no public configuration yet
+	shards          *cacheShards
+	shardState      *shardDiskState // owned only by configured sharding, closed after workers exit
 	s               *Service
 	cfg             CacheConfig
 	coldPassword    string
@@ -76,6 +77,12 @@ func (r *cacheRuntime) start(ctx context.Context) error {
 		return errors.New("cache ownership lock is held")
 	}
 	r.lock = f
+	if r.cfg.Sharding != nil {
+		if err := r.restoreSharding(ctx); err != nil {
+			r.close()
+			return err
+		}
+	}
 	if r.shards != nil {
 		if err := r.shards.start(ctx); err != nil {
 			r.close()
@@ -133,6 +140,10 @@ func (r *cacheRuntime) start(ctx context.Context) error {
 }
 
 func (r *cacheRuntime) close() {
+	if r.shardState != nil {
+		r.shardState.close()
+		r.shardState = nil
+	}
 	if r.lock != nil {
 		syscall.Flock(int(r.lock.Fd()), syscall.LOCK_UN)
 		r.lock.Close()

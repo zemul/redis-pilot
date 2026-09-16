@@ -14,7 +14,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
-// Service supports the isolated skeleton and single-backend passthrough.
+// Service supports skeleton, passthrough and cold-authoritative cache modes.
 type Service struct {
 	cache            *cacheRuntime
 	reporter         *heartbeatReporter
@@ -69,6 +69,11 @@ func NewService(c Config) (*Service, error) {
 		s.cache, err = newCacheRuntime(s)
 		if err != nil {
 			return nil, err
+		}
+		if c.Cache.Sharding != nil {
+			if _, err := s.cache.shardEndpoints(); err != nil {
+				return nil, err
+			}
 		}
 	}
 	s.reporter, err = newHeartbeatReporter(c)
@@ -148,6 +153,10 @@ func (s *Service) serve(ctx context.Context, data, admin net.Listener) error {
 	if s.reporter != nil {
 		workers.Add(1)
 		go func() { defer workers.Done(); s.reporter.run(probeCtx, s) }()
+		if s.cfg.ControlPlane.ManageShards {
+			workers.Add(1)
+			go func() { defer workers.Done(); s.runShardControl(probeCtx) }()
+		}
 	}
 	server := &http.Server{Handler: s.Handler(), ReadHeaderTimeout: 3 * time.Second, ReadTimeout: 5 * time.Second, WriteTimeout: 5 * time.Second, IdleTimeout: 30 * time.Second, MaxHeaderBytes: 8192}
 	done := make(chan error, 2)

@@ -1,6 +1,6 @@
 # Gateway 部署与运维
 
-更新：2026-09-12。当前提供单后端开发透传与固定端点的 cache 开发模式，不自动升级旧冷热链路。设计见 [冷热设计](hot-cold-gateway-design.md)，实现边界见 [状态](hot-cold-status.md)。
+更新：2026-09-16。当前提供开发透传、单冷 cache 及可选 HRW 多冷节点启动/恢复，不自动升级旧冷热链路。设计见 [冷热设计](hot-cold-gateway-design.md)，实现边界见 [状态](hot-cold-status.md)。
 
 ## 进程职责
 
@@ -46,6 +46,18 @@ Gateway 是独立宿主机二进制，由 systemd 管理并开启开机启动。
 
 [端到端验收脚本](../../scripts/verify-cache-dev.py) 只用于这套隔离开发栈，会切换写策略、启停冷热服务、强制结束 Gateway 并制造 LRU 压力。生成带随机 acceptance 前缀的业务测试 key，正常收尾删除本轮测试 key、恢复 invalidate 和服务；Gateway 恢复会清空专用热库，冷库从不 FLUSH，也不删除数据卷。异常中断可能留下该轮测试 key，不能直接对其他数据库运行。性能和生产持久性不由此测试背书。
 
+## 可选多冷分片启动与恢复
+
+参考 [多冷配置示例](../examples/gateway-cache-sharded.yaml)。仍是本机回环、一个有效 Gateway、一个专用热 Redis、多个独立冷节点，不需要 Redis Cluster；本次不替换 redis03 的现有常驻服务。
+
+1. 准备专用**空**冷库、专用热库和独立凭据，按单冷模式要求验证热缓存配置及冷库 WAL/持久性；创建服务账号持有的 0700 父目录。不要预创建 sharding.state_dir 本身。
+2. 以服务账号运行 `redis-gateway -config /etc/redis-gateway-sharded/gateway.yaml -check-config`，只检查配置及凭据，不证明状态或数据库可用。
+3. 停止业务接入，首次执行同一命令加 `-init-sharding-state`（不与 -check-config 同用）。冷库非空或状态目录已存在均拒绝；不会清空冷数据。初始化失败留下的目录不自动删除，请检查原因，不要拿此命令修复已有集群。
+4. systemd 正常 ExecStart 只带 `-config`，不能带初始化参数。StateDirectory/ReadWritePaths 必须覆盖 lock_file 父目录及 sharding.state_dir。重启使用持久化路由与任务日志恢复，不重新按 YAML 分配数据。
+5. 只可移除已经完成缩容、且无需继续回收的旧节点登记。正在使用的 ID/地址缺失或变化会拒绝启动；新增登记不会自动扩容。任务命令与 Server 配置下发尚待接通。
+
+`state_dir/runtime.db` 与 `state_dir/tasks/<task-id>/handoffs.db` 是不同职责的本地 SQLite：前者存集群路由/任务引用，后者存逐 key 交接及完成阶段；不是 Server pilot.db。两者需要保存在同一受保护的持久化状态目录，不随二进制发布删除。活动库不能仅复制 .db 忽略 WAL；备份/恢复必须同时考虑业务冷库、状态库与交接日志，当前不承诺任意历史回滚或换机接管。
+
 ## 当前透传部署
 
 1. 使用隔离、数据完整的单后端实例；当前入口只监听 loopback。
@@ -57,6 +69,30 @@ Gateway 是独立宿主机二进制，由 systemd 管理并开启开机启动。
 7. SIGTERM 会排空请求；systemd 停止超时须大于 shutdown_timeout。写入结果未知不能自动重放。
 
 Gateway 可直接向 Server 上报观测，参见配置的 control_plane 字段。Server 使用 gateway_tokens 独立鉴权；心跳失败不阻断数据请求。配置草稿、心跳不授权自动部署或多写者接管。
+
+## HRW 控制面操作
+
+当前仅支持同一主机的一套 Gateway、一个专用热 Redis 和若干专用单点 Kvrocks。使用 instance create --disable-proxy 创建后端，不设置 --password；已有直连 Proxy 入口的实例不能直接登记。先确认冷配置 rocksdb.write_options.sync=yes、disable_wal=no；Kvrocks 2.15 修改前者需要配置文件并重启，不支持运行时 CONFIG SET。
+
+Server 配置 gateway_tokens，Gateway 使用对应 token_file 和 control_plane.manage_shards: true，cluster_id 必须等于 service_id。参考 [多冷配置](../examples/gateway-cache-sharded.yaml)。首次初始化只允许新空冷库；后续启动不能重复执行初始化。
+
+集群文件示例（实例名称替换为平台真实资源；地址由 Server 解析）：
+
+```json
+{"id":"sharded-dev","gateway_id":"gateway-sharded-dev","node_id":"redis03","hot_instance":"hot-1","shards":[{"id":"cold-a","instance":"cold-1"}]}
+```
+
+执行 redis-pilot-cli cold-cluster create --file cluster.json；用 cold-cluster get sharded-dev 查看状态。扩容前先创建 cold-2，将地址加入 Gateway YAML 注册表并重启，不能改变已有节点 ID/地址。迁移文件示例：
+
+```json
+{"id":"expand-001","expected_revision":1,"shards":[{"id":"cold-a","instance":"cold-1"},{"id":"cold-b","instance":"cold-2"}]}
+```
+
+执行 redis-pilot-cli cold-cluster migrate sharded-dev --file task.json。请求超时可用完全相同任务 ID/参数重试；下一任务使用新 ID 和最新 revision。缩容同样提交完整目标列表，仅移除目标节点。只有任务 complete 且集群版本更新后才能停用旧实例；published 还在清理，不等于可下线。
+
+缺少本地端点时 waiting_configuration；持久性或空库检查失败时 preflight_failed。修复原因后自动重试，不自动清库或改配置。Server 暂时不可用不影响已落盘任务执行。pages/attempts 是累计工作量，不是完成百分比。
+
+尚不自动部署 Gateway/数据库、发布 YAML、配置业务 Proxy discovery，也无集群注销/任务取消/回滚接口。新增注册不修改已有业务入口。网络隔离仍必须保证后端只被该 Gateway 访问。
 
 ## 升级与旧环境保护
 

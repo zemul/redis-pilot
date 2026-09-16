@@ -450,6 +450,9 @@ func (d *DB) migrate() error {
 	}
 
 	// ALTER TABLE 之后才能安全创建依赖新列的索引
+	if err := createColdSchema(tx); err != nil {
+		return err
+	}
 	postAlterIndexes := []string{
 		`CREATE INDEX IF NOT EXISTS idx_instances_observed_status ON instances(observed_status)`,
 		`CREATE INDEX IF NOT EXISTS idx_audit_timestamp_ms ON audit_log(timestamp_ms)`,

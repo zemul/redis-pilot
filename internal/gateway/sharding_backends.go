@@ -14,9 +14,8 @@ import (
 	"gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/internal/gateway/sharding"
 )
 
-// Internal construction only: credentials are separate from routing snapshots.
-// No YAML/API activation is exposed until the remaining migration prerequisites
-// (validated backend drain, durable cold ACKs, clocks and finalization) are done.
+// Credentials are separate from durable routing snapshots. YAML supports
+// loopback startup/recovery; creation of migration tasks is still internal.
 type cacheShardEndpoint struct {
 	node     sharding.Node
 	password string
@@ -100,6 +99,11 @@ func (s *cacheShards) start(ctx context.Context) error {
 		}
 	}
 	for _, n := range s.requiredNodes() {
+		if s.r.s.cfg.ControlPlane.ManageShards && s.journal != nil {
+			if err := s.preflightCold(ctx, n, false); err != nil {
+				return err
+			}
+		}
 		if err := s.startNode(ctx, n); err != nil {
 			return err
 		}
@@ -268,6 +272,10 @@ func (s *cacheShards) probe(ctx context.Context) {
 func (s *cacheShards) beginTransition(to *sharding.Topology, j *sharding.Journal) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.beginTransitionLocked(to, j)
+}
+
+func (s *cacheShards) beginTransitionLocked(to *sharding.Topology, j *sharding.Journal) error {
 	if s.change != nil || s.retiring != nil || s.journal != nil {
 		return errors.New("a topology transition is already active")
 	}
