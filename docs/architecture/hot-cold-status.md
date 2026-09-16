@@ -24,6 +24,23 @@ invalidate、update_existing 各通过两轮扩容→缩容→Gateway 进程重�
 
 复验日志在 redis01 `/tmp/pilot-crosshost.M2133y/final-invalidate.log` 与 `final-update_existing.log`；测试二进制 `gateway-final.test` SHA256 为 `9aac226ec8fa4aa6b84439d11d83dacf503a96a07ceebfc32f0290e92b3753d0`。临时容器与转发入口完成后清理，仅保留配置/二进制/日志供复查。
 
+## 跨机故障回归（2026-09-16）
+
+在上述三机隔离布局上增加测试专用连接转发器，主动关闭已有冷热连接、拒绝新请求，并注入一次“INCR 已执行、回复丢失”。不是重启数据库来代替断网。控制面仍为真实 store + HTTP 夹具，业务走真实 Gateway 子进程与远端 Redis/Kvrocks，未替换常驻 Server/Proxy/Gateway。
+
+最终故障用例 invalidate / update_existing 分别 27.92s / 27.69s，通过以下断言：
+
+- 热连接断开后写冷成功、立即读到新值；恢复时 Gateway 不返回旧值，最终直接检查专用热 Redis 已缓存新值，证明不是永久绕过缓存。隔离期间热库里的旧字节允许暂存，但不能经 Gateway 返回。
+- 冷连接断开时非幂等写及未缓存读返回错误，不把异常当作 nil；恢复后未发送的 INCR 没有生效。
+- 已执行 INCR 的回复被丢弃后请求报错，恢复读取计数恰为 1，没有自动重放成 2。
+- 扩容目标断连后，等待迁移日志 failures>0，确认 worker 真实遇到故障；未迁移到目标的 Hash 持续成功写后读，未修改字段保持。集群版本不能提前完成。
+- 杀掉 Gateway 后恢复目标网络，在控制 HTTP 仍持续 503 时重启；先确认重启前成功写入仍可读，再等本地迁移完成，最后恢复控制面补报。无人工删标记或强改任务状态。
+- 随后缩容、再次重启，并复验写后读、原绝对 TTL、过期不复活。
+
+本轮无生产业务代码修改。全仓 go test / go vet、真实本地 Redis 的 Cache/Migration/Shard/RemoteFaultLink race 测试通过；转发器断连/丢回复自测另重复三次通过。网络静默黑洞、单向分区、宿主机掉电、磁盘损坏、长时间稳定性仍不在此次验收结论内。
+
+日志保留于 redis01 `/tmp/pilot-fault.lUuoQA/verified-invalidate.log`、`verified-update_existing.log`；`gateway-verified.test` SHA256 为 `efdac5f3d41c8859110d33556cb019b139b76d23b1ae6f1a362042d53b0c4b3d`。该测试二进制对热库恢复的内部字节检查比最终测试源更严格；最终源允许隔离期旧字节暂存，Gateway 不读旧值及最终恢复缓存的断言不变。临时实例/转发服务用后清理，仅保留复查资料。
+
 ## 当前命令矩阵
 
 | 类别 | 允许命令与选项 |

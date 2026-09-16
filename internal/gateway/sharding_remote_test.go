@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -9,8 +10,10 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -65,6 +68,18 @@ func TestColdRemoteAcceptance(t *testing.T) {
 	if hot == "" || a == "" || b == "" {
 		t.Skip("three dedicated remote engines required")
 	}
+	faults := os.Getenv("GATEWAY_TEST_REMOTE_FAULTS") == "1"
+	var hotLink, aLink, bLink *remoteFaultLink
+	if faults {
+		host := os.Getenv("GATEWAY_TEST_FAULT_BIND")
+		if net.ParseIP(host) == nil {
+			t.Fatal("explicit fault bind IP required")
+		}
+		hotLink = newRemoteFaultLink(t, host, hot)
+		aLink = newRemoteFaultLink(t, host, a)
+		bLink = newRemoteFaultLink(t, host, b)
+		hot, a, b = hotLink.address, aLink.address, bLink.address
+	}
 	policy := os.Getenv("GATEWAY_TEST_REMOTE_POLICY")
 	if policy != "invalidate" && policy != "update_existing" {
 		t.Fatal("explicit write policy required")
@@ -78,6 +93,9 @@ func TestColdRemoteAcceptance(t *testing.T) {
 	cfg.AdminListen = freeAddress(t)
 	cfg.FrontendPasswordFile = secretFile(t, "shard-config-front")
 	cfg.Cache.WritePolicy = policy
+	if faults {
+		cfg.Cache.Sharding.Migration.KeysPerSecond = 4
+	}
 	cfg.Cache.HotTimeout = 500 * time.Millisecond
 	cfg.Cache.Sharding.Nodes = []ShardNodeConfig{{ID: "a", Address: a}}
 	for _, addr := range []string{hot, a, b} {
@@ -112,7 +130,12 @@ func TestColdRemoteAcceptance(t *testing.T) {
 	if _, err = d.CreateColdCluster(apitypes.ColdClusterSpec{ID: "cluster", GatewayID: "gw", NodeID: "entry", HotInstance: "hot", Shards: []apitypes.ColdShard{{ID: "a", Instance: "a"}}}); err != nil {
 		t.Fatal(err)
 	}
+	var controlDown atomic.Bool
 	httpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if controlDown.Load() {
+			w.WriteHeader(503)
+			return
+		}
 		if r.Header.Get("Authorization") != "Bearer remote-test-token" {
 			w.WriteHeader(401)
 			return
@@ -146,6 +169,9 @@ func TestColdRemoteAcceptance(t *testing.T) {
 		t.Fatal(err)
 	}
 	stop := startConfiguredShardProcess(t, cfg)
+	if faults {
+		verifyRemoteLinkFailures(t, cfg.Listen, hotLink, aLink)
+	}
 	conn, r, err := authenticated(cfg.Listen, "shard-config-front")
 	if err != nil {
 		t.Fatal(err)
@@ -170,7 +196,11 @@ func TestColdRemoteAcceptance(t *testing.T) {
 	expiring := shardKeyFor(to, "b", "expires-during-migration")
 	shardWant(t, conn, r, "+OK\r\n", "SET", expiring, "gone", "PX", "100")
 	conn.Close()
-	checkLive := startColdLiveWriter(t, cfg.Listen, shardKeyFor(to, "b", "live-hash"))
+	liveKey := shardKeyFor(to, "b", "live-hash")
+	if faults {
+		liveKey = shardKeyFor(to, "a", "live-unaffected-hash")
+	}
+	checkLive := startColdLiveWriter(t, cfg.Listen, liveKey)
 	wait := func(revision uint64) {
 		t.Helper()
 		deadline := time.Now().Add(45 * time.Second)
@@ -190,6 +220,66 @@ func TestColdRemoteAcceptance(t *testing.T) {
 	}
 	if _, err = d.CreateColdTask("cluster", apitypes.ColdTaskRequest{ID: "expand", ExpectedRevision: 1, Shards: target}); err != nil {
 		t.Fatal(err)
+	}
+	if faults {
+		deadline := time.Now().Add(15 * time.Second)
+		for {
+			c, e := d.GetColdCluster("cluster")
+			if e != nil {
+				t.Fatal(e)
+			}
+			if c.Task.Phase == "active" {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("no active migration: %+v", c.Task)
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+		journal, e := sql.Open("sqlite", "file:"+filepath.Join(cfg.Cache.Sharding.StateDir, "tasks", "expand", "handoffs.db")+"?mode=ro&_pragma=busy_timeout(1000)")
+		if e != nil {
+			t.Fatal(e)
+		}
+		defer journal.Close()
+		bLink.cut(true)
+		// Confirm source-only traffic keeps running while the destination is cut.
+		deadline = time.Now().Add(15 * time.Second)
+		for {
+			var failures int
+			e = journal.QueryRow("SELECT failures FROM worker_progress WHERE id=1").Scan(&failures)
+			if e == nil && failures > 0 {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("worker did not observe target partition: %v", e)
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+		acknowledged := checkLive()
+		c, e := d.GetColdCluster("cluster")
+		if e != nil || c.Revision != 1 {
+			t.Fatalf("migration completed during partition: %+v %v", c, e)
+		}
+		controlDown.Store(true)
+		stop()
+		bLink.cut(false)
+		stop = startConfiguredShardProcess(t, cfg)
+		awaitRemoteReply(t, cfg.Listen, fmt.Sprintf("$%d\r\n%s\r\n", len(acknowledged), acknowledged), "HGET", liveKey, "counter")
+		deadline = time.Now().Add(45 * time.Second)
+		for {
+			var phase string
+			e = journal.QueryRow("SELECT phase FROM finalization WHERE id=1").Scan(&phase)
+			if e == nil && phase == "complete" {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("local migration blocked by control outage: %s %v", phase, e)
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+		controlDown.Store(false)
+		checkLive = startColdLiveWriter(t, cfg.Listen, liveKey)
+		t.Log("target partition, Gateway kill/restart and control outage recovery passed")
 	}
 	wait(2)
 	if _, err = d.CreateColdTask("cluster", apitypes.ColdTaskRequest{ID: "shrink", ExpectedRevision: 2, Shards: target[1:]}); err != nil {
@@ -212,6 +302,6 @@ func TestColdRemoteAcceptance(t *testing.T) {
 		shardWant(t, conn, r, "+OK\r\n", "SET", key, "new")
 		shardWant(t, conn, r, "$3\r\nnew\r\n", "GET", key)
 	}
-	shardWant(t, conn, r, fmt.Sprintf("$%d\r\n%s\r\n", len(last), last), "HGET", shardKeyFor(to, "b", "live-hash"), "counter")
+	shardWant(t, conn, r, fmt.Sprintf("$%d\r\n%s\r\n", len(last), last), "HGET", liveKey, "counter")
 	t.Log("remote hot/cold, dynamic expansion, shrink, concurrent Hash writes and durable Gateway restart passed", policy)
 }

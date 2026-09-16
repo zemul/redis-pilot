@@ -12,6 +12,14 @@ Proxy 与 Gateway 仍同机回环连接；一个 Gateway 可连接多台服务�
 
 冷实例仍需单点主库、同步 WAL；首次初始化仅允许新空冷库。热层仍只有一个 Redis，本轮未增加热层分片。
 
+### 跨机故障验收方法
+
+`TestColdRemoteAcceptance` 支持显式 `GATEWAY_TEST_REMOTE_FAULTS=1`，同时设置 `GATEWAY_TEST_FAULT_BIND` 为测试 Gateway 主机私网 IP；其余 `GATEWAY_TEST_REMOTE_HOT/A/B` 指向专用空测试实例，`GATEWAY_TEST_REMOTE_POLICY` 分别为 invalidate、update_existing。不能指向现有业务库；初始化会拒绝非空冷库。每轮重新创建隔离实例，不靠清理业务标记来恢复。
+
+测试转发器一条连接对应一条真实后端连接，仅允许本机同 IP 连接；故障包括断开存量连接并拒绝新请求，以及冷端已执行 INCR 后只丢失一次回复。迁移用例等到日志记录失败，确认目标断连确实影响过 worker，再杀掉 Gateway，恢复目标连接，在控制 HTTP 持续 503 时启动 Gateway；检查本地任务完成、已确认写入仍可读，再恢复控制面补报。
+
+验收不等于所有故障模型已经覆盖：连接重置与丢回复不代表长时间静默黑洞、单向分区、宿主机掉电、磁盘损坏或多 Gateway 竞争。成功回复丢失时客户端看到错误不意味着写入没发生；非幂等写不能由调用方直接无条件重试。
+
 更新：2026-09-16。当前提供开发透传、单冷 cache 及可选 HRW 多冷节点启动/恢复，不自动升级旧冷热链路。设计见 [冷热设计](hot-cold-gateway-design.md)，实现边界见 [状态](hot-cold-status.md)。
 
 ## 进程职责
