@@ -12,6 +12,16 @@
 - BLPOP/BRPOP 的有界独立冷连接，仅允许固定 cold_only_prefixes；这些 key 不会缓存。
 - 新模式 Pipeline 按连接顺序逐条完成；普通 passthrough 行为保持不变。
 
+## 常驻真实控制面验收（2026-09-16）
+
+8020d47 已部署到 redis01 常驻 Server、主 discovery Proxy、redis-gateway，正式集群 managed-dev 使用 redis02 热 Redis/冷 a、redis03 冷 b；入口 10.70.100.67:16508，业务密码在 root 私有文件，不在文档中公开。此次不再使用 HTTP 控制夹具。拓扑、路径、专用后端初始化调优和开机配置见 [部署记录](gateway-deployment.md)。
+
+scripts/verify-managed-dev.py 从真实 Proxy 入口连续完成两轮 invalidate/update_existing 验收：五种类型、1000 字段 Hash 回温和增量缓存保留、持续字段写后立即读及未修改字段校验，跨机扩容/缩容、控制 Server 重启和 Gateway 重启。两轮各模式分别完成 229/568、229/565 次持续写后读循环，非吞吐测量。第二轮还验证从已有双冷拓扑重新开始；最终 revision=12、a+b、任务 complete、默认 invalidate，自己的随机前缀测试 key 已删除。
+
+Server runtime API 可见当前 Gateway serving/backend_ready，旧 boot 记录过期为 stale 属正常历史观测。旧普通 Proxy listeners/clusters 与升级前一致，redis03 旧 cache 栈和旧数据库数据未改。Server/Proxy/Gateway 及专用防火墙、后端开机启动单元均 enabled；主机实际重启、长时间稳定性和性能仍未验收。
+
+日志在 redis01 `/opt/pilot-managed-stage.JwUn22/acceptance-ready.log`、`acceptance-repeat.log`。首次脚本曾仅等 Proxy PING 就开始写，因 Gateway 尚未监听而失败；修正为 /readyz + 真实转发 EXISTS 后两轮通过。这是验收就绪判断修正，没有因此改动缓存一致性逻辑。
+
 ## 跨主机后端验收（2026-09-16）
 
 Server 按资源所属主机解析私网端点；Gateway 通过 backend_networks 显式放行，动态任务与落盘恢复同样校验。Gateway 所在节点即使没有数据库也受资源删除/改地址保护。Proxy → Gateway 仍本机回环，业务密码只在 Proxy；本轮不是多 Gateway、热层分片或副本切换。

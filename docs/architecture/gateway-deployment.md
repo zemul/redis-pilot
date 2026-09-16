@@ -1,5 +1,31 @@
 # Gateway 部署与运维
 
+## 常驻正式接入开发栈（2026-09-16）
+
+已将 redis01 的 Server、主 discovery Proxy、既有 redis-gateway.service 升级为 8020d47；Gateway 从旧隔离透传配置切换到新建的 managed-dev 冷热集群。旧透传 Redis 和 redis03 既有 cache 测试栈保留，未复用或清空它们的数据。普通 Proxy listeners/clusters 在升级和验收后与升级前一致。
+
+| 位置 | 常驻组件/资源 | 接入地址 |
+| --- | --- | --- |
+| redis01 | Server；主 Proxy 的 cold:managed-dev 入口 | HTTP 8080；业务 10.70.100.67:16508 |
+| redis01 | redis-gateway.service，gateway-managed-dev | 127.0.0.1:17379；管理 19200 |
+| redis02 | pmdev-hot，Redis 7 专用热缓存 | 10.70.100.63:6383 |
+| redis02 | pmdev-cold-a，Kvrocks 2.15.0 分片 a | 10.70.100.63:6384 |
+| redis03 | pmdev-cold-b，Kvrocks 2.15.0 分片 b | 10.70.100.68:6382 |
+
+三个后端经真实 /instance/create API 创建，disable_proxy=true，无数据库密码；cold-cluster 注册和 ingress 下发走真实 Server，迁移经真实 CLI 发起。业务入口需要密码，仅保存在 redis01 的 root 私有文件 `/opt/pilot-managed-stage.JwUn22/ingress.json`，不写入仓库。Gateway 默认 invalidate，两个冷分片保留供后续测试；热层容器额度 128Mi，实际 maxmemory 32Mi、allkeys-lru、AOF/RDB 关闭；各冷容器 256Mi，WAL 开启并同步刷盘。
+
+Agent 通用模板默认禁用 FLUSHDB。此部署仅在新建专用热实例配置中解除 FLUSHDB 禁用，FLUSHALL/DEBUG 仍禁用；冷实例配置显式设置 rocksdb.write_options.sync=yes、disable_wal=no，并缩小缓存/写缓冲。这些是登记集群前后的专用初始化调优，没有放宽普通实例模板或通用配置覆盖校验。配置原件保存为各专用实例 conf 下的 *.before-managed。当前仍非一键自动配置：不要通过通用模板重新生成专用配置，否则可能丢失必要选项；集群资源登记后的通用配置/拓扑操作由资源保护限制。
+
+Gateway 的配置/机器凭据在 /etc/redis-gateway，私有运行状态在 /var/lib/redis-gateway，systemd managed.conf 增加 StateDirectory 和写入权限。Server、Proxy、Gateway 均 enabled；redis02/03 的 redis-pilot-managed-backends.service 只负责开机启动这三个现有容器，日常数据库操作仍由 Agent 管理。当前 Podman 不支持 update --restart，因此没有依赖该选项，也没有改其他容器启动策略。
+
+数据库端口由独立 nft 表 pilot_managed_dev 在 DNAT 前限制，仅允许 redis01 的 10.70.100.67 外部访问；本机 Agent 管理不受影响。redis-pilot-managed-firewall.service 开机加载，后端启动单元 Requires/After 它。已实测 redis03 到 redis02 热端口不可连接，Gateway 正常访问；白名单文件 /etc/redis-pilot-managed-dev.nft。未修改通用防火墙策略或既有实例端口。
+
+升级前的 Server/Proxy/Gateway 二进制、配置和一致性 SQLite 备份保存在 redis01 `/opt/pilot-managed-stage.JwUn22/backup`。不要直接恢复这份旧 pilot.db 来回滚已经创建的集群；它不包含新注册资源或后续迁移。原有 Gateway 后端数据未删除。
+
+[正式链路验收脚本](../../scripts/verify-managed-dev.py) 在 redis01 运行，参数为上述 ingress.json 路径。它只用于 managed-dev：两种模式、五种基本类型、完整 Hash 增量缓存、持续 HSET 后立即 HGET、扩缩容、Server 重启和 Gateway 重启；每轮清理自己的随机前缀测试 key，最终保留 a+b、恢复原写策略。不清空冷库。ready 等待同时检查 Gateway /readyz 和经 Proxy 的 EXISTS，不能只检查 Proxy 本地响应的 PING。脚本会切换策略、改变此开发集群拓扑并重启指定服务，不是只读检查。
+
+两轮完整验收日志为 `/opt/pilot-managed-stage.JwUn22/acceptance-ready.log`、`acceptance-repeat.log`，最终 revision=12、a+b、任务 complete。本次配置并检查了开机启动，未执行三台主机实际重启，也未开展长时间稳定性或性能压测。
+
 ## 跨主机后端（2026-09-16）
 
 Proxy 与 Gateway 仍同机回环连接；一个 Gateway 可连接多台服务器上的专用热 Redis / 冷 Kvrocks。不是多 Gateway HA，也不含副本自动切换。
@@ -68,7 +94,7 @@ Gateway 是独立宿主机二进制，由 systemd 管理并开启开机启动。
 
 ## 可选多冷分片启动与恢复
 
-参考 [多冷配置示例](../examples/gateway-cache-sharded.yaml)。仍是本机回环、一个有效 Gateway、一个专用热 Redis、多个独立冷节点，不需要 Redis Cluster；本次不替换 redis03 的现有常驻服务。
+参考 [多冷配置示例](../examples/gateway-cache-sharded.yaml)。默认本机回环，可显式允许私网跨机后端；一个有效 Gateway、一个专用热 Redis、多个独立冷节点，不需要 Redis Cluster。redis03 的旧 cache 栈与新 managed-dev 栈互相独立。
 
 1. 准备专用**空**冷库、专用热库及 Gateway→Server 机器凭据，托管模式不设置数据库密码；验证热缓存配置及冷库 WAL/持久性，创建服务账号持有的 0700 父目录。不要预创建 sharding.state_dir 本身。
 2. 以服务账号运行 `redis-gateway -config /etc/redis-gateway-sharded/gateway.yaml -check-config`，只检查配置及凭据，不证明状态或数据库可用。
@@ -92,7 +118,7 @@ Gateway 可直接向 Server 上报观测，参见配置的 control_plane 字段�
 
 ## HRW 控制面操作
 
-当前仅支持同一主机的一套 Gateway、一个专用热 Redis 和若干专用单点 Kvrocks。使用 instance create --disable-proxy 创建后端，不设置 --password；已有直连 Proxy 入口的实例不能直接登记。先确认冷配置 rocksdb.write_options.sync=yes、disable_wal=no；Kvrocks 2.15 修改前者需要配置文件并重启，不支持运行时 CONFIG SET。
+当前支持一套 Gateway、一个专用热 Redis 和若干专用单点 Kvrocks，后端可在显式放行的不同私网主机。使用 instance create --disable-proxy 创建后端，不设置 --password；已有直连 Proxy 入口的实例不能直接登记。先确认冷配置 rocksdb.write_options.sync=yes、disable_wal=no；Kvrocks 2.15 修改前者需要配置文件并重启，不支持运行时 CONFIG SET。
 
 Server 配置 gateway_tokens，Gateway 使用对应 token_file 和 control_plane.manage_shards: true，cluster_id 必须等于 service_id。参考 [多冷配置](../examples/gateway-cache-sharded.yaml)。首次初始化只允许新空冷库；后续启动不能重复执行初始化。
 
