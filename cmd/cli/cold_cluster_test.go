@@ -59,4 +59,17 @@ func TestColdCLICommands(t *testing.T) {
 	if len(requests) != 4 || requests[2] != "POST /api/v1/cold-clusters/cluster/tasks" || requests[2] != requests[3] {
 		t.Fatal(requests)
 	}
+	if err := os.WriteFile(p, []byte(`{"gateway_address":"127.0.0.1:19555","password":"business"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{{"ingress", "cluster", "--file", p}, {"ingress", "cluster"}} {
+		cmd := newColdClusterCommand()
+		cmd.SetArgs(args)
+		if err := cmd.Execute(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if requests[4] != "POST /api/v1/cold-clusters/cluster/ingress" || requests[5] != "GET /api/v1/cold-clusters/cluster/ingress" {
+		t.Fatal(requests)
+	}
 }

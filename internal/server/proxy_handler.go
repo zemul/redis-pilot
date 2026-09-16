@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"net/http"
+	"net/netip"
 	"sort"
 	"strings"
 	"time"
@@ -57,7 +58,7 @@ func (s *Server) proxySnapshot(c *gin.Context) {
 	// 先取代际的代价只是可能多醒一次、重算一遍快照后发现版本没变，与"弱信号 + 强比对"
 	// 的设计一致。
 	baseGen := s.db.Generation()
-	snapshot, err := s.buildProxySnapshot()
+	snapshot, err := s.buildProxySnapshotForNode(c.Query("node_id"))
 	if err != nil {
 		fail(c, http.StatusInternalServerError, err.Error())
 		return
@@ -84,7 +85,7 @@ func (s *Server) proxySnapshot(c *gin.Context) {
 		}
 		if gen := s.db.Generation(); gen != lastGen {
 			lastGen = gen
-			fresh, err := s.buildProxySnapshot()
+			fresh, err := s.buildProxySnapshotForNode(c.Query("node_id"))
 			if err != nil {
 				fail(c, http.StatusInternalServerError, err.Error())
 				return
@@ -126,6 +127,10 @@ func parseProxySnapshotWait(raw string) time.Duration {
 var proxySnapshotAfterStateReadHook func()
 
 func (s *Server) buildProxySnapshot() (*apitypes.ProxySnapshot, error) {
+	return s.buildProxySnapshotForNode("")
+}
+
+func (s *Server) buildProxySnapshotForNode(nodeID string) (*apitypes.ProxySnapshot, error) {
 	instances, err := s.db.ReadInstances()
 	if err != nil {
 		return nil, err
@@ -216,6 +221,26 @@ func (s *Server) buildProxySnapshot() (*apitypes.ProxySnapshot, error) {
 		}
 	}
 
+	// Loopback Gateway routes are opt-in and local to a registered Proxy node.
+	// Existing proxies without node_id retain their ordinary instance routes.
+	if nodeID != "" {
+		routes, err := s.db.ColdIngressRoutes(nodeID)
+		if err != nil {
+			return nil, err
+		}
+		for _, r := range routes {
+			if !r.Ready {
+				continue
+			}
+			a, err := netip.ParseAddrPort(r.GatewayAddress)
+			if err != nil {
+				return nil, err
+			}
+			name := "cold:" + r.ClusterID
+			snapshot.Listeners = append(snapshot.Listeners, apitypes.ProxyListener{Name: name, Group: name, Mode: "master", Bind: "0.0.0.0", Port: r.Port, StatPrefix: "cold_" + r.ClusterID, Cluster: name, Password: r.Password, ReadPolicy: "MASTER", AccessMode: "standard"})
+			snapshot.Clusters = append(snapshot.Clusters, apitypes.ProxyCluster{Name: name, Endpoints: []apitypes.ProxyEndpoint{{Address: a.Addr().String(), Port: int(a.Port())}}})
+		}
+	}
 	snapshot.Version = proxySnapshotVersion(snapshot)
 	return snapshot, nil
 }

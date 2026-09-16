@@ -38,6 +38,7 @@ func main() {
 
 	// Discovery 模式
 	proxyID := flag.String("proxy-id", "", "stable proxy identity (empty = hostname)")
+	nodeID := flag.String("node-id", "", "local platform node for Gateway routes")
 	serverEndpoint := flag.String("server-endpoint", "", "Server HTTP endpoint for snapshot (empty = static mode)")
 	serverToken := flag.String("server-token", "", "Server bearer token")
 	pollInterval := flag.Duration("poll-interval", 2*time.Second, "minimum interval between snapshot polls")
@@ -119,6 +120,7 @@ func main() {
 		if fc.ProxyID != "" {
 			cfg.ProxyID = fc.ProxyID
 		}
+		cfg.NodeID = fc.NodeID
 		if fc.ServerEndpoint != "" {
 			cfg.ServerEndpoint = fc.ServerEndpoint
 		}
@@ -178,6 +180,9 @@ func main() {
 	}
 	if setFlags["server-endpoint"] {
 		cfg.ServerEndpoint = *serverEndpoint
+	}
+	if setFlags["node-id"] {
+		cfg.NodeID = *nodeID
 	}
 	if setFlags["server-token"] {
 		cfg.ServerToken = *serverToken

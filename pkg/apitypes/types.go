@@ -312,8 +312,9 @@ func (i *Instance) IsServing() bool {
 
 // InstancesState instances-state.yaml 根结构
 type InstancesState struct {
-	Groups    map[string]*InstanceGroupState `yaml:"groups" json:"groups"`
-	Instances map[string]*Instance           `yaml:"instances" json:"instances"`
+	ReservedProxyPorts []int                          `yaml:"-" json:"-"` // external ingress reservations, loaded by store
+	Groups             map[string]*InstanceGroupState `yaml:"groups" json:"groups"`
+	Instances          map[string]*Instance           `yaml:"instances" json:"instances"`
 }
 
 // InstanceView 是 Instance 面向对外查询接口的安全投影，

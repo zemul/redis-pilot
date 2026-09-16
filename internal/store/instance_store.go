@@ -345,6 +345,10 @@ func loadInstancesState(db *sql.DB) (*apitypes.InstancesState, error) {
 		return nil, err
 	}
 	st.Instances = insts
+	st.ReservedProxyPorts, err = coldIngressPorts(db)
+	if err != nil {
+		return nil, err
+	}
 	return st, nil
 }
 
@@ -380,6 +384,10 @@ func loadInstancesStateTx(tx *sql.Tx) (*apitypes.InstancesState, error) {
 		return nil, err
 	}
 	st.Instances = insts
+	st.ReservedProxyPorts, err = coldIngressPorts(tx)
+	if err != nil {
+		return nil, err
+	}
 	return st, nil
 }
 

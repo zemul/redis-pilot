@@ -4,6 +4,7 @@ import "time"
 
 // ServerConfig 是到 Server 的连接配置。
 type ServerConfig struct {
+	NodeID   string // local platform node; scopes loopback Gateway routes
 	Endpoint string // Server HTTP 地址，如 "http://127.0.0.1:8080"
 	Token    string // Bearer token（空=不鉴权）
 }

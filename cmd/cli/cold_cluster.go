@@ -66,5 +66,19 @@ func newColdClusterCommand() *cobra.Command {
 	}}
 	migrate.Flags().StringVar(&taskFile, "file", "", "JSON with id, expected_revision and target shards")
 	root.AddCommand(migrate)
+	var ingressFile string
+	ingress := &cobra.Command{Use: "ingress NAME", Short: "Register immutable local Proxy ingress, or show it without --file", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+		path := "/api/v1/cold-clusters/" + url.PathEscape(args[0]) + "/ingress"
+		if ingressFile == "" {
+			return checkResp(client.Get(path))
+		}
+		var req apitypes.ColdIngressRequest
+		if err := readColdRequest(ingressFile, &req); err != nil {
+			return err
+		}
+		return checkResp(client.Post(path, req))
+	}}
+	ingress.Flags().StringVar(&ingressFile, "file", "", "JSON with gateway_address and business Proxy password")
+	root.AddCommand(ingress)
 	return root
 }

@@ -50,11 +50,11 @@ Gateway 是独立宿主机二进制，由 systemd 管理并开启开机启动。
 
 参考 [多冷配置示例](../examples/gateway-cache-sharded.yaml)。仍是本机回环、一个有效 Gateway、一个专用热 Redis、多个独立冷节点，不需要 Redis Cluster；本次不替换 redis03 的现有常驻服务。
 
-1. 准备专用**空**冷库、专用热库和独立凭据，按单冷模式要求验证热缓存配置及冷库 WAL/持久性；创建服务账号持有的 0700 父目录。不要预创建 sharding.state_dir 本身。
+1. 准备专用**空**冷库、专用热库及 Gateway→Server 机器凭据，托管模式不设置数据库密码；验证热缓存配置及冷库 WAL/持久性，创建服务账号持有的 0700 父目录。不要预创建 sharding.state_dir 本身。
 2. 以服务账号运行 `redis-gateway -config /etc/redis-gateway-sharded/gateway.yaml -check-config`，只检查配置及凭据，不证明状态或数据库可用。
 3. 停止业务接入，首次执行同一命令加 `-init-sharding-state`（不与 -check-config 同用）。冷库非空或状态目录已存在均拒绝；不会清空冷数据。初始化失败留下的目录不自动删除，请检查原因，不要拿此命令修复已有集群。
 4. systemd 正常 ExecStart 只带 `-config`，不能带初始化参数。StateDirectory/ReadWritePaths 必须覆盖 lock_file 父目录及 sharding.state_dir。重启使用持久化路由与任务日志恢复，不重新按 YAML 分配数据。
-5. 只可移除已经完成缩容、且无需继续回收的旧节点登记。正在使用的 ID/地址缺失或变化会拒绝启动；新增登记不会自动扩容。任务命令与 Server 配置下发尚待接通。
+5. 托管模式从已接受任务快照恢复端点，新节点自动随任务下发，不必修改 YAML。手工模式仍需保留正在使用的节点登记。新增 YAML 登记本身不会扩容。
 
 `state_dir/runtime.db` 与 `state_dir/tasks/<task-id>/handoffs.db` 是不同职责的本地 SQLite：前者存集群路由/任务引用，后者存逐 key 交接及完成阶段；不是 Server pilot.db。两者需要保存在同一受保护的持久化状态目录，不随二进制发布删除。活动库不能仅复制 .db 忽略 WAL；备份/恢复必须同时考虑业务冷库、状态库与交接日志，当前不承诺任意历史回滚或换机接管。
 
@@ -82,7 +82,7 @@ Server 配置 gateway_tokens，Gateway 使用对应 token_file 和 control_plane
 {"id":"sharded-dev","gateway_id":"gateway-sharded-dev","node_id":"redis03","hot_instance":"hot-1","shards":[{"id":"cold-a","instance":"cold-1"}]}
 ```
 
-执行 redis-pilot-cli cold-cluster create --file cluster.json；用 cold-cluster get sharded-dev 查看状态。扩容前先创建 cold-2，将地址加入 Gateway YAML 注册表并重启，不能改变已有节点 ID/地址。迁移文件示例：
+执行 redis-pilot-cli cold-cluster create --file cluster.json；用 cold-cluster get sharded-dev 查看状态。扩容前先创建专用空 cold-2，地址由任务自动下发，无需改 YAML 或重启；不能改变已有节点 ID/地址。迁移文件示例：
 
 ```json
 {"id":"expand-001","expected_revision":1,"shards":[{"id":"cold-a","instance":"cold-1"},{"id":"cold-b","instance":"cold-2"}]}
@@ -90,9 +90,19 @@ Server 配置 gateway_tokens，Gateway 使用对应 token_file 和 control_plane
 
 执行 redis-pilot-cli cold-cluster migrate sharded-dev --file task.json。请求超时可用完全相同任务 ID/参数重试；下一任务使用新 ID 和最新 revision。缩容同样提交完整目标列表，仅移除目标节点。只有任务 complete 且集群版本更新后才能停用旧实例；published 还在清理，不等于可下线。
 
-缺少本地端点时 waiting_configuration；持久性或空库检查失败时 preflight_failed。修复原因后自动重试，不自动清库或改配置。Server 暂时不可用不影响已落盘任务执行。pages/attempts 是累计工作量，不是完成百分比。
+端点身份冲突或非法地址时 waiting_configuration；持久性或空库检查失败时 preflight_failed。修复原因后自动重试，不自动清库或改数据库配置。Server 暂时不可用不影响已落盘任务执行。pages/attempts 是累计工作量，不是完成百分比。
 
-尚不自动部署 Gateway/数据库、发布 YAML、配置业务 Proxy discovery，也无集群注销/任务取消/回滚接口。新增注册不修改已有业务入口。网络隔离仍必须保证后端只被该 Gateway 访问。
+业务入口：Gateway 保持回环监听，配置 allow_unauthenticated: true 并移除 frontend_password_file；只有同机 Proxy 可访问。Proxy 使用 discovery 模式，增加 node_id: redis03（或 -node-id redis03），必须与集群 node_id 一致。其他节点的 Proxy 和未配置 node_id 的旧 Proxy 不会收到冷热入口，普通实例快照保持不变。
+
+入口文件用 0600 权限保存，示例：
+
+```json
+{"gateway_address":"127.0.0.1:17579","password":"替换为业务密码"}
+```
+
+执行 redis-pilot-cli cold-cluster ingress sharded-dev --file ingress.json；不带 --file 查询端口及 ready。Server 分配业务端口，目标 Gateway 确认地址/无前端密码/拓扑匹配后 ready=true，随后同机 Proxy 自动开端口；客户端连接该主机业务端口并使用上述密码。密码不下发到 Gateway 或数据库，查询不返回明文。首次确认前不发布入口；已有入口的地址/密码不可原地修改，相同请求可安全重试。ready 表示已完成接入确认，不是实时健康状态。不要绕过 Proxy 访问数据库。
+
+尚不自动部署 Gateway/数据库，也无集群注销、入口修改/注销、任务取消/回滚接口。新增注册不修改已有普通实例入口。网络隔离仍必须保证后端只被该 Gateway 访问；本机非受信进程不在该隔离模型内。
 
 ## 升级与旧环境保护
 

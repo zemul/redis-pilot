@@ -1,5 +1,19 @@
 package apitypes
 
+// Password is business client→Proxy authentication, never a database password.
+type ColdIngressRequest struct {
+	GatewayAddress string `json:"gateway_address"`
+	Password       string `json:"password"`
+}
+type ColdIngress struct {
+	ClusterID      string `json:"cluster_id"`
+	NodeID         string `json:"node_id"`
+	GatewayAddress string `json:"gateway_address"`
+	Port           int    `json:"port"`
+	HasPassword    bool   `json:"has_password"`
+	Ready          bool   `json:"ready"`
+}
+
 // Cold shards reference existing passwordless standalone instances. ID is the
 // stable HRW identity, Instance is the platform resource, Address is resolved
 // by Server and must match the Gateway's local endpoint registry.
@@ -18,6 +32,7 @@ type ColdClusterSpec struct {
 }
 
 type ColdCluster struct {
+	Ingress *ColdIngress `json:"ingress,omitempty"`
 	ColdClusterSpec
 	HotAddress string    `json:"hot_address"`
 	Revision   uint64    `json:"revision"`

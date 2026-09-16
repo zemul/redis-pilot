@@ -46,6 +46,20 @@ Kvrocks 差异处理：浮点自增在冷脚本内用其返回字符串写回相
 
 未支持的命令、额外选项、内部保留 key 都明确拒绝。不是“Kvrocks 支持就直接透传”。原有透传模式有自己的白名单，不受此表扩展。
 
+## 2026-09-16：Proxy 入口与动态冷端点
+
+Server/API/CLI 增加独立 ingress 登记：自动分配不与普通实例冲突的 Proxy 端口，密码只用于客户端→Proxy，查询不返回明文。Gateway 确认监听地址、拓扑和无前端密码后发布入口；Proxy 增加 node_id，只接受同机回环 Gateway 路由。普通单点/主从保持原有快照行为；冷热入口为 standard 模式，不读写分离，不回退直连数据库。
+
+托管迁移从任务自动接收新冷端点，校验回环地址、节点身份和前置条件，不再改 YAML 或重启。动态节点表并发访问加锁；正式路由仍由持久化任务控制。重启从已接受任务源/目标快照恢复端点，Server 不在线也能恢复，新端点无需写回 YAML。
+
+节点登记仅保留当前/任务所需节点；完成缩容后，释放的端口可被新分片 ID 再次使用，无需重启。仍在使用或未完成回收的节点不允许换地址/身份。启动支持新旧拓扑的节点并集，不能把每个拓扑的 128 节点上限误当成迁移期间端点并集上限。
+
+仍限定同机、单有效 Gateway。入口不提供在线改地址/改密码/注销，ready 是接入确认而非持续健康检查。首次部署/初始化仍需运维，不自动启动二进制、改数据库配置或创建新实例。以下“手动补 YAML/无 discovery 接入”是上一阶段记录，以本节为准。
+
+验证：全仓测试、go vet、差异格式检查通过；本地 Redis 的全部 Cache/Migration/Shard 竞态回归、Store/Server/CLI 入口专项和 Proxy 节点过滤检查通过。redis03 使用真实 Proxy/Gateway 子进程、Redis 7.2.5 与 Kvrocks 2.15，最终两种策略各连续三轮通过：无 YAML 变更扩容、持续 Hash 字段写后立即读、Server 断连、Gateway SIGKILL 与离线恢复、缩容、旧端口以新分片 ID 再扩容/缩容、旧冷进程退出后的恢复及最后成功值核对。HTTP 故障夹具调用真实 store 并提供快照；Server HTTP handler/快照生成/鉴权另由 Server 测试覆盖，不能冒充整套常驻 Server 部署验收。
+
+日志保留 redis03:/tmp/pilot-cold-ingress-verify.RMPIXD/reuse.log，最终测试二进制 SHA256 为 5af5814ece53f359916f9261d9b0fd4ad62cf589afc8da4fbfa092265a77cc2c。SSH 观察连接中断后测试继续，已通过容器退出码 0 和完整三轮 PASS 日志核对。常驻 Agent/Gateway/Proxy 保持 active，未替换或重启；这是功能/故障验证，不是压测、掉电或跨主机验收。
+
 ## 2026-09-16：Server 任务入口
 
 新增 cold-cluster create/get/list/migrate CLI 及 HTTP API。Server pilot.db 保存集群、任务、资源占用；Gateway 本地 runtime.db/handoffs.db 保存实际执行与交接状态，控制面断连不停止已落盘任务。相同任务 ID 和相同参数可重试，版本冲突/并发第二任务拒绝，进度不倒退。只有 complete 才释放缩容源；published 不允许删除源实例。
@@ -65,9 +79,9 @@ Kvrocks 差异处理：浮点自增在冷脚本内用其返回字符串写回相
 - 连接池、吞吐/延迟压测、长期稳定性与生产资源验收。
 - 动态阻塞 key 的缓存绕过/恢复、无限阻塞、更多阻塞命令、队列前缀策略迁移。
 - Hash 字段过期、位图/Bitfield/HyperLogLog、LMPOP/ZMPOP 等未列出的扩展，以及不同引擎所有极端输入的逐位兼容。
-- HRW 分片的 Server/API/CLI 任务入口已接入；独立热拓扑、端点配置自动下发和自动部署尚未接入。不依赖 Redis Cluster slot 协议。
+- HRW 分片的 Server/API/CLI 任务入口、冷端点自动下发和同机 Proxy 接入已接通；独立热拓扑和自动部署尚未接入。不依赖 Redis Cluster slot 协议。
 - 多 Gateway 多活/跨主机接管、Redis Cluster 协议路由、冷库复制/故障切换，以及冷库回滚或备份恢复后的重新建立边界，不属于本次 HRW 版本承诺。
-- Server 自动分配 Gateway、discovery 路由接入、滚动升级；当前静态开发链路不等于控制面集成完成。
+- Server 自动分配 Gateway、跨主机接入、滚动升级；当前控制面及回环入口开发测试不等于生产部署验收。
 
 ## 下一版本：内部请求链路、迁移与未完成范围
 

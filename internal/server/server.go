@@ -216,6 +216,7 @@ func (s *Server) Router() *gin.Engine {
 	r.POST("/api/v1/gateway/heartbeat/:name", s.gatewayHeartbeatAuth(), s.gatewayHeartbeat)
 	r.GET("/api/v1/gateway/control/:name/clusters/:cluster", s.gatewayHeartbeatAuth(), s.coldAssignment)
 	r.POST("/api/v1/gateway/control/:name/clusters/:cluster/report", s.gatewayHeartbeatAuth(), s.coldReport)
+	r.POST("/api/v1/gateway/control/:name/clusters/:cluster/ingress-ready", s.gatewayHeartbeatAuth(), s.coldIngressReady)
 
 	// ── 需要认证的路由（JWT 或 API Token）────────────────────────────────
 	authed := r.Group("")
@@ -225,6 +226,8 @@ func (s *Server) Router() *gin.Engine {
 	authed.GET("/api/v1/cold-clusters/:cluster", s.coldGet)
 	authed.POST("/api/v1/cold-clusters", s.adminOnly(), s.coldCreate)
 	authed.POST("/api/v1/cold-clusters/:cluster/tasks", s.adminOnly(), s.coldTaskCreate)
+	authed.POST("/api/v1/cold-clusters/:cluster/ingress", s.adminOnly(), s.coldIngressCreate)
+	authed.GET("/api/v1/cold-clusters/:cluster/ingress", s.coldIngressGet)
 
 	// Draft metadata only: no deployment, heartbeat, or Proxy routing changes.
 	gateways := authed.Group("/api/v1/gateway/drafts")

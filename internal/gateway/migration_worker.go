@@ -233,7 +233,7 @@ func (w *migrationWorkerCycle) move(ctx context.Context, key []byte) error {
 	_, err = w.s.moveLocked(step, key)
 	w.progress.Attempts++
 	if err == nil && w.progress.Phase == sharding.WorkerVerify {
-		n := w.s.nodes[w.change.DesiredPlacement(key).Source.ID]
+		n := w.s.node(w.change.DesiredPlacement(key).Source.ID)
 		token, e := w.s.ensure(step, n)
 		if e != nil {
 			return e
@@ -333,7 +333,7 @@ if redis.call('GET',KEYS[1])~=ARGV[1] then return redis.error_reply('TRYAGAIN co
 return redis.call('EXISTS',KEYS[2])`
 
 func (w *migrationWorkerCycle) scanSource(ctx context.Context, node sharding.Node) error {
-	n := w.s.nodes[node.ID]
+	n := w.s.node(node.ID)
 	setup, cancel := context.WithTimeout(ctx, w.options.StepTimeout)
 	token, err := w.s.ensure(setup, n)
 	if err != nil {

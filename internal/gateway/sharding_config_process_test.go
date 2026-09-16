@@ -61,8 +61,12 @@ func startConfiguredShardProcess(t *testing.T, c Config) func() {
 	stop := func() { once.Do(func() { cmd.Process.Kill(); cmd.Wait() }) }
 	t.Cleanup(stop)
 	deadline := time.Now().Add(10 * time.Second)
+	password, err := readPassword(c.FrontendPasswordFile)
+	if err != nil {
+		t.Fatal(err)
+	}
 	for {
-		conn, reader, e := authenticated(c.Listen, "shard-config-front")
+		conn, reader, e := authenticated(c.Listen, password)
 		if e == nil {
 			conn.SetDeadline(time.Now().Add(time.Second))
 			writeAll(conn, encodeCommand("PING"))

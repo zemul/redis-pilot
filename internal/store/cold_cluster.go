@@ -90,6 +90,13 @@ func loadColdCluster(q interface{ QueryRow(string, ...any) *sql.Row }, id string
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return nil, err
 	}
+	v := apitypes.ColdIngress{ClusterID: c.ID, NodeID: c.NodeID}
+	err = q.QueryRow(`SELECT address,port,password!='',ready FROM cold_ingress WHERE cluster_id=?`, id).Scan(&v.GatewayAddress, &v.Port, &v.HasPassword, &v.Ready)
+	if err == nil {
+		c.Ingress = &v
+	} else if err != sql.ErrNoRows {
+		return nil, err
+	}
 	return &c, nil
 }
 func (d *DB) GetColdCluster(id string) (*apitypes.ColdCluster, error) {
@@ -128,6 +135,7 @@ func (d *DB) ListColdClusters() ([]apitypes.ColdCluster, error) {
 func saveColdCluster(tx *sql.Tx, c *apitypes.ColdCluster) error {
 	v := *c
 	v.Task = nil
+	v.Ingress = nil
 	raw, err := json.Marshal(v)
 	if err != nil {
 		return err

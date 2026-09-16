@@ -41,7 +41,7 @@ func (s *cacheShards) admitLocked(ctx context.Context, keys [][]byte) (context.C
 		return nil, nil, errors.New("topology publication requires reconciliation")
 	}
 	if len(keys) == 0 {
-		a := &shardAdmission{runtime: s.r, node: s.nodes[s.topology.Config().Nodes[0].ID], revision: s.revisionLocked()}
+		a := &shardAdmission{runtime: s.r, node: s.node(s.topology.Config().Nodes[0].ID), revision: s.revisionLocked()}
 		a.live.Store(true)
 		return context.WithValue(ctx, shardAdmissionKey{}, a), func() { a.live.Store(false) }, nil
 	}
@@ -53,7 +53,7 @@ func (s *cacheShards) admitLocked(ctx context.Context, keys [][]byte) (context.C
 	if err != nil {
 		return nil, nil, err
 	}
-	a := &shardAdmission{runtime: s.r, node: s.nodes[p.groups[0].node.ID], revision: s.revisionLocked()}
+	a := &shardAdmission{runtime: s.r, node: s.node(p.groups[0].node.ID), revision: s.revisionLocked()}
 	a.retiring = s.retiring != nil
 	seen := map[string]bool{}
 	for _, k := range p.keys {
@@ -109,7 +109,7 @@ func (s *cacheShards) admitLocked(ctx context.Context, keys [][]byte) (context.C
 }
 
 func (s *cacheShards) activateCommitted(ctx context.Context, h sharding.Handoff) error {
-	n := s.nodes[h.Placement.Target.ID]
+	n := s.node(h.Placement.Target.ID)
 	token, err := s.ensure(ctx, n)
 	if err != nil {
 		return err
@@ -158,7 +158,7 @@ func (s *cacheShards) moveLocked(ctx context.Context, key []byte) (sharding.Hand
 	if h.State == sharding.Cleaned {
 		return h, nil
 	}
-	sourceNode, targetNode := s.nodes[h.Placement.Source.ID], s.nodes[h.Placement.Target.ID]
+	sourceNode, targetNode := s.node(h.Placement.Source.ID), s.node(h.Placement.Target.ID)
 	sourceToken, err := s.ensure(ctx, sourceNode)
 	if err != nil {
 		return h, err
@@ -252,7 +252,7 @@ func (s *cacheShards) execute(parent context.Context, args [][]byte) []byte {
 	p, valid := s.r.prepareCache(args)
 	keyless := valid && len(p.keys) == 0 && (p.kind == "local" || p.kind == "script" || p.kind == "noscript")
 	if name == "SCRIPT" || keyless {
-		n := s.nodes[s.topology.Config().Nodes[0].ID]
+		n := s.node(s.topology.Config().Nodes[0].ID)
 		a := &shardAdmission{runtime: s.r, node: n, revision: s.revisionLocked()}
 		a.live.Store(true)
 		defer a.live.Store(false)

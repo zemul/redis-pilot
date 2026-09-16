@@ -1,7 +1,8 @@
 package discovery
 
 import (
-	"fmt"
+	"net"
+	"strconv"
 
 	"gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/pkg/apitypes"
 )
@@ -107,7 +108,7 @@ func ParseSnapshot(snap *apitypes.ProxySnapshot) *Topology {
 
 // endpointAddr 将 ProxyEndpoint 转为 "host:port" 字符串。
 func endpointAddr(ep apitypes.ProxyEndpoint) string {
-	return fmt.Sprintf("%s:%d", ep.Address, ep.Port)
+	return net.JoinHostPort(ep.Address, strconv.Itoa(ep.Port))
 }
 
 // MasterChanged 比较两个 GroupTopology 的 master 地址是否变化。

@@ -86,6 +86,19 @@ func (s *Service) shardControlOnce(ctx context.Context) error {
 	if c.ID != s.cfg.ServiceID || c.GatewayID != s.cfg.GatewayID || c.NodeID != s.cfg.ControlPlane.NodeID || c.HotAddress != s.cfg.RedisAddress {
 		return errors.New("cluster placement mismatch")
 	}
+	if c.Ingress != nil && !c.Ingress.Ready && c.Ingress.GatewayAddress == s.cfg.Listen && s.frontendPassword == "" {
+		// Initial topology must agree before publishing a business entry point.
+		want, e := coldTaskTopology(c.Revision, c.Shards)
+		r := s.cache.shards
+		r.mu.RLock()
+		matches := e == nil && (r.topology.Equal(want) || (r.change != nil && r.change.MatchesSource(want)))
+		r.mu.RUnlock()
+		if matches {
+			if err := s.shardControlRequest(ctx, "POST", path+"/ingress-ready", map[string]string{"gateway_address": s.cfg.Listen}, nil); err != nil {
+				return err
+			}
+		}
+	}
 	if c.Task == nil {
 		return nil
 	}
@@ -153,13 +166,13 @@ func (s *Service) acceptColdTask(ctx context.Context, t *apitypes.ColdTask) apit
 	if shards.change != nil || shards.retiring != nil || shards.journal != nil || !shards.topology.Equal(from) {
 		return fail("task_conflict")
 	}
-	if shards.validateTopology(to) != nil {
+	if shards.registerManaged(to) != nil || shards.validateTopology(to) != nil {
 		return fail("waiting_configuration")
 	}
 	if s.backendPassword != "" {
 		return fail("waiting_configuration")
 	}
-	for _, n := range shards.nodes {
+	for _, n := range shards.nodeSnapshot() {
 		if n.password != "" {
 			return fail("waiting_configuration")
 		}
@@ -186,7 +199,7 @@ func (s *Service) acceptColdTask(ctx context.Context, t *apitypes.ColdTask) apit
 			continue
 		}
 		checked[n.ID] = true
-		if err := shards.preflightCold(step, shards.nodes[n.ID], !old[n.ID]); err != nil {
+		if err := shards.preflightCold(step, shards.node(n.ID), !old[n.ID]); err != nil {
 			return fail("preflight_failed")
 		}
 	}

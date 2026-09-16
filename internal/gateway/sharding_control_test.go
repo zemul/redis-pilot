@@ -5,18 +5,22 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/internal/proxy/proxysvc"
 	"gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/internal/store"
 	"gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/pkg/apitypes"
 )
@@ -56,9 +60,126 @@ func anonymousColdCall(t *testing.T, c Config, address string, args ...string) [
 	return cacheCall(t, &cacheConn{Conn: conn, reader: r, cfg: c}, args...)
 }
 
+func TestColdProxyProcessHelper(t *testing.T) {
+	endpoint := os.Getenv("PILOT_TEST_COLD_PROXY")
+	if endpoint == "" {
+		t.Skip("subprocess helper")
+	}
+	p := proxysvc.New(proxysvc.Config{ServerEndpoint: endpoint, ServerToken: "cold-control-machine-credential", NodeID: "node", PollInterval: 20 * time.Millisecond, PollWait: time.Millisecond, PoolSize: 4, ConnectTimeout: time.Second})
+	if err := p.ListenAndServe(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func startColdProxyProcess(t *testing.T, endpoint, address string) {
+	t.Helper()
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(executable, "-test.run=^TestColdProxyProcessHelper$", "-test.count=1")
+	cmd.Env = append(os.Environ(), "PILOT_TEST_COLD_PROXY="+endpoint)
+	var output bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &output, &output
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	var once sync.Once
+	stop := func() { once.Do(func() { cmd.Process.Kill(); cmd.Wait() }) }
+	t.Cleanup(stop)
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		c, r, err := authenticated(address, "shard-config-front")
+		if err == nil {
+			c.SetDeadline(time.Now().Add(time.Second))
+			writeAll(c, encodeCommand("PING"))
+			b, e := r.ReadFrame()
+			c.Close()
+			if e == nil && string(b) == "+PONG\r\n" {
+				return
+			}
+		}
+		if time.Now().After(deadline) {
+			stop()
+			t.Fatalf("Proxy startup: %s", output.String())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
 // Uses actual Kvrocks durability settings and real Gateway subprocesses. The
 // HTTP fixture delegates persistence/idempotency to the real Server store;
 // HTTP authorization/handlers are independently covered in internal/server.
+func startColdLiveWriter(t *testing.T, address, key string) func() string {
+	t.Helper()
+	c, r, err := authenticated(address, "shard-config-front")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writeAll(c, encodeCommand("HSET", key, "other", "keep")); err != nil {
+		t.Fatal(err)
+	}
+	b, err := r.ReadFrame()
+	if err != nil || (string(b) != ":0\r\n" && string(b) != ":1\r\n") {
+		t.Fatal(string(b), err)
+	}
+	shardWant(t, c, r, "$4\r\nkeep\r\n", "HGET", key, "other")
+	stop, done := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	var last string
+	var failure error
+	go func() {
+		defer close(done)
+		defer c.Close()
+		for i := 1; ; i++ {
+			value := strconv.Itoa(i)
+			c.SetDeadline(time.Now().Add(5 * time.Second))
+			for _, args := range [][]string{{"HSET", key, "counter", value}, {"HGET", key, "counter"}, {"HGET", key, "other"}} {
+				if e := writeAll(c, encodeCommand(args...)); e != nil {
+					failure = e
+					return
+				}
+				b, e := r.ReadFrame()
+				if e != nil {
+					failure = e
+					return
+				}
+				if args[0] == "HSET" {
+					if string(b) != ":0\r\n" && string(b) != ":1\r\n" {
+						failure = fmt.Errorf("write failed: %q", b)
+						return
+					}
+				} else {
+					want := value
+					if args[2] == "other" {
+						want = "keep"
+					}
+					if string(b) != fmt.Sprintf("$%d\r\n%s\r\n", len(want), want) {
+						failure = fmt.Errorf("successful write followed by wrong read: %q want %q", b, want)
+						return
+					}
+				}
+			}
+			last = value
+			select {
+			case <-stop:
+				return
+			case <-time.After(10 * time.Millisecond):
+			}
+		}
+	}()
+	finish := func() string {
+		once.Do(func() { close(stop) })
+		<-done
+		if failure != nil {
+			t.Fatal(failure)
+		}
+		return last
+	}
+	t.Cleanup(func() { finish() })
+	return finish
+}
+
 func TestColdControlKvrocksRecovery(t *testing.T) {
 	if os.Getenv("GATEWAY_TEST_KVROCKS_SERVER") == "" {
 		t.Skip("real Kvrocks required for task preflight")
@@ -75,7 +196,8 @@ func TestColdControlKvrocksRecovery(t *testing.T) {
 			cfg.Listen = freeAddress(t)
 			cfg.AdminListen = freeAddress(t)
 			cfg.Cache.WritePolicy = policy
-			cfg.FrontendPasswordFile = secretFile(t, "shard-config-front")
+			cfg.FrontendPasswordFile = ""
+			cfg.AllowUnauthenticated = true
 			configuredBackendCall(t, cfg, hot, "CONFIG", "SET", "maxmemory", "33554432", "maxmemory-policy", "allkeys-lru")
 			for _, address := range []string{a, b, hot} {
 				configuredBackendCall(t, cfg, address, "CONFIG", "SET", "requirepass", "")
@@ -113,6 +235,12 @@ func TestColdControlKvrocksRecovery(t *testing.T) {
 			if _, err := d.CreateColdCluster(apitypes.ColdClusterSpec{ID: "cluster", GatewayID: "gw", NodeID: "node", HotInstance: "hot", Shards: []apitypes.ColdShard{{ID: "a", Instance: "a"}}}); err != nil {
 				t.Fatal(err)
 			}
+			proxyAddress := freeAddress(t)
+			_, proxyPort, _ := net.SplitHostPort(proxyAddress)
+			port, _ := strconv.Atoi(proxyPort)
+			if _, err := d.CreateColdIngress("cluster", apitypes.ColdIngressRequest{GatewayAddress: cfg.Listen, Password: "shard-config-front"}, port, port); err != nil {
+				t.Fatal(err)
+			}
 			var unavailable, loseAck atomic.Bool
 			const token = "cold-control-machine-credential"
 			httpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -126,7 +254,27 @@ func TestColdControlKvrocksRecovery(t *testing.T) {
 				}
 				var data any
 				var err error
-				if r.Method == "POST" && strings.HasSuffix(r.URL.Path, "/report") {
+				if r.URL.Path == "/api/v1/proxy/snapshot" {
+					snap := apitypes.ProxySnapshot{Version: "empty"}
+					if r.URL.Query().Get("node_id") == "node" {
+						cluster, e := d.GetColdCluster("cluster")
+						if e != nil {
+							t.Error(e)
+							w.WriteHeader(500)
+							return
+						}
+						if cluster.Ingress.Ready {
+							host, p, _ := net.SplitHostPort(cfg.Listen)
+							pn, _ := strconv.Atoi(p)
+							snap.Version = "ready"
+							snap.Listeners = []apitypes.ProxyListener{{Name: "cold:cluster", Group: "cold:cluster", Mode: "master", Bind: "127.0.0.1", Port: port, Cluster: "cold:cluster", Password: "shard-config-front", AccessMode: "standard"}}
+							snap.Clusters = []apitypes.ProxyCluster{{Name: "cold:cluster", Endpoints: []apitypes.ProxyEndpoint{{Address: host, Port: pn}}}}
+						}
+					}
+					data = snap
+				} else if strings.HasSuffix(r.URL.Path, "/ingress-ready") {
+					err = d.ConfirmColdIngress("gw", "cluster", cfg.Listen)
+				} else if r.Method == "POST" && strings.HasSuffix(r.URL.Path, "/report") {
 					var report apitypes.ColdTaskReport
 					err = json.NewDecoder(r.Body).Decode(&report)
 					if err == nil {
@@ -151,9 +299,10 @@ func TestColdControlKvrocksRecovery(t *testing.T) {
 			cfg.ControlPlane = ControlPlaneConfig{ManageShards: true, ServerEndpoint: httpServer.URL, TokenFile: secretFile(t, token), NodeID: "node", ClusterID: "cluster", ShardIDs: []string{"entry"}, HeartbeatInterval: time.Second, RequestTimeout: time.Second}
 			cfg.Cache.Sharding.Migration.KeysPerSecond = 1
 			stop := startConfiguredShardProcess(t, cfg)
+			startColdProxyProcess(t, httpServer.URL, proxyAddress)
 			targetNodes := []apitypes.ColdShard{{ID: "a", Instance: "a", Address: a}, {ID: "b", Instance: "b", Address: b}}
 			to, _ := coldTaskTopology(2, targetNodes)
-			conn, r, err := authenticated(cfg.Listen, "shard-config-front")
+			conn, r, err := authenticated(proxyAddress, "shard-config-front")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -164,10 +313,8 @@ func TestColdControlKvrocksRecovery(t *testing.T) {
 				shardWant(t, conn, r, "+OK\r\n", "SET", key, "old")
 			}
 			conn.Close()
-			task, err := d.CreateColdTask("cluster", apitypes.ColdTaskRequest{ID: "expand", ExpectedRevision: 1, Shards: targetNodes})
-			if err != nil {
-				t.Fatal(err)
-			}
+			liveKey := shardKeyFor(to, "b", "live-hash")
+			checkLive := startColdLiveWriter(t, proxyAddress, liveKey)
 			waitReport := func(predicate func(*apitypes.ColdTask) bool) {
 				t.Helper()
 				deadline := time.Now().Add(20 * time.Second)
@@ -185,15 +332,12 @@ func TestColdControlKvrocksRecovery(t *testing.T) {
 					time.Sleep(20 * time.Millisecond)
 				}
 			}
-			waitReport(func(t *apitypes.ColdTask) bool { return t.ErrorCode == "waiting_configuration" })
-			conn, r, err = authenticated(cfg.Listen, "shard-config-front")
+			conn, r, err = authenticated(proxyAddress, "shard-config-front")
 			if err != nil {
 				t.Fatal(err)
 			}
 			shardWant(t, conn, r, "+OK\r\n", "SET", "unaffected", "available")
 			conn.Close()
-			stop()
-			cfg.Cache.Sharding.Nodes = append(cfg.Cache.Sharding.Nodes, ShardNodeConfig{ID: "b", Address: b})
 			setSync := func(old, value string) {
 				stopB()
 				contents, err := os.ReadFile(backendConfig)
@@ -208,9 +352,12 @@ func TestColdControlKvrocksRecovery(t *testing.T) {
 				configuredBackendCall(t, cfg, b, "CONFIG", "SET", "requirepass", "")
 			}
 			setSync("yes", "no")
-			stop = startConfiguredShardProcess(t, cfg)
+			task, err := d.CreateColdTask("cluster", apitypes.ColdTaskRequest{ID: "expand", ExpectedRevision: 1, Shards: targetNodes})
+			if err != nil {
+				t.Fatal(err)
+			}
 			waitReport(func(t *apitypes.ColdTask) bool { return t.ErrorCode == "preflight_failed" })
-			conn, r, err = authenticated(cfg.Listen, "shard-config-front")
+			conn, r, err = authenticated(proxyAddress, "shard-config-front")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -219,6 +366,7 @@ func TestColdControlKvrocksRecovery(t *testing.T) {
 			setSync("no", "yes")
 			loseAck.Store(true) // Server commits acceptance but response is lost.
 			waitReport(func(t *apitypes.ColdTask) bool { return t.Phase == "active" })
+			liveValue := checkLive()
 			unavailable.Store(true)
 			stop()
 			cfg.Cache.Sharding.Migration.KeysPerSecond = 100000
@@ -244,7 +392,7 @@ func TestColdControlKvrocksRecovery(t *testing.T) {
 				}
 				time.Sleep(20 * time.Millisecond)
 			}
-			conn, r, err = authenticated(cfg.Listen, "shard-config-front")
+			conn, r, err = authenticated(proxyAddress, "shard-config-front")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -255,6 +403,13 @@ func TestColdControlKvrocksRecovery(t *testing.T) {
 			}
 			conn.Close()
 			unavailable.Store(false)
+			conn, r, err = authenticated(proxyAddress, "shard-config-front")
+			if err != nil {
+				t.Fatal(err)
+			}
+			shardWant(t, conn, r, fmt.Sprintf("$%d\r\n%s\r\n", len(liveValue), liveValue), "HGET", liveKey, "counter")
+			shardWant(t, conn, r, "$4\r\nkeep\r\n", "HGET", liveKey, "other")
+			conn.Close()
 			waitReport(func(t *apitypes.ColdTask) bool { return t.Phase == "complete" })
 			c, err := d.GetColdCluster("cluster")
 			if err != nil || c.Revision != 2 {
@@ -262,12 +417,13 @@ func TestColdControlKvrocksRecovery(t *testing.T) {
 			}
 			stop()
 			stop = startConfiguredShardProcess(t, cfg)
-			conn, r, err = authenticated(cfg.Listen, "shard-config-front")
+			conn, r, err = authenticated(proxyAddress, "shard-config-front")
 			if err != nil {
 				t.Fatal(err)
 			}
 			shardWant(t, conn, r, "$3\r\nnew\r\n", "GET", keys[0])
 			conn.Close()
+			checkLive = startColdLiveWriter(t, proxyAddress, liveKey)
 			if _, err := d.CreateColdTask("cluster", apitypes.ColdTaskRequest{ID: "shrink", ExpectedRevision: 2, Shards: []apitypes.ColdShard{{ID: "a", Instance: "a"}}}); err != nil {
 				t.Fatal(err)
 			}
@@ -275,20 +431,40 @@ func TestColdControlKvrocksRecovery(t *testing.T) {
 				t.Fatal("source released before Gateway cleanup")
 			}
 			waitReport(func(t *apitypes.ColdTask) bool { return t.ID == "shrink" && t.Phase == "complete" })
+			liveValue = checkLive()
 			if err := d.DeleteInstance("b"); err != nil {
 				t.Fatal("completed source not released", err)
+			}
+			// The platform may allocate a released port to a new shard identity.
+			// Reusing it must not require restarting the Gateway registry.
+			_, bp, _ := net.SplitHostPort(b)
+			bport, _ := strconv.Atoi(bp)
+			if err := d.UpsertInstance("b", &apitypes.Instance{Group: "b", Server: "node", Role: "master", Port: bport, DesiredState: "running"}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := d.CreateColdTask("cluster", apitypes.ColdTaskRequest{ID: "reuse-expand", ExpectedRevision: 3, Shards: []apitypes.ColdShard{{ID: "a", Instance: "a"}, {ID: "replacement", Instance: "b"}}}); err != nil {
+				t.Fatal(err)
+			}
+			waitReport(func(t *apitypes.ColdTask) bool { return t.ID == "reuse-expand" && t.Phase == "complete" })
+			if _, err := d.CreateColdTask("cluster", apitypes.ColdTaskRequest{ID: "reuse-shrink", ExpectedRevision: 4, Shards: []apitypes.ColdShard{{ID: "a", Instance: "a"}}}); err != nil {
+				t.Fatal(err)
+			}
+			waitReport(func(t *apitypes.ColdTask) bool { return t.ID == "reuse-shrink" && t.Phase == "complete" })
+			if err := d.DeleteInstance("b"); err != nil {
+				t.Fatal(err)
 			}
 			stop()
 			stopB()
 			cfg.Cache.Sharding.Nodes = cfg.Cache.Sharding.Nodes[:1]
 			stop = startConfiguredShardProcess(t, cfg)
-			conn, r, err = authenticated(cfg.Listen, "shard-config-front")
+			conn, r, err = authenticated(proxyAddress, "shard-config-front")
 			if err != nil {
 				t.Fatal(err)
 			}
 			for _, key := range keys {
 				shardWant(t, conn, r, "$3\r\nnew\r\n", "GET", key)
 			}
+			shardWant(t, conn, r, fmt.Sprintf("$%d\r\n%s\r\n", len(liveValue), liveValue), "HGET", liveKey, "counter")
 			conn.Close()
 			stop()
 		})

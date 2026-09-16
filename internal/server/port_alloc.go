@@ -28,6 +28,9 @@ func allocRedisPort(cfg PortConfig, instances *apitypes.InstancesState, serverNa
 func allocProxyPorts(cfg PortConfig, instances *apitypes.InstancesState, withAuto bool) (*apitypes.ProxyConfig, error) {
 	usedAuto := make(map[int]bool)
 	usedMaster := make(map[int]bool)
+	for _, p := range instances.ReservedProxyPorts {
+		usedAuto[p], usedMaster[p] = true, true
+	}
 	for _, group := range instances.Groups {
 		if group.Proxy == nil {
 			continue

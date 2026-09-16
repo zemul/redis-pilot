@@ -31,6 +31,7 @@ type FileConfig struct {
 	// Discovery 模式（M4）
 	ProxyID           string   `yaml:"proxy_id"`
 	ServerEndpoint    string   `yaml:"server_endpoint"`
+	NodeID            string   `yaml:"node_id"`
 	ServerToken       string   `yaml:"server_token"`
 	HeartbeatInterval Duration `yaml:"heartbeat_interval"`
 	PollInterval      Duration `yaml:"poll_interval"`

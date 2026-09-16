@@ -39,6 +39,7 @@ type Config struct {
 
 	// Discovery 模式（M4）
 	ProxyID           string
+	NodeID            string
 	ServerEndpoint    string
 	ServerToken       string
 	HeartbeatInterval time.Duration
@@ -150,6 +151,7 @@ func New(cfg Config) *Proxy {
 			pollCfg.Wait = 20 * time.Second
 		}
 		p.discovery = discovery.NewManager(discovery.ServerConfig{
+			NodeID:   cfg.NodeID,
 			Endpoint: cfg.ServerEndpoint,
 			Token:    cfg.ServerToken,
 		}, pollCfg)

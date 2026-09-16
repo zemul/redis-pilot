@@ -8,7 +8,7 @@ mode: cache
 listen: 127.0.0.1:17579
 admin_listen: 127.0.0.1:19500
 redis_address: 127.0.0.1:19590
-frontend_password_file: /etc/redis-gateway-sharded/frontend.secret
+allow_unauthenticated: true # loopback only; business AUTH is terminated by Proxy
 # Managed platform backends have no database passwords.
 connect_timeout: 200ms
 request_timeout: 3s
@@ -35,13 +35,12 @@ cache:
   sharding:
     # Parent must already exist, owned by the service user, mode 0700.
     state_dir: /var/lib/redis-gateway-sharded/sharding
-    # At initialization, all listed nodes form HRW revision 1. Afterwards this
-    # is only an endpoint registry: adding/removing entries is NOT resharding.
+    # At initialization these nodes form revision 1. Managed migration tasks
+    # deliver new endpoints; offline restart uses the durable task snapshots.
     nodes:
       - id: cold-a
         address: 127.0.0.1:19591
-      - id: cold-b
-        address: 127.0.0.1:19592
+      # Further nodes (e.g. cold-b) arrive with a Server migration task.
     migration:
       scan_count: 128
       keys_per_second: 100

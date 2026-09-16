@@ -79,7 +79,7 @@ func (s *cacheShards) rotateMigrationOwnersLocked(ctx context.Context, change *s
 			continue
 		}
 		seen[node.ID] = true
-		n := s.nodes[node.ID]
+		n := s.node(node.ID)
 		if _, err := s.ensure(ctx, n); err != nil {
 			return err
 		}
@@ -112,7 +112,7 @@ func (s *cacheShards) retireMigrationKey(ctx context.Context, j *sharding.Journa
 	}
 	defer release()
 	for i, node := range []sharding.Node{h.Placement.Source, h.Placement.Target} {
-		n := s.nodes[node.ID]
+		n := s.node(node.ID)
 		token, err := s.ensure(ctx, n)
 		if err != nil {
 			return err

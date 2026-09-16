@@ -6,6 +6,9 @@ import "database/sql"
 // particular operation locks are checked before handlers contact an Agent.
 func createColdSchema(tx *sql.Tx) error {
 	for _, q := range []string{
+		`CREATE TABLE IF NOT EXISTS cold_ingress(cluster_id TEXT PRIMARY KEY,node_id TEXT NOT NULL,address TEXT NOT NULL,port INTEGER NOT NULL UNIQUE,password TEXT NOT NULL,ready INTEGER NOT NULL DEFAULT 0,UNIQUE(node_id,address))`,
+		`CREATE TRIGGER IF NOT EXISTS cold_ingress_group_insert BEFORE INSERT ON instance_groups WHEN EXISTS(SELECT 1 FROM cold_ingress WHERE port=COALESCE(json_extract(NEW.proxy,'$.master_port'),0) OR port=COALESCE(json_extract(NEW.proxy,'$.auto_port'),0) OR NEW.name='cold:'||cluster_id) BEGIN SELECT RAISE(ABORT,'Proxy port or name reserved by cold ingress'); END`,
+		`CREATE TRIGGER IF NOT EXISTS cold_ingress_group_update BEFORE UPDATE ON instance_groups WHEN EXISTS(SELECT 1 FROM cold_ingress WHERE port=COALESCE(json_extract(NEW.proxy,'$.master_port'),0) OR port=COALESCE(json_extract(NEW.proxy,'$.auto_port'),0) OR NEW.name='cold:'||cluster_id) BEGIN SELECT RAISE(ABORT,'Proxy port or name reserved by cold ingress'); END`,
 		`CREATE TABLE IF NOT EXISTS cold_clusters(id TEXT PRIMARY KEY,gateway_id TEXT NOT NULL UNIQUE,body TEXT NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS cold_tasks(cluster_id TEXT NOT NULL,id TEXT NOT NULL,target_revision INTEGER NOT NULL,body TEXT NOT NULL,PRIMARY KEY(cluster_id,id),UNIQUE(cluster_id,target_revision))`,
 		`CREATE TABLE IF NOT EXISTS cold_resources(instance TEXT PRIMARY KEY,cluster_id TEXT NOT NULL)`,

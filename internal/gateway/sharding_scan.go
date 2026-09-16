@@ -141,7 +141,7 @@ func (s *cacheShards) scanLocked(ctx context.Context, args [][]byte) []byte {
 		if v.index < 0 || v.index >= len(nodes) {
 			return shardScanError()
 		}
-		n = s.nodes[nodes[v.index].ID]
+		n = s.node(nodes[v.index].ID)
 	} else {
 		routed, release, err := s.admitLocked(ctx, args[1:2])
 		if err != nil {

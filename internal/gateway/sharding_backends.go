@@ -14,8 +14,8 @@ import (
 	"gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/internal/gateway/sharding"
 )
 
-// Credentials are separate from durable routing snapshots. YAML supports
-// loopback startup/recovery; creation of migration tasks is still internal.
+// Manual credentials are separate from durable routing snapshots. Managed
+// passwordless endpoints may be added by validated control-plane tasks.
 type cacheShardEndpoint struct {
 	node     sharding.Node
 	password string
@@ -34,7 +34,8 @@ type cacheShards struct {
 	topology           *sharding.Topology
 	change             *sharding.Transition
 	journal            *sharding.Journal
-	nodes              map[string]*cacheShardNode // immutable after construction
+	nodesMu            sync.RWMutex
+	nodes              map[string]*cacheShardNode // current/task endpoints; node objects retain immutable identities
 	cursors            shardCursorStore
 	blocking           shardBlockingActive
 	workerConfig       *migrationWorkerOptions // immutable after service startup
@@ -48,14 +49,6 @@ func newCacheShards(r *cacheRuntime, t *sharding.Topology, endpoints []cacheShar
 	if r == nil || t == nil || t.Revision() == 0 {
 		return nil, errors.New("validated sharded runtime required")
 	}
-	all := sharding.Config{Algorithm: sharding.Algorithm, Revision: 1}
-	for _, e := range endpoints {
-		all.Nodes = append(all.Nodes, e.node)
-	}
-	validated, err := sharding.New(all)
-	if err != nil {
-		return nil, err
-	}
 	s := &cacheShards{r: r, topology: t, nodes: map[string]*cacheShardNode{}}
 	canonical := map[string]sharding.Node{}
 	hotAddr, err := netip.ParseAddrPort(r.s.cfg.RedisAddress)
@@ -63,8 +56,19 @@ func newCacheShards(r *cacheRuntime, t *sharding.Topology, endpoints []cacheShar
 		return nil, err
 	}
 	hotAddress := netip.AddrPortFrom(hotAddr.Addr().Unmap(), hotAddr.Port()).String()
-	for _, n := range validated.Config().Nodes {
-		canonical[n.ID] = n
+	addresses := map[string]bool{}
+	// A transition can require the union of two valid topologies, up to twice
+	// the routing node limit. The registry is not itself a routing topology.
+	for _, e := range endpoints {
+		one, err := sharding.New(sharding.Config{Algorithm: sharding.Algorithm, Revision: 1, Nodes: []sharding.Node{e.node}})
+		if err != nil {
+			return nil, err
+		}
+		n := one.Config().Nodes[0]
+		if _, ok := canonical[n.ID]; ok || addresses[n.Address] {
+			return nil, errors.New("duplicate backend identity/address")
+		}
+		canonical[n.ID], addresses[n.Address] = n, true
 	}
 	for _, e := range endpoints {
 		n := canonical[e.node.ID]
@@ -80,6 +84,8 @@ func newCacheShards(r *cacheRuntime, t *sharding.Topology, endpoints []cacheShar
 }
 
 func (s *cacheShards) validateTopology(t *sharding.Topology) error {
+	s.nodesMu.RLock()
+	defer s.nodesMu.RUnlock()
 	for _, n := range t.Config().Nodes {
 		if s.nodes[n.ID] == nil || s.nodes[n.ID].node != n {
 			return errors.New("topology has no matching backend credentials/address")
@@ -125,7 +131,7 @@ func (s *cacheShards) requiredNodes() []*cacheShardNode {
 	}
 	byID := map[string]*cacheShardNode{}
 	for _, n := range nodes {
-		byID[n.ID] = s.nodes[n.ID]
+		byID[n.ID] = s.node(n.ID)
 	}
 	ids := make([]string, 0, len(byID))
 	for id := range byID {
@@ -210,7 +216,7 @@ func (s *cacheShards) epoch(ctx context.Context) (string, error) {
 }
 
 func (s *cacheShards) uncertain(token string) {
-	for _, n := range s.nodes {
+	for _, n := range s.nodeSnapshot() {
 		n.mu.Lock()
 		if token == n.token && n.settled {
 			n.previous, n.token, n.settled = n.token, rand.Text(), false
@@ -266,7 +272,7 @@ func (s *cacheShards) probe(ctx context.Context) {
 	}
 }
 
-// beginTransition is internal and requires the future controller to have
+// beginTransition is internal and requires the controller to have
 // verified durability, clocks and legacy unregistered-writer prerequisites. It never opens
 // a new/empty journal in place of an existing task. No second task can overlap.
 func (s *cacheShards) beginTransition(to *sharding.Topology, j *sharding.Journal) error {
@@ -304,7 +310,7 @@ func (s *cacheShards) beginTransitionLocked(to *sharding.Topology, j *sharding.J
 			current[node.ID] = true
 		}
 		for _, node := range to.Config().Nodes {
-			n := s.nodes[node.ID]
+			n := s.node(node.ID)
 			n.mu.Lock()
 			uninitialized := n.token == ""
 			n.mu.Unlock()

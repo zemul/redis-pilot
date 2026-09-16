@@ -39,6 +39,59 @@ func TestColdClusterAPI(t *testing.T) {
 	if w := doAuthRequest(r, "POST", base, spec); w.Code != 200 {
 		t.Fatal(w.Code, w.Body.String())
 	}
+	ingress := apitypes.ColdIngressRequest{GatewayAddress: "127.0.0.1:19555", Password: "ingress-business-secret"}
+	if w := doRequestWithAuth(r, "POST", base+"/cluster/ingress", viewer, ingress); w.Code != 403 {
+		t.Fatal(w.Code)
+	}
+	if w := doAuthRequest(r, "POST", base+"/cluster/ingress", ingress); w.Code != 200 || strings.Contains(w.Body.String(), ingress.Password) {
+		t.Fatal(w.Code, w.Body.String())
+	}
+	before, err := s.buildProxySnapshotForNode("node")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, l := range before.Listeners {
+		if l.Group == "cold:cluster" {
+			t.Fatal("unconfirmed ingress published")
+		}
+	}
+	if w := doRequestWithAuth(r, "POST", "/api/v1/gateway/control/gw/clusters/cluster/ingress-ready", heartbeatToken, map[string]string{"gateway_address": ingress.GatewayAddress}); w.Code != 200 {
+		t.Fatal(w.Code, w.Body.String())
+	}
+	for _, node := range []string{"", "other", "node"} {
+		snapshot, err := s.buildProxySnapshotForNode(node)
+		if err != nil {
+			t.Fatal(err)
+		}
+		found := false
+		for _, l := range snapshot.Listeners {
+			if l.Group == "cold:cluster" {
+				found = true
+				if l.Password != ingress.Password || l.AccessMode != "standard" || l.ReadCluster != "" {
+					t.Fatal(l)
+				}
+			}
+		}
+		if found != (node == "node") {
+			t.Fatal("wrong placement", node, snapshot)
+		}
+		for _, c := range snapshot.Clusters {
+			if c.Name == "cold:cluster" && (c.Password != "" || len(c.Endpoints) != 1 || c.Endpoints[0].Port != 19555) {
+				t.Fatal(c)
+			}
+		}
+	}
+	if w := doRequestWithAuth(r, "GET", base+"/cluster/ingress", viewer, nil); w.Code != 200 || strings.Contains(w.Body.String(), ingress.Password) {
+		t.Fatal(w.Code, w.Body.String())
+	}
+	st, err := s.db.ReadInstances()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ports, err := allocProxyPorts(s.cfg.Ports, st, false)
+	if err != nil || ports.MasterPort == st.ReservedProxyPorts[0] {
+		t.Fatal(ports, err)
+	}
 	if w := doRequestWithAuth(r, "GET", base, viewer, nil); w.Code != 200 || strings.Contains(w.Body.String(), "secret") {
 		t.Fatal(w.Code, w.Body.String())
 	}

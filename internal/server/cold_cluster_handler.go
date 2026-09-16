@@ -82,6 +82,53 @@ func (s *Server) coldTaskCreate(c *gin.Context) {
 	}
 	ok(c, v)
 }
+
+func (s *Server) coldIngressCreate(c *gin.Context) {
+	var req apitypes.ColdIngressRequest
+	if !coldBody(c, &req) {
+		return
+	}
+	v, err := s.db.CreateColdIngress(c.Param("cluster"), req, s.cfg.Ports.ProxyMaster.Start, s.cfg.Ports.ProxyMaster.End)
+	s.coldAudit(c, "ingress", c.Param("cluster"), err)
+	if err != nil {
+		s.coldError(c, err)
+		return
+	}
+	ok(c, v)
+}
+func (s *Server) coldIngressGet(c *gin.Context) {
+	cluster, err := s.db.GetColdCluster(c.Param("cluster"))
+	if err != nil {
+		s.coldError(c, err)
+		return
+	}
+	routes, err := s.db.ColdIngressRoutes(cluster.NodeID)
+	if err != nil {
+		s.coldError(c, err)
+		return
+	}
+	for _, r := range routes {
+		if r.ClusterID == cluster.ID {
+			ok(c, r.ColdIngress)
+			return
+		}
+	}
+	fail(c, 404, "cold ingress not registered")
+}
+
+func (s *Server) coldIngressReady(c *gin.Context) {
+	var req struct {
+		GatewayAddress string `json:"gateway_address"`
+	}
+	if !coldBody(c, &req) {
+		return
+	}
+	if err := s.db.ConfirmColdIngress(c.Param("name"), c.Param("cluster"), req.GatewayAddress); err != nil {
+		s.coldError(c, err)
+		return
+	}
+	ok(c, nil)
+}
 func (s *Server) coldAssignment(c *gin.Context) {
 	v, err := s.db.GetColdCluster(c.Param("cluster"))
 	if err != nil {

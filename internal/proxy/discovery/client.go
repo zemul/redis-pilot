@@ -19,6 +19,7 @@ import (
 
 // serverClient 是到 Server 的 HTTP 客户端。
 type serverClient struct {
+	nodeID  string
 	baseURL string
 	token   string
 	client  *http.Client
@@ -52,6 +53,7 @@ func (c *serverClient) ReportHeartbeat(ctx context.Context, heartbeat apitypes.P
 func newServerClient(cfg ServerConfig, httpClient *http.Client) *serverClient {
 	return &serverClient{
 		baseURL: strings.TrimRight(cfg.Endpoint, "/"),
+		nodeID:  cfg.NodeID,
 		token:   cfg.Token,
 		client:  httpClient,
 	}
@@ -66,8 +68,16 @@ func newServerClient(cfg ServerConfig, httpClient *http.Client) *serverClient {
 // 调用方仍能正确工作（只是退化成短轮询），不会因此死循环--调用方按实际耗时补足间隔。
 func (c *serverClient) FetchProxySnapshot(ctx context.Context, knownVersion string, wait time.Duration) (snapshot *apitypes.ProxySnapshot, unchanged bool, err error) {
 	url := c.baseURL + "/api/v1/proxy/snapshot"
+	params := neturl.Values{}
+	if c.nodeID != "" {
+		params.Set("node_id", c.nodeID)
+	}
 	if knownVersion != "" && wait > 0 {
-		url += "?known_version=" + neturl.QueryEscape(knownVersion) + "&wait=" + wait.String()
+		params.Set("known_version", knownVersion)
+		params.Set("wait", wait.String())
+	}
+	if len(params) > 0 {
+		url += "?" + params.Encode()
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {

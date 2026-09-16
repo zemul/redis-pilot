@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net/netip"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -341,6 +342,27 @@ func (r *cacheRuntime) restoreSharding(ctx context.Context) error {
 		if phase == sharding.FinalComplete {
 			// Removed cold nodes may already be offline or absent from config.
 			from = state.journal.Target()
+		}
+	}
+	if r.s.cfg.ControlPlane.ManageShards {
+		// Managed addresses are trusted only from our durable validated task,
+		// never fetched from Server during restart. Ignore obsolete YAML nodes.
+		byID := map[string]sharding.Node{}
+		for _, n := range from.Config().Nodes {
+			byID[n.ID] = n
+		}
+		if state.journal != nil {
+			for _, n := range state.journal.Target().Config().Nodes {
+				byID[n.ID] = n
+			}
+		}
+		endpoints = nil
+		for _, n := range byID {
+			a, e := netip.ParseAddrPort(n.Address)
+			if e != nil || !a.Addr().IsLoopback() {
+				return errors.New("invalid durable managed endpoint")
+			}
+			endpoints = append(endpoints, cacheShardEndpoint{node: n})
 		}
 	}
 	r.shards, err = newCacheShards(r, from, endpoints)
