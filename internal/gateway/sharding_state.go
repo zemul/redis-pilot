@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
-	"net/netip"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -358,8 +357,7 @@ func (r *cacheRuntime) restoreSharding(ctx context.Context) error {
 		}
 		endpoints = nil
 		for _, n := range byID {
-			a, e := netip.ParseAddrPort(n.Address)
-			if e != nil || !a.Addr().IsLoopback() {
+			if !r.cfg.allowsBackend(n.Address) {
 				return errors.New("invalid durable managed endpoint")
 			}
 			endpoints = append(endpoints, cacheShardEndpoint{node: n})

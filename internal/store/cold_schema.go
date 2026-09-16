@@ -12,6 +12,8 @@ func createColdSchema(tx *sql.Tx) error {
 		`CREATE TABLE IF NOT EXISTS cold_clusters(id TEXT PRIMARY KEY,gateway_id TEXT NOT NULL UNIQUE,body TEXT NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS cold_tasks(cluster_id TEXT NOT NULL,id TEXT NOT NULL,target_revision INTEGER NOT NULL,body TEXT NOT NULL,PRIMARY KEY(cluster_id,id),UNIQUE(cluster_id,target_revision))`,
 		`CREATE TABLE IF NOT EXISTS cold_resources(instance TEXT PRIMARY KEY,cluster_id TEXT NOT NULL)`,
+		`CREATE TRIGGER IF NOT EXISTS cold_gateway_node_delete BEFORE DELETE ON servers WHEN EXISTS(SELECT 1 FROM cold_clusters WHERE json_extract(body,'$.node_id')=OLD.name) BEGIN SELECT RAISE(ABORT,'node owns a cold Gateway'); END`,
+		`CREATE TRIGGER IF NOT EXISTS cold_gateway_node_change BEFORE UPDATE ON servers WHEN EXISTS(SELECT 1 FROM cold_clusters WHERE json_extract(body,'$.node_id')=OLD.name) AND (NEW.name!=OLD.name OR NEW.endpoint!=OLD.endpoint) BEGIN SELECT RAISE(ABORT,'node owns a cold Gateway'); END`,
 		`CREATE TRIGGER IF NOT EXISTS cold_instance_delete BEFORE DELETE ON instances WHEN EXISTS(SELECT 1 FROM cold_resources WHERE instance=OLD.name) BEGIN SELECT RAISE(ABORT,'instance is reserved by a cold cluster; finish migration before removal'); END`,
 		`CREATE TRIGGER IF NOT EXISTS cold_instance_change BEFORE UPDATE ON instances WHEN EXISTS(SELECT 1 FROM cold_resources WHERE instance=OLD.name) AND
 		(NEW.name!=OLD.name OR NEW.grp!=OLD.grp OR NEW.server!=OLD.server OR NEW.port!=OLD.port OR NEW.role!=OLD.role OR NEW.replica_of!=OLD.replica_of OR NEW.desired_state!=OLD.desired_state OR NEW.persistence!=OLD.persistence OR NEW.config_overrides!=OLD.config_overrides OR NEW.data_path!=OLD.data_path OR NEW.config_path!=OLD.config_path OR NEW.container!=OLD.container OR

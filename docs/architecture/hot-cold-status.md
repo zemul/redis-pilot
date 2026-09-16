@@ -4,13 +4,25 @@
 
 ## 已接入开发代码
 
-- 单有效 Gateway + 一个热 Redis + 单个或可选 HRW 多冷 Kvrocks，DB 0；独立前后端凭据、配置检查、预算、指标和心跳。多冷模式仍限本机回环。
+- 单有效 Gateway + 一个热 Redis + 单个或可选 HRW 多冷 Kvrocks，DB 0；独立前后端凭据、配置检查、预算、指标和心跳。默认本机回环，可通过 backend_networks 显式开放私网跨机后端。
 - invalidate / update_existing 两种写后策略；前者删除缓存，后者在已有完整缓存上安全增量更新，不再整对象重建。
 - 五种类型分批完整回温；单对象大小/元素数上限及 per-type 大小配置已删除，默认 4 个加载；保留协议帧、内存预算和超时保护。带业务 TTL 的对象按剩余生命周期回温。
 - 热层原始业务 key、原生类型，一个对象一个 key，无 data/complete、运行标识或热代次后缀。写冷、热失效/更新与同 key 回填串行；热失败先隔离，关闭旧服务端连接并清空专用热 DB 后恢复。冷结果未知仍用冷层固定 token CAS 隔离迟到写。
 - Redis 自身 allkeys-lru；热层禁用持久化，不恢复旧缓存。无同步器、主动淘汰器、布隆过滤器或全量 key 目录。
 - BLPOP/BRPOP 的有界独立冷连接，仅允许固定 cold_only_prefixes；这些 key 不会缓存。
 - 新模式 Pipeline 按连接顺序逐条完成；普通 passthrough 行为保持不变。
+
+## 跨主机后端验收（2026-09-16）
+
+Server 按资源所属主机解析私网端点；Gateway 通过 backend_networks 显式放行，动态任务与落盘恢复同样校验。Gateway 所在节点即使没有数据库也受资源删除/改地址保护。Proxy → Gateway 仍本机回环，业务密码只在 Proxy；本轮不是多 Gateway、热层分片或副本切换。
+
+真实三机隔离测试：redis01 (10.70.100.67) 运行测试 Gateway，redis02 (10.70.100.63) 运行临时 Redis 7 和 Kvrocks 2.15.0 A，redis03 (10.70.100.68) 运行临时 Kvrocks 2.15.0 B。数据库仅绑定回环，由只接受 redis01 源 IP 的临时测试转发入口提供跨机连接。控制 HTTP 使用真实 store 的测试夹具，不是常驻 Server；本轮没有重跑 Proxy 路径，也没有替换任何常驻服务。
+
+invalidate、update_existing 各通过两轮扩容→缩容→Gateway 进程重启。持续 HSET 后立即 HGET，并检查未修改字段；启动 YAML 仍只列旧 A，重启从落盘目标 B 恢复。最终轮补验迁移前后 PEXPIRETIME 相同、迁移期间过期 key 不复活，分别 11.11s / 10.91s。测试耗时不是性能指标；未模拟跨机网络分区、宿主机掉电、运行时时钟突跳。
+
+新增地址白名单、远端资源、节点保护、时钟解析/偏差拒绝单测。全仓 go test / go vet 通过，真实本地 Redis 的缓存/迁移/分片 race 测试及 store Cold race 测试通过。跨机迁移依赖 NTP，并增加预检及拷贝/提交前 250ms 时钟准入，不能据此宣称任意时钟条件下零过期偏差。
+
+复验日志在 redis01 `/tmp/pilot-crosshost.M2133y/final-invalidate.log` 与 `final-update_existing.log`；测试二进制 `gateway-final.test` SHA256 为 `9aac226ec8fa4aa6b84439d11d83dacf503a96a07ceebfc32f0290e92b3753d0`。临时容器与转发入口完成后清理，仅保留配置/二进制/日志供复查。
 
 ## 当前命令矩阵
 
@@ -54,7 +66,7 @@ Server/API/CLI 增加独立 ingress 登记：自动分配不与普通实例冲�
 
 节点登记仅保留当前/任务所需节点；完成缩容后，释放的端口可被新分片 ID 再次使用，无需重启。仍在使用或未完成回收的节点不允许换地址/身份。启动支持新旧拓扑的节点并集，不能把每个拓扑的 128 节点上限误当成迁移期间端点并集上限。
 
-仍限定同机、单有效 Gateway。入口不提供在线改地址/改密码/注销，ready 是接入确认而非持续健康检查。首次部署/初始化仍需运维，不自动启动二进制、改数据库配置或创建新实例。以下“手动补 YAML/无 discovery 接入”是上一阶段记录，以本节为准。
+仍限定单有效 Gateway，Proxy 入口同机；后续跨机后端增补见部署文档的“跨主机后端”。入口不提供在线改地址/改密码/注销，ready 是接入确认而非持续健康检查。首次部署/初始化仍需运维，不自动启动二进制、改数据库配置或创建新实例。以下“手动补 YAML/无 discovery 接入”是上一阶段记录，以本节为准。
 
 验证：全仓测试、go vet、差异格式检查通过；本地 Redis 的全部 Cache/Migration/Shard 竞态回归、Store/Server/CLI 入口专项和 Proxy 节点过滤检查通过。redis03 使用真实 Proxy/Gateway 子进程、Redis 7.2.5 与 Kvrocks 2.15，最终两种策略各连续三轮通过：无 YAML 变更扩容、持续 Hash 字段写后立即读、Server 断连、Gateway SIGKILL 与离线恢复、缩容、旧端口以新分片 ID 再扩容/缩容、旧冷进程退出后的恢复及最后成功值核对。HTTP 故障夹具调用真实 store 并提供快照；Server HTTP handler/快照生成/鉴权另由 Server 测试覆盖，不能冒充整套常驻 Server 部署验收。
 

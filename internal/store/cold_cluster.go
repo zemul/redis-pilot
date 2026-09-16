@@ -5,9 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/netip"
 	"reflect"
 	"sort"
-	"strconv"
 
 	"gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/pkg/apitypes"
 )
@@ -28,8 +28,8 @@ func coldResource(tx *sql.Tx, name, node, engine string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if host != node || actualEngine != engine || kind != "standalone" || role != "master" || desired != "running" || port < 1 || port > 65535 || (lock != "null" && lock != "{}" && lock != "") {
-		return "", coldInvalid("requires an unlocked running standalone instance on the Gateway node with the correct engine")
+	if actualEngine != engine || kind != "standalone" || role != "master" || desired != "running" || port < 1 || port > 65535 || (lock != "null" && lock != "{}" && lock != "") {
+		return "", coldInvalid("requires an unlocked running standalone instance with the correct engine")
 	}
 	var p *apitypes.ProxyConfig
 	if json.Unmarshal([]byte(proxy), &p) != nil || (p != nil && (p.AutoPort != 0 || p.MasterPort != 0)) {
@@ -41,7 +41,20 @@ func coldResource(tx *sql.Tx, name, node, engine string) (string, error) {
 	if count != 1 {
 		return "", coldInvalid("backend group must contain exactly one instance")
 	}
-	return "127.0.0.1:" + strconv.Itoa(port), nil
+	ip := netip.MustParseAddr("127.0.0.1")
+	if host != node {
+		var endpoint string
+		if err := tx.QueryRow(`SELECT endpoint FROM servers WHERE name=?`, host).Scan(&endpoint); err != nil {
+			return "", coldInvalid("backend node not found")
+		}
+		var err error
+		ip, err = netip.ParseAddr(endpoint)
+		ip = ip.Unmap()
+		if err != nil || !ip.IsPrivate() || ip.Zone() != "" {
+			return "", coldInvalid("remote backend node requires a literal private IP endpoint")
+		}
+	}
+	return netip.AddrPortFrom(ip, uint16(port)).String(), nil
 }
 
 func resolveColdShards(tx *sql.Tx, nodes []apitypes.ColdShard, host string) ([]apitypes.ColdShard, error) {

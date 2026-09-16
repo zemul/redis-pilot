@@ -23,6 +23,9 @@ limits:
   max_elements: 4096
   max_depth: 16
 cache:
+  # Optional remote engine IP allowlist. Empty means loopback only.
+  # Configure host firewall too: only this Gateway may access dedicated engines.
+  # backend_networks: ["10.70.100.63/32", "10.70.100.68/32"]
   exclusive_backends: true
   lock_file: /var/lib/redis-gateway-sharded/owner.lock
   write_policy: update_existing # or invalidate

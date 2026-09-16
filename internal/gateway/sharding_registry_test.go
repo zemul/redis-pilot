@@ -94,4 +94,15 @@ func TestShardManagedRegistry(t *testing.T) {
 	if r.node("new") != nil || r.node("replacement") == nil {
 		t.Fatal("unused registry blocked port reuse")
 	}
+	s.cache.cfg.BackendNetworks = []string{"10.0.0.1/32"}
+	remote, err := sharding.New(sharding.Config{Algorithm: sharding.Algorithm, Revision: 3, Nodes: append(from.Config().Nodes, sharding.Node{ID: "remote", Address: "10.0.0.1:6379"})})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.registerManaged(remote); err != nil {
+		t.Fatal("explicit remote registration rejected", err)
+	}
+	if !r.topology.Equal(from) || r.node("remote") == nil {
+		t.Fatal("remote registration changed routing")
+	}
 }

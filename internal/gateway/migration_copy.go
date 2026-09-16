@@ -77,9 +77,13 @@ func (f *migrationFence) state(ctx context.Context) (phase, attempt string, err 
 // to retire authoritative source data; these primitives do not fsync Kvrocks.
 // A prepared record allows restarting a partial copy; committed records NEVER
 // permit copying over target data again. Each invocation starts a fresh attempt.
-// Finite TTL assumes a shared absolute clock; runtime clock admission is pending.
+// Finite TTL preserves absolute expiration; cross-host clocks are checked before
+// freezing and before committing, in addition to the operational NTP requirement.
 func copyMigrationKey(ctx context.Context, j *sharding.Journal, h sharding.Handoff, source, target *migrationFence) (string, error) {
 	if err := checkMigrationPair(h, source, target); err != nil {
+		return "", err
+	}
+	if err := checkMigrationClocks(ctx, source, target); err != nil {
 		return "", err
 	}
 	current, found, err := j.Lookup(ctx, h.Key)
@@ -290,6 +294,9 @@ func finishMigrationKey(ctx context.Context, j *sharding.Journal, h sharding.Han
 		return errors.New("target copy not ready")
 	}
 	if current.State == sharding.Prepared {
+		if err := checkMigrationClocks(ctx, source, target); err != nil {
+			return err
+		}
 		if phase != "ready" {
 			return errors.New("target serving before journal commit")
 		}

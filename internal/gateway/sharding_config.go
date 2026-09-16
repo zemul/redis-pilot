@@ -75,8 +75,8 @@ func (c Config) validateSharding() error {
 	hot = netip.AddrPortFrom(hot.Addr().Unmap(), hot.Port())
 	for _, n := range t.Config().Nodes {
 		a, _ := netip.ParseAddrPort(n.Address)
-		if !a.Addr().IsLoopback() {
-			return errors.New("sharding currently requires loopback cold backends; cross-host preflight is not enabled")
+		if !c.Cache.allowsBackend(n.Address) {
+			return errors.New("cold backend is outside backend_networks")
 		}
 		if a == hot {
 			return errors.New("cold node cannot reuse hot backend")

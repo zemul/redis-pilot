@@ -2,15 +2,14 @@ package gateway
 
 import (
 	"errors"
-	"net"
 	"path/filepath"
-	"strconv"
 	"time"
 )
 
 // CacheConfig is deliberately separate from the retired hot_cold protocol.
 // RedisAddress/BackendPasswordFile configure the disposable hot Redis.
 type CacheConfig struct {
+	BackendNetworks   []string      `yaml:"backend_networks"`
 	Sharding          *ShardConfig  `yaml:"sharding"`
 	HotTimeout        time.Duration `yaml:"hot_timeout"`
 	ColdOnlyPrefixes  []string      `yaml:"cold_only_prefixes"`
@@ -54,6 +53,9 @@ func (c Config) validateCache() error {
 		return errors.New("cache mode requires cache configuration")
 	}
 	o := c.Cache.resolved()
+	if err := o.validateBackendNetworks(); err != nil {
+		return err
+	}
 	if o.HotTimeout < time.Millisecond || o.HotTimeout > c.RequestTimeout/2 {
 		return errors.New("hot_timeout must be at least 1ms and at most half request_timeout")
 	}
@@ -75,11 +77,8 @@ func (c Config) validateCache() error {
 		return err
 	}
 	for _, addr := range addresses {
-		h, p, err := net.SplitHostPort(addr)
-		n, e := strconv.Atoi(p)
-		ip := net.ParseIP(h)
-		if err != nil || e != nil || n < 1 || n > 65535 || ip == nil || !ip.IsLoopback() {
-			return errors.New("cache backends require literal loopback addresses")
+		if !o.allowsBackend(addr) {
+			return errors.New("cache backend must be loopback or in backend_networks")
 		}
 	}
 	if c.RedisAddress == o.ColdAddress {

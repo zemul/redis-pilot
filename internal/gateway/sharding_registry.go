@@ -40,7 +40,7 @@ func (s *cacheShards) registerManaged(t *sharding.Topology) error {
 	hot = netip.AddrPortFrom(hot.Addr().Unmap(), hot.Port())
 	for _, n := range t.Config().Nodes {
 		a, err := netip.ParseAddrPort(n.Address)
-		if err != nil || !a.Addr().IsLoopback() || a == hot {
+		if err != nil || !s.r.cfg.allowsBackend(n.Address) || a == hot {
 			return errors.New("invalid managed endpoint")
 		}
 		if old := next[n.ID]; old != nil && (old.node != n || old.password != "") {

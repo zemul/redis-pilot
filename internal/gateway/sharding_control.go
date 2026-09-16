@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"os"
 	"strings"
@@ -232,13 +233,19 @@ func (s *Service) acceptColdTask(ctx context.Context, t *apitypes.ColdTask) apit
 }
 
 // Read-only preflight. Never silently turn on persistence or clear a target.
-// The full-copy protocol preserves absolute TTL, so public tasks remain local.
+// The full-copy protocol preserves absolute TTL; remote clocks need NTP.
 func (s *cacheShards) preflightCold(ctx context.Context, n *cacheShardNode, empty bool) error {
 	c, err := s.raw(ctx, n)
 	if err != nil {
 		return err
 	}
 	defer c.Close()
+	a, _ := netip.ParseAddrPort(n.node.Address)
+	if !a.Addr().IsLoopback() {
+		if err := checkBackendClock(ctx, c); err != nil {
+			return err
+		}
+	}
 	b, err := c.call(ctx, "INFO", "all")
 	if err != nil {
 		return err
