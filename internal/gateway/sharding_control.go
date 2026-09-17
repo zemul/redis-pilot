@@ -84,7 +84,7 @@ func (s *Service) shardControlOnce(ctx context.Context) error {
 	if err := s.shardControlRequest(ctx, "GET", path, nil, &c); err != nil {
 		return err
 	}
-	if c.ID != s.cfg.ServiceID || c.GatewayID != s.cfg.GatewayID || c.NodeID != s.cfg.ControlPlane.NodeID || c.HotAddress != s.cfg.RedisAddress {
+	if c.ID != s.cfg.ServiceID || c.GatewayID != s.cfg.GatewayID || c.NodeID != s.cfg.ControlPlane.NodeID || c.HotAddress != s.cfg.RedisAddress || c.UsesCache() != s.cfg.Cache.enabled() || (c.Engine != "" && c.Engine != "kvrocks") {
 		return errors.New("cluster placement mismatch")
 	}
 	if c.Ingress != nil && !c.Ingress.Ready && c.Ingress.GatewayAddress == s.cfg.Listen && s.frontendPassword == "" {

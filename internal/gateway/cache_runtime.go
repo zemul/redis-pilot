@@ -200,6 +200,9 @@ func (r *cacheRuntime) uncertainEpoch(token string) {
 }
 
 func (r *cacheRuntime) hotFailed() {
+	if !r.cfg.enabled() {
+		return
+	}
 	r.hotStateMu.Lock()
 	defer r.hotStateMu.Unlock()
 	r.hotFailures++

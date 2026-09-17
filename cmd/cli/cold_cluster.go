@@ -41,7 +41,7 @@ func readColdRequest(path string, dst any) error {
 }
 
 func newColdClusterCommand() *cobra.Command {
-	root := &cobra.Command{Use: "cold-cluster", Short: "Manage cold-authoritative sharded clusters and migration tasks"}
+	root := &cobra.Command{Use: "cold-cluster", Aliases: []string{"custom-cluster"}, Short: "Manage Kvrocks custom clusters with optional Redis cache and migration tasks"}
 	root.AddCommand(&cobra.Command{Use: "list", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, args []string) error { return checkResp(client.Get("/api/v1/cold-clusters")) }})
 	root.AddCommand(&cobra.Command{Use: "get NAME", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
 		return checkResp(client.Get("/api/v1/cold-clusters/" + url.PathEscape(args[0])))

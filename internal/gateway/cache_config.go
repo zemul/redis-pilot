@@ -9,6 +9,7 @@ import (
 // CacheConfig is deliberately separate from the retired hot_cold protocol.
 // RedisAddress/BackendPasswordFile configure the disposable hot Redis.
 type CacheConfig struct {
+	Enabled           *bool         `yaml:"enabled"`
 	BackendNetworks   []string      `yaml:"backend_networks"`
 	Sharding          *ShardConfig  `yaml:"sharding"`
 	HotTimeout        time.Duration `yaml:"hot_timeout"`
@@ -22,6 +23,9 @@ type CacheConfig struct {
 	MaxLoads          int           `yaml:"max_loads"`
 	TTL               time.Duration `yaml:"ttl"`
 }
+
+// Omission preserves existing deployments; disabled never attempts hot recovery.
+func (c CacheConfig) enabled() bool { return c.Enabled == nil || *c.Enabled }
 
 func (c CacheConfig) resolved() CacheConfig {
 	if c.HotTimeout == 0 {
@@ -70,7 +74,12 @@ func (c Config) validateCache() error {
 	if !o.ExclusiveBackends || !filepath.IsAbs(o.LockFile) || o.LockFile == "/" {
 		return errors.New("cache mode requires exclusive_backends and an absolute private lock_file")
 	}
-	addresses := []string{c.RedisAddress}
+	var addresses []string
+	if o.enabled() {
+		addresses = append(addresses, c.RedisAddress)
+	} else if c.RedisAddress != "" || c.BackendPasswordFile != "" {
+		return errors.New("disabled cache must not configure a hot address or credential")
+	}
 	if o.Sharding == nil {
 		addresses = append(addresses, o.ColdAddress)
 	} else if err := c.validateSharding(); err != nil {
@@ -81,7 +90,7 @@ func (c Config) validateCache() error {
 			return errors.New("cache backend must be loopback or in backend_networks")
 		}
 	}
-	if c.RedisAddress == o.ColdAddress {
+	if o.enabled() && c.RedisAddress == o.ColdAddress {
 		return errors.New("hot and cold backends must differ")
 	}
 	if o.WritePolicy != "invalidate" && o.WritePolicy != "update_existing" {

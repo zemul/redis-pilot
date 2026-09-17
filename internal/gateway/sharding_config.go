@@ -68,11 +68,14 @@ func (c Config) validateSharding() error {
 	if err != nil {
 		return err
 	}
-	hot, err := netip.ParseAddrPort(c.RedisAddress)
-	if err != nil {
-		return errors.New("invalid hot backend address")
+	var hot netip.AddrPort
+	if c.Cache.enabled() {
+		hot, err = netip.ParseAddrPort(c.RedisAddress)
+		if err != nil {
+			return errors.New("invalid hot backend address")
+		}
+		hot = netip.AddrPortFrom(hot.Addr().Unmap(), hot.Port())
 	}
-	hot = netip.AddrPortFrom(hot.Addr().Unmap(), hot.Port())
 	for _, n := range t.Config().Nodes {
 		a, _ := netip.ParseAddrPort(n.Address)
 		if !c.Cache.allowsBackend(n.Address) {

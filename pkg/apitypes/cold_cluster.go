@@ -24,12 +24,17 @@ type ColdShard struct {
 }
 
 type ColdClusterSpec struct {
-	ID          string      `json:"id"`
-	GatewayID   string      `json:"gateway_id"`
-	NodeID      string      `json:"node_id"`
-	HotInstance string      `json:"hot_instance"`
-	Shards      []ColdShard `json:"shards"`
+	Engine       string      `json:"engine,omitempty"`
+	CacheEnabled *bool       `json:"cache_enabled,omitempty"`
+	ID           string      `json:"id"`
+	GatewayID    string      `json:"gateway_id"`
+	NodeID       string      `json:"node_id"`
+	HotInstance  string      `json:"hot_instance"`
+	Shards       []ColdShard `json:"shards"`
 }
+
+// Omission preserves the hot layer of legacy clusters.
+func (c ColdClusterSpec) UsesCache() bool { return c.CacheEnabled == nil || *c.CacheEnabled }
 
 type ColdCluster struct {
 	Ingress *ColdIngress `json:"ingress,omitempty"`

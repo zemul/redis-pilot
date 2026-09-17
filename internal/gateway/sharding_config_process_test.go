@@ -95,7 +95,7 @@ func configuredBackendCall(t *testing.T, c Config, address string, args ...strin
 }
 
 func TestShardConfiguredRestartAndMigration(t *testing.T) {
-	for _, policy := range []string{"invalidate", "update_existing"} {
+	for _, policy := range []string{"invalidate", "update_existing", "disabled"} {
 		t.Run(policy, func(t *testing.T) {
 			ctx := context.Background()
 			a := migrationCold(t)
@@ -126,6 +126,17 @@ func TestShardConfiguredRestartAndMigration(t *testing.T) {
 				{ID: "b", Address: b, PasswordFile: secretFile(t, "g4-backend-test")},
 			}
 			configuredBackendCall(t, c, hot, "CONFIG", "SET", "maxmemory", "33554432", "maxmemory-policy", "allkeys-lru")
+			if policy == "disabled" {
+				disabled := false
+				c.Cache.Enabled, c.Cache.WritePolicy = &disabled, ""
+				c.RedisAddress, c.BackendPasswordFile = "", ""
+				configuredBackendCall(t, c, hot, "SET", "untouched-hot", "keep")
+				t.Cleanup(func() {
+					if got := configuredBackendCall(t, c, hot, "GET", "untouched-hot"); string(got) != "$4\r\nkeep\r\n" {
+						t.Fatalf("disabled cache touched hot database: %q", got)
+					}
+				})
+			}
 			s, err := NewService(c)
 			if err != nil {
 				t.Fatal(err)

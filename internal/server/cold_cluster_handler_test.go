@@ -9,6 +9,14 @@ import (
 )
 
 func TestColdClusterAPI(t *testing.T) {
+	for _, cacheEnabled := range []bool{true, false} {
+		t.Run(map[bool]string{true: "cache", false: "without-cache"}[cacheEnabled], func(t *testing.T) {
+			testCustomClusterAPI(t, cacheEnabled)
+		})
+	}
+}
+
+func testCustomClusterAPI(t *testing.T, cacheEnabled bool) {
 	s := newTestServer(t, "")
 	s.cfg.GatewayTokens = map[string]string{"gw": heartbeatToken, "other": "other-gateway-token-long"}
 	if err := s.db.UpsertServer("node", &apitypes.NodeServer{Endpoint: "127.0.0.1"}); err != nil {
@@ -29,6 +37,10 @@ func TestColdClusterAPI(t *testing.T) {
 	r := s.Router()
 	base := "/api/v1/cold-clusters"
 	spec := apitypes.ColdClusterSpec{ID: "cluster", GatewayID: "gw", NodeID: "node", HotInstance: "hot", Shards: []apitypes.ColdShard{{ID: "a", Instance: "a"}, {ID: "b", Instance: "b"}}}
+	if !cacheEnabled {
+		base = "/api/v1/custom-clusters"
+		spec.CacheEnabled, spec.HotInstance = &cacheEnabled, ""
+	}
 	viewer, _ := s.jwtSign("viewer", "viewer")
 	if w := doRequest(r, "GET", base, nil); w.Code != 401 {
 		t.Fatal(w.Code)

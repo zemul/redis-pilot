@@ -228,6 +228,13 @@ func (s *Server) Router() *gin.Engine {
 	authed.POST("/api/v1/cold-clusters/:cluster/tasks", s.adminOnly(), s.coldTaskCreate)
 	authed.POST("/api/v1/cold-clusters/:cluster/ingress", s.adminOnly(), s.coldIngressCreate)
 	authed.GET("/api/v1/cold-clusters/:cluster/ingress", s.coldIngressGet)
+	// Public product name; retain cold-clusters for existing Gateways and CLI.
+	authed.GET("/api/v1/custom-clusters", s.coldList)
+	authed.GET("/api/v1/custom-clusters/:cluster", s.coldGet)
+	authed.POST("/api/v1/custom-clusters", s.adminOnly(), s.coldCreate)
+	authed.POST("/api/v1/custom-clusters/:cluster/tasks", s.adminOnly(), s.coldTaskCreate)
+	authed.POST("/api/v1/custom-clusters/:cluster/ingress", s.adminOnly(), s.coldIngressCreate)
+	authed.GET("/api/v1/custom-clusters/:cluster/ingress", s.coldIngressGet)
 
 	// Draft metadata only: no deployment, heartbeat, or Proxy routing changes.
 	gateways := authed.Group("/api/v1/gateway/drafts")

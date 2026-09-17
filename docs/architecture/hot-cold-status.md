@@ -1,6 +1,14 @@
 # 冷热缓存实现状态
 
-更新：2026-09-16。mode: cache 开发实现，不代表正式发布。设计见 [冷热设计](hot-cold-gateway-design.md)。
+更新：2026-09-17。mode: cache 开发实现，不代表正式发布。设计见 [冷热设计](hot-cold-gateway-design.md)。
+
+## 自定义集群：缓存可选（2026-09-17）
+
+- 新建 Kvrocks 集群可显式设置 API `cache_enabled: false`，不配置 hot_instance；Gateway 对应 `cache.enabled: false`，删除 redis_address/backend_password_file。关闭后不连接热库、不做热库清空/回温/失效，仍复用原有命令协调、HRW 分片、迁移日志与恢复协议，不是无保护的透传。旧配置和旧数据库记录省略开关时仍启用缓存。engine 默认 kvrocks，Redis 自定义分片当前拒绝。
+- 新增 `/api/v1/custom-clusters` 及详情、tasks、ingress 同语义路由，原 cold-clusters API 保留。CLI `custom-cluster` 是原 cold-cluster 的别名。前端“自定义集群”只读聚合展示存储引擎、缓存开关、成员、统一入口、实时 Gateway 观测与迁移任务，不把 ingress.ready 或过期心跳当成实时健康。
+- 开关目前是创建时配置，**不是在线切换能力**。已存在的 Gateway 持久化状态绑定热地址，不能通过改配置直接开启/关闭缓存；控制面模式不匹配也不会确认入口或接受任务。无缓存模式保留原命令支持边界和阻塞命令前缀约束，不新增 Redis Cluster 协议或副本切换。
+- 本地新增配置/状态兼容、存储登记/迁移、API 鉴权测试通过；无缓存五类型、批量读写，以及含原两种缓存模式的配置式迁移/重启 race 测试通过。redis03 隔离真实 Kvrocks 进程通过无缓存五类型和迁移/重启测试，日志 `/tmp/pilot-no-cache.MuQLpJ/result.log`。未重启或改写 managed-dev。前端单测、构建及本地模拟数据页面交互检查通过，未将新页面部署到开发 Server。
+- **未完成**：专用实例配置自动生成并可靠持久化、可恢复的一键资源创建任务、Gateway 初始配置交付，以及页面创建/操作流程。当前页面不提供假一键创建按钮；登记仍需现有 CLI/API 和独立 Gateway 部署。一个分片对应实例组及未来副本模型仍需继续落实，现阶段仍为专用 standalone 实例。Redis 引擎适配、Sentinel 接入未开始。
 
 ## 已接入开发代码
 

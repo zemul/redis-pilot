@@ -6,6 +6,9 @@ import "context"
 // Kill server-side connections BEFORE clearing: closing a local socket alone
 // does not cancel commands already buffered on an old Redis connection.
 func (r *cacheRuntime) recoverHot(ctx context.Context) {
+	if !r.cfg.enabled() {
+		return
+	}
 	if r.hotReady.Load() || !r.hotMu.TryLock() {
 		return
 	}

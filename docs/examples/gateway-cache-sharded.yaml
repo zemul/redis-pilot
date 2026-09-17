@@ -23,6 +23,10 @@ limits:
   max_elements: 4096
   max_depth: 16
 cache:
+  # Omission preserves existing behavior. For Kvrocks WITHOUT caching set
+  # enabled: false and remove redis_address/backend_password_file.
+  # Choose at creation: changing an existing state's hot binding is rejected.
+  enabled: true
   # Optional remote engine IP allowlist. Empty means loopback only.
   # Configure host firewall too: only this Gateway may access dedicated engines.
   # backend_networks: ["10.70.100.63/32", "10.70.100.68/32"]

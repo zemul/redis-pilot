@@ -19,6 +19,7 @@ import { createRequest } from './lib/request.js';
 import { UserMenu } from './components/common.jsx';
 import { DashboardView } from './views/DashboardView.jsx';
 import { InstancesView } from './views/InstancesView.jsx';
+import { CustomClustersView } from './views/CustomClustersView.jsx';
 import { ServersView } from './views/ServersView.jsx';
 import { AuditView } from './views/AuditView.jsx';
 import { TasksView } from './views/TasksView.jsx';
@@ -41,6 +42,7 @@ import { buildInstanceGroups } from './lib/instance.js';
 const TABS = [
   { id: 'dashboard', label: '大盘看板', icon: LayoutDashboard },
   { id: 'instances', label: '实例管理', icon: Database },
+  { id: 'custom-clusters', label: '自定义集群', icon: Database },
   { id: 'servers', label: '服务器节点', icon: Server },
   { id: 'incidents', label: '异常记录', icon: ShieldAlert },
   { id: 'tasks', label: '运维任务', icon: ClipboardList },
@@ -514,6 +516,7 @@ function AppShell() {
                 />
               )}
               {activeTab === 'ai' && <AiChatPanel />}
+              {activeTab === 'custom-clusters' && <CustomClustersView request={request} />}
               {activeTab === 'servers' && <ServersView servers={servers} groups={instanceGroups} />}
               {activeTab === 'tasks' && <TasksView request={request} initialInstance={taskInstanceFilter} />}
               {activeTab === 'incidents' && <IncidentsView request={request} initialInstance={incidentInstanceFilter} />}

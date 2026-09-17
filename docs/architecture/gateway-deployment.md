@@ -1,5 +1,13 @@
 # Gateway 部署与运维
 
+## 自定义集群无缓存配置（2026-09-17，尚未常驻部署）
+
+新建 Kvrocks 自定义集群可以关闭缓存。Server 登记请求显式指定 `engine: "kvrocks"`、`cache_enabled: false`，省略 hot_instance；其余 gateway_id、node_id、shards 和 ingress 流程保持不变。支持新 `/api/v1/custom-clusters` 路由及 `custom-cluster` CLI 别名，旧路径保持兼容。登记不是自动部署。
+
+Gateway 仍使用现有 mode: cache 协调框架，在 cache 下设置 `enabled: false`，并删除顶层 redis_address、backend_password_file；分片、锁目录、持久化运行状态、后端网络限制及冷库同步 WAL 要求不变。旧配置省略 enabled 默认为 true。禁止把无缓存存储误作专用热缓存清空；关闭时热连接入口和恢复入口均禁用。该开关只用于新建，现有状态不支持就地切换，无需也不允许通过删除 runtime.db 来强行切换已有集群。
+
+页面“自定义集群”当前只读展示，尚未完成自动创建数据库和交付 Gateway 配置；专用引擎配置仍按下述部署约束准备。后续创建流程必须保存可恢复步骤，确认 Gateway 后再发布入口，不能用控制面登记成功替代服务就绪。
+
 ## 常驻正式接入开发栈（2026-09-16）
 
 已将 redis01 的 Server、主 discovery Proxy、既有 redis-gateway.service 升级为 8020d47；Gateway 从旧隔离透传配置切换到新建的 managed-dev 冷热集群。旧透传 Redis 和 redis03 既有 cache 测试栈保留，未复用或清空它们的数据。普通 Proxy listeners/clusters 在升级和验收后与升级前一致。

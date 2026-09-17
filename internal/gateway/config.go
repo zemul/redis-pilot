@@ -103,7 +103,8 @@ func (c Config) Validate() error {
 		}
 		host, port, err := net.SplitHostPort(c.RedisAddress)
 		n, pe := strconv.Atoi(port)
-		if err != nil || strings.TrimSpace(host) == "" || pe != nil || n < 1 || n > 65535 {
+		needsAddress := c.Mode == "passthrough" || c.Cache == nil || c.Cache.enabled()
+		if needsAddress && (err != nil || strings.TrimSpace(host) == "" || pe != nil || n < 1 || n > 65535) {
 			return errors.New("passthrough requires a valid redis_address")
 		}
 		if c.FrontendPasswordFile == "" && !c.AllowUnauthenticated {

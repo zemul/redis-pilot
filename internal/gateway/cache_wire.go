@@ -158,6 +158,9 @@ func (r *cacheRuntime) connect(ctx context.Context, hot bool) (*cacheConn, error
 }
 
 func (r *cacheRuntime) connectAddress(ctx context.Context, hot bool, addr, password string) (*cacheConn, error) {
+	if hot && !r.cfg.enabled() {
+		return nil, errors.New("hot cache is disabled")
+	}
 	if hot {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, r.cfg.HotTimeout)

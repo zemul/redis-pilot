@@ -165,6 +165,9 @@ func saveColdTask(tx *sql.Tx, t *apitypes.ColdTask) error {
 	return err
 }
 func reserveCold(tx *sql.Tx, cluster, instance string) error {
+	if instance == "" {
+		return nil
+	}
 	var owner string
 	err := tx.QueryRow(`SELECT cluster_id FROM cold_resources WHERE instance=?`, instance).Scan(&owner)
 	if err == nil {
@@ -181,6 +184,15 @@ func reserveCold(tx *sql.Tx, cluster, instance string) error {
 }
 
 func (d *DB) CreateColdCluster(spec apitypes.ColdClusterSpec) (*apitypes.ColdCluster, error) {
+	if spec.Engine == "" {
+		spec.Engine = "kvrocks"
+	}
+	if spec.Engine != "kvrocks" {
+		return nil, coldInvalid("only Kvrocks custom clusters are currently supported")
+	}
+	if !spec.UsesCache() && spec.HotInstance != "" {
+		return nil, coldInvalid("disabled cache must not reference a hot instance")
+	}
 	if !gatewayDraftName.MatchString(spec.ID) || !gatewayDraftName.MatchString(spec.GatewayID) || spec.NodeID == "" {
 		return nil, coldInvalid("invalid cluster, Gateway or node identity")
 	}
@@ -204,9 +216,12 @@ func (d *DB) CreateColdCluster(spec apitypes.ColdClusterSpec) (*apitypes.ColdClu
 	if used != 1 {
 		return nil, coldInvalid("Gateway node not found")
 	}
-	hot, err := coldResource(tx, spec.HotInstance, spec.NodeID, "redis")
-	if err != nil {
-		return nil, err
+	hot := ""
+	if spec.UsesCache() {
+		hot, err = coldResource(tx, spec.HotInstance, spec.NodeID, "redis")
+		if err != nil {
+			return nil, err
+		}
 	}
 	nodes, err := resolveColdShards(tx, spec.Shards, spec.NodeID)
 	if err != nil {

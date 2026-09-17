@@ -51,11 +51,14 @@ func newCacheShards(r *cacheRuntime, t *sharding.Topology, endpoints []cacheShar
 	}
 	s := &cacheShards{r: r, topology: t, nodes: map[string]*cacheShardNode{}}
 	canonical := map[string]sharding.Node{}
-	hotAddr, err := netip.ParseAddrPort(r.s.cfg.RedisAddress)
-	if err != nil {
-		return nil, err
+	hotAddress := ""
+	if r.cfg.enabled() {
+		hotAddr, err := netip.ParseAddrPort(r.s.cfg.RedisAddress)
+		if err != nil {
+			return nil, err
+		}
+		hotAddress = netip.AddrPortFrom(hotAddr.Addr().Unmap(), hotAddr.Port()).String()
 	}
-	hotAddress := netip.AddrPortFrom(hotAddr.Addr().Unmap(), hotAddr.Port()).String()
 	addresses := map[string]bool{}
 	// A transition can require the union of two valid topologies, up to twice
 	// the routing node limit. The registry is not itself a routing topology.
