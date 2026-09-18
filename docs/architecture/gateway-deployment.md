@@ -1,5 +1,11 @@
 # Gateway 部署与运维
 
+## 统一实例列表修订部署（2026-09-18）
+
+代码 bb25b54 已发布 redis01 Server 与内嵌页面。移除自定义集群侧栏及独立区块，单点/主从/分片集群共用列表、搜索、筛选和创建入口。旧 custom-clusters 页面链接跳转 instances。前端 10 项测试、构建及本地交互检查通过。
+
+本轮仅重启 redis-pilot-server，原二进制备份 `/opt/pilot-unified-ui.ICOOXG/backup-server`；未修改配置或业务数据，未重启 Gateway、Proxy、Agent 或数据库。部署后 Server active、版本 bb25b54，实例页引用新 JS；页面资源及集群接口均为 200。四个 Gateway readyz 和 managed-dev/spec-update/spec-invalidate/spec-nocache 的 Proxy 只读 EXISTS 验证通过。
+
 ## 页面集群聚合部署（2026-09-18）
 
 代码 e080240 已推送 dev，以 Linux amd64 二进制更新 redis01 的 `/opt/redis-pilot-server/redis-pilot-server`（包含新页面），仅重启 redis-pilot-server。原二进制备份在 `/opt/pilot-ui-stage.MoFMd7/backup-server`。未修改配置、数据库数据或机器凭据，未重启 Agent、Proxy、Gateway、Redis/Kvrocks。
