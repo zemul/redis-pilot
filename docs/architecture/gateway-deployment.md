@@ -1,5 +1,13 @@
 # Gateway 部署与运维
 
+## 页面集群聚合部署（2026-09-18）
+
+代码 e080240 已推送 dev，以 Linux amd64 二进制更新 redis01 的 `/opt/redis-pilot-server/redis-pilot-server`（包含新页面），仅重启 redis-pilot-server。原二进制备份在 `/opt/pilot-ui-stage.MoFMd7/backup-server`。未修改配置、数据库数据或机器凭据，未重启 Agent、Proxy、Gateway、Redis/Kvrocks。
+
+部署后 Server active、版本 e080240；`/dashboard/instances`、新 JS/CSS、pending/create-options/custom-clusters/gateway/runtime 接口均返回 200。四个 Gateway 的 readyz 均为 200；managed-dev、spec-update、spec-invalidate、spec-nocache 经各自 Proxy 入口执行只读 EXISTS 均成功。页面地址为 `http://10.70.100.67:8080/dashboard/instances`。
+
+提交前 Go 全量测试、vet、Server 相关 race 测试、前端 9 项测试和构建通过；页面交互在本地模拟 API 下验证。此次上线仅做真实环境只读检查，没有通过页面新建真实集群。创建仍需要未占用且已配置机器凭据的 Gateway ID，页面不会自动安装 Gateway 或创建凭据。
+
 ## 单份规格到真实 Proxy 验收（2026-09-17）
 
 本轮工作树（未提交）已构建 Linux 二进制：更新 redis01 Server、redis02/03 Agent；保留原 Proxy、managed-dev Gateway 和原数据库容器。新创建三个隔离集群，资源完全经单份规格 API 创建、幂等任务执行和真实数据库预检，再调用配置导出接口，以独立二进制/systemd 启动 Gateway，最后登记 ingress 接入原 Proxy。没有手工修补新数据库配置或用夹具替代 Server/Agent。
