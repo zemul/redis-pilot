@@ -1,6 +1,7 @@
 package store
 
 import (
+	"database/sql"
 	"fmt"
 	"strings"
 	"time"
@@ -42,6 +43,14 @@ type TaskFilter struct {
 }
 
 func (d *DB) CreateTask(t Task) error {
+	err := insertTask(t, d.sql.Exec)
+	if err == nil {
+		d.bumpGeneration()
+	}
+	return err
+}
+
+func insertTask(t Task, exec func(string, ...any) (sql.Result, error)) error {
 	now := time.Now().Format(time.RFC3339)
 	if t.CreatedAt == "" {
 		t.CreatedAt = now
@@ -64,11 +73,12 @@ func (d *DB) CreateTask(t Task) error {
 	if t.Trigger == "" {
 		t.Trigger = "automatic"
 	}
-	return d.execWrite(`INSERT INTO tasks(id,kind,status,phase,progress,message,cancelable,cancel_requested,payload,result,error,operator,source,trigger,
+	_, err := exec(`INSERT INTO tasks(id,kind,status,phase,progress,message,cancelable,cancel_requested,payload,result,error,operator,source,trigger,
 		group_name,instance_name,server_name,created_at,started_at,finished_at,updated_at)
 		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, t.ID, t.Kind, t.Status, t.Phase, t.Progress, t.Message, t.Cancelable, t.CancelRequested, t.Payload, t.Result, t.Error,
 		t.Operator, t.Source, t.Trigger, t.GroupName, t.InstanceName, t.ServerName,
 		t.CreatedAt, t.StartedAt, t.FinishedAt, t.UpdatedAt)
+	return err
 }
 
 func (d *DB) GetTask(id string) (*Task, error) {

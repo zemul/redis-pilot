@@ -382,6 +382,7 @@ func (d *DB) migrate() error {
 		sql     string
 		postSQL string // 列添加成功后的后续操作（如数据迁移），可为空
 	}{
+		{sql: `ALTER TABLE instances ADD COLUMN profile TEXT NOT NULL DEFAULT ''`},
 		{
 			sql:     `ALTER TABLE instances ADD COLUMN desired_state TEXT NOT NULL DEFAULT 'running'`,
 			postSQL: `UPDATE instances SET desired_state = CASE WHEN status IN ('stopped','deleting') THEN status ELSE 'running' END WHERE desired_state = 'running' AND status != ''`,
@@ -451,6 +452,12 @@ func (d *DB) migrate() error {
 
 	// ALTER TABLE 之后才能安全创建依赖新列的索引
 	if err := createColdSchema(tx); err != nil {
+		return err
+	}
+	if err := createProvisionSchema(tx); err != nil {
+		return err
+	}
+	if err := createClusterBuildSchema(tx); err != nil {
 		return err
 	}
 	postAlterIndexes := []string{

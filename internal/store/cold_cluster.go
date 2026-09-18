@@ -184,6 +184,13 @@ func reserveCold(tx *sql.Tx, cluster, instance string) error {
 }
 
 func (d *DB) CreateColdCluster(spec apitypes.ColdClusterSpec) (*apitypes.ColdCluster, error) {
+	return d.createColdCluster(spec, "")
+}
+
+func (d *DB) createColdCluster(spec apitypes.ColdClusterSpec, buildTaskID string) (*apitypes.ColdCluster, error) {
+	if !spec.ValidWritePolicy() {
+		return nil, coldInvalid("invalid cache write policy")
+	}
 	if spec.Engine == "" {
 		spec.Engine = "kvrocks"
 	}
@@ -203,6 +210,9 @@ func (d *DB) CreateColdCluster(spec apitypes.ColdClusterSpec) (*apitypes.ColdClu
 		return nil, err
 	}
 	defer tx.Rollback()
+	if err := checkClusterBuildTx(tx, spec, buildTaskID); err != nil {
+		return nil, err
+	}
 	var used int
 	if err := tx.QueryRow(`SELECT count(*) FROM cold_clusters WHERE id=? OR gateway_id=?`, spec.ID, spec.GatewayID).Scan(&used); err != nil {
 		return nil, err
@@ -243,9 +253,15 @@ func (d *DB) CreateColdCluster(spec apitypes.ColdClusterSpec) (*apitypes.ColdClu
 			return nil, err
 		}
 	}
+	if buildTaskID != "" {
+		if err := finishClusterBuildTx(tx, buildTaskID); err != nil {
+			return nil, err
+		}
+	}
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
+	d.bumpGeneration()
 	return c, nil
 }
 func coldNames(nodes []apitypes.ColdShard) []string {

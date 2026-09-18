@@ -42,8 +42,21 @@ func (r *Runtime) Run(args ...string) (string, error) {
 }
 
 func (r *Runtime) Create(engine, name, image string, port int, memory string, cpus float64, dataDir string) (string, error) {
+	return r.create(engine, name, image, port, memory, cpus, dataDir, nil)
+}
+
+// CreateOwned tags a provisioning attempt before the container can start.
+func (r *Runtime) CreateOwned(engine, name, image string, port int, memory string, cpus float64, dataDir, owner string) (string, error) {
+	return r.create(engine, name, image, port, memory, cpus, dataDir, []string{"--label", "redis-pilot.provision=" + owner})
+}
+
+func (r *Runtime) create(engine, name, image string, port int, memory string, cpus float64, dataDir string, labels []string) (string, error) {
+	run := func(args ...string) (string, error) {
+		args = append(append([]string{"run"}, labels...), args[1:]...)
+		return r.Run(args...)
+	}
 	if engine == "kvrocks" {
-		return r.Run("run", "-d",
+		return run("run", "-d",
 			"--name", name,
 			"--user", "0:0",
 			"--memory", memory,
@@ -59,7 +72,7 @@ func (r *Runtime) Create(engine, name, image string, port int, memory string, cp
 			"-c", "/etc/kvrocks/kvrocks.conf",
 		)
 	}
-	return r.Run("run", "-d",
+	return run("run", "-d",
 		"--name", name,
 		"--memory", memory,
 		"--memory-swap", memory,

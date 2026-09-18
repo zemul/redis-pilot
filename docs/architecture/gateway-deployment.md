@@ -1,5 +1,56 @@
 # Gateway 部署与运维
 
+## 单份规格到真实 Proxy 验收（2026-09-17）
+
+本轮工作树（未提交）已构建 Linux 二进制：更新 redis01 Server、redis02/03 Agent；保留原 Proxy、managed-dev Gateway 和原数据库容器。新创建三个隔离集群，资源完全经单份规格 API 创建、幂等任务执行和真实数据库预检，再调用配置导出接口，以独立二进制/systemd 启动 Gateway，最后登记 ingress 接入原 Proxy。没有手工修补新数据库配置或用夹具替代 Server/Agent。
+
+| 集群 | 模式 | Proxy 业务入口 | Gateway 回环 / 管理端口 | 专用后端 |
+| --- | --- | --- | --- | --- |
+| spec-update | update_existing | 10.70.100.67:16509 | 17679 / 19600 | redis02 冷 6385、热 6386；redis03 冷 6383 |
+| spec-invalidate | invalidate | 10.70.100.67:16510 | 17680 / 19601 | redis03 冷 6384；redis02 热 6387 |
+| spec-nocache | 无缓存 | 10.70.100.67:16511 | 17681 / 19602 | redis03 冷 6385 |
+
+冷实例各 256Mi/0.25 CPU，热实例各 128Mi/0.25 CPU。三个集群仍保留用于后续验收，不能重新运行首次安装脚本来覆盖。业务密码仅存 redis01 私有暂存目录 `/opt/pilot-spec-stage.vpNJJT/<cluster>-ingress.json`，未写入仓库或日志；机器凭据位于 `/etc/redis-gateway-<cluster>/control.secret`。Gateway 配置、二进制、状态目录分别为 `/etc/redis-gateway-<cluster>`、`/opt/redis-gateway-<cluster>`、`/var/lib/redis-gateway-<cluster>`。三个 `redis-gateway-<cluster>.service` 已 enabled；正常启动不带初始化参数。
+
+redis02/03 的 `redis-pilot-spec-firewall.service` 加载 `/etc/redis-pilot-spec-dev.nft`，在 DNAT 前限制本轮预留端口（redis02 6385–6399、redis03 6383–6399），仅允许 Gateway 主机 10.70.100.67 的外部 IPv4 访问，阻断外部 IPv6，本机 Agent 可用。实测 redis03 无法直连 redis02:6385，而 Gateway 正常读写。专用 `redis-pilot-spec-backends.service` 依赖此防火墙，只在开机启动本轮已有容器；两台均 enabled，不改既有容器或全局 Podman 启动策略。
+
+安装脚本 [deploy-spec-dev.py](../../scripts/deploy-spec-dev.py) 的动作分开执行，故障不自动清库或回滚旧数据库。Server 二进制/配置/一致性 SQLite 备份在 redis01 `/opt/pilot-spec-stage.vpNJJT/backup-server`；Agent 备份在 redis02 `/opt/pilot-spec-stage.AU2HF3/backup-agent`、redis03 `/opt/pilot-spec-stage.IXE5H8/backup-agent`。旧 pilot.db 不含新资源，不能直接恢复来回滚程序。
+
+[verify-spec-dev.py](../../scripts/verify-spec-dev.py) 从真实 Proxy 完成两轮，每轮覆盖三个模式：五种类型、MGET/MSET、TTL、1000 字段 Hash 回温与字段更新、两客户端各 100 次写后读及未修改字段校验、各 Gateway 重启、Server 重启后的同规格重放。两轮共 1200 次并发写后读校验，无旧值/请求错误；更新模式在字段修改后完整 Hash 仍在热库，删除模式缓存失效后可回温。所有测试仅删除本轮随机前缀业务 key，无 FLUSHDB。日志在 redis01 同一暂存目录的 `acceptance.log`、`acceptance-repeat.log`。现有 managed-dev 经 Proxy 的只读 EXISTS 与 /readyz=200 复核通过。
+
+SSH 跳板连接曾中断，已通过远端日志、进程状态和文件摘要核对操作结果，未因此重复初始化。未重启宿主机，未在本轮重做迁移/故障分区/压测/长稳；开机配置已检查不等于实际掉电重启验收。平台 servers 的历史容量登记为 16C/64Gi，与实机约 3.5Gi 内存不符，本轮按实测余量使用小规格，未擅自更改登记；后续容量调度验收前需校准。
+
+## 从已创建集群生成初始配置
+
+规格创建任务完成后，管理员可调用 `POST /api/v1/custom-clusters/orders/gateway-config`，或使用 CLI。准备 deployment.json（以下均为示例，端口需确认未占用）：
+
+```json
+{
+  "server_endpoint": "http://127.0.0.1:8080",
+  "listen": "127.0.0.1:17579",
+  "admin_listen": "127.0.0.1:19500",
+  "state_dir": "/var/lib/redis-gateway/orders",
+  "token_file": "/etc/redis-gateway/orders.secret"
+}
+```
+
+`server_endpoint` 是从 Gateway 主机访问的地址，远程必须使用 HTTPS；不能把本地 CLI 地址直接当作远程 Gateway 的 Server 地址。state_dir 是该集群独占运行目录，token_file 必须在其外部，存放与 Server gateway_tokens 对应的机器凭据，不是业务密码。
+
+```sh
+redis-pilot-cli custom-cluster gateway-config orders --file deployment.json
+```
+
+命令仅输出 YAML，不创建文件或远程部署。输出仅适用于 revision 1、尚无迁移任务的集群；已有运行状态必须保留，不可借此重建。后端地址与缓存策略取自登记信息，精确私网允许列表不会自动更新主机防火墙。新增远端分片时仍须先更新 backend_networks 的许可。
+
+安装流程仍由独立二进制/systemd 完成：
+
+1. 核对集群当前仍是初始拓扑，专用后端只能由这个 Gateway 访问。安装 YAML 和 owner-only 机器凭据（0600），创建服务用户拥有的 state_dir 父目录/根目录（0700），不要预创建其 sharding 子目录。
+2. 以服务账号执行 `redis-gateway -config <配置路径> -check-config`，再且仅首次执行 `-init-sharding-state`。首次初始化会检查空冷库；失败不得清库或删除未知运行状态后盲目重试。
+3. systemd ExecStart 只带 `-config`，写入权限覆盖上述 state_dir，开启开机启动。保留整个运行状态目录，不随发布清理；重启不能附带初始化参数。
+4. 检查 Gateway `/readyz`、Server 的实时心跳，再通过现有 ingress 接口配置业务 Proxy 密码和相同的 listen 地址。Gateway 确认拓扑/接入条件后才发布 Proxy 路由，最后从 Proxy 做真实读写验证。
+
+配置默认不指定 cold_only_prefixes，阻塞队列需按现有规则显式规划。配置导出不安装二进制、不验证网络连通性或主机端口、不保证后端正在运行，也不声称业务 ready。开发环境整链路部署结果见本文开头。
+
 ## 自定义集群无缓存配置（2026-09-17，尚未常驻部署）
 
 新建 Kvrocks 自定义集群可以关闭缓存。Server 登记请求显式指定 `engine: "kvrocks"`、`cache_enabled: false`，省略 hot_instance；其余 gateway_id、node_id、shards 和 ingress 流程保持不变。支持新 `/api/v1/custom-clusters` 路由及 `custom-cluster` CLI 别名，旧路径保持兼容。登记不是自动部署。

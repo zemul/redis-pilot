@@ -12,6 +12,12 @@ Server 的 cold_clusters/cold_tasks/cold_resources 只保存期望拓扑、稳�
 
 ## 契约与职责
 
+### 专用资源创建任务
+
+专用 Redis 缓存/Kvrocks 存储的创建由 Server 持久化 `profile.create` 任务协调。资源预留与任务同事务提交；Agent 使用固定 operation_id、本机创建记录和容器 label 幂等创建。网络不确定时保留资源、按原参数自动核对和重试，不自动删库。活动任务保护不依赖临时锁的超时；任务完成与资源解锁同事务提交。普通实例的同步创建流程不变。
+
+这是单控制 Server 下的资源创建协议，不是 Gateway 数据面锁，也不是新的同步服务。子任务在容器确认之后，还需只读验证数据库角色、关键配置与空库才成功。`cluster.provision` 父任务组装子任务，持续保护成员；全部成功后再次预检，并原子登记集群及转交资源占用。`POST /api/v1/custom-clusters/create` 与 CLI `custom-cluster provision --file` 已支持一份规格，在一个事务中预留所有资源、生成子任务与父任务；同名相同规格重试复用原任务，不同规格报冲突。缓存写策略随规格登记，Gateway 必须匹配。初始配置可通过管理员 `/:cluster/gateway-config` 接口或 CLI 同名子命令导出，严格限定初始拓扑，不包含凭据内容。安装配置、首次状态初始化及独立 systemd 服务部署仍需执行；父任务成功和导出成功均不等于业务入口 ready。接口、恢复边界与验证范围见 [实现状态](hot-cold-status.md)。
+
 Kvrocks 是唯一权威存储，保存完整业务数据；Redis 是可丢弃缓存。所有业务访问必须经过同一个有效 Gateway，不能旁路修改冷库、缓存或内部元数据。不再使用 PSYNC 同步器、复制日志、冷热所有权转移和主动降冷器。
 
 Gateway 属于数据面：读写路由、缓存更新、回填、一致性协调。独立二进制由 systemd 管理；Agent 只管理数据库容器，Server 管理配置/观测，Proxy 负责接入。Proxy → Gateway 保持本机回环，Gateway → 数据库允许显式私网白名单；单 Gateway、DB 0，不提供 Redis Cluster 协议或多 Gateway。

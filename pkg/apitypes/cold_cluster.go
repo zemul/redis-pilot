@@ -24,6 +24,7 @@ type ColdShard struct {
 }
 
 type ColdClusterSpec struct {
+	WritePolicy  string      `json:"write_policy,omitempty"`
 	Engine       string      `json:"engine,omitempty"`
 	CacheEnabled *bool       `json:"cache_enabled,omitempty"`
 	ID           string      `json:"id"`
@@ -35,6 +36,11 @@ type ColdClusterSpec struct {
 
 // Omission preserves the hot layer of legacy clusters.
 func (c ColdClusterSpec) UsesCache() bool { return c.CacheEnabled == nil || *c.CacheEnabled }
+
+// Empty policy preserves legacy registrations whose policy lives in Gateway YAML.
+func (c ColdClusterSpec) ValidWritePolicy() bool {
+	return c.WritePolicy == "" || (c.UsesCache() && (c.WritePolicy == "invalidate" || c.WritePolicy == "update_existing"))
+}
 
 type ColdCluster struct {
 	Ingress *ColdIngress `json:"ingress,omitempty"`

@@ -73,7 +73,7 @@ func defaultPersistence(engine, category string, overrides map[string]string) *a
 		p.AOF = v == "yes"
 	}
 	if v, ok := overrides["save"]; ok {
-		if v == "" {
+		if v == "" || v == `""` {
 			p.RDB = false
 			p.RDBFrequency = ""
 		} else {
@@ -292,6 +292,31 @@ func (s *Server) instanceCreate(c *gin.Context) {
 		return
 	}
 	req.Engine = strings.TrimSpace(req.Engine)
+	if err := redisconf.ValidateProfile(req.Profile, req.Engine, req.Category, req.Type, req.ReplicaOf, req.ConfigOverrides); err != nil {
+		fail(c, http.StatusBadRequest, err.Error())
+		return
+	}
+	if req.Profile != "" && (!req.DisableProxy || req.Password != "") {
+		fail(c, http.StatusBadRequest, "dedicated profile requires disable_proxy and no business password")
+		return
+	}
+	if req.Profile != "" {
+		if !validProvisionName.MatchString(req.Name) {
+			fail(c, http.StatusBadRequest, "invalid dedicated instance name")
+			return
+		}
+		req.Memory = strings.TrimSpace(req.Memory)
+		if strings.HasSuffix(req.Memory, "G") || strings.HasSuffix(req.Memory, "M") {
+			req.Memory += "i"
+		}
+		if req.CPUs == 0 {
+			req.CPUs = 1
+		}
+		if req.CPUs < 0 || (req.Profile == redisconf.KvrocksStorageProfile && parseMemoryBytes(req.Memory) < 64<<20) {
+			fail(c, http.StatusBadRequest, "invalid dedicated instance resources (Kvrocks requires at least 64Mi)")
+			return
+		}
+	}
 	if req.DisableProxy && (req.Type != "standalone" || req.ReplicaOf != "" || req.Password != "") {
 		fail(c, http.StatusBadRequest, "disable_proxy requires a standalone instance without replica_of or Proxy password")
 		return
@@ -364,10 +389,16 @@ func (s *Server) instanceCreate(c *gin.Context) {
 	if sessionID == "" {
 		sessionID = fmt.Sprintf("create-%d", time.Now().UnixNano())
 	}
+	var provisionTask *store.Task
+	if req.Profile != "" {
+		id := newProvisionID()
+		sessionID = id
+		provisionTask = &store.Task{ID: id, Kind: "profile.create", Status: "pending", Phase: "queued", Operator: operatorFrom(c), Source: "api", Trigger: "manual", InstanceName: req.Name, GroupName: groupName}
+	}
 
 	// 原子操作：检查冲突 → 调度 → 分配端口 → 写入 creating 状态
 	var resolvedAddr string // replica_of 解析后的 ip:port，用于 Agent 调用
-	err = s.db.WithInstances(func(instances *apitypes.InstancesState) error {
+	err = s.db.WithInstancesAndTask(provisionTask, func(instances *apitypes.InstancesState) error {
 		if _, exists := instances.Instances[req.Name]; exists {
 			return fmt.Errorf("conflict: instance already exists: %s", req.Name)
 		}
@@ -438,6 +469,11 @@ func (s *Server) instanceCreate(c *gin.Context) {
 		if !exists {
 			return fmt.Errorf("server not found: %s", req.Server)
 		}
+		if provisionTask != nil {
+			if _, err := selectServer(&apitypes.NodeState{Servers: map[string]*apitypes.NodeServer{req.Server: srv}}, instances, req.Memory, req.CPUs, req.Disk, "", req.NodeSelector); err != nil {
+				return fmt.Errorf("dedicated resource reservation: %w", err)
+			}
+		}
 
 		port, err := allocRedisPort(s.cfg.Ports, instances, req.Server)
 		if err != nil {
@@ -490,6 +526,7 @@ func (s *Server) instanceCreate(c *gin.Context) {
 			BackupPath:      dataDir + "/backup",
 			Persistence:     defaultPersistence(req.Engine, req.Category, req.ConfigOverrides),
 			ConfigOverrides: req.ConfigOverrides,
+			Profile:         req.Profile,
 			ReplicaOf:       masterName, // 存实例名而非 ip:port
 			// 只写意图。观测字段留空，Phase() 会推导为 "creating"——
 			// 语义是"要求它跑起来，但还没观测到"，比存一个 creating 字面值更准确
@@ -497,6 +534,9 @@ func (s *Server) instanceCreate(c *gin.Context) {
 			CreatedAt:    time.Now().Format(time.RFC3339),
 		}
 		instances.Instances[req.Name] = inst
+		if req.Profile == redisconf.RedisCacheProfile {
+			inst.Persistence = &apitypes.Persistence{RDB: false, AOF: false}
+		}
 		// 加操作锁：阻止并发删除在 Agent 创建完成前删掉记录导致孤儿容器
 		inst.Lock = &apitypes.Lock{
 			HeldBy:     sessionID,
@@ -504,7 +544,18 @@ func (s *Server) instanceCreate(c *gin.Context) {
 			AcquiredAt: time.Now().Format(time.RFC3339),
 			Timeout:    600, // 创建可能较慢（拉镜像等），给足超时
 		}
+		if provisionTask != nil {
+			inst.Lock.Operation = "profile.create"
+		}
 		state.RecalculateGroupTopology(instances, groupName)
+		if provisionTask != nil {
+			provisionTask.ServerName = req.Server
+			b, err := json.Marshal(profileTaskPayload{EnsureProfileRequest: apitypes.EnsureProfileRequest{OperationID: provisionTask.ID, CreateInstanceRequest: req}, AgentEndpoint: srv.Endpoint, AgentPort: srv.AgentPort})
+			if err != nil {
+				return err
+			}
+			provisionTask.Payload = string(b)
+		}
 
 		return nil
 	})
@@ -516,25 +567,34 @@ func (s *Server) instanceCreate(c *gin.Context) {
 		}
 		return
 	}
+	if provisionTask != nil {
+		c.JSON(http.StatusAccepted, apitypes.APIResponse{Success: true, Data: gin.H{"task_id": provisionTask.ID, "instance": req.Name, "status": "pending"}})
+		return
+	}
 
 	// 调用 Agent 创建（传解析后的 ip:port）
 	req.ReplicaOf = resolvedAddr
 	// Proxy 前端密码存储在 group 级别，不下发给 Agent。
 	req.Password = ""
 	client := newAgentClient(srv)
-	if _, err := client.postLong("/instance/create", req); err != nil {
+	if _, err := client.postLong(profileAgentPath("create", req.Profile), req); err != nil {
 		// 调用 Agent 清理已创建的资源（best-effort，忽略错误）
-		client.post("/instance/delete", map[string]interface{}{
-			"name":       req.Name,
-			"engine":     req.Engine,
-			"clean_data": true,
-		})
+		if req.Profile == "" {
+			client.post("/instance/delete", map[string]interface{}{
+				"name":       req.Name,
+				"engine":     req.Engine,
+				"clean_data": true,
+			})
+		}
 		// 标记实例为 failed，保留记录供排查
 		if markErr := s.db.WithInstances(func(instances *apitypes.InstancesState) error {
 			if i := instances.Instances[req.Name]; i != nil {
 				// 意图不变（用户仍然要这个实例），但已确认容器不存在。
 				// 这是观测而非意图：Phase() 会推导为 "failed"
 				i.ObservedStatus = apitypes.ObservedMissing
+				if req.Profile != "" {
+					i.ObservedStatus = ""
+				} // unknown reply must not claim absence
 				state.ReleaseLock(i, sessionID)
 				state.RecalculateGroupTopology(instances, i.Group)
 			}
@@ -817,7 +877,12 @@ func (s *Server) instanceConfig(c *gin.Context) {
 		fail(c, http.StatusInternalServerError, "resolve replica_of: "+err.Error())
 		return
 	}
-	if _, err := client.post("/instance/config", map[string]interface{}{
+	if err := redisconf.ValidateProfile(inst.Profile, groupState.Engine, groupState.Category, groupState.Type, replicaOfAddr, req.ConfigOverrides); err != nil {
+		fail(c, http.StatusBadRequest, err.Error())
+		return
+	}
+	if _, err := client.post(profileAgentPath("config", inst.Profile), map[string]interface{}{
+		"profile":          inst.Profile,
 		"name":             req.Name,
 		"engine":           groupState.Engine,
 		"type":             groupState.Type,
@@ -989,6 +1054,7 @@ func (s *Server) instanceResize(c *gin.Context) {
 			return
 		}
 		payload := map[string]interface{}{
+			"profile":          inst.Profile,
 			"name":             req.Name,
 			"engine":           groupState.Engine,
 			"type":             groupState.Type,
@@ -1005,7 +1071,7 @@ func (s *Server) instanceResize(c *gin.Context) {
 			payload["cpus"] = *req.CPUs
 		}
 		client := newAgentClient(srv)
-		if _, err := client.post("/instance/resize", payload); err != nil {
+		if _, err := client.post(profileAgentPath("resize", inst.Profile), payload); err != nil {
 			s.audit.Log(store.AuditRecord{Operator: operatorFrom(c), Action: "instance.resize", Level: audit.LevelImportant, Result: "failed", Detail: err.Error(),
 				Target: map[string]interface{}{"instance": req.Name, "server": inst.Server}})
 			fail(c, http.StatusInternalServerError, "agent resize failed: "+err.Error())

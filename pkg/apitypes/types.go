@@ -215,6 +215,7 @@ func (g *InstanceGroupState) ToView() *InstanceGroupView {
 
 // Instance 单容器运行状态
 type Instance struct {
+	Profile         string            `yaml:"profile,omitempty" json:"profile,omitempty"`
 	Group           string            `yaml:"group" json:"group"`
 	Role            string            `yaml:"role" json:"role"`
 	Server          string            `yaml:"server" json:"server"`
@@ -276,6 +277,9 @@ func (i *Instance) Phase() string {
 	if i == nil {
 		return "unknown"
 	}
+	if i.Lock != nil && i.Lock.Operation == "profile.create" {
+		return "creating"
+	}
 	switch {
 	case i.DesiredState == DesiredStopped:
 		if i.ObservedStatus == ObservedStopped || i.ObservedStatus == ObservedMissing {
@@ -307,7 +311,7 @@ func (i *Instance) Phase() string {
 // IsServing 报告实例当前是否可以承接业务流量。
 // 判据是观测结果而非意图——Proxy 端点、备份调度这类决策必须基于事实。
 func (i *Instance) IsServing() bool {
-	return i != nil && i.ObservedStatus == ObservedRunning
+	return i != nil && i.ObservedStatus == ObservedRunning && (i.Lock == nil || i.Lock.Operation != "profile.create")
 }
 
 // InstancesState instances-state.yaml 根结构
@@ -320,6 +324,7 @@ type InstancesState struct {
 // InstanceView 是 Instance 面向对外查询接口的安全投影，
 // 用于提供派生状态（Phase()）等计算字段的序列化形式。
 type InstanceView struct {
+	Profile         string            `json:"profile,omitempty"`
 	Group           string            `json:"group"`
 	Role            string            `json:"role"`
 	Server          string            `json:"server"`
@@ -351,6 +356,7 @@ func (i *Instance) ToView() *InstanceView {
 		return nil
 	}
 	return &InstanceView{
+		Profile:         i.Profile,
 		Group:           i.Group,
 		Role:            i.Role,
 		Server:          i.Server,
@@ -406,7 +412,13 @@ type APIResponse struct {
 }
 
 // CreateInstanceRequest 创建实例请求
+type EnsureProfileRequest struct {
+	OperationID string `json:"operation_id"`
+	CreateInstanceRequest
+}
+
 type CreateInstanceRequest struct {
+	Profile         string            `json:"profile,omitempty"`
 	Name            string            `json:"name" binding:"required"`
 	Category        string            `json:"category" binding:"required"` // cache | persistent
 	Group           string            `json:"group,omitempty"`             // stable logical group; required for master/standalone

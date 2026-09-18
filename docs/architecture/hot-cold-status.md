@@ -2,13 +2,102 @@
 
 更新：2026-09-17。mode: cache 开发实现，不代表正式发布。设计见 [冷热设计](hot-cold-gateway-design.md)。
 
+## 本轮真实创建与接入验收（2026-09-17）
+
+新增 spec-update、spec-invalidate、spec-nocache 三个隔离开发集群：真实单份规格创建 → 真实 Agent/Podman 配置和数据库预检 → 导出配置 → 独立 systemd Gateway → 原 Proxy 接入。两轮五类型、多 key、TTL、大 Hash 缓存语义和重启检查通过，共 1200 次并发写后读校验，无旧值或请求错误。新 Gateway/专用后端和防火墙已配置开机启动；未实际重启宿主机。本轮不修改旧集群数据、不覆盖原 Gateway，保留三个新集群。部署位置、凭据私有路径、备份和日志见 [部署记录](gateway-deployment.md#单份规格到真实-proxy-验收2026-09-17)。
+
+此结果补充下文各实现阶段的测试替身验证；不是页面一键安装、无人值守部署器、性能或长稳验收。Server 及 redis02/03 Agent 已更新；redis01 Agent 本轮没有新数据库任务，未更新。新增安装/验收脚本未自动提交或推送。
+
 ## 自定义集群：缓存可选（2026-09-17）
 
 - 新建 Kvrocks 集群可显式设置 API `cache_enabled: false`，不配置 hot_instance；Gateway 对应 `cache.enabled: false`，删除 redis_address/backend_password_file。关闭后不连接热库、不做热库清空/回温/失效，仍复用原有命令协调、HRW 分片、迁移日志与恢复协议，不是无保护的透传。旧配置和旧数据库记录省略开关时仍启用缓存。engine 默认 kvrocks，Redis 自定义分片当前拒绝。
 - 新增 `/api/v1/custom-clusters` 及详情、tasks、ingress 同语义路由，原 cold-clusters API 保留。CLI `custom-cluster` 是原 cold-cluster 的别名。前端“自定义集群”只读聚合展示存储引擎、缓存开关、成员、统一入口、实时 Gateway 观测与迁移任务，不把 ingress.ready 或过期心跳当成实时健康。
 - 开关目前是创建时配置，**不是在线切换能力**。已存在的 Gateway 持久化状态绑定热地址，不能通过改配置直接开启/关闭缓存；控制面模式不匹配也不会确认入口或接受任务。无缓存模式保留原命令支持边界和阻塞命令前缀约束，不新增 Redis Cluster 协议或副本切换。
 - 本地新增配置/状态兼容、存储登记/迁移、API 鉴权测试通过；无缓存五类型、批量读写，以及含原两种缓存模式的配置式迁移/重启 race 测试通过。redis03 隔离真实 Kvrocks 进程通过无缓存五类型和迁移/重启测试，日志 `/tmp/pilot-no-cache.MuQLpJ/result.log`。未重启或改写 managed-dev。前端单测、构建及本地模拟数据页面交互检查通过，未将新页面部署到开发 Server。
-- **未完成**：专用实例配置自动生成并可靠持久化、可恢复的一键资源创建任务、Gateway 初始配置交付，以及页面创建/操作流程。当前页面不提供假一键创建按钮；登记仍需现有 CLI/API 和独立 Gateway 部署。一个分片对应实例组及未来副本模型仍需继续落实，现阶段仍为专用 standalone 实例。Redis 引擎适配、Sentinel 接入未开始。
+- 后端及 CLI 已支持从单份规格自动创建资源、登记集群和导出 Gateway 初始配置，独立服务的开发环境整链路已验收。**未完成**：产品化配置自动安装，以及页面创建/操作流程。当前页面不提供假一键创建按钮；Gateway 仍独立部署。一个分片对应实例组及未来副本模型仍需继续落实，现阶段仍为专用 standalone 实例。Redis 引擎适配、Sentinel 接入未开始。
+
+## Gateway 初始配置导出（2026-09-17）
+
+- 管理员 `POST /api/v1/custom-clusters/:cluster/gateway-config`，输入 server_endpoint、listen、admin_listen、state_dir、token_file；CLI `custom-cluster gateway-config NAME --file deployment.json` 输出纯 YAML。字段含义和部署步骤见 [部署说明](gateway-deployment.md#从已创建集群生成初始配置)。API 返回 cluster_id、node_id、revision、yaml。
+- 从已登记集群读取真实地址、节点身份、冷热开关与写策略，远端后端仅放行精确私网 IP（/32 或 /128）。输出用 Gateway 自己的严格解析器再次验证。监听必须为回环固定端口；控制面要求 HTTPS 或本机回环 HTTP。配置不包含机器 token 内容、业务密码或后端密码，不读取 token_file。
+- 只允许 revision=1 且没有迁移任务的集群；旧手工登记且启用缓存但未声明 write_policy 的集群不猜策略，继续使用原 YAML。配置仅用于首次安装，不能用于丢失路由状态后的重建或多 Gateway 接管。导出不锁定后续拓扑，使用前需重新核对；真正初始化仍须数据库空库检查。
+- 此接口无部署副作用，不调用 Agent、不写 Gateway 状态、不初始化冷库、不创建/确认 ingress。机器凭据仍由运维安全安装，Gateway 仍独立二进制/systemd 启动。首次初始化只执行一次，systemd 正常启动不得附带初始化参数。无需修改现有业务认证方式。
+- 未默认启用阻塞命令前缀（需显式规划 cold_only_prefixes），连接/帧/预算采用现有分片示例的保守值，不代表压测选型。导出不验证端口是否被其他进程占用、主机防火墙和路径权限，也不代表服务 ready。
+- 验证覆盖三种缓存配置的 YAML 往返、精确 IPv4/IPv6 放行、非法路径/公开监听/零端口/迁移状态拒绝、管理员权限、机器凭据不泄露、规格创建后直接导出，以及 CLI 纯 YAML 输出。未将新创建→导出→真实服务启动链路部署至开发机。
+
+## 单份规格创建入口（2026-09-17）
+
+`POST /api/v1/custom-clusters/create` 或 CLI `redis-pilot-cli custom-cluster provision --file cluster.json` 接收以下规格，不必先手动创建资源子任务：
+
+```json
+{
+  "id": "orders",
+  "gateway_id": "gateway",
+  "node_id": "redis01",
+  "cold": {
+    "count": 2,
+    "memory": "2Gi",
+    "cpus": 1,
+    "disk": "50Gi",
+    "servers": ["redis02", "redis03"]
+  },
+  "cache": {
+    "memory": "4Gi",
+    "server": "redis02",
+    "write_policy": "update_existing"
+  }
+}
+```
+
+- 当前只支持 Kvrocks 存储，冷分片 1–128 个，可选一个 Redis 缓存。省略 cache 表示无缓存；提供 cache 时 write_policy 默认 invalidate，可选 update_existing。策略写入集群记录，Gateway 配置必须匹配；不是在线切换。旧手工登记记录未指定策略时保持原行为。
+- 每个资源必须提供 memory；CPU 默认 1。cold.servers 可省略自动调度，或提供与 count 等长的列表（空项自动调度）；cache.server 可省略。支持 node_selector 标签约束和 engine_version。自动调度按剩余容量选节点，不保证分片跨机分散；disk 仍是容量预算，不是磁盘配额。
+- 集群 ID 最长 32 字符，生成资源名 `<id>-cold-1` 等、可选 `<id>-hot`，分片 ID 为 s1、s2 等。Gateway 所在节点需已登记，机器凭据需预配置；不在此规格中设置业务密码。远端数据库节点需为私网 IP，并仍需正确配置网络访问控制。
+- 资源/端口预留、全部子任务、父任务及请求回执在同一个 SQLite 事务提交。资源不足、名字或 Gateway 冲突时整体回滚，提交前不调用 Agent。事务内复核选中节点的地址、容量、标签和状态，变化则拒绝本次预留，可重新提交。
+- 返回 HTTP 202，含 task_id、cluster_id、status、phase；通过 `/tasks/{id}` 查询。相同集群 ID、相同归一化规格重复提交返回原父任务（并发或 Server 重启后同样有效）；同名不同规格返回冲突，不静默修改或追加实例。当前无删除重建该回执的工作流。
+- Server 继续执行专用子任务、验证数据库、组装集群。成功仅表示 cluster_registered，**不表示业务入口可用**：可继续调用上述配置导出接口，但不会自动安装配置、部署服务或发布 ingress，也未新增页面创建表单。已有手动登记 create 和子任务组装 provision API 保留。
+- 验证包括无缓存及两种缓存策略、六个并发相同提交、关闭/重开数据库后续跑、成功后重复提交不再调用 Agent，以及容量不足、后续成员重名、最终父任务冲突时整批回滚。Agent 使用测试替身，不能据此宣称真实三机一键部署已验收。
+- 本轮全仓 `go test ./...`、`go vet ./...`、Server/Store/CLI 创建链路专项 race 检查通过；另验证节点容量在调度快照之后变化会拒绝并回滚预留。未部署到 redis01–03，未自动提交或推送。
+
+## 专用实例配置基础（2026-09-17）
+
+- 创建实例 API 增加不可变 `profile`：`redis-cache` 要求 Redis/cache，`kvrocks-storage` 要求 Kvrocks/persistent；两者均限 standalone、关闭普通 Proxy 入口、无实例业务密码。省略 profile 保持普通实例行为，不自动转换已有实例。
+- Redis 缓存模板关闭 RDB/AOF，采用 allkeys-lru，maxmemory 为容器内存预算的 75%；允许 Gateway 所需 FLUSHDB，仍禁用 FLUSHALL。剩余 25% 是开销预留，不是不会 OOM 的保证。不得绕过 Gateway 访问专用后端。
+- Kvrocks 存储模板启用 WAL 和同步写，workers=2；block cache 为内存预算的四分之一、单 write buffer 为十六分之一（4 个 buffer），至少配置 64Mi。max-db-size=0，不误把 RAM 额度当数据库容量限制；disk 字段仍是容量规划信息，并非磁盘配额。同步写不等于副本高可用或任意故障零丢失。
+- 用途写入 SQLite，Agent 生成配置中保留用途标记，配置采用临时文件、同步与原子替换；重写、重启后仍保留用途。禁止移除用途、原地改用途、修改专用组引擎/类型或向组追加副本。新 Server 使用带 profile 的 Agent 路径；旧 Agent 返回不支持，不能忽略字段后创建普通实例。
+- 专用创建调用失败不自动删除后端：超时可能已创建成功，状态保留为待核对，不能当作确定不存在。自动核对与续跑已接入下述 Server 单实例创建任务。专用 Kvrocks 在线内存调整暂拒绝，避免只变更容器额度而未协调引擎 buffer；CPU 调整保留。
+- 当前是配置和状态基础，不代表一键创建、Gateway 自动部署或 Sentinel 已实现；未替换开发环境常驻服务。
+- 验证：全仓 Go 测试、go vet 通过；专用模板重复重写、Agent 重建后用途保护、SQLite 关闭重开、拓扑变更拒绝和旧 Agent 拒绝测试通过。此轮尚未用新模板创建真实 Redis/Kvrocks 容器，不把模板断言当作真实引擎启动验收。
+
+## 可恢复创建的 Agent 基础（2026-09-17）
+
+新增内部鉴权接口 `POST /instance/ensure-profile`，在专用创建参数外要求固定 `operation_id`。Agent 在实例锁内，先持久化操作编号与请求摘要，再通过 Podman label 标记容器归属；创建后重新检查容器运行状态和身份。相同操作、相同参数重试不重复创建，也不重写已完成实例的配置。回复丢失、Agent 重启后可根据本机记录和容器 label 接认原容器；同名陌生目录/容器、参数变化、身份不符、已完成容器消失或被替换均拒绝接认，不覆盖、不删除，也不隐式启动停止的容器。Podman 查询失败不当作“不存在”。普通创建接口不能覆盖带此创建记录的实例。
+
+此接口已接入下述 Server 自动续跑循环；容器 Running 仍只代表进程状态，Server 另调用 verify-profile 检查数据库后才完成子任务，不等于 Gateway 就绪。创建记录写入前后宿主机掉电、真实 Podman 故障及整链路恢复尚未验收；容器操作测试使用运行时替身。
+
+专项测试覆盖：创建回复丢失后 Agent 重启接认、创建发出前失败后的续跑、8 个并发相同请求只创建一次、参数/操作编号变化拒绝、陌生资源拒绝、已完成容器消失/替换/停止时不重建、普通创建接口不能覆盖。专项 race 检查通过。
+
+## Server 持久化专用实例创建任务（2026-09-17）
+
+- `POST /instance/create` 指定非空 profile 时改为异步：事务内完成调度、实例组/实例登记、端口与资源预留、`tasks` 中 `profile.create` 登记，然后返回 HTTP 202，data 含 task_id/instance/status。普通实例创建保持原有同步接口。通过 `GET /tasks/{id}` 或 `/tasks?instance=...` 查询；请求回复丢失后不要换实例名重建。重复提交同名实例仍返回冲突，可查询原任务。
+- 专用请求默认 CPU=1，显式指定服务器也校验资源与标签；任务持久化解析后的镜像、版本、端口、完整参数和 Agent 地址。Agent 地址在预留事务中再次核对，活动任务期间不能换地址。CPU/内存预留不因 reconcile 暂时观测不到容器而释放。
+- 复用 Server 进程和 SQLite，无新服务。独立于备份任务跟踪的单 worker 每 5 秒检查任务，失败至少等待 30 秒后用同一 operation_id 重试；拉镜像等调用不阻塞备份任务跟踪。Server 启动后恢复 pending/running 任务。只支持当前单控制 Server 模型，不是多 Server 分布式任务租约。
+- 活动任务是持久保护，不随临时锁超时消失；即使传入同一个会话编号也不能停库、删库、改配置或变配。SQLite 触发器同时保护实例、组、节点地址及集群认领；已有资源不能在创建未完成时加入冷热集群。
+- 创建完成后删除资源时，Agent 先在数据根目录的 `.provision-retired/<operation_id>/` 持久化退役记录，再删除容器和实例目录；迟到的旧创建请求即使跨 Agent 重启也会被拒绝。退役记录不能随实例目录一起清理，目前不做自动 GC；它按资源创建操作计数，不是逐业务 key 元数据。新操作编号仍可重用已释放的实例名。
+- Agent 返回匹配的操作编号、非空容器 ID，核验容器归属与 Running 后，Server 还须调用 verify-profile 确认数据库就绪、关键运行配置与空库；回复必须属于同一容器。全部确认后才将子任务置 success/database_ready；任务终态、实例观测、解锁在同一事务提交。确认结果写幂等审计，不自动发布业务入口。
+- 网络错误、旧 Agent 不支持、错误回包会保留 retry_wait 和原因，自动重试，不触发删除或重放新任务。永久参数/资源冲突也保留占用和可见原因，不能靠盲目删除解决；安全取消/终止尚未开放。这只限制正在创建的资源，不停止已有集群服务。
+- 本轮覆盖持久任务重启续跑、相同操作/参数重试、事务回滚、过期锁与同会话绕过拒绝、资源占用、旧 Agent、任务查询和删除后的迟到请求隔离；创建期间派生状态保持 creating，不因临时 missing 报成最终失败，也不提前当作可接入实例。真实 Podman/宿主机故障尚未验收。父任务组装和数据库预检见下节；Gateway 初始配置交付、页面创建流程仍未完成。
+- 验证结果：全仓 Go 测试、go vet、Agent/Server/Store/状态投影的专项 race 检查通过；注入完成事务失败时，任务终态与解锁均回滚。未部署到 redis01–03，不将测试替身当作真实 Podman 验收。
+
+## 数据库就绪与集群父任务组装（2026-09-17）
+
+- Agent 内部 `POST /instance/verify-profile` 要求同一创建操作的原始参数；先确认容器归属，再从本机回环端口读 PING、INFO、CONFIG GET、DBSIZE，最后再次确认容器身份。连接与整体探测有超时，RESP 回复有大小/深度限制。只读检查，不写测试 key、不清库、不自动修复配置。
+- 检查实际 Redis/Kvrocks 引擎、master、cluster_enabled=0 和非加载状态；Redis 检查 save 空、appendonly=no、allkeys-lru、正 maxmemory；Kvrocks 检查 WAL 开启、同步写、workers=2、max-db-size=0。DB 0 必须为空，INFO 中若有其他非空 DB 也拒绝。预检不是持续一致性锁：专用后端必须禁止旁路写入，Gateway 初始化时仍要自己的空库与配置检查。
+- `POST /api/v1/custom-clusters/provision` 接收 `{"spec": <ColdClusterSpec>, "child_tasks": [<创建任务ID>...]}`。先用带 profile 的 `/instance/create` 生成子任务，再把每个资源对应的 task_id 提交给此接口；每个冷分片一个 Kvrocks 子任务，可选一个 Redis 缓存子任务。返回 202 和父 task_id，经通用 `/tasks/{id}` 查询。**不是一次请求自动创建所有子资源**，也没有新增页面创建按钮。
+- 父任务 `cluster.provision` 与成员占用一起落库。通过当前实例来源记录绑定子任务，拒绝任意同名实例、重复成员、错误用途、缺失成员或已被其他集群占用的资源；旧容器级 success 且无 database_ready 证明的任务不能直接组装。
+- 一个子任务失败/暂不可达时，其他已成功资源保留并受父任务保护，Server 重启后继续等待与重试。子任务全部成功后，父任务重新预检全部数据库，不能仅凭之前的就绪结果接管可能已被修改的实例。完成时在同一事务登记 HRW 集群、建立集群资源占用、置父任务 success/cluster_registered，并释放父任务的临时成员占用。成员从创建保护转交集群保护，中间没有可删除窗口。
+- 父任务完成时不创建 ingress、不部署 Gateway、不宣布业务就绪。临时故障自动重试；非空数据、错误运行配置、身份冲突不会被自动清理。安全取消/失败资源回收、Gateway 初始配置交付与页面操作仍待实现；单份规格预留入口见上节。
+- 测试覆盖有缓存/无缓存两种父任务、部分子任务失败后 Server 重启续跑、禁止提前登记、已成功成员不能被删除、最终保护转交，以及探测的错误引擎/副本/加载中/非空库/错误 LRU/WAL/认证/异常回复。真实 Podman 与真实 Kvrocks 的本轮新链路尚未验收。
+- 本轮全仓 Go 测试、go vet、Agent/Server/Store 专项 race 检查通过。本地独立真实 Redis 进程通过空库就绪检查；写入测试 key 后预检拒绝，且原值仍可读取，确认探测不清库。未改动 redis01–03 常驻服务，未提交或部署本轮变更。
 
 ## 已接入开发代码
 

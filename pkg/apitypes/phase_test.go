@@ -2,6 +2,15 @@ package apitypes
 
 import "testing"
 
+func TestProvisioningPhaseDoesNotPublishEarly(t *testing.T) {
+	for _, observed := range []string{ObservedMissing, ObservedRunning, ObservedUnreachable} {
+		i := &Instance{DesiredState: DesiredRunning, ObservedStatus: observed, Lock: &Lock{Operation: "profile.create"}}
+		if i.Phase() != "creating" || i.IsServing() {
+			t.Fatalf("premature phase for %s: %s", observed, i.Phase())
+		}
+	}
+}
+
 // TestPhase 是 DesiredState × ObservedStatus 的完整推导矩阵。
 //
 // 拆分之前，Status 单字段同时承担意图与观测，unexpected_stopped 这类本质上是

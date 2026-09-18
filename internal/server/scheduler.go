@@ -99,7 +99,10 @@ func selectServer(node *apitypes.NodeState, instances *apitypes.InstancesState, 
 			return !ci.sameZone
 		}
 		// 剩余内存多的优先
-		return ci.remainingMem > cj.remainingMem
+		if ci.remainingMem != cj.remainingMem {
+			return ci.remainingMem > cj.remainingMem
+		}
+		return ci.name < cj.name
 	})
 
 	return candidates[0].name, nil
@@ -123,7 +126,7 @@ func computeAllocatedExcluding(instances *apitypes.InstancesState, serverName, e
 	for name, inst := range instances.Instances {
 		// 容器确实不存在的实例不占用资源。注意这里读观测而非意图：
 		// 一个"意图 running 但容器已消失"的实例不该继续占配额。
-		if inst == nil || inst.Server != serverName || inst.ObservedStatus == apitypes.ObservedMissing {
+		if inst == nil || inst.Server != serverName || (inst.ObservedStatus == apitypes.ObservedMissing && (inst.Lock == nil || inst.Lock.Operation != "profile.create")) {
 			continue
 		}
 		if name == excludeName {

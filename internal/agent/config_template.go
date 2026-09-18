@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"text/template"
+
+	"gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/pkg/redisconf"
 )
 
 func convertMemoryToBytes(mem string) string {
@@ -40,6 +42,7 @@ func convertMemoryToBytes(mem string) string {
 }
 
 var redisTmpl = template.Must(template.New("redis").Parse(`
+# redis-pilot profile: {{ .Profile }}
 port {{ .Port }}
 bind 0.0.0.0
 timeout 300
@@ -50,7 +53,9 @@ databases 16
 maxmemory {{ .Memory }}
 maxmemory-policy {{ .MaxmemoryPolicy }}
 
-{{ if eq .Version "7" }}
+{{ if eq .Profile "redis-cache" }}
+save ""
+{{ else if eq .Version "7" }}
 save 3600 1 300 100 60 10000
 {{ else }}
 save 900 1
@@ -83,7 +88,7 @@ replica-announce-port {{ .AnnouncePort }}
 min-replicas-to-write {{ .MinReplicasToWrite }}
 min-replicas-max-lag 10
 
-rename-command FLUSHDB ""
+{{ if ne .Profile "redis-cache" }}rename-command FLUSHDB ""{{ end }}
 rename-command FLUSHALL ""
 rename-command DEBUG ""
 
@@ -106,6 +111,7 @@ activedefrag {{ if eq .Version "5" }}no{{ else }}yes{{ end }}
 `))
 
 var kvrocksTmpl = template.Must(template.New("kvrocks").Parse(`
+# redis-pilot profile: {{ .Profile }}
 bind 0.0.0.0
 port {{ .Port }}
 timeout 300
@@ -118,7 +124,7 @@ max-db-size {{ .Memory }}
 rocksdb.compression snappy
 rocksdb.block_size 16384
 rocksdb.max_open_files 4096
-rocksdb.write_buffer_size 64
+rocksdb.write_buffer_size {{ if eq .Profile "kvrocks-storage" }}{{ .WriteBufferMB }}{{ else }}64{{ end }}
 rocksdb.max_write_buffer_number 4
 rocksdb.target_file_size_base 128
 rocksdb.max_bytes_for_level_base 268435456
@@ -126,6 +132,12 @@ rocksdb.level0_slowdown_writes_trigger 20
 rocksdb.level0_stop_writes_trigger 40
 rocksdb.enable_pipelined_write yes
 rocksdb.max_subcompactions 2
+{{ if eq .Profile "kvrocks-storage" }}
+workers 2
+rocksdb.block_cache_size {{ .BlockCacheMB }}
+rocksdb.write_options.sync yes
+rocksdb.write_options.disable_wal no
+{{ end }}
 
 {{ if .ReplicaOf }}
 slaveof {{ .ReplicaOf }}
@@ -144,6 +156,7 @@ maxclients 10000
 `))
 
 type RedisConfigParams struct {
+	Profile            string
 	Version            string // "5", "6.2", "7"
 	Port               int
 	Password           string
@@ -158,6 +171,9 @@ type RedisConfigParams struct {
 }
 
 type KvrocksConfigParams struct {
+	Profile            string
+	BlockCacheMB       int64
+	WriteBufferMB      int64
 	Port               int
 	Password           string
 	Memory             string
@@ -170,6 +186,15 @@ type KvrocksConfigParams struct {
 
 func writeRedisConfig(dataDir string, params RedisConfigParams) error {
 	params.Memory = convertMemoryToBytes(params.Memory)
+	if params.Profile == redisconf.RedisCacheProfile {
+		n, err := strconv.ParseInt(params.Memory, 10, 64)
+		if err != nil || n < 4 {
+			return fmt.Errorf("invalid dedicated cache memory")
+		}
+		// Leave a quarter of the container budget for allocator/connection overhead.
+		params.Memory = strconv.FormatInt(n-n/4, 10)
+		params.MaxmemoryPolicy, params.Appendonly = "allkeys-lru", "no"
+	}
 	params.ReplicaOf = strings.Replace(params.ReplicaOf, ":", " ", 1)
 	if params.Version == "" {
 		params.Version = "7"
@@ -179,6 +204,16 @@ func writeRedisConfig(dataDir string, params RedisConfigParams) error {
 
 func writeKvrocksConfig(dataDir string, params KvrocksConfigParams) error {
 	params.Memory = convertMemoryToBytes(params.Memory)
+	if params.Profile == redisconf.KvrocksStorageProfile {
+		n, err := strconv.ParseInt(params.Memory, 10, 64)
+		if err != nil || n < 64<<20 {
+			return fmt.Errorf("dedicated Kvrocks requires at least 64Mi container memory")
+		}
+		params.BlockCacheMB, params.WriteBufferMB = n/(4<<20), n/(16<<20)
+		// max-db-size is a database-size limit, not an engine memory budget.
+		// Disk remains capacity-planning metadata until disk quotas are supported.
+		params.Memory = "0"
+	}
 	params.ReplicaOf = strings.Replace(params.ReplicaOf, ":", " ", 1)
 	return writeConfig(dataDir, "kvrocks.conf", kvrocksTmpl, params)
 }
@@ -192,5 +227,31 @@ func writeConfig(dataDir, filename string, tmpl *template.Template, params inter
 	if err := tmpl.Execute(&buf, params); err != nil {
 		return fmt.Errorf("render template: %w", err)
 	}
-	return os.WriteFile(filepath.Join(confDir, filename), buf.Bytes(), 0644)
+	f, err := os.CreateTemp(confDir, "."+filename+"-*")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(f.Name())
+	defer f.Close()
+	if err := f.Chmod(0644); err != nil {
+		return err
+	}
+	if _, err := f.Write(buf.Bytes()); err != nil {
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(f.Name(), filepath.Join(confDir, filename)); err != nil {
+		return err
+	}
+	d, err := os.Open(confDir)
+	if err != nil {
+		return err
+	}
+	defer d.Close()
+	return d.Sync()
 }

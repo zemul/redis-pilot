@@ -232,6 +232,11 @@ func (a *Agent) Router() *gin.Engine {
 		inst.GET("/list", a.instanceList)
 		inst.GET("/status", a.instanceStatus)
 		inst.POST("/create", a.instanceCreate)
+		inst.POST("/create-profile", a.instanceCreate)
+		inst.POST("/ensure-profile", a.instanceEnsureProfile)
+		inst.POST("/verify-profile", a.instanceVerifyProfile)
+		inst.POST("/config-profile", a.instanceConfig)
+		inst.POST("/resize-profile", a.instanceResize)
 		inst.POST("/start", a.instanceStart)
 		inst.POST("/stop", a.instanceStop)
 		inst.POST("/delete", a.instanceDelete)
@@ -314,6 +319,14 @@ func (a *Agent) instanceCreate(c *gin.Context) {
 	defer unlock()
 
 	dataDir := filepath.Join(a.cfg.DataDir, req.Name)
+	if _, err := os.Stat(filepath.Join(dataDir, "conf", "provision.json")); err == nil || !os.IsNotExist(err) {
+		fail(c, http.StatusConflict, "provisioned instance requires ensure-profile; ordinary create cannot overwrite it")
+		return
+	}
+	if err := a.checkProfile(req.Name, req.Profile, req.Engine, req.Category, req.Type, req.ReplicaOf, req.ConfigOverrides); err != nil {
+		fail(c, http.StatusBadRequest, err.Error())
+		return
+	}
 	for _, sub := range []string{"conf", "data", "backup"} {
 		if err := os.MkdirAll(filepath.Join(dataDir, sub), 0755); err != nil {
 			fail(c, http.StatusInternalServerError, "mkdir: "+err.Error())
@@ -331,6 +344,7 @@ func (a *Agent) instanceCreate(c *gin.Context) {
 	var createErr error
 	if req.Engine == "kvrocks" {
 		createErr = writeKvrocksConfig(dataDir, KvrocksConfigParams{
+			Profile:            req.Profile,
 			Port:               req.Port,
 			Password:           req.Password,
 			Memory:             req.Memory,
@@ -350,6 +364,7 @@ func (a *Agent) instanceCreate(c *gin.Context) {
 			aof = "no"
 		}
 		createErr = writeRedisConfig(dataDir, RedisConfigParams{
+			Profile:            req.Profile,
 			Version:            req.EngineVersion,
 			Port:               req.Port,
 			Password:           req.Password,
@@ -460,6 +475,10 @@ func (a *Agent) instanceDelete(c *gin.Context) {
 
 	containerName := req.Engine + "-" + req.Name
 	// 先优雅停止，让 Redis 有机会 flush 数据；忽略错误（容器可能已停止）
+	if err := a.retireProvision(req.Name); err != nil {
+		fail(c, http.StatusInternalServerError, "persist provisioning retirement: "+err.Error())
+		return
+	}
 	_ = a.runtime.Stop(containerName)
 	if err := a.runtime.Remove(containerName); err != nil {
 		// 容器不存在时不应报错（幂等删除）
@@ -490,9 +509,10 @@ func (a *Agent) instanceDelete(c *gin.Context) {
 //   - Restart=true：重写磁盘配置文件并重启容器（配置项需要重启才生效时用）
 //   - 两者都为 false：热更新，逐项 CONFIG SET，不动磁盘配置文件
 type instanceConfigRequest struct {
-	Name   string `json:"name" binding:"required"`
-	Engine string `json:"engine" binding:"required"`
-	Type   string `json:"type"`
+	Profile string `json:"profile"`
+	Name    string `json:"name" binding:"required"`
+	Engine  string `json:"engine" binding:"required"`
+	Type    string `json:"type"`
 	// 注意：这里不加 binding:"required"。RewriteConfigOnly 模式下（角色落盘）
 	// 实例可能本来就没有任何 config_overrides，空 map 是合法输入。
 	// 面向用户的 config 变更由 Server 侧校验非空。
@@ -519,6 +539,9 @@ type instanceConfigRequest struct {
 
 // writeInstanceConfig 按请求参数渲染并落盘实例配置文件。
 func (a *Agent) writeInstanceConfig(req *instanceConfigRequest) error {
+	if err := a.checkProfile(req.Name, req.Profile, req.Engine, req.Category, req.Type, req.ReplicaOf, req.ConfigOverrides); err != nil {
+		return err
+	}
 	dataDir := filepath.Join(a.cfg.DataDir, req.Name)
 	overrides, err := configOverridesString(req.ConfigOverrides)
 	if err != nil {
@@ -527,6 +550,7 @@ func (a *Agent) writeInstanceConfig(req *instanceConfigRequest) error {
 	minReplicas := minReplicasToWrite(req.Type, req.ReplicaOf)
 	if req.Engine == "kvrocks" {
 		return writeKvrocksConfig(dataDir, KvrocksConfigParams{
+			Profile:            req.Profile,
 			Port:               req.Port,
 			Password:           req.Password,
 			Memory:             req.Memory,
@@ -546,6 +570,7 @@ func (a *Agent) writeInstanceConfig(req *instanceConfigRequest) error {
 		aof = "no"
 	}
 	return writeRedisConfig(dataDir, RedisConfigParams{
+		Profile:            req.Profile,
 		Version:            req.EngineVersion,
 		Port:               req.Port,
 		Password:           req.Password,
@@ -584,6 +609,10 @@ func (a *Agent) instanceConfig(c *gin.Context) {
 	containerName := req.Engine + "-" + req.Name
 	if req.Password != "" {
 		a.passwords.Store(req.Name, req.Password)
+	}
+	if err := a.checkProfile(req.Name, req.Profile, req.Engine, req.Category, req.Type, req.ReplicaOf, req.ConfigOverrides); err != nil {
+		fail(c, http.StatusBadRequest, err.Error())
+		return
 	}
 
 	switch {
@@ -634,6 +663,7 @@ func (a *Agent) instanceConfig(c *gin.Context) {
 // Memory 为空表示不改内存;CPUs<=0 表示不改 CPU。其余字段用于内存变配时重写配置文件
 // （持久化 maxmemory）与热更新 CONFIG SET，语义与 instanceConfig 的 restart/rewrite 模式一致。
 type instanceResizeRequest struct {
+	Profile         string            `json:"profile"`
 	Name            string            `json:"name" binding:"required"`
 	Engine          string            `json:"engine" binding:"required"`
 	Memory          string            `json:"memory"`
@@ -673,6 +703,21 @@ func (a *Agent) instanceResize(c *gin.Context) {
 	containerName := req.Engine + "-" + req.Name
 
 	// 1. 在线调整容器 cgroup(内存/CPU)
+	if req.Profile == redisconf.KvrocksStorageProfile && req.Memory != "" {
+		fail(c, http.StatusBadRequest, "dedicated Kvrocks memory changes require a coordinated restart; generic live resize is not supported")
+		return
+	}
+	if err := a.checkProfile(req.Name, req.Profile, req.Engine, req.Category, req.Type, req.ReplicaOf, req.ConfigOverrides); err != nil {
+		fail(c, http.StatusBadRequest, err.Error())
+		return
+	}
+	if req.Profile == redisconf.RedisCacheProfile && req.Memory != "" {
+		n, err := strconv.ParseInt(convertMemoryToBytes(req.Memory), 10, 64)
+		if err != nil || n < 4 {
+			fail(c, http.StatusBadRequest, "invalid dedicated cache memory")
+			return
+		}
+	}
 	if err := a.runtime.Update(containerName, req.Memory, req.CPUs); err != nil {
 		fail(c, http.StatusInternalServerError, "podman update: "+err.Error())
 		return
@@ -681,6 +726,7 @@ func (a *Agent) instanceResize(c *gin.Context) {
 	// 2. 内存变配:持久化配置文件 + 热更新引擎的 maxmemory,使新内存立即且长期生效
 	if req.Memory != "" {
 		cfgReq := &instanceConfigRequest{
+			Profile:         req.Profile,
 			Name:            req.Name,
 			Engine:          req.Engine,
 			Type:            req.Type,
@@ -698,6 +744,14 @@ func (a *Agent) instanceResize(c *gin.Context) {
 		}
 		// 热更新:Redis 用 maxmemory,Kvrocks 用 max-db-size,值与配置文件一致(字节)。
 		memBytes := convertMemoryToBytes(req.Memory)
+		if req.Profile == redisconf.RedisCacheProfile {
+			n, err := strconv.ParseInt(memBytes, 10, 64)
+			if err != nil || n < 4 {
+				fail(c, http.StatusBadRequest, "invalid dedicated cache memory")
+				return
+			}
+			memBytes = strconv.FormatInt(n-n/4, 10)
+		}
 		key := "maxmemory"
 		if req.Engine == "kvrocks" {
 			key = "max-db-size"
@@ -1336,7 +1390,7 @@ func (a *Agent) instanceBackup(c *gin.Context) {
 	var req struct {
 		Name      string `json:"name" binding:"required"`
 		Engine    string `json:"engine" binding:"required"`
-		Retention int    `json:"retention"` // 保留份数，0 表示不清理
+		Retention int    `json:"retention"`                    // 保留份数，0 表示不清理
 		S3Prefix  string `json:"s3_prefix" binding:"required"` // S3 归档前缀（组名）
 		TaskID    string `json:"task_id"`
 	}

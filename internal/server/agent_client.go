@@ -27,6 +27,15 @@ type agentClient struct {
 	token    string
 }
 
+// A separate endpoint prevents old Agents silently ignoring the new profile.
+func profileAgentPath(operation, profile string) string {
+	path := "/instance/" + operation
+	if profile != "" {
+		path += "-profile"
+	}
+	return path
+}
+
 func newAgentClient(server *apitypes.NodeServer) *agentClient {
 	return &agentClient{
 		endpoint: fmt.Sprintf("http://%s:%d", server.Endpoint, server.AgentPort),

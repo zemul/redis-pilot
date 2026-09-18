@@ -19,12 +19,13 @@ import (
 )
 
 type Server struct {
-	cfg       *Config
-	db        *store.DB
-	log       *logger.Logger
-	audit     *audit.Logger
-	scheduler *backupScheduler
-	metrics   *servermetrics.Metrics
+	provisionMu sync.Mutex // one bounded provisioning worker per Server process
+	cfg         *Config
+	db          *store.DB
+	log         *logger.Logger
+	audit       *audit.Logger
+	scheduler   *backupScheduler
+	metrics     *servermetrics.Metrics
 
 	// topologyMu 串行化"读取拓扑状态 → 把它推给 Sentinel / 推给 Agent 写配置文件"
 	// 这个复合序列。
@@ -232,6 +233,9 @@ func (s *Server) Router() *gin.Engine {
 	authed.GET("/api/v1/custom-clusters", s.coldList)
 	authed.GET("/api/v1/custom-clusters/:cluster", s.coldGet)
 	authed.POST("/api/v1/custom-clusters", s.adminOnly(), s.coldCreate)
+	authed.POST("/api/v1/custom-clusters/provision", s.adminOnly(), s.clusterBuildCreate)
+	authed.POST("/api/v1/custom-clusters/create", s.adminOnly(), s.clusterCreateFromSpec)
+	authed.POST("/api/v1/custom-clusters/:cluster/gateway-config", s.adminOnly(), s.gatewayBootstrap)
 	authed.POST("/api/v1/custom-clusters/:cluster/tasks", s.adminOnly(), s.coldTaskCreate)
 	authed.POST("/api/v1/custom-clusters/:cluster/ingress", s.adminOnly(), s.coldIngressCreate)
 	authed.GET("/api/v1/custom-clusters/:cluster/ingress", s.coldIngressGet)

@@ -66,7 +66,7 @@ func (d *DB) GetAllInstances() (map[string]*apitypes.Instance, error) {
 	rows, err := d.sql.Query(
 		`SELECT name, grp, role, server, container, port, memory, cpus, disk,
 		        config_path, data_path, backup_path,
-		        persistence, config_overrides, replica_of, desired_state, observed_status, lock, created_at
+		        persistence, profile, config_overrides, replica_of, desired_state, observed_status, lock, created_at
 		 FROM instances`)
 	if err != nil {
 		return nil, err
@@ -84,8 +84,8 @@ func (d *DB) UpsertInstance(name string, inst *apitypes.Instance) error {
 	return d.execWrite(`
 		INSERT INTO instances(name, grp, role, server, container, port, memory, cpus, disk,
 		    config_path, data_path, backup_path,
-		    persistence, config_overrides, replica_of, desired_state, observed_status, lock, created_at)
-		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+		    persistence, profile, config_overrides, replica_of, desired_state, observed_status, lock, created_at)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 		ON CONFLICT(name) DO UPDATE SET
 			grp              = excluded.grp,
 			role             = excluded.role,
@@ -99,6 +99,7 @@ func (d *DB) UpsertInstance(name string, inst *apitypes.Instance) error {
 			data_path        = excluded.data_path,
 			backup_path      = excluded.backup_path,
 			persistence      = excluded.persistence,
+			profile          = excluded.profile,
 			config_overrides = excluded.config_overrides,
 			replica_of       = excluded.replica_of,
 			desired_state    = excluded.desired_state,
@@ -109,7 +110,7 @@ func (d *DB) UpsertInstance(name string, inst *apitypes.Instance) error {
 		inst.Group, inst.Role, inst.Server, inst.Container,
 		inst.Port, inst.Memory, inst.CPUs, inst.Disk,
 		inst.ConfigPath, inst.DataPath, inst.BackupPath,
-		string(persistenceJSON), string(overridesJSON),
+		string(persistenceJSON), inst.Profile, string(overridesJSON),
 		inst.ReplicaOf,
 		inst.DesiredState, inst.ObservedStatus, string(lockJSON), inst.CreatedAt,
 	)
@@ -125,7 +126,7 @@ func (d *DB) GetInstance(name string) (*apitypes.Instance, error) {
 	row := d.sql.QueryRow(
 		`SELECT name, grp, role, server, container, port, memory, cpus, disk,
 		        config_path, data_path, backup_path,
-		        persistence, config_overrides, replica_of, desired_state, observed_status, lock, created_at
+		        persistence, profile, config_overrides, replica_of, desired_state, observed_status, lock, created_at
 		 FROM instances WHERE name = ?`, name)
 
 	inst, err := scanInstance(row)
@@ -141,6 +142,20 @@ func (d *DB) GetInstance(name string) (*apitypes.Instance, error) {
 // 用 DB.mu 强制同一时间只有一个 WithInstances/WithServers 在执行，避免并发调用者
 // 各自基于旧快照修改后互相覆盖（丢失更新），或触发 SQLITE_BUSY_SNAPSHOT 静默失败。
 func (d *DB) WithInstances(fn func(*apitypes.InstancesState) error) error {
+	return d.WithInstancesAndTask(nil, fn)
+}
+
+// WithInstancesAndTask commits resource reservations and a new task together.
+// The callback can fill task.Payload after allocating the resource endpoint.
+func (d *DB) WithInstancesAndTask(task *Task, fn func(*apitypes.InstancesState) error) error {
+	var tasks []*Task
+	if task != nil {
+		tasks = append(tasks, task)
+	}
+	return d.withInstancesAndTasks(&tasks, nil, fn)
+}
+
+func (d *DB) withInstancesAndTasks(tasks *[]*Task, after func(*sql.Tx) error, fn func(*apitypes.InstancesState) error) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
@@ -218,8 +233,8 @@ func (d *DB) WithInstances(fn func(*apitypes.InstancesState) error) error {
 		if _, err := tx.Exec(`
 			INSERT INTO instances(name, grp, role, server, container, port, memory, cpus, disk,
 			    config_path, data_path, backup_path,
-			    persistence, config_overrides, replica_of, desired_state, observed_status, lock, created_at)
-			VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+			    persistence, profile, config_overrides, replica_of, desired_state, observed_status, lock, created_at)
+			VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 			ON CONFLICT(name) DO UPDATE SET
 				grp              = excluded.grp,
 				role             = excluded.role,
@@ -233,7 +248,8 @@ func (d *DB) WithInstances(fn func(*apitypes.InstancesState) error) error {
 				data_path        = excluded.data_path,
 				backup_path      = excluded.backup_path,
 				persistence      = excluded.persistence,
-				config_overrides = excluded.config_overrides,
+				profile          = excluded.profile,
+			config_overrides = excluded.config_overrides,
 				replica_of       = excluded.replica_of,
 				desired_state    = excluded.desired_state,
 				observed_status  = excluded.observed_status,
@@ -243,7 +259,7 @@ func (d *DB) WithInstances(fn func(*apitypes.InstancesState) error) error {
 			inst.Group, inst.Role, inst.Server, inst.Container,
 			inst.Port, inst.Memory, inst.CPUs, inst.Disk,
 			inst.ConfigPath, inst.DataPath, inst.BackupPath,
-			string(persistenceJSON), string(overridesJSON),
+			string(persistenceJSON), inst.Profile, string(overridesJSON),
 			inst.ReplicaOf,
 			inst.DesiredState, inst.ObservedStatus, string(lockJSON), inst.CreatedAt,
 		); err != nil {
@@ -258,6 +274,38 @@ func (d *DB) WithInstances(fn func(*apitypes.InstancesState) error) error {
 		}
 	}
 
+	for _, task := range *tasks {
+		if task.Kind != "profile.create" || task.Status != "pending" || st.Instances[task.InstanceName] == nil || st.Instances[task.InstanceName].Profile == "" {
+			return fmt.Errorf("invalid provisioning reservation")
+		}
+		i := st.Instances[task.InstanceName]
+		if i.Lock == nil || i.Lock.HeldBy != task.ID || i.Lock.Operation != "profile.create" || i.Server != task.ServerName || i.Group != task.GroupName || task.Payload == "" {
+			return fmt.Errorf("provisioning task does not match reservation")
+		}
+		var endpoint string
+		var port int
+		if err := tx.QueryRow(`SELECT endpoint,agent_port FROM servers WHERE name=?`, task.ServerName).Scan(&endpoint, &port); err != nil {
+			return err
+		}
+		var target struct {
+			AgentEndpoint string `json:"agent_endpoint"`
+			AgentPort     int    `json:"agent_port"`
+		}
+		if json.Unmarshal([]byte(task.Payload), &target) != nil || target.AgentEndpoint != endpoint || target.AgentPort != port {
+			return fmt.Errorf("provisioning host changed during reservation")
+		}
+		if err := insertTask(*task, tx.Exec); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(`INSERT INTO profile_provenance(instance,task_id) VALUES(?,?)`, task.InstanceName, task.ID); err != nil {
+			return err
+		}
+	}
+	if after != nil {
+		if err := after(tx); err != nil {
+			return err
+		}
+	}
 	if err := tx.Commit(); err != nil {
 		return err
 	}
@@ -335,7 +383,7 @@ func loadInstancesState(db *sql.DB) (*apitypes.InstancesState, error) {
 	iRows, err := db.Query(
 		`SELECT name, grp, role, server, container, port, memory, cpus, disk,
 		        config_path, data_path, backup_path,
-		        persistence, config_overrides, replica_of, desired_state, observed_status, lock, created_at
+		        persistence, profile, config_overrides, replica_of, desired_state, observed_status, lock, created_at
 		 FROM instances`)
 	if err != nil {
 		return nil, err
@@ -374,7 +422,7 @@ func loadInstancesStateTx(tx *sql.Tx) (*apitypes.InstancesState, error) {
 	iRows, err := tx.Query(
 		`SELECT name, grp, role, server, container, port, memory, cpus, disk,
 		        config_path, data_path, backup_path,
-		        persistence, config_overrides, replica_of, desired_state, observed_status, lock, created_at
+		        persistence, profile, config_overrides, replica_of, desired_state, observed_status, lock, created_at
 		 FROM instances`)
 	if err != nil {
 		return nil, err
@@ -403,7 +451,7 @@ func scanInstance(row rowScanner) (*apitypes.Instance, error) {
 		&inst.Group, &inst.Role, &inst.Server, &inst.Container,
 		&inst.Port, &inst.Memory, &inst.CPUs, &inst.Disk,
 		&inst.ConfigPath, &inst.DataPath, &inst.BackupPath,
-		&persistenceJSON, &overridesJSON,
+		&persistenceJSON, &inst.Profile, &overridesJSON,
 		&inst.ReplicaOf,
 		&inst.DesiredState, &inst.ObservedStatus, &lockJSON, &inst.CreatedAt,
 	); err != nil {
@@ -426,7 +474,7 @@ func scanInstances(rows *sql.Rows) (map[string]*apitypes.Instance, error) {
 			&inst.Group, &inst.Role, &inst.Server, &inst.Container,
 			&inst.Port, &inst.Memory, &inst.CPUs, &inst.Disk,
 			&inst.ConfigPath, &inst.DataPath, &inst.BackupPath,
-			&persistenceJSON, &overridesJSON,
+			&persistenceJSON, &inst.Profile, &overridesJSON,
 			&inst.ReplicaOf,
 			&inst.DesiredState, &inst.ObservedStatus, &lockJSON, &inst.CreatedAt,
 		); err != nil {

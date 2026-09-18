@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/url"
 	"os"
@@ -56,6 +57,45 @@ func newColdClusterCommand() *cobra.Command {
 	}}
 	create.Flags().StringVar(&createFile, "file", "", "Cluster JSON specification")
 	root.AddCommand(create)
+	var provisionFile string
+	provision := &cobra.Command{Use: "provision", Short: "Create all dedicated resources and a cluster task from one specification", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, args []string) error {
+		var req apitypes.ClusterCreateRequest
+		if err := readColdRequest(provisionFile, &req); err != nil {
+			return err
+		}
+		return checkResp(client.Post("/api/v1/custom-clusters/create", req))
+	}}
+	provision.Flags().StringVar(&provisionFile, "file", "", "JSON with id, gateway_id, node_id, cold and optional cache")
+	root.AddCommand(provision)
+	var bootstrapFile string
+	bootstrap := &cobra.Command{Use: "gateway-config NAME", Short: "Print initial Gateway YAML; does not deploy, initialize or publish ingress", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+		var req apitypes.GatewayBootstrapRequest
+		if err := readColdRequest(bootstrapFile, &req); err != nil {
+			return err
+		}
+		resp, err := client.Post("/api/v1/custom-clusters/"+url.PathEscape(args[0])+"/gateway-config", req)
+		if err != nil {
+			return err
+		}
+		if !resp.Success {
+			return fmt.Errorf("Gateway configuration rejected: %v", resp.Error)
+		}
+		raw, err := json.Marshal(resp.Data)
+		if err != nil {
+			return err
+		}
+		var config apitypes.GatewayBootstrap
+		if err := json.Unmarshal(raw, &config); err != nil {
+			return err
+		}
+		if config.YAML == "" {
+			return errors.New("Server returned empty Gateway configuration")
+		}
+		_, err = fmt.Fprint(cmd.OutOrStdout(), config.YAML)
+		return err
+	}}
+	bootstrap.Flags().StringVar(&bootstrapFile, "file", "", "Deployment JSON: server_endpoint, listen, admin_listen, state_dir, token_file")
+	root.AddCommand(bootstrap)
 	var taskFile string
 	migrate := &cobra.Command{Use: "migrate NAME", Short: "Request expansion/shrink; reuse the same task ID on retries", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
 		var req apitypes.ColdTaskRequest

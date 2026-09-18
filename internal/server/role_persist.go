@@ -76,7 +76,8 @@ func (s *Server) pushConfigRewrite(
 	replicaOfAddr string,
 ) error {
 	client := newAgentClient(srv)
-	_, err := client.post("/instance/config", map[string]interface{}{
+	_, err := client.post(profileAgentPath("config", inst.Profile), map[string]interface{}{
+		"profile":             inst.Profile,
 		"name":                name,
 		"engine":              group.Engine,
 		"type":                group.Type,

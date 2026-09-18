@@ -35,6 +35,7 @@ func marshalTaskPayload(p operationTaskPayload) string {
 
 // StartOperationTaskTracker tracks Agent jobs independently of UI/CLI polling.
 func (s *Server) StartOperationTaskTracker() {
+	go s.runProvisionTasks()
 	go func() {
 		s.trackOperationTasksOnce()
 		ticker := time.NewTicker(2 * time.Second)
@@ -57,6 +58,9 @@ func (s *Server) trackOperationTasksOnce() {
 }
 
 func (s *Server) trackOperationTask(task store.Task) {
+	if task.Kind == "profile.create" || task.Kind == "cluster.provision" {
+		return
+	} // handled independently; image pulls must not delay backup tracking
 	var p operationTaskPayload
 	if err := json.Unmarshal([]byte(task.Payload), &p); err != nil {
 		s.finishOperationTask(task, p, "failed", "", "invalid task payload: "+err.Error())

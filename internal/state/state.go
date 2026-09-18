@@ -17,6 +17,9 @@ import (
 func TryAcquireLock(inst *apitypes.Instance, heldBy, operation string, timeout int) error {
 	now := time.Now()
 	if inst.Lock != nil {
+		if inst.Lock.Operation == "profile.create" {
+			return fmt.Errorf("instance has durable provisioning task %s", inst.Lock.HeldBy)
+		}
 		if inst.Lock.HeldBy == heldBy {
 			return nil // 同会话可重入
 		}
