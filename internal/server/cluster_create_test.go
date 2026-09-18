@@ -87,6 +87,21 @@ func TestClusterSpecAtomicCreateReplayAndRestart(t *testing.T) {
 			if calls.Load() != 0 {
 				t.Fatal("Agent contacted during reservation")
 			}
+			pending := doAuthRequest(router, "GET", "/api/v1/custom-clusters/pending", nil)
+			if pending.Code != 200 || !strings.Contains(pending.Body.String(), parentID) || !strings.Contains(pending.Body.String(), "orders-cold-1") || strings.Contains(pending.Body.String(), "agent_endpoint") {
+				t.Fatal("missing or unsafe creation progress", pending.Code, pending.Body.String())
+			}
+			options := doAuthRequest(router, "GET", "/api/v1/custom-clusters/create-options", nil)
+			if options.Code != 200 || !strings.Contains(options.Body.String(), "gateway") || strings.Contains(options.Body.String(), s.cfg.GatewayTokens["gateway"]) {
+				t.Fatal("unsafe options", options.Body.String())
+			}
+			viewerToken, _ := s.jwtSign("viewer", "viewer")
+			if w := doRequestWithAuth(router, "GET", "/api/v1/custom-clusters/create-options", viewerToken, nil); w.Code != 403 {
+				t.Fatal(w.Code)
+			}
+			if w := doRequest(router, "GET", "/api/v1/custom-clusters/pending", nil); w.Code != 401 {
+				t.Fatal(w.Code)
+			}
 			expected := 2
 			if req.Cache != nil {
 				expected++
@@ -139,6 +154,10 @@ func TestClusterSpecAtomicCreateReplayAndRestart(t *testing.T) {
 			}
 			if cluster.Ingress != nil || cluster.WritePolicy != policy || cluster.UsesCache() != (policy != "") {
 				t.Fatalf("invalid result %+v", cluster)
+			}
+			pending = doAuthRequest(resumed.Router(), "GET", "/api/v1/custom-clusters/pending", nil)
+			if pending.Code != 200 || strings.Contains(pending.Body.String(), parentID) {
+				t.Fatal("completed creation remained pending", pending.Body.String())
 			}
 			bootstrap := apitypes.GatewayBootstrapRequest{ServerEndpoint: "http://127.0.0.1:8080", Listen: "127.0.0.1:17579", AdminListen: "127.0.0.1:19500", StateDir: "/var/lib/redis-gateway/orders", TokenFile: "/etc/redis-gateway/orders.secret"}
 			path := "/api/v1/custom-clusters/orders/gateway-config"

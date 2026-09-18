@@ -231,6 +231,8 @@ func (s *Server) Router() *gin.Engine {
 	authed.GET("/api/v1/cold-clusters/:cluster/ingress", s.coldIngressGet)
 	// Public product name; retain cold-clusters for existing Gateways and CLI.
 	authed.GET("/api/v1/custom-clusters", s.coldList)
+	authed.GET("/api/v1/custom-clusters/pending", s.clusterPending)
+	authed.GET("/api/v1/custom-clusters/create-options", s.adminOnly(), s.clusterCreateOptions)
 	authed.GET("/api/v1/custom-clusters/:cluster", s.coldGet)
 	authed.POST("/api/v1/custom-clusters", s.adminOnly(), s.coldCreate)
 	authed.POST("/api/v1/custom-clusters/provision", s.adminOnly(), s.clusterBuildCreate)

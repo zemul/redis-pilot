@@ -490,8 +490,9 @@ function AppShell() {
             <>
               {activeTab === 'dashboard' && <DashboardView groups={instanceGroups} servers={servers} audits={data.audits} tasks={data.tasks} sentinel={data.sentinel} proxyStatus={proxyStatus} incidentSummary={incidentSummary} lastUpdatedAt={lastUpdatedAt} onRefresh={refresh} onOpenDetail={openInstanceDetail} onOpenIncidents={openIncidents} onOpenBackups={openBackupList} onOpenTasks={openInstanceTasks} onOpenAudit={() => setActiveTab('audit')} onViewInstances={() => setActiveTab('instances')} />}
               {activeTab === 'instances' && (
+                <CustomClustersView request={request} servers={servers} groups={instanceGroups} isAdmin={isAdmin} publicHost={serverInfo?.proxy_public_endpoint}>{(visibleGroups) => (
                 <InstancesView
-                  groups={instanceGroups}
+                  groups={visibleGroups}
                   publicHost={serverInfo?.proxy_public_endpoint}
                   sentinelPort={serverInfo?.proxy_sentinel_port}
                   query={query}
@@ -514,9 +515,10 @@ function AppShell() {
                   onCreate={() => { setCreateInitialGroup(null); setCreateOpen(true); }}
                   pendingAction={pendingAction}
                 />
+                )}</CustomClustersView>
               )}
               {activeTab === 'ai' && <AiChatPanel />}
-              {activeTab === 'custom-clusters' && <CustomClustersView request={request} />}
+              {activeTab === 'custom-clusters' && <CustomClustersView request={request} servers={servers} isAdmin={isAdmin} publicHost={serverInfo?.proxy_public_endpoint} />}
               {activeTab === 'servers' && <ServersView servers={servers} groups={instanceGroups} />}
               {activeTab === 'tasks' && <TasksView request={request} initialInstance={taskInstanceFilter} />}
               {activeTab === 'incidents' && <IncidentsView request={request} initialInstance={incidentInstanceFilter} />}

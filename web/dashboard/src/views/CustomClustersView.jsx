@@ -1,75 +1,64 @@
 import { useEffect, useState } from 'react';
-import { clusterMembers, clusterRuntime, usesCache } from '../lib/customCluster.js';
+import { Plus, RefreshCw, Search } from 'lucide-react';
+import { aggregateClusters, clusterMembers, ordinaryGroups } from '../lib/customCluster.js';
+import { buildInstanceGroups } from '../lib/instance.js';
+import { CreateCustomClusterModal, ClusterAccessModal } from '../modals/CustomClusterModals.jsx';
+import { CustomClusterCard } from '../components/CustomClusterCard.jsx';
 
-const phases = { pending: '等待执行', active: '迁移中', published: '清理迁移状态', complete: '已完成' };
-
-// Read-only aggregate: resource provisioning is not yet exposed as a one-click
-// action. Do not turn registration success into a claim that a Gateway is ready.
-export function CustomClustersView({ request }) {
-  const [clusters, setClusters] = useState([]);
-  const [observations, setObservations] = useState([]);
+export function CustomClustersView({ request, servers = {}, groups = [], isAdmin = false, publicHost, children }) {
+  const [inventory, setInventory] = useState(null);
   const [error, setError] = useState('');
-  const [loading, setLoading] = useState(true);
   const [reload, setReload] = useState(0);
-  const [selected, setSelected] = useState('');
+  const [expanded, setExpanded] = useState({});
+  const [query, setQuery] = useState('');
+  const [modal, setModal] = useState(null);
+  const [notice, setNotice] = useState('');
   useEffect(() => {
-    let canceled = false;
-    let timer;
-    async function load() {
-      try {
-        const [items, runtime] = await Promise.all([
-          request('/api/v1/custom-clusters'), request('/api/v1/gateway/runtime'),
-        ]);
-        if (!canceled) {
-          setClusters(items || []);
-          setObservations(runtime?.observations || []);
-          setError('');
-        }
-      } catch (err) {
-        if (!canceled) setError(err.message);
-      } finally {
-        if (!canceled) {
-          setLoading(false);
-          timer = setTimeout(load, 10000);
-        }
+    let canceled = false, timer;
+    const controller = new AbortController();
+    const read = path => request(path, { signal: controller.signal });
+    async function pending() {
+      let records = [], page = 1;
+      for (;;) {
+        const data = await read(`/api/v1/custom-clusters/pending?page=${page}`);
+        records.push(...(data.records || []));
+        if (page * data.page_size >= data.total) return records;
+        page++;
       }
     }
+    async function load() {
+      try {
+        // Read pending plans before registered clusters so a plan completing
+        // between requests remains represented on at least one side.
+        const builds = await pending();
+        const [clusters, runtime, instances] = await Promise.all([read('/api/v1/custom-clusters'), read('/api/v1/gateway/runtime'), read('/instance/list')]);
+        if (!canceled) { setInventory({ clusters: aggregateClusters(clusters || [], builds), observations: runtime?.observations || [], groups: buildInstanceGroups(instances || {}) }); setError(''); }
+      } catch (e) { if (!canceled) setError(e.message); }
+      finally { if (!canceled) timer = setTimeout(load, 5000); }
+    }
     load();
-    return () => { canceled = true; clearTimeout(timer); };
+    return () => { canceled = true; controller.abort(); clearTimeout(timer); };
   }, [request, reload]);
-  const cluster = clusters.find(c => c.id === selected);
+  const clusters = inventory?.clusters || [];
+  const instances = new Map((inventory?.groups || []).flatMap(g => g.instances.map(i => [i.name, i])));
+  const selected = clusters.find(c => c.id === modal?.id);
+  function refreshed() { setReload(v => v + 1); }
   return <div className="space-y-5">
-    <div className="flex items-center justify-between gap-4">
-      <div><h2 className="text-lg font-semibold">自定义集群</h2>
-        <p className="text-sm text-gray-500 mt-1">按集群查看存储分片、可选 Redis 缓存及统一接入信息。当前不支持分片副本自动切换。</p></div>
-      <button className="border rounded-md px-3 py-2 text-sm" onClick={() => setReload(v => v + 1)}>刷新</button>
-    </div>
-    {error && <p role="alert" className="text-red-700">刷新失败：{error}。下方可能为上次数据，请勿据此判断当前健康状态。</p>}
-    {loading && <p>加载中…</p>}
-    {!loading && !error && !clusters.length && <p className="text-gray-500">暂无自定义集群。当前通过 CLI 登记专用实例；统一资源创建流程尚未开放。</p>}
-    <div className="overflow-x-auto border rounded-lg bg-white">
-      <table className="w-full text-left text-sm"><thead className="bg-gray-50"><tr>
-        {['集群', '存储引擎', '缓存加速', '存储分片', 'Gateway 状态', '操作'].map(h => <th key={h} className="px-4 py-3 font-medium">{h}</th>)}
-      </tr></thead><tbody>{clusters.map(c => <tr key={c.id} className="border-t">
-        <td className="px-4 py-3">{c.id}</td><td className="px-4 py-3">{c.engine || 'kvrocks'}</td>
-        <td className="px-4 py-3">{usesCache(c) ? 'Redis 缓存' : '关闭'}</td>
-        <td className="px-4 py-3">{c.shards?.length || 0}</td>
-        <td className="px-4 py-3">{error ? '状态待刷新' : clusterRuntime(c, observations)}</td>
-        <td className="px-4 py-3"><button className="underline" onClick={() => setSelected(c.id)}>查看详情</button></td>
-      </tr>)}</tbody></table>
-    </div>
-    {cluster && <section className="border rounded-lg bg-white p-5 space-y-4" aria-label="集群详情">
-      <div className="flex justify-between"><h3 className="font-semibold">{cluster.id}</h3><button onClick={() => setSelected('')}>收起</button></div>
-      <p className="text-sm">Gateway：{cluster.gateway_id} · 所在节点：{cluster.node_id} · 拓扑版本：{cluster.revision}</p>
-      <p className="text-sm">接入：{cluster.ingress ? `Proxy 节点 ${cluster.ingress.node_id}，端口 ${cluster.ingress.port}；${cluster.ingress.ready ? '已发布' : '等待 Gateway 确认'}；${cluster.ingress.has_password ? '需要业务密码' : '未设置业务密码'}` : '尚未配置统一入口'}</p>
-      <p className="text-xs text-gray-500">入口发布状态不代表实时健康。业务连接 Proxy，不直接连接下列数据库端点。</p>
-      <table className="w-full text-left text-sm"><thead><tr>{['角色', '实例', '后端地址'].map(h => <th key={h} className="py-2">{h}</th>)}</tr></thead>
-        <tbody>{clusterMembers(cluster).map(m => <tr key={m.instance} className="border-t"><td className="py-2">{m.role}</td><td>{m.instance}</td><td>{m.address}</td></tr>)}</tbody></table>
-      {cluster.task && <div className="text-sm space-y-1">
-        <p>最近迁移：{cluster.task.id} · {phases[cluster.task.phase] || cluster.task.phase}</p>
-        <p>目标分片：{cluster.task.target?.map(s => s.id).join('、')}；已扫描页数：{cluster.task.pages}；尝试次数：{cluster.task.attempts}</p>
-        {cluster.task.error_code && <p role="alert">迁移提示：{cluster.task.error_code}</p>}
-      </div>}
-    </section>}
+    <section className="space-y-3" aria-label="自定义集群列表">
+      <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-gray-200 bg-white p-4">
+        <div><h2 className="text-sm font-semibold">自定义集群 <span className="font-normal text-gray-400">{clusters.length}</span></h2><p className="mt-1 text-xs text-gray-500">一个集群、统一入口；展开查看存储分片和缓存。热层不是副本。</p></div>
+        <div className="flex flex-wrap items-center gap-2"><label className="flex items-center gap-2 rounded-md border border-gray-200 px-2 py-1.5 text-gray-400"><Search size={14} /><input aria-label="搜索自定义集群" className="w-40 text-xs text-gray-900 outline-none" placeholder="集群或成员名称" value={query} onChange={e => setQuery(e.target.value)} /></label><button className="rounded-md border p-2" onClick={() => setReload(v => v + 1)} aria-label="刷新集群"><RefreshCw size={14} /></button>
+          {isAdmin && <button disabled={!inventory || !!error} className="flex items-center gap-1.5 rounded-md bg-gray-900 px-3 py-2 text-xs text-white disabled:opacity-40" onClick={() => setModal({ type: 'create' })}><Plus size={14} />创建集群</button>}
+        </div>
+      </div>
+      {notice && <p role="status" className="text-sm text-gray-600">{notice}</p>}
+      {error && <p role="alert" className="text-sm text-red-700">加载失败：{error}。已有数据仅供参考，集群操作已暂停，请刷新重试。</p>}
+      {!inventory && !error && <p className="text-sm text-gray-500">正在读取集群归属…</p>}
+      {inventory && !clusters.length && <p className="rounded-lg border bg-white p-5 text-sm text-gray-500">暂无自定义集群。{isAdmin ? '可创建 Kvrocks 集群，并选择是否启用 Redis 缓存。' : '请联系管理员创建。'}</p>}
+      {clusters.filter(c => [c.id, c.gateway_id, ...clusterMembers(c).map(m => m.instance)].join(' ').toLowerCase().includes(query.trim().toLowerCase())).map(c => <CustomClusterCard key={c.id} cluster={c} observations={inventory.observations} instances={instances} expanded={!!expanded[c.id]} toggle={() => setExpanded(v => ({ ...v, [c.id]: !v[c.id] }))} error={error} isAdmin={isAdmin} publicHost={publicHost} onAction={type => setModal({ type, id: c.id })} />)}
+    </section>
+    {children && inventory && children(ordinaryGroups(inventory.groups, clusters).map(g => ({ ...g, incident: groups.find(old => old.groupName === g.groupName)?.incident })))}
+    {modal?.type === 'create' && <CreateCustomClusterModal request={request} servers={servers} clusters={clusters} onClose={() => setModal(null)} onCreated={r => { setModal(null); setNotice(`已提交 ${r.cluster_id}，任务 ${r.task_id}。资源完成后仍需部署 Gateway 和配置入口。`); setExpanded(v => ({ ...v, [r.cluster_id]: true })); refreshed(); }} />}
+    {selected && modal?.type !== 'create' && <ClusterAccessModal cluster={selected} mode={modal.type} request={request} onClose={() => setModal(null)} onSaved={() => { setModal(null); setNotice('入口已登记，等待 Gateway 确认后发布。'); refreshed(); }} />}
   </div>;
 }
