@@ -1,6 +1,23 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { usesCache, clusterMembers, clusterRuntime, aggregateClusters, ordinaryGroups, makeClusterSpec, cachePolicy } from '../src/lib/customCluster.js';
+import { usesCache, clusterMembers, clusterRuntime, aggregateClusters, ordinaryGroups, makeClusterSpec, cachePolicy, clusterListGroups } from '../src/lib/customCluster.js';
+
+test('clusters project into the shared instance filters without ordinary instance actions', () => {
+  const c = { id: 'demo', gateway_id: 'g', node_id: 'n', cache_enabled: false, shards: [{ instance: 'cold' }], ingress: { ready: true } };
+  const instances = new Map([['cold', { name: 'cold', server: 'redis02', labels: ['开发'] }]]);
+  const observations = [{ gateway_id: 'g', cluster_id: 'demo', node_id: 'n', status: 'ready', serving: true, backend_ready: true }];
+  const [row] = clusterListGroups([c], instances, observations, '');
+  assert.equal(row.cluster, c);
+  assert.equal(row.type, 'sharded');
+  assert.equal(row.engine, 'kvrocks');
+  assert.equal(row.status, 'running');
+  assert.deepEqual(row.labels, ['开发']);
+  assert.equal(row.instances[0].server, 'redis02');
+  assert.equal(clusterListGroups([c], instances, [], '')[0].status, 'pending');
+  assert.equal(clusterListGroups([c], instances, observations, 'unavailable')[0].status, 'unknown');
+  assert.equal(clusterListGroups([{ ...c, creation: {} }], instances, [], '')[0].status, 'creating');
+  assert.equal(clusterListGroups([c], new Map(), [], '')[0].instances[0].name, 'cold');
+});
 
 test('legacy cluster retains cache; disabled mode has no hot member', () => {
   const cluster = { hot_instance: 'hot', hot_address: '127.0.0.1:1', shards: [{ id: 'a', instance: 'cold' }] };

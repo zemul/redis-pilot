@@ -199,6 +199,8 @@ export function statusMeta(status) {
   const labels = {
     running: '运行中',
     creating: '创建中',
+    pending: '待就绪',
+    unknown: '待确认',
     stopped: '已停止',
     stopping: '停止中',
     failed: '异常',
@@ -216,6 +218,7 @@ export function statusMeta(status) {
     running: 'ok',
     healthy: 'ok',
     creating: 'warn',
+    pending: 'warn',
     stopping: 'warn',
     drain: 'warn',
     stopped: 'warn',

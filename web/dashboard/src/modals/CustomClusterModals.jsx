@@ -37,7 +37,7 @@ export function CreateCustomClusterModal({ request, servers, clusters, onClose, 
     } catch (e) { setError(`${e.message}。若响应丢失，请使用相同名称和规格重试，系统会复用原任务。`); }
     finally { setBusy(false); }
   }
-  return <Shell title="创建自定义集群" description="Kvrocks 存储分片，可选 Redis 缓存。资源创建完成后仍需独立部署 Gateway 并配置统一入口。" busy={busy} onClose={onClose}>
+  return <Shell title="创建分片集群" description="Kvrocks 存储分片，可选 Redis 缓存。资源创建完成后仍需独立部署 Gateway 并配置统一入口。" busy={busy} onClose={onClose}>
     <form onSubmit={submit} className="space-y-5"><fieldset disabled={busy} className="space-y-5">
       <div className="grid gap-4 sm:grid-cols-2">{input('id', '集群名称')}<Field title="Gateway（已配置机器凭据）"><select className={control} required value={form.gateway_id} onChange={e => set('gateway_id', e.target.value)}><option value="">请选择 Gateway</option>{available.map(id => <option key={id}>{id}</option>)}</select></Field>
         <Field title="Gateway / Proxy 所在节点">{nodeSelect(form.node_id, v => set('node_id', v), false)}</Field>

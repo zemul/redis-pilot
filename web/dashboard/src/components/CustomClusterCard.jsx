@@ -1,19 +1,29 @@
 import { ChevronDown, ChevronRight } from 'lucide-react';
 import { cachePolicy, clusterMembers, clusterRuntime, clusterPhases } from '../lib/customCluster.js';
+import { CategoryBadge, EngineIcon, CopyableText, CopyableEndpoint, StatusBadge } from './common.jsx';
 import { getField, statusMeta } from '../lib/format.js';
 
 const action = 'rounded-md border border-gray-200 bg-white px-3 py-1.5 text-xs hover:bg-gray-50 disabled:opacity-40';
-export function CustomClusterCard({ cluster: c, observations, instances, expanded, toggle, error, isAdmin, publicHost, onAction }) {
+export function CustomClusterCard({ cluster: c, group, gridClass, observations, instances, expanded, toggle, error, isAdmin, publicHost, onAction }) {
   const members = clusterMembers(c), creating = !!c.creation;
   const runtime = clusterRuntime(c, observations);
   const ready = !error && !creating && c.ingress?.ready && runtime === '运行正常';
   return <article className="overflow-hidden rounded-lg border border-gray-200 bg-white">
-    <div className="flex flex-wrap items-center gap-x-6 gap-y-3 p-4">
-      <button className="flex min-w-44 items-center gap-2 text-sm font-semibold" onClick={toggle} aria-expanded={expanded} aria-label={`展开集群 ${c.id}`}>{expanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}{c.id}</button>
-      <div className="min-w-32 text-xs"><div>Kvrocks · {c.shards?.length || 0} 分片</div><div className="mt-1 text-gray-500">{cachePolicy(c)}</div></div>
-      <div className="min-w-36 text-xs"><div>{error ? '状态待刷新' : creating ? (clusterPhases[c.creation.phase] || '创建中') : ready ? '业务可用' : '待接入 / Gateway 待就绪'}</div><div className="mt-1 text-gray-500">{creating ? `${c.children.filter(t => t.status === 'success').length}/${members.length} 个资源已就绪` : runtime}</div></div>
-      <div className="min-w-48 flex-1 text-xs">{c.ingress ? <>Proxy：{publicHost || `节点 ${c.ingress.node_id}`}:{c.ingress.port}<div className="mt-1 text-gray-500">{c.ingress.ready ? '入口已发布' : '等待 Gateway 确认'} · {c.ingress.has_password ? '需要业务密码' : '未设置业务密码'}</div></> : <span className="text-gray-400">统一入口尚未配置</span>}</div>
-      <button className={action} onClick={toggle}>{expanded ? '收起' : '详情'}</button>
+    <div className={`${gridClass} py-3.5 cursor-pointer`} onClick={toggle}>
+      <div className="flex items-center gap-2.5 min-w-0">
+        <button className="w-5 h-5 shrink-0 text-gray-400" onClick={e => { e.stopPropagation(); toggle(); }} aria-expanded={expanded} aria-label={`${expanded ? '收起' : '展开'}集群 ${c.id}`}>{expanded ? <ChevronDown size={15} /> : <ChevronRight size={15} />}</button>
+        <EngineIcon engine="kvrocks" size={32} />
+        <div className="min-w-0"><CopyableText text={c.id} className="font-semibold text-gray-900 text-[14px]" /><span className="block mt-0.5 text-[11px] text-gray-400">{cachePolicy(c)}</span></div>
+      </div>
+      <div><CategoryBadge category="persistent" /></div>
+      <div className="text-xs text-slate-700">统一入口</div>
+      <div className="text-[13px] text-gray-500">分片集群<span className="block text-[11px]">{c.shards?.length || c.cold?.count || 0} 分片{c.cache_enabled !== false && (c.hot_instance || c.cache) ? ' · 缓存' : ''}</span></div>
+      <div className="text-[13px] text-gray-700">Kvrocks{c.cache_enabled !== false && (c.hot_instance || c.cache) ? ' + Redis' : ''}</div>
+      <div className="text-xs text-gray-500">{group.labels.length ? group.labels.join(' · ') : '—'}</div>
+      <div className="text-[13px]" onClick={e => e.stopPropagation()}>{c.ingress ? <CopyableEndpoint host={publicHost || c.ingress.node_id} port={c.ingress.port} /> : <span className="text-gray-400">待配置入口</span>}</div>
+      <div className="text-gray-400 text-xs" title="展开查看各存储分片和缓存资源">按成员查看</div>
+      <div title={error ? '状态待刷新' : creating ? (clusterPhases[c.creation.phase] || '创建中') : ready ? '业务可用' : runtime}><StatusBadge status={group.status} /></div>
+      <div className="flex justify-end"><button className={action} onClick={e => { e.stopPropagation(); toggle(); }}>{expanded ? '收起' : '详情'}</button></div>
     </div>
     {expanded && <div className="space-y-4 border-t bg-gray-50/50 p-4">
       <p className="text-xs text-gray-600">Gateway：{c.gateway_id} · 所在节点：{c.node_id} · {creating ? '正在准备资源' : `拓扑版本 ${c.revision}`}。Gateway 是独立接入组件，不是数据库分片。</p>

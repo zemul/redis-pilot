@@ -1,3 +1,19 @@
+import { getField } from './format.js';
+
+// Logical clusters share list filtering with ordinary instance groups, but never
+// inherit their single-instance destructive actions.
+export function clusterListGroups(clusters, instances, observations, error) {
+  return clusters.map(c => {
+    const members = clusterMembers(c).map(m => instances.get(m.instance) || { name: m.instance });
+    return { cluster: c, groupName: c.id, engine: c.engine || 'kvrocks',
+      category: 'persistent', type: 'sharded', engineVersion: '',
+      status: error ? 'unknown' : c.creation ? 'creating' : c.ingress?.ready && clusterRuntime(c, observations) === '运行正常' ? 'running' : 'pending',
+      labels: [...new Set(members.flatMap(i => getField(i, 'labels', 'Labels', []) || []))],
+      instances: members,
+    };
+  });
+}
+
 export function usesCache(cluster) {
   return cluster.cache_enabled !== false;
 }

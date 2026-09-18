@@ -4,7 +4,7 @@
 //   replication 组 → 父行只放组级操作，可展开显示主/从节点行，节点行只放高频运维项。
 // 主按钮统一为「详情」，层级靠角色徽标区分。
 import { useMemo, useState } from 'react';
-import { Search, Plus, ChevronDown, ChevronRight, X } from 'lucide-react';
+import { Search, Plus, RefreshCw, ChevronDown, ChevronRight, X } from 'lucide-react';
 import {
   EmptyState,
   CategoryBadge,
@@ -31,12 +31,13 @@ import {
 // 实例列表统一的网格列模板：实例组/节点 | 类型 | 接入 | 拓扑 | 架构/版本 | 标签 | 节点/接入点 | 内存使用 | 状态 | 操作
 const INST_GRID = 'grid items-center gap-4 grid-cols-[280px_84px_100px_110px_130px_190px_minmax(220px,1fr)_90px_92px_112px] px-4';
 
-export function InstancesView({ groups, publicHost, sentinelPort, query, setQuery, expandedGroups, setExpandedGroups, callbacks, onCreate, pendingAction }) {
+export function InstancesView({ groups, clusterUI, publicHost, sentinelPort, query, setQuery, expandedGroups, setExpandedGroups, callbacks, onCreate, pendingAction }) {
   // 轻量筛选：引擎 / 类别 / 状态（单选）+ 标签（多选，AND）。纯前端过滤，数据已全量在手。
   const [engineFilter, setEngineFilter] = useState('');
   const [categoryFilter, setCategoryFilter] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
   const [labelFilter, setLabelFilter] = useState([]);
+  const [topologyFilter, setTopologyFilter] = useState('');
 
   // 从当前数据派生可选项，保证下拉里只出现真实存在的值。
   const { engineOptions, categoryOptions, statusOptions, labelOptions } = useMemo(() => {
@@ -69,11 +70,13 @@ export function InstancesView({ groups, publicHost, sentinelPort, query, setQuer
     setCategoryFilter('');
     setStatusFilter('');
     setLabelFilter([]);
+    setTopologyFilter('');
   }
 
-  const hasActiveFilters = engineFilter || categoryFilter || statusFilter || labelFilter.length > 0;
+  const hasActiveFilters = engineFilter || categoryFilter || statusFilter || topologyFilter || labelFilter.length > 0;
 
   const filtered = groups.filter((group) => {
+    if (topologyFilter && (group.cluster ? 'sharded' : isStandaloneGroup(group) ? 'standalone' : 'replication') !== topologyFilter) return false;
     if (engineFilter && group.engine !== engineFilter) return false;
     if (categoryFilter && group.category !== categoryFilter) return false;
     if (statusFilter && group.status !== statusFilter) return false;
@@ -89,6 +92,8 @@ export function InstancesView({ groups, publicHost, sentinelPort, query, setQuer
       group.category,
       group.type,
       group.status,
+      group.cluster?.gateway_id,
+      group.cluster?.ingress?.port,
       ...(group.labels || []),
       ...group.instances.flatMap((item) => [
         item.name,
@@ -111,12 +116,20 @@ export function InstancesView({ groups, publicHost, sentinelPort, query, setQuer
             <Search size={15} />
             <input className="w-full border-0 outline-0 bg-transparent text-[13px] text-gray-900 placeholder:text-gray-400" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索实例组、节点或标签..." />
           </div>
-          <button className="h-[32px] rounded-md px-3 bg-gray-900 text-white font-medium text-[12px] inline-flex items-center gap-1.5 hover:bg-gray-700 transition-colors border-0 cursor-pointer shrink-0" onClick={onCreate}>
-            <Plus size={14} /> 创建实例
-          </button>
+          <div className="flex items-center gap-2">
+            {clusterUI && <button className="rounded-md border border-gray-200 p-2" aria-label="刷新实例列表" onClick={clusterUI.refresh}><RefreshCw size={14} /></button>}
+            {clusterUI?.onCreate ? <details className="relative">
+              <summary className="h-8 list-none rounded-md px-3 bg-gray-900 text-white text-xs inline-flex items-center gap-1.5 cursor-pointer"><Plus size={14} />创建实例<ChevronDown size={12} /></summary>
+              <div className="absolute right-0 top-10 z-30 w-56 rounded-md border bg-white p-1 shadow-lg">
+                <button className="w-full rounded px-3 py-2 text-left text-sm hover:bg-gray-50" onClick={e => { e.currentTarget.closest('details').open = false; onCreate(); }}>单点 / 主从实例</button>
+                <button className="w-full rounded px-3 py-2 text-left text-sm hover:bg-gray-50" onClick={e => { e.currentTarget.closest('details').open = false; clusterUI.onCreate(); }}>分片集群<span className="block text-xs text-gray-400">Kvrocks，可选 Redis 缓存</span></button>
+              </div>
+            </details> : clusterUI?.canCreate !== false && <button className="h-8 rounded-md px-3 bg-gray-900 text-white text-xs inline-flex items-center gap-1.5" onClick={onCreate}><Plus size={14} />创建实例</button>}
+          </div>
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
+          <FilterSelect className="w-[130px]" ariaLabel="按拓扑筛选" value={topologyFilter} onChange={setTopologyFilter} placeholder="全部拓扑" options={[{ value: '', label: '全部拓扑' }, { value: 'standalone', label: '单点' }, { value: 'replication', label: '主从' }, { value: 'sharded', label: '分片集群' }]} />
           <FilterSelect className="w-[130px]" ariaLabel="按引擎筛选" value={engineFilter} onChange={setEngineFilter} placeholder="全部引擎"
             options={[{ value: '', label: '全部引擎' }, ...engineOptions.map((engine) => ({ value: engine, label: engineLabel({ engine, engineVersion: '' }) }))]} />
           <FilterSelect className="w-[120px]" ariaLabel="按类别筛选" value={categoryFilter} onChange={setCategoryFilter} placeholder="全部类别"
@@ -168,9 +181,9 @@ export function InstancesView({ groups, publicHost, sentinelPort, query, setQuer
 
           {filtered.length === 0 ? (
             <div className="border border-gray-200 rounded-xl bg-white"><EmptyState title={hasActiveFilters || query.trim() ? '没有符合筛选条件的实例' : '暂无实例'} /></div>
-          ) : filtered.map((group) => (
+          ) : filtered.map((group) => group.cluster ? clusterUI.render(group, INST_GRID) : (
             <InstanceGroupCard
-              key={group.groupName}
+              key={`instance:${group.groupName}`}
               group={group}
               expanded={expandedGroups[group.groupName] === true}
               onToggle={() => toggleGroup(group.groupName)}

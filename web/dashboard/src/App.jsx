@@ -42,7 +42,6 @@ import { buildInstanceGroups } from './lib/instance.js';
 const TABS = [
   { id: 'dashboard', label: '大盘看板', icon: LayoutDashboard },
   { id: 'instances', label: '实例管理', icon: Database },
-  { id: 'custom-clusters', label: '自定义集群', icon: Database },
   { id: 'servers', label: '服务器节点', icon: Server },
   { id: 'incidents', label: '异常记录', icon: ShieldAlert },
   { id: 'tasks', label: '运维任务', icon: ClipboardList },
@@ -65,7 +64,7 @@ const VALID_TABS = TABS.map((tab) => tab.id);
 function AppShell() {
   const { tab } = useParams();
   const navigate = useNavigate();
-  const activeTab = tab || 'dashboard';
+  const activeTab = tab === 'custom-clusters' ? 'instances' : tab || 'dashboard';
   const setActiveTab = (id) => navigate(id === 'dashboard' ? '/' : `/${id}`);
   const [mobileOpen, setMobileOpen] = useState(false);
   const [auth, setAuth] = useState(() => getStoredAuth());
@@ -444,6 +443,7 @@ function AppShell() {
     return <LoginPage onLogin={(data) => setAuth({ token: data.token, username: data.username })} />;
   }
 
+  if (tab === 'custom-clusters') return <Navigate to="/instances" replace />;
   if (tab && !VALID_TABS.includes(tab)) {
     return <Navigate to="/" replace />;
   }
@@ -490,9 +490,10 @@ function AppShell() {
             <>
               {activeTab === 'dashboard' && <DashboardView groups={instanceGroups} servers={servers} audits={data.audits} tasks={data.tasks} sentinel={data.sentinel} proxyStatus={proxyStatus} incidentSummary={incidentSummary} lastUpdatedAt={lastUpdatedAt} onRefresh={refresh} onOpenDetail={openInstanceDetail} onOpenIncidents={openIncidents} onOpenBackups={openBackupList} onOpenTasks={openInstanceTasks} onOpenAudit={() => setActiveTab('audit')} onViewInstances={() => setActiveTab('instances')} />}
               {activeTab === 'instances' && (
-                <CustomClustersView request={request} servers={servers} groups={instanceGroups} isAdmin={isAdmin} publicHost={serverInfo?.proxy_public_endpoint}>{(visibleGroups) => (
+                <CustomClustersView request={request} servers={servers} groups={instanceGroups} isAdmin={isAdmin} publicHost={serverInfo?.proxy_public_endpoint}>{(visibleGroups, clusterUI) => (
                 <InstancesView
                   groups={visibleGroups}
+                  clusterUI={clusterUI}
                   publicHost={serverInfo?.proxy_public_endpoint}
                   sentinelPort={serverInfo?.proxy_sentinel_port}
                   query={query}
@@ -518,7 +519,6 @@ function AppShell() {
                 )}</CustomClustersView>
               )}
               {activeTab === 'ai' && <AiChatPanel />}
-              {activeTab === 'custom-clusters' && <CustomClustersView request={request} servers={servers} isAdmin={isAdmin} publicHost={serverInfo?.proxy_public_endpoint} />}
               {activeTab === 'servers' && <ServersView servers={servers} groups={instanceGroups} />}
               {activeTab === 'tasks' && <TasksView request={request} initialInstance={taskInstanceFilter} />}
               {activeTab === 'incidents' && <IncidentsView request={request} initialInstance={incidentInstanceFilter} />}
