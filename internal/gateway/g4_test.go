@@ -115,6 +115,10 @@ func authenticated(addr, password string) (net.Conn, *Reader, error) {
 	return c, r, nil
 }
 func g4Redis(t *testing.T) string {
+	return isolatedTestRedis(t, false)
+}
+
+func isolatedTestRedis(t *testing.T, durable bool) string {
 	t.Helper()
 	binary := os.Getenv("GATEWAY_TEST_REDIS_SERVER")
 	if binary == "" {
@@ -122,7 +126,11 @@ func g4Redis(t *testing.T) string {
 	}
 	addr := freeAddress(t)
 	_, port, _ := net.SplitHostPort(addr)
-	ownProcess(t, binary, "--bind", "127.0.0.1", "--port", port, "--save", "", "--appendonly", "no", "--dir", t.TempDir(), "--requirepass", "g4-backend-test", "--loglevel", "warning")
+	args := []string{"--bind", "127.0.0.1", "--port", port, "--save", "", "--appendonly", "no", "--dir", t.TempDir(), "--requirepass", "g4-backend-test", "--loglevel", "warning"}
+	if durable {
+		args = append(args, "--appendonly", "yes", "--appendfsync", "always", "--maxmemory", "64mb", "--maxmemory-policy", "noeviction")
+	}
+	ownProcess(t, binary, args...)
 	deadline := time.Now().Add(5 * time.Second)
 	for {
 		c, _, e := authenticated(addr, "g4-backend-test")

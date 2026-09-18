@@ -44,11 +44,17 @@ test('creation form builds exact three-mode API shapes, truncating removed shard
   assert.deepEqual(result.cold.servers, ['n', '']);
   assert.equal(result.cache.write_policy, 'update_existing');
   assert.equal(makeClusterSpec({ ...form, cache: false }).cache, undefined);
+  const redis = makeClusterSpec({ ...form, engine: 'redis', cache: false });
+  assert.equal(redis.engine, 'redis');
+  assert.equal(redis.cache, undefined);
+  assert.equal(redis.cold.count, 2);
   assert.equal(makeClusterSpec({ ...form, write_policy: 'invalidate' }).cache.write_policy, 'invalidate');
   assert.deepEqual(makeClusterSpec({ ...form, count: 1, servers: ['a','b'] }).cold.servers, ['a']);
   assert.equal(cachePolicy({ cache_enabled: false }), '无缓存');
 });
 test('creation validation rejects invalid resource choices', () => {
+  assert.throws(() => makeClusterSpec({ ...form, engine: 'redis' }));
+  assert.throws(() => makeClusterSpec({ ...form, engine: 'unknown' }));
   for (const changed of [{ id: '../x' }, { node_id: '' }, { gateway_id: '' }, { count: 0 }, { count: 129 }, { count: 1.5 }, { cold_memory: '0Gi' }, { cold_cpus: '-1' }, { cold_cpus: 'NaN' }, { cold_disk: 'garbage' }]) {
     assert.throws(() => makeClusterSpec({ ...form, ...changed }));
   }

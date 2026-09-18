@@ -12,9 +12,12 @@ func bootstrapFixture() (apitypes.ColdCluster, apitypes.GatewayBootstrapRequest)
 }
 
 func TestInitialConfigRoundTrip(t *testing.T) {
-	for _, policy := range []string{"", "invalidate", "update_existing"} {
+	for _, policy := range []string{"", "invalidate", "update_existing", "redis"} {
 		t.Run(policy, func(t *testing.T) {
 			cluster, req := bootstrapFixture()
+			if policy == "redis" {
+				cluster.Engine, policy = "redis", ""
+			}
 			enabled := policy != ""
 			cluster.CacheEnabled, cluster.WritePolicy = &enabled, policy
 			if !enabled {
@@ -33,6 +36,9 @@ func TestInitialConfigRoundTrip(t *testing.T) {
 			}
 			if enabled && cfg.Cache.WritePolicy != policy {
 				t.Fatal("lost policy")
+			}
+			if cfg.Cache.coldEngine() != cluster.StorageEngine() {
+				t.Fatal("engine lost")
 			}
 			if strings.Join(cfg.Cache.BackendNetworks, ",") != "10.0.0.2/32,fd00::3/128" {
 				t.Fatal(cfg.Cache.BackendNetworks)

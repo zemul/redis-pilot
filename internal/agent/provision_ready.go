@@ -99,6 +99,9 @@ func probeProvisionDatabase(addr, profile string) error {
 	if profile == redisconf.RedisCacheProfile {
 		wants = map[string]string{"save": "", "appendonly": "no", "maxmemory-policy": "allkeys-lru", "maxmemory": "positive"}
 	}
+	if profile == redisconf.RedisStorageProfile {
+		wants = map[string]string{"appendonly": "yes", "appendfsync": "always", "no-appendfsync-on-rewrite": "no", "maxmemory-policy": "noeviction", "maxmemory": "positive"}
+	}
 	for key, want := range wants {
 		v, err := call("CONFIG", "GET", key)
 		if err != nil {

@@ -37,6 +37,17 @@ type ColdClusterSpec struct {
 // Omission preserves the hot layer of legacy clusters.
 func (c ColdClusterSpec) UsesCache() bool { return c.CacheEnabled == nil || *c.CacheEnabled }
 
+func (c ColdClusterSpec) StorageEngine() string {
+	if c.Engine == "" {
+		return "kvrocks"
+	}
+	return c.Engine
+}
+
+func (c ColdClusterSpec) ValidEngine() bool {
+	return c.StorageEngine() == "kvrocks" || (c.StorageEngine() == "redis" && !c.UsesCache())
+}
+
 // Empty policy preserves legacy registrations whose policy lives in Gateway YAML.
 func (c ColdClusterSpec) ValidWritePolicy() bool {
 	return c.WritePolicy == "" || (c.UsesCache() && (c.WritePolicy == "invalidate" || c.WritePolicy == "update_existing"))

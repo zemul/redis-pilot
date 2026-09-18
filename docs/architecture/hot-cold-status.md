@@ -2,6 +2,23 @@
 
 更新：2026-09-18。mode: cache 开发实现，不代表正式发布。设计见 [冷热设计](hot-cold-gateway-design.md)。
 
+## Redis 自定义分片接入（2026-09-18，本地开发）
+
+- 单份规格创建支持 `engine: redis`，必须省略 `cache`；原 Kvrocks 无缓存、删除缓存、双写更新模式保持兼容。手工登记 Redis 集群须显式 `cache_enabled: false`。历史章节中的“Redis 引擎适配未开始”不再代表当前代码。
+- Redis 分片使用新专用用途 `redis-storage`：standalone、persistent、75% 容器内存上限、noeviction、RDB、AOF 和 `appendfsync always`，重写配置不丢失用途；禁止覆盖持久化与淘汰策略。不是 Redis Cluster 协议，也不是可自动淘汰的纯缓存集群。同步落盘增加写延迟，不代表副本高可用或磁盘损坏零丢失。
+- 注册、扩缩容目标按集群引擎验证，禁止混入另一引擎。Gateway 配置增加 `cache.cold_engine`（省略仍为 kvrocks），配置导出和控制面身份校验包含引擎；runtime.db 绑定引擎，禁止用同一状态目录改引擎。Redis 启动/恢复、迁移准入检查主节点、引擎、加载状态、AOF 健康、同步策略和 noeviction；新迁移目标必须无业务数据。
+- 页面沿用实例管理与现有创建弹窗，增加 Redis/Kvrocks 引擎选择；Redis 隐藏额外缓存选项，父子记录按实际引擎展示图标、名称和内存指标。CLI `custom-cluster provision --file` 使用同一规格，无新服务。
+- 本轮不增加副本/Sentinel、多 Gateway 接管、引擎在线转换、跨节点事务或新的命令白名单。兼容旧接口，规格里的 `cold` 仍表示权威存储分片，不要求真的存在冷热两层。
+- 验证范围：创建幂等/Server 重启续跑和导出使用模拟 Agent；真实本地 Redis 7.2.5、Gateway 与 Proxy 子进程覆盖受控扩缩容、并发 Hash 写、五类型和 TTL、迁移中 SIGKILL Gateway 原盘恢复、控制面中断/确认丢失、源资源释放与地址复用；另验证 Redis SIGKILL 后从原 AOF 恢复，Gateway 原盘恢复后值不丢失、不重复自增。引擎混用、AOF 非同步/淘汰策略和有数据目标拒绝测试通过，全仓 Go 测试、go vet、专项竞态测试、前端测试及构建通过。尚未发布 redis01–03，未做生产性能、整机掉电或多副本故障验收。
+
+创建规格示例（API `/api/v1/custom-clusters/create`，CLI `custom-cluster provision --file`）：
+
+```json
+{"id":"redis-orders","engine":"redis","gateway_id":"gateway-redis-orders","node_id":"redis01","cold":{"count":2,"memory":"1Gi","cpus":1,"servers":["redis02","redis03"]}}
+```
+
+Gateway 标识须先配置机器凭据；创建完成后仍要导出配置、独立部署和初始化 Gateway、登记 Proxy 入口，不是自动安装 Gateway。
+
 ## 页面集群聚合与创建（2026-09-18）
 
 本轮接入现有实例管理页面：逻辑集群聚合为一条可展开记录，冷热成员不再在普通实例区重复显示。后续页面修订将单点、主从和分片集群合并为同一张列表，共用搜索/筛选/创建入口，移除独立自定义集群侧栏；该修订 bb25b54 已部署 redis01。管理员可提交单份规格、查看持久创建进度/重试原因、导出初始 Gateway YAML、登记 Proxy 入口；只读账号仅查看。资源完成与业务就绪分开判定。没有新增 Agent 启停 Gateway、分片副本、在线策略切换或自动服务安装能力。字段、权限与验证范围见 [实例管理设计](instance-management-ui.md#自定义集群聚合与创建2026-09-18)。代码 e080240 已推送 dev 并部署 redis01 Server 与内嵌页面；下文“页面未完成”的记录描述此前阶段。部署验证见 [部署记录](gateway-deployment.md#页面集群聚合部署2026-09-18)。

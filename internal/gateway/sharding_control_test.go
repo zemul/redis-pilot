@@ -180,15 +180,22 @@ func startColdLiveWriter(t *testing.T, address, key string) func() string {
 	return finish
 }
 
-func TestColdControlKvrocksRecovery(t *testing.T) {
-	if os.Getenv("GATEWAY_TEST_KVROCKS_SERVER") == "" {
-		t.Skip("real Kvrocks required for task preflight")
-	}
-	for _, policy := range []string{"invalidate", "update_existing"} {
+func TestColdControlStorageRecovery(t *testing.T) {
+	for _, policy := range []string{"invalidate", "update_existing", "redis"} {
 		t.Run(policy, func(t *testing.T) {
+			redisStorage := policy == "redis"
+			if !redisStorage && os.Getenv("GATEWAY_TEST_KVROCKS_SERVER") == "" {
+				t.Skip("real Kvrocks required for task preflight")
+			}
 			ctx := context.Background()
-			a, hot := migrationCold(t), g4Redis(t)
-			b, stopB, startB, backendConfig := isolatedKvrocksWithConfig(t)
+			var a, b, hot, backendConfig string
+			stopB, startB := func() {}, func() {}
+			if redisStorage {
+				a, b = isolatedTestRedis(t, true), isolatedTestRedis(t, true)
+			} else {
+				a, hot = migrationCold(t), g4Redis(t)
+				b, stopB, startB, backendConfig = isolatedKvrocksWithConfig(t)
+			}
 			cfg := shardConfigForTest(t)
 			cfg.RedisAddress = hot
 			cfg.GatewayID = "gw"
@@ -196,10 +203,19 @@ func TestColdControlKvrocksRecovery(t *testing.T) {
 			cfg.Listen = freeAddress(t)
 			cfg.AdminListen = freeAddress(t)
 			cfg.Cache.WritePolicy = policy
+			if redisStorage {
+				disabled := false
+				cfg.Cache.Enabled, cfg.Cache.ColdEngine, cfg.Cache.WritePolicy = &disabled, "redis", "invalidate"
+			}
 			cfg.FrontendPasswordFile = ""
 			cfg.AllowUnauthenticated = true
-			configuredBackendCall(t, cfg, hot, "CONFIG", "SET", "maxmemory", "33554432", "maxmemory-policy", "allkeys-lru")
+			if hot != "" {
+				configuredBackendCall(t, cfg, hot, "CONFIG", "SET", "maxmemory", "33554432", "maxmemory-policy", "allkeys-lru")
+			}
 			for _, address := range []string{a, b, hot} {
+				if address == "" {
+					continue
+				}
 				configuredBackendCall(t, cfg, address, "CONFIG", "SET", "requirepass", "")
 			}
 			cfg.Cache.Sharding.Nodes = []ShardNodeConfig{{ID: "a", Address: a}}
@@ -219,8 +235,11 @@ func TestColdControlKvrocksRecovery(t *testing.T) {
 				t.Fatal(err)
 			}
 			for name, address := range map[string]string{"hot": hot, "a": a, "b": b} {
+				if address == "" {
+					continue
+				}
 				engine := "kvrocks"
-				if name == "hot" {
+				if name == "hot" || redisStorage {
 					engine = "redis"
 				}
 				_, port, _ := net.SplitHostPort(address)
@@ -232,7 +251,12 @@ func TestColdControlKvrocksRecovery(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			if _, err := d.CreateColdCluster(apitypes.ColdClusterSpec{ID: "cluster", GatewayID: "gw", NodeID: "node", HotInstance: "hot", Shards: []apitypes.ColdShard{{ID: "a", Instance: "a"}}}); err != nil {
+			spec := apitypes.ColdClusterSpec{ID: "cluster", GatewayID: "gw", NodeID: "node", HotInstance: "hot", Shards: []apitypes.ColdShard{{ID: "a", Instance: "a"}}}
+			if redisStorage {
+				disabled := false
+				spec.Engine, spec.CacheEnabled, spec.HotInstance = "redis", &disabled, ""
+			}
+			if _, err := d.CreateColdCluster(spec); err != nil {
 				t.Fatal(err)
 			}
 			proxyAddress := freeAddress(t)
@@ -312,6 +336,14 @@ func TestColdControlKvrocksRecovery(t *testing.T) {
 				keys = append(keys, key)
 				shardWant(t, conn, r, "+OK\r\n", "SET", key, "old")
 			}
+			// All five types share a tag that moves to b, then returns on shrink.
+			tag := "{" + shardKeyFor(to, "b", "five-types") + "}:"
+			shardWant(t, conn, r, "+OK\r\n", "SET", tag+"s", "value", "PX", "300000")
+			shardWant(t, conn, r, ":1\r\n", "HSET", tag+"h", "field", "value")
+			shardWant(t, conn, r, ":2\r\n", "RPUSH", tag+"l", "a", "b")
+			shardWant(t, conn, r, ":1\r\n", "SADD", tag+"set", "member")
+			shardWant(t, conn, r, ":1\r\n", "ZADD", tag+"z", "3", "member")
+			expires := time.Now().Add(300 * time.Second).UnixMilli()
 			conn.Close()
 			liveKey := shardKeyFor(to, "b", "live-hash")
 			checkLive := startColdLiveWriter(t, proxyAddress, liveKey)
@@ -339,6 +371,14 @@ func TestColdControlKvrocksRecovery(t *testing.T) {
 			shardWant(t, conn, r, "+OK\r\n", "SET", "unaffected", "available")
 			conn.Close()
 			setSync := func(old, value string) {
+				if redisStorage {
+					mode := "always"
+					if value == "no" {
+						mode = "everysec"
+					}
+					anonymousColdCall(t, cfg, b, "CONFIG", "SET", "appendfsync", mode)
+					return
+				}
 				stopB()
 				contents, err := os.ReadFile(backendConfig)
 				if err != nil {
@@ -467,6 +507,27 @@ func TestColdControlKvrocksRecovery(t *testing.T) {
 			shardWant(t, conn, r, fmt.Sprintf("$%d\r\n%s\r\n", len(liveValue), liveValue), "HGET", liveKey, "counter")
 			conn.Close()
 			stop()
+			conn, r, err = authenticated(a, "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			shardWant(t, conn, r, "$5\r\nvalue\r\n", "GET", tag+"s")
+			shardWant(t, conn, r, "$5\r\nvalue\r\n", "HGET", tag+"h", "field")
+			shardWant(t, conn, r, "*2\r\n$1\r\na\r\n$1\r\nb\r\n", "LRANGE", tag+"l", "0", "-1")
+			shardWant(t, conn, r, ":1\r\n", "SISMEMBER", tag+"set", "member")
+			shardWant(t, conn, r, "$1\r\n3\r\n", "ZSCORE", tag+"z", "member")
+			if err := writeAll(conn, encodeCommand("PTTL", tag+"s")); err != nil {
+				t.Fatal(err)
+			}
+			ttlFrame, err := r.ReadFrame()
+			if err != nil {
+				t.Fatal(err)
+			}
+			ttl, err := strconv.ParseInt(strings.TrimSuffix(strings.TrimPrefix(string(ttlFrame), ":"), "\r\n"), 10, 64)
+			if err != nil || ttl <= 0 || time.Now().UnixMilli()+ttl > expires+1000 {
+				t.Fatalf("TTL reset or lost: %s", ttlFrame)
+			}
+			conn.Close()
 		})
 	}
 }

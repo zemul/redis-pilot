@@ -12,7 +12,7 @@ function Shell({ title, description, onClose, busy, children }) {
 }
 
 export function CreateCustomClusterModal({ request, servers, clusters, onClose, onCreated }) {
-  const [form, setForm] = useState({ id: '', gateway_id: '', node_id: '', count: 1, servers: [], cold_memory: '256Mi', cold_cpus: '0.25', cold_disk: '', cache: true, hot_memory: '128Mi', hot_cpus: '0.25', hot_server: '', write_policy: 'invalidate' });
+  const [form, setForm] = useState({ id: '', engine: 'kvrocks', gateway_id: '', node_id: '', count: 1, servers: [], cold_memory: '256Mi', cold_cpus: '0.25', cold_disk: '', cache: true, hot_memory: '128Mi', hot_cpus: '0.25', hot_server: '', write_policy: 'invalidate' });
   const [options, setOptions] = useState(null);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
@@ -37,22 +37,24 @@ export function CreateCustomClusterModal({ request, servers, clusters, onClose, 
     } catch (e) { setError(`${e.message}。若响应丢失，请使用相同名称和规格重试，系统会复用原任务。`); }
     finally { setBusy(false); }
   }
-  return <Shell title="创建分片集群" description="Kvrocks 存储分片，可选 Redis 缓存。资源创建完成后仍需独立部署 Gateway 并配置统一入口。" busy={busy} onClose={onClose}>
+  return <Shell title="创建分片集群" description="支持 Redis 分片、Kvrocks 分片及冷热分离。资源创建完成后仍需独立部署 Gateway 并配置统一入口。" busy={busy} onClose={onClose}>
     <form onSubmit={submit} className="space-y-5"><fieldset disabled={busy} className="space-y-5">
       <div className="grid gap-4 sm:grid-cols-2">{input('id', '集群名称')}<Field title="Gateway（已配置机器凭据）"><select className={control} required value={form.gateway_id} onChange={e => set('gateway_id', e.target.value)}><option value="">请选择 Gateway</option>{available.map(id => <option key={id}>{id}</option>)}</select></Field>
         <Field title="Gateway / Proxy 所在节点">{nodeSelect(form.node_id, v => set('node_id', v), false)}</Field>
-        <Field title="冷分片数量"><input className={control} type="number" min="1" max="128" step="1" required value={form.count} onChange={e => set('count', e.target.value)} /></Field>
+        <Field title="存储引擎"><select className={control} value={form.engine} onChange={e => setForm(f => ({ ...f, engine: e.target.value, cache: e.target.value === 'redis' ? false : f.cache }))}><option value="redis">Redis</option><option value="kvrocks">Kvrocks</option></select></Field>
+        <Field title="分片数量"><input className={control} type="number" min="1" max="128" step="1" required value={form.count} onChange={e => set('count', e.target.value)} /></Field>
       </div>
       {options && !available.length && <p role="status" className="text-sm text-amber-700">没有空闲 Gateway 标识。请先在 Server 配置独立机器凭据；这里不创建或展示密码。</p>}
-      <section className="space-y-3 border-t pt-4"><h3 className="font-medium">冷层 · Kvrocks</h3><div className="grid gap-3 sm:grid-cols-3">{input('cold_memory', '每分片内存')}{input('cold_cpus', '每分片 CPU', 'number')}<Field title="每分片磁盘预算（可选）"><input className={control} placeholder="如 10Gi" value={form.cold_disk} onChange={e => set('cold_disk', e.target.value)} /></Field></div>
+      <section className="space-y-3 border-t pt-4"><h3 className="font-medium">存储分片 · {form.engine === 'redis' ? 'Redis' : 'Kvrocks'}</h3><div className="grid gap-3 sm:grid-cols-3">{input('cold_memory', '每分片内存')}{input('cold_cpus', '每分片 CPU', 'number')}<Field title="每分片磁盘预算（可选）"><input className={control} placeholder="如 10Gi" value={form.cold_disk} onChange={e => set('cold_disk', e.target.value)} /></Field></div>
         <div className="grid gap-3 sm:grid-cols-2">{Array.from({ length: Math.min(128, Math.max(0, Number(form.count) || 0)) }, (_, i) => <Field key={i} title={`分片 s${i + 1} 部署节点`}>{nodeSelect(form.servers[i] || '', v => setForm(f => { const values = [...f.servers]; values[i] = v; return { ...f, servers: values }; }))}</Field>)}</div>
         <p className="text-xs text-gray-500">使用服务器默认引擎版本。自动调度校验登记容量，但不保证跨机分散；磁盘预算不是硬配额。当前分片无副本自动切换。</p>
+        {form.engine === 'redis' && <p className="text-xs text-gray-500">Redis 分片保存权威数据，禁止自动淘汰，启用 AOF 同步落盘及 RDB；内存不足时可能拒绝写入。此配置优先保证存储可靠性，会增加写入延迟。</p>}
       </section>
-      <section className="space-y-3 border-t pt-4"><label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={form.cache} onChange={e => set('cache', e.target.checked)} />启用 Redis 缓存加速</label>
+      {form.engine === 'kvrocks' && <section className="space-y-3 border-t pt-4"><label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={form.cache} onChange={e => set('cache', e.target.checked)} />启用 Redis 缓存加速</label>
         {form.cache && <><div className="grid gap-3 sm:grid-cols-3">{input('hot_memory', '热层内存')}{input('hot_cpus', '热层 CPU', 'number')}<Field title="热层节点">{nodeSelect(form.hot_server, v => set('hot_server', v))}</Field></div>
           <Field title="写后缓存策略"><select className={control} value={form.write_policy} onChange={e => set('write_policy', e.target.value)}><option value="invalidate">删除缓存 · 写冷后失效，读时回温</option><option value="update_existing">双写更新 · 安全更新已有完整缓存</option></select></Field>
           <p className="text-xs text-gray-500">热层是缓存，不是冷层副本。双写更新不会为每次写入强制建立完整缓存；异常时允许失效或绕过缓存。缓存开关和策略在创建时确定。</p></>}
-      </section>
+      </section>}
       {error && <p role="alert" className="text-sm text-red-700">{error}</p>}
       <div className="flex justify-end gap-3"><button type="button" onClick={onClose} className="text-sm">取消</button><button className={button} disabled={busy || !available.length}>{busy ? '正在提交…' : '创建集群'}</button></div>
     </fieldset></form>

@@ -56,7 +56,7 @@ func createClusterBuildTx(tx *sql.Tx, spec apitypes.ColdClusterSpec, children []
 	if spec.Engine == "" {
 		spec.Engine = "kvrocks"
 	}
-	if spec.Engine != "kvrocks" || !gatewayDraftName.MatchString(spec.ID) || !gatewayDraftName.MatchString(spec.GatewayID) || spec.NodeID == "" || len(spec.Shards) < 1 || len(spec.Shards) > 128 || task.ID == "" {
+	if !spec.ValidEngine() || !gatewayDraftName.MatchString(spec.ID) || !gatewayDraftName.MatchString(spec.GatewayID) || spec.NodeID == "" || len(spec.Shards) < 1 || len(spec.Shards) > 128 || task.ID == "" {
 		return coldInvalid("invalid cluster creation plan")
 	}
 	wants := map[string]string{}
@@ -74,7 +74,7 @@ func createClusterBuildTx(tx *sql.Tx, spec apitypes.ColdClusterSpec, children []
 			return coldInvalid("invalid or duplicate shard")
 		}
 		ids[shard.ID] = true
-		wants[shard.Instance] = "kvrocks-storage"
+		wants[shard.Instance] = spec.StorageEngine() + "-storage"
 	}
 	if len(children) != len(wants) {
 		return coldInvalid("one child creation task is required for each resource")

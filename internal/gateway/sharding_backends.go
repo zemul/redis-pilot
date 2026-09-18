@@ -108,7 +108,7 @@ func (s *cacheShards) start(ctx context.Context) error {
 		}
 	}
 	for _, n := range s.requiredNodes() {
-		if s.r.s.cfg.ControlPlane.ManageShards && s.journal != nil {
+		if s.r.cfg.coldEngine() == "redis" || (s.r.s.cfg.ControlPlane.ManageShards && s.journal != nil) {
 			if err := s.preflightCold(ctx, n, false); err != nil {
 				return err
 			}

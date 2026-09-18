@@ -57,7 +57,7 @@ func coldResource(tx *sql.Tx, name, node, engine string) (string, error) {
 	return netip.AddrPortFrom(ip, uint16(port)).String(), nil
 }
 
-func resolveColdShards(tx *sql.Tx, nodes []apitypes.ColdShard, host string) ([]apitypes.ColdShard, error) {
+func resolveColdShards(tx *sql.Tx, nodes []apitypes.ColdShard, host, engine string) ([]apitypes.ColdShard, error) {
 	if len(nodes) < 1 || len(nodes) > 128 {
 		return nil, coldInvalid("requires 1..128 cold shards")
 	}
@@ -68,7 +68,7 @@ func resolveColdShards(tx *sql.Tx, nodes []apitypes.ColdShard, host string) ([]a
 		if !gatewayDraftName.MatchString(n.ID) || n.Instance == "" || ids[n.ID] || names[n.Instance] {
 			return nil, coldInvalid("duplicate or invalid shard/instance identity")
 		}
-		a, err := coldResource(tx, n.Instance, host, "kvrocks")
+		a, err := coldResource(tx, n.Instance, host, engine)
 		if err != nil {
 			return nil, err
 		}
@@ -194,8 +194,8 @@ func (d *DB) createColdCluster(spec apitypes.ColdClusterSpec, buildTaskID string
 	if spec.Engine == "" {
 		spec.Engine = "kvrocks"
 	}
-	if spec.Engine != "kvrocks" {
-		return nil, coldInvalid("only Kvrocks custom clusters are currently supported")
+	if !spec.ValidEngine() {
+		return nil, coldInvalid("requires Redis without cache, or Kvrocks with optional cache")
 	}
 	if !spec.UsesCache() && spec.HotInstance != "" {
 		return nil, coldInvalid("disabled cache must not reference a hot instance")
@@ -233,7 +233,7 @@ func (d *DB) createColdCluster(spec apitypes.ColdClusterSpec, buildTaskID string
 			return nil, err
 		}
 	}
-	nodes, err := resolveColdShards(tx, spec.Shards, spec.NodeID)
+	nodes, err := resolveColdShards(tx, spec.Shards, spec.NodeID, spec.StorageEngine())
 	if err != nil {
 		return nil, err
 	}
@@ -313,7 +313,7 @@ func (d *DB) CreateColdTask(id string, req apitypes.ColdTaskRequest) (*apitypes.
 	if c.Revision != req.ExpectedRevision || (c.Task != nil && c.Task.Phase != "complete") {
 		return nil, ErrColdConflict
 	}
-	nodes, err := resolveColdShards(tx, req.Shards, c.NodeID)
+	nodes, err := resolveColdShards(tx, req.Shards, c.NodeID, c.StorageEngine())
 	if err != nil {
 		return nil, err
 	}

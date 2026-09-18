@@ -52,10 +52,13 @@ export function ordinaryGroups(groups, clusters) {
   return groups.filter(g => !g.instances.some(i => owned.has(i.name)));
 }
 export function makeClusterSpec(form) {
+	const engine = form.engine || 'kvrocks';
+	if (!['redis', 'kvrocks'].includes(engine)) throw new Error('请选择 Redis 或 Kvrocks');
+	if (engine === 'redis' && form.cache) throw new Error('Redis 分片不需要额外热缓存');
   if (!/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,31}$/.test(form.id)) throw new Error('名称需为 1–32 位字母、数字、下划线或连字符，以字母或数字开头');
   if (!form.gateway_id || !form.node_id) throw new Error('请选择 Gateway 和部署节点');
   const count = Number(form.count);
-  if (!Number.isInteger(count) || count < 1 || count > 128) throw new Error('冷分片数量需为 1–128');
+  if (!Number.isInteger(count) || count < 1 || count > 128) throw new Error('分片数量需为 1–128');
   const resource = (memory, cpus, disk) => {
     if (!/^\d+(\.\d+)?(Mi|Gi|M|G)$/.test(memory) || parseFloat(memory) <= 0) throw new Error('内存请输入有效容量，如 256Mi 或 2Gi');
     if (!Number.isFinite(Number(cpus)) || Number(cpus) <= 0) throw new Error('CPU 必须大于 0');
@@ -63,6 +66,6 @@ export function makeClusterSpec(form) {
     return { memory, cpus: Number(cpus), ...(disk ? { disk } : {}) };
   };
   const cold = { count, ...resource(form.cold_memory, form.cold_cpus, form.cold_disk), servers: Array.from({ length: count }, (_, i) => form.servers[i] || '') };
-  return { id: form.id, engine: 'kvrocks', gateway_id: form.gateway_id, node_id: form.node_id, cold,
+  return { id: form.id, engine, gateway_id: form.gateway_id, node_id: form.node_id, cold,
     ...(form.cache ? { cache: { ...resource(form.hot_memory, form.hot_cpus, ''), server: form.hot_server, write_policy: form.write_policy } } : {}) };
 }

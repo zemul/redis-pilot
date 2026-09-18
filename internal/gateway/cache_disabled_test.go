@@ -36,6 +36,12 @@ func TestCacheDisabledConfigAndState(t *testing.T) {
 		t.Fatal(err)
 	}
 	state.close()
+	c.Cache.ColdEngine = "redis"
+	if state, err := openShardDisk(context.Background(), c, false); err == nil {
+		state.close()
+		t.Fatal("storage engine changed existing state")
+	}
+	c.Cache.ColdEngine = ""
 	enabled := true
 	c.Cache.Enabled, c.RedisAddress = &enabled, "127.0.0.1:17100"
 	if state, err := openShardDisk(context.Background(), c, false); err == nil {

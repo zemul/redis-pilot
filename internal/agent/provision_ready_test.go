@@ -14,6 +14,15 @@ import (
 )
 
 func TestProvisionDatabaseNativeRedis(t *testing.T) {
+	testProvisionNativeRedis(t, "redis-cache")
+}
+
+func TestProvisionDatabaseNativeRedisStorage(t *testing.T) {
+	testProvisionNativeRedis(t, "redis-storage")
+}
+
+func testProvisionNativeRedis(t *testing.T, profile string) {
+	t.Helper()
 	binary := os.Getenv("PILOT_TEST_REDIS_SERVER")
 	if binary == "" {
 		t.Skip("set PILOT_TEST_REDIS_SERVER for native engine readiness test")
@@ -25,13 +34,17 @@ func TestProvisionDatabaseNativeRedis(t *testing.T) {
 	addr := ln.Addr().String()
 	port := ln.Addr().(*net.TCPAddr).Port
 	ln.Close()
-	p := exec.Command(binary, "--bind", "127.0.0.1", "--port", strconv.Itoa(port), "--dir", t.TempDir(), "--save", "", "--appendonly", "no", "--maxmemory", "16mb", "--maxmemory-policy", "allkeys-lru")
+	aof, policy := "no", "allkeys-lru"
+	if profile == "redis-storage" {
+		aof, policy = "yes", "noeviction"
+	}
+	p := exec.Command(binary, "--bind", "127.0.0.1", "--port", strconv.Itoa(port), "--dir", t.TempDir(), "--save", "", "--appendonly", aof, "--appendfsync", "always", "--maxmemory", "16mb", "--maxmemory-policy", policy)
 	if err := p.Start(); err != nil {
 		t.Fatal(err)
 	}
 	defer func() { p.Process.Kill(); p.Wait() }()
 	for until := time.Now().Add(5 * time.Second); ; {
-		err = probeProvisionDatabase(addr, "redis-cache")
+		err = probeProvisionDatabase(addr, profile)
 		if err == nil {
 			break
 		}
@@ -54,7 +67,7 @@ func TestProvisionDatabaseNativeRedis(t *testing.T) {
 	if err != nil || string(frame) != "+OK\r\n" {
 		t.Fatalf("%q %v", frame, err)
 	}
-	if err := probeProvisionDatabase(addr, "redis-cache"); err == nil {
+	if err := probeProvisionDatabase(addr, profile); err == nil {
 		t.Fatal("nonempty real database accepted")
 	}
 	if _, err := fmt.Fprint(c, "*2\r\n$3\r\nGET\r\n$5\r\nowned\r\n"); err != nil {
@@ -67,7 +80,7 @@ func TestProvisionDatabaseNativeRedis(t *testing.T) {
 }
 
 func TestProvisionDatabaseReadiness(t *testing.T) {
-	for _, mode := range []string{"redis", "kvrocks", "loading", "replica", "nonempty", "other-db", "bad-policy", "wal-off", "noauth", "bad-config", "wrong-engine"} {
+	for _, mode := range []string{"redis", "kvrocks", "loading", "replica", "nonempty", "other-db", "bad-policy", "wal-off", "noauth", "bad-config", "wrong-engine", "redis-storage", "redis-storage-async", "redis-storage-eviction"} {
 		t.Run(mode, func(t *testing.T) {
 			ln, err := net.Listen("tcp", "127.0.0.1:0")
 			if err != nil {
@@ -122,6 +135,15 @@ func TestProvisionDatabaseReadiness(t *testing.T) {
 							continue
 						}
 						values := map[string]string{"save": "", "appendonly": "no", "maxmemory": "1000", "maxmemory-policy": "allkeys-lru", "rocksdb.write_options.sync": "yes", "rocksdb.write_options.disable_wal": "no", "workers": "2", "max-db-size": "0"}
+						if strings.HasPrefix(mode, "redis-storage") {
+							values["appendonly"], values["appendfsync"], values["no-appendfsync-on-rewrite"], values["maxmemory-policy"] = "yes", "always", "no", "noeviction"
+							if mode == "redis-storage-async" {
+								values["appendfsync"] = "everysec"
+							}
+							if mode == "redis-storage-eviction" {
+								values["maxmemory-policy"] = "allkeys-lru"
+							}
+						}
 						if mode == "bad-policy" {
 							values["maxmemory-policy"] = "noeviction"
 						}
@@ -144,11 +166,14 @@ func TestProvisionDatabaseReadiness(t *testing.T) {
 				}
 			}()
 			profile := "redis-cache"
+			if strings.HasPrefix(mode, "redis-storage") {
+				profile = "redis-storage"
+			}
 			if mode == "kvrocks" || mode == "wal-off" {
 				profile = "kvrocks-storage"
 			}
 			err = probeProvisionDatabase(ln.Addr().String(), profile)
-			if (mode == "redis" || mode == "kvrocks") != (err == nil) {
+			if (mode == "redis" || mode == "kvrocks" || mode == "redis-storage") != (err == nil) {
 				t.Fatalf("unexpected readiness result: %v", err)
 			}
 		})

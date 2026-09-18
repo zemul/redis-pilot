@@ -3,11 +3,11 @@ package redisconf
 import "testing"
 
 func TestDedicatedProfiles(t *testing.T) {
-	for _, p := range []struct{ profile, engine, category string }{{RedisCacheProfile, "redis", "cache"}, {KvrocksStorageProfile, "kvrocks", "persistent"}} {
+	for _, p := range []struct{ profile, engine, category string }{{RedisCacheProfile, "redis", "cache"}, {KvrocksStorageProfile, "kvrocks", "persistent"}, {RedisStorageProfile, "redis", "persistent"}} {
 		if err := ValidateProfile(p.profile, p.engine, p.category, "standalone", "", nil); err != nil {
 			t.Fatal(err)
 		}
-		for _, key := range []string{"save", "appendonly", "maxmemory", "maxmemory-policy", "max-db-size", "rocksdb.write_options.sync"} {
+		for _, key := range []string{"save", "appendonly", "maxmemory", "maxmemory-policy", "max-db-size", "rocksdb.write_options.sync", "appendfsync", "no-appendfsync-on-rewrite"} {
 			if err := ValidateProfile(p.profile, p.engine, p.category, "standalone", "", map[string]string{key: "no"}); err == nil {
 				t.Fatal("accepted override", key)
 			}

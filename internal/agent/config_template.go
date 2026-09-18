@@ -70,7 +70,7 @@ stop-writes-on-bgsave-error yes
 
 appendonly {{ .Appendonly }}
 appendfilename "appendonly.aof"
-appendfsync everysec
+appendfsync {{ if eq .Profile "redis-storage" }}always{{ else }}everysec{{ end }}
 no-appendfsync-on-rewrite no
 auto-aof-rewrite-percentage 100
 auto-aof-rewrite-min-size 64mb
@@ -205,6 +205,9 @@ func writeRedisConfig(dataDir string, params RedisConfigParams) error {
 	}
 	if params.Profile == redisconf.RedisCacheProfile {
 		params.MaxmemoryPolicy, params.Appendonly = "allkeys-lru", "no"
+	}
+	if params.Profile == redisconf.RedisStorageProfile {
+		params.MaxmemoryPolicy, params.Appendonly = "noeviction", "yes"
 	}
 	params.ReplicaOf = strings.Replace(params.ReplicaOf, ":", " ", 1)
 	if params.Version == "" {

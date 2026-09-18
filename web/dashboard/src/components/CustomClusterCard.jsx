@@ -13,13 +13,13 @@ export function CustomClusterCard({ cluster: c, group, gridClass, observations, 
     <div className={`${gridClass} py-3.5 cursor-pointer`} onClick={toggle}>
       <div className="flex items-center gap-2.5 min-w-0">
         <button className={`w-5 h-5 rounded inline-flex items-center justify-center shrink-0 ${expanded ? 'text-blue-500 bg-blue-50' : 'text-gray-400'}`} onClick={e => { e.stopPropagation(); toggle(); }} aria-expanded={expanded} aria-label={`${expanded ? '收起' : '展开'}集群 ${c.id}`}>{expanded ? <ChevronDown size={15} /> : <ChevronRight size={15} />}</button>
-        <EngineIcon engine="kvrocks" size={32} />
+        <EngineIcon engine={c.engine || 'kvrocks'} size={32} />
         <div className="min-w-0"><CopyableText text={c.id} className="font-semibold text-gray-900 text-[14px]" /><span className="block mt-0.5 text-[11px] text-gray-400">{c.shards?.length || 0} 分片{c.hot_instance ? ' · 1 缓存' : ''}</span></div>
       </div>
       <div><CategoryBadge category="persistent" /></div>
       <div><span className="inline-flex rounded-md border border-slate-200 bg-slate-50 px-2 py-0.5 text-xs font-medium text-slate-700">标准</span></div>
       <div className="text-[13px] text-gray-500">分片集群</div>
-      <div className="text-[13px] text-gray-700">Kvrocks{c.cache_enabled !== false && (c.hot_instance || c.cache) ? ' + Redis' : ''}</div>
+      <div className="text-[13px] text-gray-700">{c.engine === 'redis' ? 'Redis' : 'Kvrocks'}{c.cache_enabled !== false && (c.hot_instance || c.cache) ? ' + Redis' : ''}</div>
       <div className="text-xs text-gray-500">{group.labels.length ? group.labels.join(' · ') : '—'}</div>
       <div className="text-[13px]" onClick={e => e.stopPropagation()}>{c.ingress ? <CopyableEndpoint host={publicHost || c.ingress.node_id} port={c.ingress.port} /> : <span className="text-gray-400">待配置入口</span>}</div>
       <div className="text-gray-400 text-xs" title="展开查看各存储分片和缓存资源">按成员查看</div>

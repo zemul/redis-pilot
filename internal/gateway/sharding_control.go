@@ -84,7 +84,7 @@ func (s *Service) shardControlOnce(ctx context.Context) error {
 	if err := s.shardControlRequest(ctx, "GET", path, nil, &c); err != nil {
 		return err
 	}
-	if c.ID != s.cfg.ServiceID || c.GatewayID != s.cfg.GatewayID || c.NodeID != s.cfg.ControlPlane.NodeID || c.HotAddress != s.cfg.RedisAddress || c.UsesCache() != s.cfg.Cache.enabled() || (c.Engine != "" && c.Engine != "kvrocks") || (c.WritePolicy != "" && c.WritePolicy != s.cfg.Cache.WritePolicy) {
+	if c.ID != s.cfg.ServiceID || c.GatewayID != s.cfg.GatewayID || c.NodeID != s.cfg.ControlPlane.NodeID || c.HotAddress != s.cfg.RedisAddress || c.UsesCache() != s.cfg.Cache.enabled() || !c.ValidEngine() || c.StorageEngine() != s.cfg.Cache.coldEngine() || (c.WritePolicy != "" && c.WritePolicy != s.cfg.Cache.WritePolicy) {
 		return errors.New("cluster placement mismatch")
 	}
 	if c.Ingress != nil && !c.Ingress.Ready && c.Ingress.GatewayAddress == s.cfg.Listen && s.frontendPassword == "" {
@@ -251,10 +251,25 @@ func (s *cacheShards) preflightCold(ctx context.Context, n *cacheShardNode, empt
 		return err
 	}
 	info, ok := frameString(b)
-	if !ok || !strings.Contains(info, "kvrocks_version:") || !strings.Contains(info, "role:master") || !strings.Contains(info, "cluster_enabled:0") {
-		return errors.New("requires standalone primary Kvrocks")
+	fields := map[string]string{}
+	for _, line := range strings.Split(info, "\n") {
+		if k, v, found := strings.Cut(strings.TrimSpace(line), ":"); found {
+			fields[k] = v
+		}
 	}
-	for name, want := range map[string]string{"rocksdb.write_options.sync": "yes", "rocksdb.write_options.disable_wal": "no"} {
+	if !ok || fields["role"] != "master" || fields["cluster_enabled"] != "0" || (fields["loading"] != "" && fields["loading"] != "0") {
+		return errors.New("requires a ready standalone primary")
+	}
+	wants := map[string]string{"rocksdb.write_options.sync": "yes", "rocksdb.write_options.disable_wal": "no"}
+	if s.r.cfg.coldEngine() == "redis" {
+		if fields["redis_version"] == "" || fields["kvrocks_version"] != "" || fields["aof_enabled"] != "1" || fields["aof_last_write_status"] != "ok" {
+			return errors.New("requires Redis with healthy AOF")
+		}
+		wants = map[string]string{"appendonly": "yes", "appendfsync": "always", "no-appendfsync-on-rewrite": "no", "maxmemory-policy": "noeviction"}
+	} else if fields["kvrocks_version"] == "" {
+		return errors.New("requires Kvrocks engine")
+	}
+	for name, want := range wants {
 		b, err := c.call(ctx, "CONFIG", "GET", name)
 		if err != nil {
 			return err

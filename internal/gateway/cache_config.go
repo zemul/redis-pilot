@@ -9,6 +9,7 @@ import (
 // CacheConfig is deliberately separate from the retired hot_cold protocol.
 // RedisAddress/BackendPasswordFile configure the disposable hot Redis.
 type CacheConfig struct {
+	ColdEngine        string        `yaml:"cold_engine,omitempty"`
 	Enabled           *bool         `yaml:"enabled"`
 	BackendNetworks   []string      `yaml:"backend_networks"`
 	Sharding          *ShardConfig  `yaml:"sharding"`
@@ -26,6 +27,13 @@ type CacheConfig struct {
 
 // Omission preserves existing deployments; disabled never attempts hot recovery.
 func (c CacheConfig) enabled() bool { return c.Enabled == nil || *c.Enabled }
+
+func (c CacheConfig) coldEngine() string {
+	if c.ColdEngine == "" {
+		return "kvrocks"
+	}
+	return c.ColdEngine
+}
 
 func (c CacheConfig) resolved() CacheConfig {
 	if c.HotTimeout == 0 {
@@ -57,6 +65,12 @@ func (c Config) validateCache() error {
 		return errors.New("cache mode requires cache configuration")
 	}
 	o := c.Cache.resolved()
+	if o.coldEngine() != "kvrocks" && o.coldEngine() != "redis" {
+		return errors.New("cold_engine must be redis or kvrocks")
+	}
+	if o.coldEngine() == "redis" && (o.enabled() || o.Sharding == nil) {
+		return errors.New("Redis storage requires sharding with cache disabled")
+	}
 	if err := o.validateBackendNetworks(); err != nil {
 		return err
 	}

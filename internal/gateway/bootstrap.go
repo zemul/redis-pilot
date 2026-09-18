@@ -18,8 +18,8 @@ func InitialConfig(cluster apitypes.ColdCluster, req apitypes.GatewayBootstrapRe
 	if cluster.Revision != 1 || cluster.Task != nil {
 		return "", fmt.Errorf("initial config requires revision 1 with no migration task; preserve existing Gateway state")
 	}
-	if cluster.Engine != "" && cluster.Engine != "kvrocks" {
-		return "", fmt.Errorf("only Kvrocks custom clusters are supported")
+	if !cluster.ValidEngine() {
+		return "", fmt.Errorf("requires Redis without cache, or Kvrocks with optional cache")
 	}
 	if !cluster.ValidWritePolicy() || (cluster.UsesCache() && cluster.WritePolicy == "") {
 		return "", fmt.Errorf("cluster must declare its cache write policy")
@@ -45,6 +45,7 @@ func InitialConfig(cluster apitypes.ColdCluster, req apitypes.GatewayBootstrapRe
 	c.MaxBatchBytes, c.BufferBudgetBytes = 262144, 134217728
 	enabled := cluster.UsesCache()
 	c.Cache = &CacheConfig{Enabled: &enabled, ExclusiveBackends: true, LockFile: filepath.Join(req.StateDir, "owner.lock"), WritePolicy: cluster.WritePolicy, Sharding: &ShardConfig{StateDir: filepath.Join(req.StateDir, "sharding")}}
+	c.Cache.ColdEngine = cluster.StorageEngine()
 	resolved := c.Cache.resolved()
 	c.Cache = &resolved
 	networks := map[string]bool{}

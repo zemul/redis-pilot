@@ -46,8 +46,8 @@ func (s *Server) clusterCreateFromSpec(c *gin.Context) {
 	if req.Engine == "" {
 		req.Engine = "kvrocks"
 	}
-	if req.Engine != "kvrocks" || !validProvisionName.MatchString(req.ID) || len(req.ID) > 32 || !validProvisionName.MatchString(req.GatewayID) || req.NodeID == "" || req.Cold.Count < 1 || req.Cold.Count > 128 || (len(req.Cold.Servers) != 0 && len(req.Cold.Servers) != req.Cold.Count) {
-		fail(c, 400, "requires Kvrocks, valid cluster ID (up to 32 chars), Gateway/node, 1..128 shards and either zero or count server entries")
+	if (req.Engine != "kvrocks" && req.Engine != "redis") || (req.Engine == "redis" && req.Cache != nil) || !validProvisionName.MatchString(req.ID) || len(req.ID) > 32 || !validProvisionName.MatchString(req.GatewayID) || req.NodeID == "" || req.Cold.Count < 1 || req.Cold.Count > 128 || (len(req.Cold.Servers) != 0 && len(req.Cold.Servers) != req.Cold.Count) {
+		fail(c, 400, "requires Redis (without cache) or Kvrocks, valid cluster ID (up to 32 chars), Gateway/node, 1..128 shards and either zero or count server entries")
 		return
 	}
 	if err := normalizeClusterResource(&req.Cold.ClusterResourceSpec); err != nil {
@@ -55,7 +55,7 @@ func (s *Server) clusterCreateFromSpec(c *gin.Context) {
 		return
 	}
 	if parseMemoryBytes(req.Cold.Memory) < 64<<20 {
-		fail(c, 400, "Kvrocks memory must be at least 64Mi")
+		fail(c, 400, "storage shard memory must be at least 64Mi")
 		return
 	}
 	if req.Cache != nil {
@@ -107,7 +107,7 @@ func (s *Server) clusterCreateFromSpec(c *gin.Context) {
 		return
 	}
 	cache := req.Cache != nil
-	plan := &store.ClusterPlan{Request: req, Digest: digest, Spec: apitypes.ColdClusterSpec{ID: req.ID, Engine: "kvrocks", GatewayID: req.GatewayID, NodeID: req.NodeID, CacheEnabled: &cache}, Parent: store.Task{ID: newProvisionID(), Operator: operatorFrom(c), Source: "api", Trigger: "manual"}}
+	plan := &store.ClusterPlan{Request: req, Digest: digest, Spec: apitypes.ColdClusterSpec{ID: req.ID, Engine: req.Engine, GatewayID: req.GatewayID, NodeID: req.NodeID, CacheEnabled: &cache}, Parent: store.Task{ID: newProvisionID(), Operator: operatorFrom(c), Source: "api", Trigger: "manual"}}
 	if cache {
 		plan.Spec.WritePolicy = req.Cache.WritePolicy
 	}
@@ -127,7 +127,7 @@ func (s *Server) clusterCreateFromSpec(c *gin.Context) {
 		if len(req.Cold.Servers) > 0 {
 			host = req.Cold.Servers[i]
 		}
-		if err := makeResource(name, "kvrocks", "kvrocks-storage", "persistent", host, req.Cold.ClusterResourceSpec); err != nil {
+		if err := makeResource(name, req.Engine, req.Engine+"-storage", "persistent", host, req.Cold.ClusterResourceSpec); err != nil {
 			fail(c, 400, err.Error())
 			return
 		}
@@ -174,7 +174,8 @@ func (s *Server) clusterCreateFromSpec(c *gin.Context) {
 			st.Groups[r.Group] = &apitypes.InstanceGroupState{Type: r.Type, Engine: r.Engine, EngineVersion: r.EngineVersion, Category: r.Category, AccessMode: "standard", CurrentMaster: r.Name, TopologyStatus: "degraded", Backup: defaultGroupBackup(r.Category, r.Group), CreatedAt: now, UpdatedAt: now}
 			st.Instances[r.Name] = &apitypes.Instance{Group: r.Group, Role: "master", Profile: r.Profile, Server: host, Container: r.Engine + "-" + r.Name, Port: r.Port, Memory: r.Memory, CPUs: r.CPUs, Disk: r.Disk, ConfigPath: dir + "/conf", DataPath: dir + "/data", BackupPath: dir + "/backup", DesiredState: apitypes.DesiredRunning, CreatedAt: now, Lock: &apitypes.Lock{HeldBy: id, Operation: "profile.create", AcquiredAt: now, Timeout: 600}}
 			if r.Engine == "redis" {
-				st.Instances[r.Name].Persistence = &apitypes.Persistence{}
+				storage := r.Profile == "redis-storage"
+				st.Instances[r.Name].Persistence = &apitypes.Persistence{RDB: storage, AOF: storage}
 			}
 			payload, err := json.Marshal(profileTaskPayload{EnsureProfileRequest: apitypes.EnsureProfileRequest{OperationID: id, CreateInstanceRequest: r}, AgentEndpoint: node.Endpoint, AgentPort: node.AgentPort})
 			if err != nil {

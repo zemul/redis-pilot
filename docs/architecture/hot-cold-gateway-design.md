@@ -2,6 +2,14 @@
 
 更新：2026-09-16。当前开发实现与限制见 [实现状态](hot-cold-status.md)，配置和部署见 [部署运维](gateway-deployment.md)。
 
+## Redis 权威分片扩展（2026-09-18）
+
+新增无额外缓存的 Redis 自定义分片，与 Kvrocks 复用 HRW、key 锁、后端 owner 防护、迁移日志和恢复状态机；不是增加一条不受保护的直连路径。集群创建及每次目标拓扑校验均绑定引擎，Redis 禁止附加热缓存；旧集群省略引擎仍解释为 Kvrocks。底层 API 的 cold/shard 命名为兼容保留。
+
+Redis 权威分片不允许 LRU 淘汰数据或迁移保护标记；专用配置为 noeviction、RDB 和 AOF always（重写期间也不跳过 fsync）。75% 内存预算不等于 RSS/复制或 fork 的完整安全保证，空间不足时写请求可能失败。Agent 创建前置验证与 Gateway 启动/恢复/迁移预检共同防止把默认 everysec 或缓存型 Redis 当作可安全删除源数据的迁移目标。数据库应独占、只经 Gateway 访问，禁止运行期间人工修改持久化、引擎或淘汰策略；这不提供对任意外部配置修改、磁盘损坏的保证。
+
+Gateway `cache.cold_engine: redis` 必须同时设置 `cache.enabled: false` 并使用 sharding；引擎写入 runtime.db，重启必须一致。旧 manifest 没有引擎字段按 Kvrocks 解释，不能用修改 YAML 的方式把旧集群转为 Redis。分片副本、自动切主和 Gateway 跨机接管仍未接入。
+
 ## 控制面任务登记（2026-09-16）
 
 Server 的 cold_clusters/cold_tasks/cold_resources 只保存期望拓扑、稳定任务身份、汇总进度和专用实例占用，不承担逐 key 交接。Gateway 显式开启 control_plane.manage_shards 后，通过现有 per-Gateway token 拉取任务；先持久化本地任务日志和运行引用，再激活迁移。控制面不可达时本地任务继续，恢复后补报；重复投递不创建第二任务，进度只能前进。最终 complete 才更新 Server 集群版本并释放旧实例，published 仍保留资源保护。

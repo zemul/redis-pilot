@@ -43,9 +43,12 @@ func clusterSpecFixture(t *testing.T) (*Server, apitypes.ClusterCreateRequest, *
 }
 
 func TestClusterSpecAtomicCreateReplayAndRestart(t *testing.T) {
-	for _, policy := range []string{"", "invalidate", "update_existing"} {
+	for _, policy := range []string{"", "invalidate", "update_existing", "redis"} {
 		t.Run("policy-"+policy, func(t *testing.T) {
 			s, req, calls := clusterSpecFixture(t)
+			if policy == "redis" {
+				req.Engine, policy = "redis", ""
+			}
 			if policy != "" {
 				req.Cache = &apitypes.ClusterCacheSpec{ClusterResourceSpec: apitypes.ClusterResourceSpec{Memory: "4Gi"}, WritePolicy: policy}
 			}
@@ -113,6 +116,9 @@ func TestClusterSpecAtomicCreateReplayAndRestart(t *testing.T) {
 			}
 			ports := map[int]bool{}
 			for name, i := range st.Instances {
+				if req.Engine == "redis" && (i.Profile != "redis-storage" || st.Groups[i.Group].Engine != "redis" || i.Persistence == nil || !i.Persistence.AOF || !i.Persistence.RDB) {
+					t.Fatalf("incorrect Redis storage resource: %+v", i)
+				}
 				if ports[i.Port] {
 					t.Fatal("duplicate ports")
 				}
@@ -183,6 +189,9 @@ func TestClusterSpecAtomicCreateReplayAndRestart(t *testing.T) {
 			if err != nil || cfg.ServiceID != req.ID || len(cfg.Cache.Sharding.Nodes) != 2 {
 				t.Fatal("invalid generated config", err)
 			}
+			if req.Engine == "redis" && (cfg.Cache.ColdEngine != "redis" || cluster.Engine != "redis" || cluster.UsesCache()) {
+				t.Fatal("Redis engine lost during creation/export")
+			}
 			after, err := resumed.db.GetColdCluster(req.ID)
 			if err != nil || after.Ingress != nil || calls.Load() != countBefore {
 				t.Fatal("config export mutated deployment")
@@ -197,10 +206,15 @@ func TestClusterSpecAtomicCreateReplayAndRestart(t *testing.T) {
 }
 
 func TestClusterSpecFailureRollsBackAllReservations(t *testing.T) {
-	for _, failure := range []string{"capacity", "late-name-conflict", "gateway-conflict", "bad-placement"} {
+	for _, failure := range []string{"capacity", "late-name-conflict", "gateway-conflict", "bad-placement", "redis-with-cache", "unknown-engine"} {
 		t.Run(failure, func(t *testing.T) {
 			s, req, calls := clusterSpecFixture(t)
 			switch failure {
+			case "redis-with-cache":
+				req.Engine = "redis"
+				req.Cache = &apitypes.ClusterCacheSpec{ClusterResourceSpec: apitypes.ClusterResourceSpec{Memory: "128Mi"}}
+			case "unknown-engine":
+				req.Engine = "unknown"
 			case "capacity":
 				req.Cache = &apitypes.ClusterCacheSpec{ClusterResourceSpec: apitypes.ClusterResourceSpec{Memory: "64Gi"}}
 			case "late-name-conflict":

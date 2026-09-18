@@ -19,12 +19,13 @@ import (
 // The manifest references a separately durable journal; its final phase, not
 // YAML or an in-memory worker cursor, determines the routing after a restart.
 type shardManifest struct {
-	Version   int             `json:"version"`
-	GatewayID string          `json:"gateway_id"`
-	ServiceID string          `json:"service_id"`
-	Hot       string          `json:"hot"`
-	Source    sharding.Config `json:"source"`
-	Task      *shardTaskRef   `json:"task,omitempty"`
+	ColdEngine string          `json:"cold_engine,omitempty"`
+	Version    int             `json:"version"`
+	GatewayID  string          `json:"gateway_id"`
+	ServiceID  string          `json:"service_id"`
+	Hot        string          `json:"hot"`
+	Source     sharding.Config `json:"source"`
+	Task       *shardTaskRef   `json:"task,omitempty"`
 }
 
 type shardTaskRef struct {
@@ -132,6 +133,7 @@ func openShardDisk(ctx context.Context, c Config, create bool) (_ *shardDiskStat
 			return nil, e
 		}
 		s.manifest = shardManifest{Version: 1, GatewayID: c.GatewayID, ServiceID: c.ServiceID, Hot: c.RedisAddress, Source: t.Config()}
+		s.manifest.ColdEngine = c.Cache.ColdEngine
 		b, e := json.Marshal(s.manifest)
 		if e != nil {
 			return nil, e
@@ -196,7 +198,7 @@ func openShardDisk(ctx context.Context, c Config, create bool) (_ *shardDiskStat
 		return nil, errors.New("invalid trailing sharding manifest")
 	}
 	m := s.manifest
-	if m.Version != 1 || m.GatewayID != c.GatewayID || m.ServiceID != c.ServiceID || m.Hot != c.RedisAddress {
+	if m.Version != 1 || m.GatewayID != c.GatewayID || m.ServiceID != c.ServiceID || m.Hot != c.RedisAddress || (CacheConfig{ColdEngine: m.ColdEngine}).coldEngine() != c.Cache.coldEngine() {
 		return nil, errors.New("sharding state identity differs from configuration")
 	}
 	from, err := sharding.New(m.Source)
@@ -298,6 +300,12 @@ func (s *Service) InitializeShardState(ctx context.Context) error {
 		return err
 	}
 	for _, e := range endpoints {
+		if s.cache.cfg.coldEngine() == "redis" {
+			probe := &cacheShards{r: s.cache}
+			if err := probe.preflightCold(ctx, &cacheShardNode{node: e.node, password: e.password}, false); err != nil {
+				return err
+			}
+		}
 		c, err := s.cache.connectAddress(ctx, false, e.node.Address, e.password)
 		if err != nil {
 			return err
