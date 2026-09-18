@@ -1,5 +1,11 @@
 # Gateway 部署与运维
 
+## 集群树形成员样式部署（2026-09-18）
+
+代码 1e90e40 已发布 redis01 Server 与内嵌页面：集群成员改为主从实例同款树形子行，管理信息及配置操作移入详情弹窗。仅重启 redis-pilot-server，未修改配置、业务数据或重启其他服务。旧二进制备份在 `/opt/pilot-tree-ui.tiBGHT/backup-server`。
+
+部署后 Server active、版本 1e90e40；实例页引用新 JS，页面资源与集群接口均返回 200。四个 Gateway readyz、四个集群经 Proxy 的只读 EXISTS 均通过。前端 10 项测试和构建通过，本地浏览器检查成员展开、成员详情和集群详情。
+
 ## 统一实例列表修订部署（2026-09-18）
 
 代码 bb25b54 已发布 redis01 Server 与内嵌页面。移除自定义集群侧栏及独立区块，单点/主从/分片集群共用列表、搜索、筛选和创建入口。旧 custom-clusters 页面链接跳转 instances。前端 10 项测试、构建及本地交互检查通过。
