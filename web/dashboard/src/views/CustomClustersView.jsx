@@ -3,6 +3,7 @@ import { aggregateClusters, clusterListGroups, ordinaryGroups } from '../lib/cus
 import { buildInstanceGroups } from '../lib/instance.js';
 import { CreateCustomClusterModal, ClusterAccessModal } from '../modals/CustomClusterModals.jsx';
 import { CustomClusterCard } from '../components/CustomClusterCard.jsx';
+import { CustomClusterDetailModal } from '../modals/CustomClusterDetailModal.jsx';
 
 export function CustomClustersView({ request, servers = {}, groups = [], isAdmin = false, publicHost, children }) {
   const [inventory, setInventory] = useState(null);
@@ -52,9 +53,10 @@ export function CustomClustersView({ request, servers = {}, groups = [], isAdmin
       onCreate: isAdmin && !error ? () => setModal({ type: 'create' }) : null,
       canCreate: isAdmin,
       refresh: refreshed,
-      render: (group, gridClass) => <CustomClusterCard key={`cluster:${group.groupName}`} cluster={group.cluster} group={group} gridClass={gridClass} observations={inventory.observations} instances={instances} expanded={!!expanded[group.groupName]} toggle={() => setExpanded(v => ({ ...v, [group.groupName]: !v[group.groupName] }))} error={error} isAdmin={isAdmin} publicHost={publicHost} onAction={type => setModal({ type, id: group.groupName })} />,
+      render: (group, gridClass) => <CustomClusterCard key={`cluster:${group.groupName}`} cluster={group.cluster} group={group} gridClass={gridClass} observations={inventory.observations} instances={instances} expanded={!!expanded[group.groupName]} toggle={() => setExpanded(v => ({ ...v, [group.groupName]: !v[group.groupName] }))} error={error} isAdmin={isAdmin} publicHost={publicHost} onAction={(type, member) => setModal({ type, member, id: group.groupName })} />,
     })}
     {modal?.type === 'create' && <CreateCustomClusterModal request={request} servers={servers} clusters={clusters} onClose={() => setModal(null)} onCreated={r => { setModal(null); setNotice(`已提交 ${r.cluster_id}，任务 ${r.task_id}。资源完成后仍需部署 Gateway 和配置入口。`); setExpanded(v => ({ ...v, [r.cluster_id]: true })); refreshed(); }} />}
-    {selected && modal?.type !== 'create' && <ClusterAccessModal cluster={selected} mode={modal.type} request={request} onClose={() => setModal(null)} onSaved={() => { setModal(null); setNotice('入口已登记，等待 Gateway 确认后发布。'); refreshed(); }} />}
+    {selected && ['detail', 'member'].includes(modal?.type) && <CustomClusterDetailModal cluster={selected} member={modal.member} instances={instances} observations={inventory.observations} error={error} isAdmin={isAdmin} onClose={() => setModal(null)} onAction={type => setModal({ type, id: selected.id })} />}
+    {selected && ['config', 'ingress'].includes(modal?.type) && <ClusterAccessModal cluster={selected} mode={modal.type} request={request} onClose={() => setModal(null)} onSaved={() => { setModal(null); setNotice('入口已登记，等待 Gateway 确认后发布。'); refreshed(); }} />}
   </div>;
 }
