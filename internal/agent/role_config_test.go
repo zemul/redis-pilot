@@ -233,6 +233,7 @@ func TestInstanceConfig_RejectsInjectedDirective(t *testing.T) {
 	// 先落一份正常配置，作为"注入失败后原文件应保持不变"的基线
 	if err := a.writeInstanceConfig(&instanceConfigRequest{
 		Name: "order-a", Engine: "redis", Type: "replication",
+		Memory: "1Gi",
 		ConfigOverrides: map[string]string{"hz": "100"},
 		Port:            6379,
 	}); err != nil {

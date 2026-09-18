@@ -153,6 +153,10 @@ func (m *monitor) hostResources() map[string]interface{} {
 // usedMemoryMap 返回各实例最近一次 INFO 中解析出的 used_memory（字节）。
 // 只包含最近 120s 内有指标采集的实例。
 func (m *monitor) usedMemoryMap() map[string]int64 {
+	return m.memoryFieldMap("used_memory")
+}
+
+func (m *monitor) memoryFieldMap(field string) map[string]int64 {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	out := make(map[string]int64, len(m.instances))
@@ -161,7 +165,7 @@ func (m *monitor) usedMemoryMap() map[string]int64 {
 		if met == nil || now.Sub(met.UpdatedAt) > 120*time.Second {
 			continue
 		}
-		if v := parseInfoField(met.Info, "used_memory"); v > 0 {
+		if v := parseInfoField(met.Info, field); v > 0 {
 			out[name] = v
 		}
 	}

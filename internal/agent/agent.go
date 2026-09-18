@@ -509,10 +509,11 @@ func (a *Agent) instanceDelete(c *gin.Context) {
 //   - Restart=true：重写磁盘配置文件并重启容器（配置项需要重启才生效时用）
 //   - 两者都为 false：热更新，逐项 CONFIG SET，不动磁盘配置文件
 type instanceConfigRequest struct {
-	Profile string `json:"profile"`
-	Name    string `json:"name" binding:"required"`
-	Engine  string `json:"engine" binding:"required"`
-	Type    string `json:"type"`
+	recalculateMemory bool
+	Profile           string `json:"profile"`
+	Name              string `json:"name" binding:"required"`
+	Engine            string `json:"engine" binding:"required"`
+	Type              string `json:"type"`
 	// 注意：这里不加 binding:"required"。RewriteConfigOnly 模式下（角色落盘）
 	// 实例可能本来就没有任何 config_overrides，空 map 是合法输入。
 	// 面向用户的 config 变更由 Server 侧校验非空。
@@ -570,6 +571,7 @@ func (a *Agent) writeInstanceConfig(req *instanceConfigRequest) error {
 		aof = "no"
 	}
 	return writeRedisConfig(dataDir, RedisConfigParams{
+		RecalculateMemory:  req.recalculateMemory,
 		Profile:            req.Profile,
 		Version:            req.EngineVersion,
 		Port:               req.Port,
@@ -711,10 +713,14 @@ func (a *Agent) instanceResize(c *gin.Context) {
 		fail(c, http.StatusBadRequest, err.Error())
 		return
 	}
-	if req.Profile == redisconf.RedisCacheProfile && req.Memory != "" {
-		n, err := strconv.ParseInt(convertMemoryToBytes(req.Memory), 10, 64)
-		if err != nil || n < 4 {
-			fail(c, http.StatusBadRequest, "invalid dedicated cache memory")
+	if req.Engine != "kvrocks" && req.Memory != "" {
+		if _, overridden := req.ConfigOverrides["maxmemory"]; overridden {
+			fail(c, http.StatusBadRequest, "remove explicit maxmemory override before resizing memory")
+			return
+		}
+		_, err := redisMemoryBudget(req.Memory)
+		if err != nil {
+			fail(c, http.StatusBadRequest, "invalid Redis container memory")
 			return
 		}
 	}
@@ -726,17 +732,18 @@ func (a *Agent) instanceResize(c *gin.Context) {
 	// 2. 内存变配:持久化配置文件 + 热更新引擎的 maxmemory,使新内存立即且长期生效
 	if req.Memory != "" {
 		cfgReq := &instanceConfigRequest{
-			Profile:         req.Profile,
-			Name:            req.Name,
-			Engine:          req.Engine,
-			Type:            req.Type,
-			ConfigOverrides: req.ConfigOverrides,
-			EngineVersion:   req.EngineVersion,
-			Password:        a.getPassword(req.Name),
-			Memory:          req.Memory,
-			Category:        req.Category,
-			ReplicaOf:       req.ReplicaOf,
-			Port:            req.Port,
+			Profile:           req.Profile,
+			recalculateMemory: true,
+			Name:              req.Name,
+			Engine:            req.Engine,
+			Type:              req.Type,
+			ConfigOverrides:   req.ConfigOverrides,
+			EngineVersion:     req.EngineVersion,
+			Password:          a.getPassword(req.Name),
+			Memory:            req.Memory,
+			Category:          req.Category,
+			ReplicaOf:         req.ReplicaOf,
+			Port:              req.Port,
 		}
 		if err := a.writeInstanceConfig(cfgReq); err != nil {
 			fail(c, http.StatusInternalServerError, "rewrite config: "+err.Error())
@@ -744,13 +751,13 @@ func (a *Agent) instanceResize(c *gin.Context) {
 		}
 		// 热更新:Redis 用 maxmemory,Kvrocks 用 max-db-size,值与配置文件一致(字节)。
 		memBytes := convertMemoryToBytes(req.Memory)
-		if req.Profile == redisconf.RedisCacheProfile {
-			n, err := strconv.ParseInt(memBytes, 10, 64)
-			if err != nil || n < 4 {
-				fail(c, http.StatusBadRequest, "invalid dedicated cache memory")
+		if req.Engine != "kvrocks" {
+			budget, err := redisMemoryBudget(req.Memory)
+			if err != nil {
+				fail(c, http.StatusBadRequest, "invalid Redis container memory")
 				return
 			}
-			memBytes = strconv.FormatInt(n-n/4, 10)
+			memBytes = budget
 		}
 		key := "maxmemory"
 		if req.Engine == "kvrocks" {
@@ -949,6 +956,7 @@ func (a *Agent) instanceList(c *gin.Context) {
 		"configured_replica_of": configured,
 		"runtime_replica_of":    a.mon.replicaOfMap(),
 		"used_memory":           a.mon.usedMemoryMap(),
+		"used_memory_rss":       a.mon.memoryFieldMap("used_memory_rss"),
 	})
 }
 

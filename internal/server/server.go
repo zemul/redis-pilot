@@ -54,6 +54,7 @@ type Server struct {
 	// 由 reconcile 写入，列表接口读取。重启后为空，下一轮 reconcile 自动填充。
 	memoryUsedMu sync.RWMutex
 	memoryUsed   map[string]int64
+	memoryRSS    map[string]int64
 
 	// sentinelMaster 缓存每组 Sentinel 共识认为的 master（已解析成实例名，解析不到时
 	// 退回 host:port）。由 sentinel reconcile 写入，列表接口读取，用于大盘三视角一致性
@@ -103,6 +104,7 @@ func New(cfg *Config) (*Server, error) {
 		audit:            audit.New(db),
 		alertInstances:   make(map[string]bool),
 		memoryUsed:       make(map[string]int64),
+		memoryRSS:        make(map[string]int64),
 		sentinelMaster:   make(map[string]string),
 		runtimeReplicaOf: make(map[string]string),
 		proxyRuntime:     make(map[string]proxyRuntimeObservation),

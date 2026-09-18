@@ -161,6 +161,7 @@ type RedisConfigParams struct {
 	Port               int
 	Password           string
 	Memory             string
+	RecalculateMemory  bool // Explicit memory resize; ordinary rewrites preserve the existing budget.
 	MaxmemoryPolicy    string
 	Appendonly         string
 	ReplicaOf          string
@@ -185,14 +186,24 @@ type KvrocksConfigParams struct {
 }
 
 func writeRedisConfig(dataDir string, params RedisConfigParams) error {
-	params.Memory = convertMemoryToBytes(params.Memory)
-	if params.Profile == redisconf.RedisCacheProfile {
-		n, err := strconv.ParseInt(params.Memory, 10, 64)
-		if err != nil || n < 4 {
-			return fmt.Errorf("invalid dedicated cache memory")
+	budget, err := redisMemoryBudget(params.Memory)
+	if err != nil {
+		return err
+	}
+	params.Memory = budget
+	if !params.RecalculateMemory {
+		data, err := os.ReadFile(filepath.Join(dataDir, "conf", "redis.conf"))
+		if err != nil && !os.IsNotExist(err) {
+			return err
 		}
-		// Leave a quarter of the container budget for allocator/connection overhead.
-		params.Memory = strconv.FormatInt(n-n/4, 10)
+		for _, line := range strings.Split(string(data), "\n") {
+			fields := strings.Fields(line)
+			if len(fields) >= 2 && strings.EqualFold(fields[0], "maxmemory") {
+				params.Memory = fields[1]
+			}
+		}
+	}
+	if params.Profile == redisconf.RedisCacheProfile {
 		params.MaxmemoryPolicy, params.Appendonly = "allkeys-lru", "no"
 	}
 	params.ReplicaOf = strings.Replace(params.ReplicaOf, ":", " ", 1)
@@ -200,6 +211,14 @@ func writeRedisConfig(dataDir string, params RedisConfigParams) error {
 		params.Version = "7"
 	}
 	return writeConfig(dataDir, "redis.conf", redisTmpl, params)
+}
+
+func redisMemoryBudget(memory string) (string, error) {
+	n, err := strconv.ParseInt(convertMemoryToBytes(memory), 10, 64)
+	if err != nil || n < 4 {
+		return "", fmt.Errorf("invalid Redis container memory %q", memory)
+	}
+	return strconv.FormatInt(n-n/4, 10), nil
 }
 
 func writeKvrocksConfig(dataDir string, params KvrocksConfigParams) error {

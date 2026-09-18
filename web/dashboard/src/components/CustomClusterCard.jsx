@@ -2,6 +2,7 @@ import { ChevronDown, ChevronRight } from 'lucide-react';
 import { clusterMembers, clusterRuntime, clusterPhases } from '../lib/customCluster.js';
 import { CategoryBadge, EngineIcon, CopyableText, CopyableEndpoint, StatusBadge, MemoryUsage } from './common.jsx';
 import { getField, parseGi } from '../lib/format.js';
+import { instanceMemoryUsed, memoryMetricTitle } from '../lib/memory.js';
 
 const action = 'h-7 px-3 rounded-md border border-gray-200 bg-white text-[12px] text-gray-700 hover:bg-gray-50 hover:border-gray-300 transition-colors cursor-pointer';
 export function CustomClusterCard({ cluster: c, group, gridClass, observations, instances, expanded, toggle, error, publicHost, onAction }) {
@@ -29,6 +30,7 @@ export function CustomClusterCard({ cluster: c, group, gridClass, observations, 
       <span className="absolute left-[26px] top-0 bottom-6 w-px bg-blue-200/80 pointer-events-none" aria-hidden="true" />
       {members.map((m, index) => {
         const i = instances.get(m.instance), task = c.children?.find(t => t.instance_name === m.instance);
+        const engine = m.id === 'cache' ? 'redis' : c.engine || 'kvrocks';
         const cpus = Number(getField(i, 'cpus', 'CPUs', 0) || 0);
         const memory = parseGi(getField(i, 'memory', 'Memory', ''));
         const specs = [cpus ? `${cpus}C` : '', memory ? `${Number(memory.toFixed(3))}G` : ''].filter(Boolean).join(' · ');
@@ -42,7 +44,7 @@ export function CustomClusterCard({ cluster: c, group, gridClass, observations, 
           </div>
           <div /><div /><div /><div /><div />
           <div className="text-[13px]">{server && port ? <CopyableEndpoint host={server} port={port} className="text-gray-600" /> : <span className="text-gray-400">{server || '待分配'}</span>}</div>
-          <div>{i && getField(i, 'memory_used', 'MemoryUsed', null) != null ? <MemoryUsage memory={memory} memoryUsed={Number(getField(i, 'memory_used', 'MemoryUsed'))} /> : <span className="text-gray-400">—</span>}</div>
+          <div title={memoryMetricTitle(engine)}><MemoryUsage memory={memory} memoryUsed={instanceMemoryUsed(i, engine)} /></div>
           <div title={task?.error || task?.message || ''}><StatusBadge status={task && task.status !== 'success' ? 'creating' : getField(i, 'status', 'Status', 'unknown')} /></div>
           <div className="flex justify-end items-center gap-1.5"><button className={action} aria-label={`成员 ${m.instance} 详情`} onClick={() => onAction('member', m.instance)}>详情</button></div>
         </div>;

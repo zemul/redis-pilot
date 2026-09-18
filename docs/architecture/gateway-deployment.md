@@ -1,5 +1,13 @@
 # Gateway 部署与运维
 
+## 内存预算与 Kvrocks RSS 修复部署（2026-09-18）
+
+未提交工作树构建版本 `3df594c-memory-fix`，更新 redis01–03 Agent 和 redis01 Server/内嵌页面；仅重启这些管理服务。三台数据库容器 ID 与运行时长保持不变，Gateway/Proxy 未重启。抽查 pmdev-hot maxmemory 仍为 33554432、galaxy-1 仍为 1073741824，没有自动降低已有实例预算。
+
+备份/暂存目录：redis01 `/opt/pilot-memory.St5A6X`（backup-agent、backup-server），redis02 `/opt/pilot-memory.V280jV`（backup-agent），redis03 `/opt/pilot-memory.qqglAF`（backup-agent）。传输期间 SSH 中断，核对远端状态与二进制校验和后完成重试；Server 新文件校验通过后才替换运行版本。
+
+页面与新 JS 返回 200。下一轮采集后真实 `/instance/list` 返回 pmdev-cold-a RSS 34971648、pmdev-cold-b RSS 34160640 字节；Redis 热层 used_memory 与 RSS 独立返回。四个 Gateway readyz 和四个集群经 Proxy 的只读 EXISTS 均通过。此次未创建或变配真实实例，75% 预算规则使用前述自动化测试验证。代码与本部署记录一并纳入本次提交，部署二进制仍保留发布时的版本标识。
+
 ## 集群树形成员样式部署（2026-09-18）
 
 代码 1e90e40 已发布 redis01 Server 与内嵌页面：集群成员改为主从实例同款树形子行，管理信息及配置操作移入详情弹窗。仅重启 redis-pilot-server，未修改配置、业务数据或重启其他服务。旧二进制备份在 `/opt/pilot-tree-ui.tiBGHT/backup-server`。

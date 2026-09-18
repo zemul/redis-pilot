@@ -1,5 +1,6 @@
 // 业务派生纯函数：从后端状态计算实例组拓扑、状态、标签等。依赖 lib/format 的字段读取工具。
 import { Play, Power } from 'lucide-react';
+import { instanceMemoryUsed } from './memory.js';
 import {
   normalizeMap,
   normalizeNamedMap,
@@ -121,7 +122,8 @@ export function buildInstanceGroups(instanceState, incidentsByGroup = {}) {
       ? group.instances.find((item) => item.name === group.currentMaster) || group.master || group.instances[0] || null
       : group.master || group.instances[0] || null;
     const memory = group.instances.reduce((sum, item) => sum + parseGi(getField(item, 'memory', 'Memory')), 0);
-    const memoryUsed = group.instances.reduce((sum, item) => sum + Number(getField(item, 'memory_used', 'MemoryUsed', 0) || 0), 0);
+    const values = group.instances.map(item => instanceMemoryUsed(item, group.engine));
+    const memoryUsed = values.every(v => v != null) ? values.reduce((sum, v) => sum + Number(v), 0) : null;
     const disk = group.instances.reduce((sum, item) => sum + parseGi(getField(item, 'disk', 'Disk')), 0);
     const cpus = group.instances.reduce((sum, item) => sum + Number(getField(item, 'cpus', 'CPUs', 0) || 0), 0);
     const runStatus = runtimeStatus(group.instances);

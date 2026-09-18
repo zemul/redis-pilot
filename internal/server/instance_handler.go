@@ -188,6 +188,7 @@ func (s *Server) injectMemoryUsed(view *apitypes.InstancesStateView) {
 	s.memoryUsedMu.RLock()
 	defer s.memoryUsedMu.RUnlock()
 	for name, inst := range view.Instances {
+		inst.MemoryRSS = s.memoryRSS[name]
 		if v, ok := s.memoryUsed[name]; ok {
 			inst.MemoryUsed = v
 		}
@@ -1031,6 +1032,10 @@ func (s *Server) instanceResize(c *gin.Context) {
 		s.memoryUsedMu.RLock()
 		used := s.memoryUsed[req.Name]
 		s.memoryUsedMu.RUnlock()
+		if groupState.Engine != "kvrocks" && used > 0 && newBytes-newBytes/4 < used {
+			fail(c, http.StatusBadRequest, "new Redis maxmemory (75% of container memory) would be below current used_memory")
+			return
+		}
 		if used > 0 && newBytes > 0 && newBytes < used*11/10 {
 			fail(c, http.StatusBadRequest, fmt.Sprintf(
 				"refusing to shrink memory to %s: current used_memory is %d bytes; new limit must leave >=10%% headroom to avoid OOM",

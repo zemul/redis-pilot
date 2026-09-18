@@ -4,6 +4,7 @@
 //   replication 组 → 父行只放组级操作，可展开显示主/从节点行，节点行只放高频运维项。
 // 主按钮统一为「详情」，层级靠角色徽标区分。
 import { useMemo, useState } from 'react';
+import { instanceMemoryUsed, memoryMetricTitle } from '../lib/memory.js';
 import { Search, Plus, RefreshCw, ChevronDown, ChevronRight, X } from 'lucide-react';
 import {
   EmptyState,
@@ -283,7 +284,7 @@ function InstanceGroupCard({ group, expanded, onToggle, publicHost, sentinelPort
           )}
         </div>
         <div className="text-[13px]"><ProxyPorts group={group} publicHost={publicHost} /></div>
-        <div>{master ? <MemoryUsage memory={group.resource.memory} memoryUsed={group.resource.memoryUsed} /> : <span className="text-gray-300">-</span>}</div>
+        <div title={memoryMetricTitle(group.engine)}>{master ? <MemoryUsage memory={group.resource.memory} memoryUsed={group.resource.memoryUsed} /> : <span className="text-gray-300">-</span>}</div>
         <div className="flex items-center gap-1.5">
           {group.incident && group.incident.count ? (
             <StatusBadge
@@ -359,7 +360,7 @@ function InstanceNodeRow({ item, group, role, first, callbacks, pendingAction })
   const server = getField(item, 'server', 'Server', '');
   const port = getField(item, 'port', 'Port', '');
   const cpus = Number(getField(item, 'cpus', 'CPUs', 0) || 0);
-  const used = Number(getField(item, 'memory_used', 'MemoryUsed', 0) || 0);
+  const used = instanceMemoryUsed(item, group.engine);
   const totalGi = parseGi(getField(item, 'memory', 'Memory'));
   const specs = [
     cpus > 0 ? `${Number.isInteger(cpus) ? cpus : cpus.toFixed(1)}C` : '',
@@ -387,7 +388,7 @@ function InstanceNodeRow({ item, group, role, first, callbacks, pendingAction })
       <div className="text-[13px]">
         {server ? <CopyableEndpoint host={server} port={port} className="text-gray-600" /> : <span className="text-gray-300">-</span>}
       </div>
-      <div><MemoryUsage memory={totalGi} memoryUsed={used} /></div>
+      <div title={memoryMetricTitle(group.engine)}><MemoryUsage memory={totalGi} memoryUsed={used} /></div>
       <div><StatusBadge status={getField(item, 'status', 'Status')} /></div>
       <div className="flex justify-end items-center gap-1.5">
         <button type="button" className="h-7 px-3 rounded-md border border-gray-200 bg-white text-[12px] text-gray-700 hover:bg-gray-50 hover:border-gray-300 transition-colors cursor-pointer" aria-label={`${role} ${item.name} 详情`} onClick={() => callbacks.onOpenNodeDetail(item, group)}>详情</button>

@@ -76,6 +76,11 @@ func (s *Server) runReconcile() ([]ReconcileResult, error) {
 	serverReachable := make(map[string]bool)
 
 	for serverName, instNames := range serverInstances {
+		s.memoryUsedMu.Lock()
+		for _, name := range instNames {
+			delete(s.memoryRSS, name)
+		}
+		s.memoryUsedMu.Unlock()
 		srv := node.Servers[serverName]
 		if srv == nil {
 			// 服务器不在 node 中，所有实例标记异常
@@ -146,6 +151,17 @@ func (s *Server) runReconcile() ([]ReconcileResult, error) {
 
 		// 缓存实例内存使用
 		usedMemory := parseUsedMemory(apiResp.Data)
+		rssMemory := parseMemoryField(apiResp.Data, "used_memory_rss")
+		s.memoryUsedMu.Lock()
+		if s.memoryRSS == nil {
+			s.memoryRSS = make(map[string]int64)
+		}
+		for _, name := range instNames {
+			if v, ok := rssMemory[name]; ok {
+				s.memoryRSS[name] = v
+			}
+		}
+		s.memoryUsedMu.Unlock()
 		if len(usedMemory) > 0 {
 			s.memoryUsedMu.Lock()
 			for name, v := range usedMemory {
@@ -278,6 +294,7 @@ func (s *Server) runReconcile() ([]ReconcileResult, error) {
 
 	return results, nil
 }
+
 // parseConfiguredReplicaOf 从 Agent /instance/list 的响应里取出各实例磁盘配置文件中的
 // replicaof（归一化为 ip:port，空串表示配置为 master）。
 //
@@ -318,12 +335,16 @@ func parseStringMapField(data interface{}, field string) map[string]string {
 
 // parseUsedMemory 从 Agent /instance/list 响应中提取各实例的 used_memory（字节）。
 func parseUsedMemory(data interface{}) map[string]int64 {
+	return parseMemoryField(data, "used_memory")
+}
+
+func parseMemoryField(data interface{}, field string) map[string]int64 {
 	result := make(map[string]int64)
 	m, ok := data.(map[string]interface{})
 	if !ok {
 		return result
 	}
-	raw, ok := m["used_memory"].(map[string]interface{})
+	raw, ok := m[field].(map[string]interface{})
 	if !ok {
 		return result
 	}

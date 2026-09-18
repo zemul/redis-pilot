@@ -165,7 +165,7 @@ func TestWriteRedisConfig_Cache(t *testing.T) {
 	}
 	content := string(data)
 	checks := []string{
-		"maxmemory 4294967296",
+		"maxmemory 3221225472",
 		"maxmemory-policy allkeys-lru",
 		"appendonly no",
 	}

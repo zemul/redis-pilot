@@ -284,6 +284,7 @@ export function CategoryBadge({ category }) {
 
 // 内存使用：保留百分比和快速扫读用的进度线，详细容量留给实例详情页
 export function MemoryUsage({ memory, memoryUsed }) {
+  if (memoryUsed == null) return <span className="text-gray-400" title="内存指标暂不可用">—</span>;
   const totalBytes = memory * 1024 * 1024 * 1024;
   const pct = totalBytes > 0 && memoryUsed > 0 ? (memoryUsed / totalBytes) * 100 : 0;
   const pctLabel = pct >= 10 ? pct.toFixed(0) : pct > 0 ? pct.toFixed(2) : '0';
