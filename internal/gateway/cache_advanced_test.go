@@ -85,6 +85,10 @@ func TestCacheUserScript(t *testing.T) {
 				`return _G.redis.call('GET','__pilot_cache_v1__:owner')`,
 				`return loadstring("return redis.call('GET','__pilot_cache_v1__:owner')")()`,
 				`return getfenv(0).redis.call('GET','__pilot_cache_v1__:owner')`,
+				`return rawget(_G,'loadstring')('return redis')()`,
+				`return debug.getupvalue(redis.call,1)`,
+				`return setfenv(1,_G)`,
+				`end; redis.call('SET','adv:escape','bad'); return function()`,
 				`getmetatable('').__index.upper=function()return 'GET' end;return 1`,
 				`return redis.call('FLUSHDB')`,
 			} {

@@ -275,9 +275,10 @@ func (r *cacheRuntime) finishUserScript(ctx context.Context, cold, hot *cacheCon
 	return reply
 }
 
-// loadstring + setfenv isolates user source from the private owner token and
-// raw redis handle. Merely declaring `local redis=...` would be escapable via
-// _G/getfenv/loadstring. Only the capability-limited redis facade is exposed.
+// A separate chunk shadows EVERY engine global with a sandbox capability (or
+// nil), including _G/getfenv/loadstring. No engine global or wrapper upvalue is
+// passed to user code. Prefixing top-level bindings, rather than interpolating
+// source into a function body, prevents a closing `end` escaping the sandbox.
 // Native Kvrocks/Redis still runs the whole script atomically. The transcript
 // records actual cold effects, never re-executes user code on hot Redis.
 const cacheUserScript = "local shardCursorsBlocked=false\n" + cacheUserScriptBody
@@ -385,8 +386,25 @@ local env={KEYS=keys,ARGV=argv,redis=facade,assert=assert,error=error,ipairs=ipa
 env.getmetatable=function(v)if type(v)=='table' then return getmetatable(v) end;return nil end
 local function copy(t)local x={};for k,v in pairs(t) do x[k]=v end;return x end
 env.string=copy(string);env.table=copy(table);env.math=copy(math);env.cjson=copy(cjson);env.cmsgpack=copy(cmsgpack);env.bit=copy(bit);env._G=env
-setfenv(user,env)
-local ok,result=pcall(user)
+-- Redis security releases remove setfenv/getfenv. Bind all global names as
+-- locals in a separate chunk instead. Globals not in the capability map are
+-- nil; _G itself is the private sandbox table. No raw values cross this boundary.
+local names,seen={},{}
+local function bindname(k)
+ if type(k)=='string' and string.match(k,'^[%a_][%w_]*$') and not seen[k] then
+  seen[k]=true;names[#names+1]=k
+ end
+end
+for k in pairs(_G) do bindname(k) end
+for k in pairs(env) do bindname(k) end
+-- Explicitly shadow dangerous globals even when an engine hides them in _G.
+for k in string.gmatch('getfenv setfenv loadstring load loadfile dofile require module package debug io os collectgarbage newproxy','%S+') do bindname(k) end
+if #names>128 then return raw.error_reply('ERR unsupported Lua global environment') end
+table.sort(names)
+local values={};for i,k in ipairs(names) do values[i]=env[k] end
+user,compile_error=loadstring('local '..table.concat(names,',')..'=...\n'..ARGV[2])
+if not user then return raw.error_reply(compile_error) end
+local ok,result=pcall(user,unpack(values,1,#names))
 if result==nil then result=false end
 if not ok then result=tostring(result) end
 -- Kvrocks loses status-table tags when they are nested in a Lua reply. Encode

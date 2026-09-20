@@ -239,6 +239,16 @@ Server 配置 gateway_tokens，Gateway 使用对应 token_file 和 control_plane
 
 尚不自动部署 Gateway/数据库，也无集群注销、入口修改/注销、任务取消/回滚接口。新增注册不修改已有普通实例入口。网络隔离仍必须保证后端只被该 Gateway 访问；本机非受信进程不在该隔离模型内。
 
+## Redis 自定义分片开发验收（2026-09-18）
+
+- 基线代码 `37a6bb0`；redis01 Server（含前端构建）及 redis01–03 Agent 已升级。新 Gateway 额外包含 Redis 7.4.9 Lua 兼容修复，版本标记 `37a6bb0-lua-compat`，不是已提交版本。原有 Gateway/Proxy 二进制及数据库未改动。
+- 新集群 `redis-shards-dev`：engine=redis、无缓存，Gateway 位于 redis01，数据/管理端口回环 `17682/19603`，systemd `redis-gateway-redis-shards-dev` 开机自启；业务通过原 Proxy `redis-proxy-dev.dev.ihuman.com:16512` 接入。业务密码保存在 redis01 私有 staging 的 `redis-shards-dev-ingress.json`，不写入文档。
+- s1=`redis-shards-dev-cold-1`（redis02:6388），s2=`redis-shards-dev-cold-2`（redis03:6386），各 128Mi/0.25 CPU；Redis 实际版本 7.4.9、专用 redis-storage 配置。扩容目标 `redis-shards-dev-extra`（redis02:6389）验收后已移出拓扑，保留空业务库供后续使用。两台后端的 `redis-shards-dev-backends.service` 已启用，依赖既有专用防火墙单元，端口仅允许 redis01 访问；未重启宿主机验证。
+- 私有部署/备份目录：redis01 `/opt/pilot-redis-accept.w6VALB`，redis02 `/opt/pilot-redis-accept.kj7by0`，redis03 `/opt/pilot-redis-accept.UAAE1a`。含旧组件备份，redis01 另含升级前 SQLite 一致性备份、配置及验收 manifest。不要直接恢复旧 SQLite 覆盖新创建资源。
+- 使用 `scripts/redis-shards-dev.py` 与 `scripts/verify-redis-shards-dev.py`，经真实 API/Agent/Podman 创建并登记入口。随机前缀 600 个五类型对象及 7 个批量/事务/Lua/并发检查 key；校验字符串绝对 TTL、Hash 保留字段、List/Set/ZSet 内容。扩容任务 `expand-f3d626c5` 完成 847 次并发写后读，缩容 `shrink-be46bf34` 完成 740 次，均无旧值/请求错误/TRYAGAIN；任务最终 complete，拓扑 revision=3、2 分片。迁移请求完全重放未重复创建任务。
+- 新 Gateway SIGKILL 后 systemd 自动恢复，Redis s1 容器正常重启后全量验收数据/TTL 仍正确。先前失败的随机测试数据及最终 607 个已知验收 key 按 manifest 删除，不执行 FLUSH；不删除集群和持久化控制状态。旧四个集群 revision/shards/ingress 与部署前快照一致。
+- 实测发现 Redis 7.4.9 不提供 setfenv：事务改用词法 KEYS/ARGV 参数，用户 Lua 通过独立 chunk 全局名称屏蔽保留受限接口，增加沙箱逃逸回归。全仓 Go 测试、go vet、本地真实 Redis Lua/事务 race 回归通过。新版沙箱未在真实 Kvrocks 上重跑，故未升级旧 Kvrocks 集群 Gateway。本轮没有浏览器端点击验收、长稳压测、整机掉电、迁移中切主或多 Gateway 接管验收。
+
 ## 升级与旧环境保护
 
 - 旧 hot_cold、state_dir 及 -init-state 已移除。旧 YAML 必须报错，不支持自动降级或旧状态迁移。

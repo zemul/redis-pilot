@@ -93,7 +93,7 @@ MULTI/EXEC/DISCARD/WATCH/UNWATCH 是每条前端连接的状态，不跨连接�
 
 Kvrocks 2.15 的 WATCH 不会因自然过期而按 Redis 预期中止：建立 WATCH 时，在 key 锁内读取冷层绝对到期时间；EXEC 的单个冷执行体先一次性检查全部到期时间，再执行整批，避免逐命令判断导致半批执行。写冲突仍由原生 WATCH 判断；私有 owner 同样被 WATCH，隔离跨重启/恢复的迟到 EXEC。到期时间落在捕获与 WATCH 之间时允许保守中止，客户端应按 WATCH 冲突重试整项业务。无每对象版本 key、事务日志 key 或全量版本目录。超过精确毫秒范围的 WATCH 到期时间拒绝，而非近似比较。
 
-EVAL/EVALSHA（含 _RO）在冷层完整执行，不在热层重复运行脚本。调用方必须通过 KEYS 声明所有访问 key；沙箱仅开放本状态矩阵的业务命令、PING/ECHO/TIME、常用 Lua 基础库和受保护 redis.call/pcall，拒绝未声明 key、控制 key、管理/阻塞/嵌套脚本命令。用户源通过 loadstring/setfenv 进入独立环境，不能通过 _G/getfenv/加载字节码/字符串元表绕过保护。脚本源码和声明 key 不属于“任意 Redis 扩展都兼容”的承诺。
+EVAL/EVALSHA（含 _RO）在冷层完整执行，不在热层重复运行脚本。调用方必须通过 KEYS 声明所有访问 key；沙箱仅开放本状态矩阵的业务命令、PING/ECHO/TIME、常用 Lua 基础库和受保护 redis.call/pcall，拒绝未声明 key、控制 key、管理/阻塞/嵌套脚本命令。用户源单独 loadstring 编译，在 chunk 顶层将引擎全局名称绑定为受限能力或 nil，包含私有 _G；不再依赖新 Redis 已移除的 setfenv/getfenv，也不将用户源拼入可被 end 闭合逃逸的函数体。全局名称超过 128 个时拒绝执行；这些局部绑定会占用 Lua 局部变量预算。覆盖 _G/getfenv/动态编译/字符串元表及源码闭合逃逸拒绝测试。脚本源码和声明 key 不属于“任意 Redis 扩展都兼容”的承诺。
 
 脚本写操作在可能修改数据前登记保守记录，成功后记录实际命令结果；记录与交给用户 Lua 的返回表分离，避免用户改表篡改缓存更新依据。更新模式只把这些已确认效果应用到热层，不重算随机弹出或自增；脚本先写后报错、缓存处理失败、返回超协议预算等场景同样清理或隔离热层。Kvrocks 的嵌套状态回复差异在脚本边界显式编码为 RESP2，再按协议限制验证。SCRIPT LOAD/EXISTS/FLUSH 管理 Gateway 的有界源码缓存；重启后 EVALSHA 可以 NOSCRIPT，客户端应 LOAD/EVAL。源码总量不超过 max_batch_bytes，Lua 命令次数及事务条目数受 limits.max_elements 约束，展开后的事务也受帧预算约束。长脚本仍占用冷引擎执行时间，客户端超时不代表脚本已取消。
 

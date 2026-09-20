@@ -123,14 +123,14 @@ def status():
         print(cluster, json.dumps({k: state.get(k) for k in ('status', 'phase', 'error', 'error_message')}), flush=True)
 
 
-def gateway():
+def gateway(port_base=17679, admin_base=19600):
     assert HOST == 'redis01'
     account = pwd.getpwnam('redis-gateway')
     cfg = yaml.safe_load(pathlib.Path('/opt/redis-pilot-server/server.yaml').read_text())
     for i, cluster in enumerate(CLUSTERS):
         db = api('/api/v1/custom-clusters/'+cluster)
         assert db['revision'] == 1 and not db.get('task') and not db.get('ingress')
-        port, admin = 17679+i, 19600+i
+        port, admin = port_base+i, admin_base+i
         for p in (port, admin):
             with socket.socket() as probe: probe.bind(('127.0.0.1', p))
         conf = pathlib.Path('/etc/redis-gateway-'+cluster)

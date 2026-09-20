@@ -541,15 +541,14 @@ for i=1,count do
  local a={};for j=1,size do a[j]=ARGV[pos];pos=pos+1 end
  local result
  if a[1]=='EVAL' then
-  local f,e=loadstring(a[2]);if not f then result=redis.error_reply(e)
+  -- Trusted wrappers receive lexical KEYS/ARGV; no removed setfenv primitive.
+  local f,e=loadstring('local KEYS,ARGV=...\n'..a[2]);if not f then result=redis.error_reply(e)
   else
    local keys,args={},{};local n=tonumber(a[3])
    for j=1,n do keys[j]=a[3+j] end
    for j=4+n,#a do args[#args+1]=a[j] end
-   -- Only trusted, generated wrappers use this environment. User source is
-   -- separately compiled into the restricted environment in cacheUserScript.
-   local env={KEYS=keys,ARGV=args};setmetatable(env,{__index=_G});setfenv(f,env)
-   local ok;ok,result=pcall(f)
+   -- User source is separately restricted in cacheUserScript.
+   local ok;ok,result=pcall(f,keys,args)
    if not ok then result=redis.error_reply(tostring(result)) end
   end
  else result=redis.pcall(unpack(a)) end
