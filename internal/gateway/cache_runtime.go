@@ -88,7 +88,13 @@ func (r *cacheRuntime) start(ctx context.Context) error {
 			r.close()
 			return err
 		}
-		r.s.backendReady.Store(true)
+		ready := true
+		for _, n := range r.shards.requiredNodes() {
+			if n.blocked.Load() {
+				ready = false
+			}
+		}
+		r.s.backendReady.Store(ready)
 		return nil
 	}
 	// One reserved cold key fences delayed requests from a previous process.

@@ -54,6 +54,16 @@ func (s *Server) clusterCreateFromSpec(c *gin.Context) {
 		fail(c, 400, err.Error())
 		return
 	}
+	if req.Cold.Replicas < 0 || req.Cold.Replicas > 2 || (req.Cold.Replicas > 0 && !s.cfg.Sentinel.Enabled) || (len(req.Cold.ReplicaServers) != 0 && len(req.Cold.ReplicaServers) != req.Cold.Count) {
+		fail(c, 400, "requires 0..2 replicas per shard, enabled Sentinel for replicas, and one replica placement row per shard")
+		return
+	}
+	for _, row := range req.Cold.ReplicaServers {
+		if len(row) != req.Cold.Replicas {
+			fail(c, 400, "replica placement count differs from replicas")
+			return
+		}
+	}
 	if parseMemoryBytes(req.Cold.Memory) < 64<<20 {
 		fail(c, 400, "storage shard memory must be at least 64Mi")
 		return
@@ -132,6 +142,21 @@ func (s *Server) clusterCreateFromSpec(c *gin.Context) {
 			return
 		}
 		plan.Spec.Shards = append(plan.Spec.Shards, apitypes.ColdShard{ID: fmt.Sprintf("s%d", i+1), Instance: name})
+		if req.Cold.Replicas > 0 {
+			resources[len(resources)-1].Type = "replication"
+		}
+		for j := 0; j < req.Cold.Replicas; j++ {
+			replicaHost := ""
+			if len(req.Cold.ReplicaServers) > 0 {
+				replicaHost = req.Cold.ReplicaServers[i][j]
+			}
+			if err := makeResource(fmt.Sprintf("%s-replica-%d", name, j+1), req.Engine, req.Engine+"-storage", "persistent", replicaHost, req.Cold.ClusterResourceSpec); err != nil {
+				fail(c, 400, err.Error())
+				return
+			}
+			r := &resources[len(resources)-1]
+			r.Group, r.Type, r.ReplicaOf = name, "replication", name
+		}
 	}
 	if cache {
 		plan.Spec.HotInstance = req.ID + "-hot"
@@ -142,11 +167,20 @@ func (s *Server) clusterCreateFromSpec(c *gin.Context) {
 	}
 	err = s.db.ReserveClusterPlan(plan, func(st *apitypes.InstancesState) error {
 		for _, r := range resources {
-			if st.Instances[r.Name] != nil || st.Groups[r.Group] != nil {
+			if st.Instances[r.Name] != nil || (r.ReplicaOf == "" && st.Groups[r.Group] != nil) {
 				return fmt.Errorf("%w: resource name %s already exists", store.ErrColdConflict, r.Name)
 			}
 			eligible := &apitypes.NodeState{Servers: map[string]*apitypes.NodeServer{}}
 			for name, node := range nodes.Servers {
+				occupied := false
+				for _, member := range st.Instances {
+					if member.Group == r.Group && (member.Server == name || (nodes.Servers[member.Server] != nil && nodes.Servers[member.Server].Endpoint == node.Endpoint)) {
+						occupied = true
+					}
+				}
+				if occupied {
+					continue // a shard's primary and replicas must use different hosts
+				}
 				if r.Server != "" && name != r.Server {
 					continue
 				}
@@ -171,8 +205,17 @@ func (s *Server) clusterCreateFromSpec(c *gin.Context) {
 			id := newProvisionID()
 			now := time.Now().Format(time.RFC3339)
 			dir := "/data/redis/" + r.Name
-			st.Groups[r.Group] = &apitypes.InstanceGroupState{Type: r.Type, Engine: r.Engine, EngineVersion: r.EngineVersion, Category: r.Category, AccessMode: "standard", CurrentMaster: r.Name, TopologyStatus: "degraded", Backup: defaultGroupBackup(r.Category, r.Group), CreatedAt: now, UpdatedAt: now}
+			if r.ReplicaOf == "" {
+				st.Groups[r.Group] = &apitypes.InstanceGroupState{Type: r.Type, Engine: r.Engine, EngineVersion: r.EngineVersion, Category: r.Category, AccessMode: "standard", CurrentMaster: r.Name, TopologyStatus: "degraded", Backup: defaultGroupBackup(r.Category, r.Group), CreatedAt: now, UpdatedAt: now}
+			}
 			st.Instances[r.Name] = &apitypes.Instance{Group: r.Group, Role: "master", Profile: r.Profile, Server: host, Container: r.Engine + "-" + r.Name, Port: r.Port, Memory: r.Memory, CPUs: r.CPUs, Disk: r.Disk, ConfigPath: dir + "/conf", DataPath: dir + "/data", BackupPath: dir + "/backup", DesiredState: apitypes.DesiredRunning, CreatedAt: now, Lock: &apitypes.Lock{HeldBy: id, Operation: "profile.create", AcquiredAt: now, Timeout: 600}}
+			if r.ReplicaOf != "" {
+				st.Instances[r.Name].Role, st.Instances[r.Name].ReplicaOf = "replica", r.ReplicaOf
+				r.ReplicaOf, err = resolveReplicaOfAddr(nodes, st, r.ReplicaOf)
+				if err != nil {
+					return err
+				}
+			}
 			if r.Engine == "redis" {
 				storage := r.Profile == "redis-storage"
 				st.Instances[r.Name].Persistence = &apitypes.Persistence{RDB: storage, AOF: storage}

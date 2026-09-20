@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"context"
 	"errors"
 	"net/netip"
 
@@ -47,7 +48,7 @@ func (s *cacheShards) registerManaged(t *sharding.Topology) error {
 			return errors.New("endpoint identity changed")
 		}
 		for id, old := range next {
-			if old.node.Address == n.Address && id != n.ID {
+			if (old.node.Address == n.Address || old.backendAddress() == n.Address) && id != n.ID {
 				return errors.New("endpoint reused with another identity")
 			}
 		}
@@ -55,6 +56,13 @@ func (s *cacheShards) registerManaged(t *sharding.Topology) error {
 	for _, n := range t.Config().Nodes {
 		if next[n.ID] == nil {
 			next[n.ID] = &cacheShardNode{node: n}
+			if disk := s.r.shardState; disk != nil && disk.primaries != nil {
+				p, err := disk.primaries.Resolve(context.Background(), n.ID)
+				if err != nil {
+					return err
+				}
+				next[n.ID].address, next[n.ID].replicas = p.Address, p.Replicas
+			}
 		}
 	}
 	s.nodes = next

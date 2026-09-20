@@ -1,7 +1,7 @@
 package apitypes
 
 // A placement is either an explicit node or an automatic selector. Resources
-// remain dedicated standalone engines behind a separately deployed Gateway.
+// remain dedicated storage groups behind a separately deployed Gateway.
 type ClusterResourceSpec struct {
 	Memory        string            `json:"memory"`
 	CPUs          float64           `json:"cpus,omitempty"`
@@ -11,8 +11,10 @@ type ClusterResourceSpec struct {
 }
 type ClusterColdSpec struct {
 	ClusterResourceSpec
-	Count   int      `json:"count"`
-	Servers []string `json:"servers,omitempty"`
+	Count          int        `json:"count"`
+	Servers        []string   `json:"servers,omitempty"`
+	Replicas       int        `json:"replicas,omitempty"`
+	ReplicaServers [][]string `json:"replica_servers,omitempty"`
 }
 type ClusterCacheSpec struct {
 	ClusterResourceSpec

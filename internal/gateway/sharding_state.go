@@ -13,19 +13,21 @@ import (
 	"syscall"
 
 	"gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/internal/gateway/sharding"
+	"gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/pkg/apitypes"
 )
 
 // Runtime state is local to one effective Gateway, not a distributed lease.
 // The manifest references a separately durable journal; its final phase, not
 // YAML or an in-memory worker cursor, determines the routing after a restart.
 type shardManifest struct {
-	ColdEngine string          `json:"cold_engine,omitempty"`
-	Version    int             `json:"version"`
-	GatewayID  string          `json:"gateway_id"`
-	ServiceID  string          `json:"service_id"`
-	Hot        string          `json:"hot"`
-	Source     sharding.Config `json:"source"`
-	Task       *shardTaskRef   `json:"task,omitempty"`
+	PrimaryTracking bool            `json:"primary_tracking,omitempty"`
+	ColdEngine      string          `json:"cold_engine,omitempty"`
+	Version         int             `json:"version"`
+	GatewayID       string          `json:"gateway_id"`
+	ServiceID       string          `json:"service_id"`
+	Hot             string          `json:"hot"`
+	Source          sharding.Config `json:"source"`
+	Task            *shardTaskRef   `json:"task,omitempty"`
 }
 
 type shardTaskRef struct {
@@ -34,11 +36,12 @@ type shardTaskRef struct {
 }
 
 type shardDiskState struct {
-	dir      string
-	db       *sql.DB
-	lock     *os.File
-	manifest shardManifest
-	journal  *sharding.Journal // owned even after the runtime finishes retirement
+	primaries *sharding.PrimaryStore
+	dir       string
+	db        *sql.DB
+	lock      *os.File
+	manifest  shardManifest
+	journal   *sharding.Journal // owned even after the runtime finishes retirement
 }
 
 func privateShardDir(path string) error {
@@ -201,6 +204,12 @@ func openShardDisk(ctx context.Context, c Config, create bool) (_ *shardDiskStat
 	if m.Version != 1 || m.GatewayID != c.GatewayID || m.ServiceID != c.ServiceID || m.Hot != c.RedisAddress || (CacheConfig{ColdEngine: m.ColdEngine}).coldEngine() != c.Cache.coldEngine() {
 		return nil, errors.New("sharding state identity differs from configuration")
 	}
+	if m.PrimaryTracking {
+		s.primaries, err = sharding.OpenPrimaryStore(ctx, s.db)
+		if err != nil {
+			return nil, err
+		}
+	}
 	from, err := sharding.New(m.Source)
 	if err != nil {
 		return nil, err
@@ -299,33 +308,90 @@ func (s *Service) InitializeShardState(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	for _, e := range endpoints {
-		if s.cache.cfg.coldEngine() == "redis" {
-			probe := &cacheShards{r: s.cache}
-			if err := probe.preflightCold(ctx, &cacheShardNode{node: e.node, password: e.password}, false); err != nil {
+	var primaries []sharding.Primary
+	probe := func(overrides map[string]string) error {
+		for _, e := range endpoints {
+			address := e.node.Address
+			if overrides[e.node.ID] != "" {
+				address = overrides[e.node.ID]
+			}
+			if s.cache.cfg.coldEngine() == "redis" {
+				probe := &cacheShards{r: s.cache}
+				if err := probe.preflightCold(ctx, &cacheShardNode{node: e.node, address: address, password: e.password}, false); err != nil {
+					return err
+				}
+			}
+			c, err := s.cache.connectAddress(ctx, false, address, e.password)
+			if err != nil {
 				return err
 			}
+			b, err := c.call(ctx, "DBSIZE")
+			c.Close()
+			if err != nil {
+				return err
+			}
+			if string(b) != ":0\r\n" {
+				return errShardInitializationNonempty
+			}
 		}
-		c, err := s.cache.connectAddress(ctx, false, e.node.Address, e.password)
-		if err != nil {
+		return nil
+	}
+	if err := probe(nil); err != nil {
+		if !s.cfg.ControlPlane.ManageShards || errors.Is(err, errShardInitializationNonempty) {
 			return err
 		}
-		b, err := c.call(ctx, "DBSIZE")
-		c.Close()
-		if err != nil {
+		// A primary may fail before the first Gateway deployment. Resolve its
+		// replacement from the authenticated control plane, without changing HRW
+		// identity or ever accepting nonempty databases as a fresh installation.
+		var c apitypes.ColdCluster
+		path := "/api/v1/gateway/control/" + url.PathEscape(s.cfg.GatewayID) + "/clusters/" + url.PathEscape(s.cfg.ControlPlane.ClusterID)
+		if err := s.shardControlRequest(ctx, "GET", path, nil, &c); err != nil {
 			return err
 		}
-		if string(b) != ":0\r\n" {
-			return errors.New("initialization requires empty cold backends; refusing existing data")
+		want, e := coldTaskTopology(c.Revision, c.Shards)
+		configured, _ := s.cfg.Cache.Sharding.registry()
+		if e != nil || !want.Equal(configured) || c.Task != nil || c.ID != s.cfg.ServiceID || c.GatewayID != s.cfg.GatewayID || c.NodeID != s.cfg.ControlPlane.NodeID || c.HotAddress != s.cfg.RedisAddress || c.StorageEngine() != s.cfg.Cache.coldEngine() || c.UsesCache() != s.cfg.Cache.enabled() || len(c.Primaries) != len(endpoints) {
+			return errors.New("initial primary assignment mismatch")
+		}
+		overrides := map[string]string{}
+		for _, v := range c.Primaries {
+			p := sharding.Primary(v)
+			if sharding.ValidatePrimary(p) != nil || !s.cache.cfg.allowsBackend(p.Address) || p.Address == s.cfg.RedisAddress || overrides[p.ShardID] != "" {
+				return errors.New("invalid initial primary")
+			}
+			overrides[p.ShardID] = p.Address
+			primaries = append(primaries, p)
+		}
+		for _, e := range endpoints {
+			if overrides[e.node.ID] == "" {
+				return errors.New("initial primary missing")
+			}
+		}
+		if err := probe(overrides); err != nil {
+			return err
 		}
 	}
 	state, err := openShardDisk(ctx, s.cfg, true)
 	if err != nil {
 		return err
 	}
-	state.close()
+	defer state.close()
+	if len(primaries) > 0 {
+		if _, err := sharding.CreatePrimaryStore(ctx, state.db, primaries); err != nil {
+			return err
+		}
+		state.manifest.PrimaryTracking = true
+		b, err := json.Marshal(state.manifest)
+		if err != nil {
+			return err
+		}
+		_, err = state.db.ExecContext(ctx, `UPDATE runtime SET manifest=? WHERE id=1`, b)
+		return err
+	}
 	return nil
 }
+
+var errShardInitializationNonempty = errors.New("initialization requires empty cold backends; refusing existing data")
 
 func (r *cacheRuntime) restoreSharding(ctx context.Context) error {
 	state, err := openShardDisk(ctx, r.s.cfg, false)
@@ -373,6 +439,9 @@ func (r *cacheRuntime) restoreSharding(ctx context.Context) error {
 	}
 	r.shards, err = newCacheShards(r, from, endpoints)
 	if err != nil {
+		return err
+	}
+	if err := r.restorePrimaries(ctx); err != nil {
 		return err
 	}
 	if state.journal != nil && !from.Equal(state.journal.Target()) {

@@ -8,6 +8,8 @@ import (
 	"errors"
 	"io"
 	"net/netip"
+
+	"gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/pkg/apitypes"
 )
 
 var ErrPrimaryConflict = errors.New("shard primary generation or identity conflict")
@@ -15,22 +17,39 @@ var ErrPrimaryPending = errors.New("shard primary switch requires reconciliation
 
 // Primary is separate from HRW placement. Generation is issued by the control
 // plane, NOT Redis run_id, uptime or a Sentinel event arrival timestamp.
-type Primary struct {
-	ShardID    string `json:"shard_id"`
-	Group      string `json:"group"`
-	Instance   string `json:"instance"`
-	Address    string `json:"address"`
-	Generation uint64 `json:"generation"`
-}
+type Primary apitypes.ShardPrimary
 
 type PrimaryState struct {
 	Current Primary  `json:"current"`
 	Pending *Primary `json:"pending,omitempty"`
 }
 
+func ValidatePrimary(p Primary) error {
+	if !p.valid() {
+		return ErrPrimaryConflict
+	}
+	return nil
+}
+
+// Retarget is legal only while no new-primary business admission has happened.
+// Runtime retains its barrier across retries; an intermediate failed primary
+// must not have to become reachable before a newer election can be accepted.
+func (s *PrimaryStore) Retarget(ctx context.Context, pending, next Primary) error {
+	if !primarySuccessor(pending, next) {
+		return ErrPrimaryConflict
+	}
+	return s.update(ctx, pending.ShardID, func(v *PrimaryState) error {
+		if v.Pending == nil || *v.Pending != pending || !primarySuccessor(v.Current, next) {
+			return ErrPrimaryConflict
+		}
+		v.Pending = &next
+		return nil
+	})
+}
+
 func (p Primary) valid() bool {
 	a, err := netip.ParseAddrPort(p.Address)
-	return validID(p.ShardID) && validID(p.Group) && validID(p.Instance) && p.Generation > 0 &&
+	return validID(p.ShardID) && validID(p.Group) && validID(p.Instance) && p.Generation > 0 && p.Replicas >= 0 && p.Replicas <= 2 &&
 		err == nil && a.Port() != 0 && a.Addr().Zone() == "" &&
 		(a.Addr().IsLoopback() || a.Addr().IsPrivate()) &&
 		netip.AddrPortFrom(a.Addr().Unmap(), a.Port()).String() == p.Address
@@ -45,13 +64,114 @@ func primarySuccessor(old, next Primary) bool {
 // PrimaryStore persists the endpoint switch intent, not permission to serve a
 // new backend. The caller owns the private WAL/FULL SQLite DB and process lock.
 // No network calls, replication checks, election or write retries happen here.
-// Not yet wired to the Gateway data plane: existing endpoint guards stay intact.
 type PrimaryStore struct{ db *sql.DB }
+
+// ReconcileMembers changes only membership, never an existing primary. The
+// runtime must validate membership against its durable topology/task first.
+// An unresolved switch cannot be silently removed by an older snapshot.
+func (s *PrimaryStore) ReconcileMembers(ctx context.Context, wanted []Primary) error {
+	if len(wanted) == 0 || len(wanted) > 2*MaxNodes {
+		return ErrPrimaryConflict
+	}
+	c, err := s.db.Conn(ctx)
+	if err != nil {
+		return err
+	}
+	defer c.Close()
+	if _, err = c.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
+		return err
+	}
+	defer c.ExecContext(context.Background(), "ROLLBACK")
+	rows, err := c.QueryContext(ctx, `SELECT body FROM shard_primaries`)
+	if err != nil {
+		return err
+	}
+	old := map[string]PrimaryState{}
+	for rows.Next() {
+		var b string
+		if err = rows.Scan(&b); err != nil {
+			rows.Close()
+			return err
+		}
+		v, e := decodePrimary(b)
+		if e != nil {
+			rows.Close()
+			return e
+		}
+		old[v.Current.ShardID] = v
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return err
+	}
+	next := map[string]PrimaryState{}
+	groups, instances, addresses := map[string]bool{}, map[string]string{}, map[string]string{}
+	for _, p := range wanted {
+		if !p.valid() {
+			return ErrPrimaryConflict
+		}
+		if _, ok := next[p.ShardID]; ok {
+			return ErrPrimaryConflict
+		}
+		v, ok := old[p.ShardID]
+		if ok {
+			if v.Current.Group != p.Group {
+				return ErrPrimaryConflict
+			}
+		} else {
+			v.Current = p
+		}
+		if groups[v.Current.Group] {
+			return ErrPrimaryConflict
+		}
+		groups[v.Current.Group] = true
+		ps := []Primary{v.Current}
+		if v.Pending != nil {
+			ps = append(ps, *v.Pending)
+		}
+		for _, a := range ps {
+			if (instances[a.Instance] != "" && instances[a.Instance] != p.ShardID) || (addresses[a.Address] != "" && addresses[a.Address] != p.ShardID) {
+				return ErrPrimaryConflict
+			}
+			instances[a.Instance], addresses[a.Address] = p.ShardID, p.ShardID
+		}
+		next[p.ShardID] = v
+	}
+	for id, v := range old {
+		if _, ok := next[id]; !ok && v.Pending != nil {
+			return ErrPrimaryConflict
+		}
+	}
+	if len(next) == len(old) {
+		unchanged := true
+		for id := range next {
+			if _, ok := old[id]; !ok {
+				unchanged = false
+				break
+			}
+		}
+		if unchanged {
+			return nil
+		}
+	}
+	if _, err = c.ExecContext(ctx, `DELETE FROM shard_primaries`); err != nil {
+		return err
+	}
+	for id, v := range next {
+		b, _ := json.Marshal(v)
+		if _, err = c.ExecContext(ctx, `INSERT INTO shard_primaries VALUES(?,?)`, id, string(b)); err != nil {
+			return err
+		}
+	}
+	_, err = c.ExecContext(ctx, "COMMIT")
+	return err
+}
 
 // CreatePrimaryStore is explicit initialization only. Existing state must be
 // opened, never rebuilt from an older Server/YAML snapshot after a restart.
 func CreatePrimaryStore(ctx context.Context, db *sql.DB, primaries []Primary) (*PrimaryStore, error) {
-	if len(primaries) == 0 || len(primaries) > MaxNodes {
+	if len(primaries) == 0 || len(primaries) > 2*MaxNodes {
 		return nil, errors.New("invalid primary count")
 	}
 	ids, groups, instances, addresses := map[string]bool{}, map[string]bool{}, map[string]bool{}, map[string]bool{}
@@ -158,7 +278,7 @@ func (s *PrimaryStore) Snapshot(ctx context.Context) ([]PrimaryState, error) {
 			instances[p.Instance], addresses[p.Address] = id, id
 		}
 		out = append(out, v)
-		if len(out) > MaxNodes {
+		if len(out) > 2*MaxNodes {
 			return nil, ErrPrimaryConflict
 		}
 	}

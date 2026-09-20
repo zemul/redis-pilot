@@ -89,6 +89,22 @@ func (s *cacheShards) rotateMigrationOwnersLocked(ctx context.Context, change *s
 		if _, err := s.ensure(ctx, n); err != nil {
 			return err
 		}
+		if n.replicas > 0 {
+			c, err := s.raw(ctx, n)
+			if err != nil {
+				return err
+			}
+			b, err := c.call(ctx, "EVAL", `if redis.call('GET',KEYS[1])~=ARGV[1] then return 0 end redis.call('SET',KEYS[1],ARGV[1]);return 1`, "1", s.r.guard, n.token)
+			if err == nil && string(b) == ":1\r\n" {
+				err = waitMigrationReplicas(ctx, c, n.replicas)
+			} else if err == nil {
+				err = errors.New("migration owner replication not confirmed")
+			}
+			c.Close()
+			if err != nil {
+				return err
+			}
+		}
 	}
 	return nil
 }
@@ -96,9 +112,9 @@ func (s *cacheShards) rotateMigrationOwnersLocked(ctx context.Context, change *s
 const migrationRetireScript = `
 if redis.call('GET',KEYS[1])~=ARGV[1] then return redis.error_reply('TRYAGAIN retirement owner changed') end
 if ARGV[3]=='cleaned' and redis.call('EXISTS',KEYS[3])~=0 then return redis.error_reply('TRYAGAIN source data remains') end
-if redis.call('EXISTS',KEYS[2])==0 then return 1 end
+if redis.call('EXISTS',KEYS[2])==0 then redis.call('SET',KEYS[1],ARGV[1]);return 1 end
 if redis.call('HGET',KEYS[2],'binding')~=ARGV[2] or redis.call('HGET',KEYS[2],'key')~=KEYS[3] or redis.call('HGET',KEYS[2],'phase')~=ARGV[3] then return redis.error_reply('TRYAGAIN retirement binding changed') end
-redis.call('DEL',KEYS[2]);return 1`
+redis.call('DEL',KEYS[2]);redis.call('SET',KEYS[1],ARGV[1]);return 1`
 
 func (s *cacheShards) retireMigrationKey(ctx context.Context, j *sharding.Journal, h sharding.Handoff) error {
 	s.mu.RLock()
@@ -131,6 +147,9 @@ func (s *cacheShards) retireMigrationKey(ctx context.Context, j *sharding.Journa
 			b, err = f.c.call(ctx, "EVAL", migrationRetireScript, "3", f.ownerKey, f.marker, f.key, f.owner, f.binding, phase)
 			if err == nil && string(b) != ":1\r\n" {
 				err = errors.New("migration marker retirement not confirmed")
+			}
+			if err == nil {
+				err = waitMigrationReplicas(ctx, f.c, n.replicas)
 			}
 		}
 		c.Close()

@@ -145,6 +145,7 @@ func (a *Agent) ensureProfileAttempt(req ensureProfileRequest, allowCreate bool)
 	err = a.writeInstanceConfig(&instanceConfigRequest{
 		Name: req.Name, Profile: req.Profile, Engine: req.Engine, Type: req.Type,
 		Category: req.Category, Memory: req.Memory, Port: req.Port,
+		ReplicaOf:     req.ReplicaOf,
 		EngineVersion: req.EngineVersion, ConfigOverrides: req.ConfigOverrides,
 	})
 	if err != nil {

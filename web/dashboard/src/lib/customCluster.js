@@ -4,7 +4,7 @@ import { getField } from './format.js';
 // inherit their single-instance destructive actions.
 export function clusterListGroups(clusters, instances, observations, error) {
   return clusters.map(c => {
-    const members = clusterMembers(c).map(m => instances.get(m.instance) || { name: m.instance });
+    const members = clusterMembers(c, instances).map(m => instances.get(m.instance) || { name: m.instance });
     return { cluster: c, groupName: c.id, engine: c.engine || 'kvrocks',
       category: 'persistent', type: 'sharded', engineVersion: '',
       status: error ? 'unknown' : c.creation ? 'creating' : c.ingress?.ready && clusterRuntime(c, observations) === '运行正常' ? 'running' : 'pending',
@@ -18,13 +18,22 @@ export function usesCache(cluster) {
   return cluster.cache_enabled !== false;
 }
 
-export function clusterMembers(cluster) {
+export function clusterMembers(cluster, instances = new Map()) {
   const rows = [];
   if (usesCache(cluster) && cluster.hot_instance) {
     rows.push({ id: 'cache', instance: cluster.hot_instance, address: cluster.hot_address, role: 'Redis 缓存' });
   }
   for (const shard of cluster.shards || []) {
-    rows.push({ ...shard, role: `存储分片 ${shard.id}` });
+    const anchor = instances.get(shard.instance);
+    const group = getField(anchor, 'group', 'Group', '');
+    const members = group ? [...instances.entries()].filter(([, i]) => getField(i, 'group', 'Group', '') === group) : [];
+    if (members.length > 1) {
+      members.sort(([an, a], [bn, b]) => Number(getField(b, 'role', 'Role') === 'master') - Number(getField(a, 'role', 'Role') === 'master') || an.localeCompare(bn));
+      for (const [name, i] of members) {
+        const replica = getField(i, 'role', 'Role') === 'replica';
+        rows.push({ id: shard.id, instance: name, replica, role: `分片 ${shard.id} · ${replica ? '从库' : '主库'}` });
+      }
+    } else rows.push({ ...shard, role: `存储分片 ${shard.id}` });
   }
   return rows;
 }
@@ -66,6 +75,9 @@ export function makeClusterSpec(form) {
     return { memory, cpus: Number(cpus), ...(disk ? { disk } : {}) };
   };
   const cold = { count, ...resource(form.cold_memory, form.cold_cpus, form.cold_disk), servers: Array.from({ length: count }, (_, i) => form.servers[i] || '') };
+  const replicas = Number(form.replicas || 0);
+  if (!Number.isInteger(replicas) || replicas < 0 || replicas > 2) throw new Error('每分片副本数需为 0–2');
+  if (replicas) cold.replicas = replicas;
   return { id: form.id, engine, gateway_id: form.gateway_id, node_id: form.node_id, cold,
     ...(form.cache ? { cache: { ...resource(form.hot_memory, form.hot_cpus, ''), server: form.hot_server, write_policy: form.write_policy } } : {}) };
 }

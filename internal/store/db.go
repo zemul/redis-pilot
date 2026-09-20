@@ -454,6 +454,9 @@ func (d *DB) migrate() error {
 	if err := createColdSchema(tx); err != nil {
 		return err
 	}
+	if err := createPrimaryGenerationSchema(tx); err != nil {
+		return err
+	}
 	if err := createProvisionSchema(tx); err != nil {
 		return err
 	}

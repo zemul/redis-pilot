@@ -9,6 +9,12 @@ import (
 	"gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/pkg/apitypes"
 )
 
+func (d *DB) ClusterGroupBuilding(group string) (bool, error) {
+	var count int
+	err := d.sql.QueryRow(`SELECT count(*) FROM cluster_build_members m JOIN instances i ON i.name=m.instance WHERE i.grp=?`, group).Scan(&count)
+	return count > 0, err
+}
+
 func createClusterBuildSchema(tx *sql.Tx) error {
 	for _, q := range []string{
 		`CREATE TABLE IF NOT EXISTS cluster_create_requests(cluster_id TEXT PRIMARY KEY,digest TEXT NOT NULL,task_id TEXT NOT NULL UNIQUE,request TEXT NOT NULL)`,
@@ -75,6 +81,27 @@ func createClusterBuildTx(tx *sql.Tx, spec apitypes.ColdClusterSpec, children []
 		}
 		ids[shard.ID] = true
 		wants[shard.Instance] = spec.StorageEngine() + "-storage"
+		rows, err := tx.Query(`SELECT i.name,i.profile FROM instances i JOIN instances anchor ON i.grp=anchor.grp WHERE anchor.name=? AND i.name!=anchor.name`, shard.Instance)
+		if err != nil {
+			return err
+		}
+		for rows.Next() {
+			var name, profile string
+			if err := rows.Scan(&name, &profile); err != nil {
+				rows.Close()
+				return err
+			}
+			if profile != spec.StorageEngine()+"-storage" || wants[name] != "" {
+				rows.Close()
+				return coldInvalid("invalid storage replica")
+			}
+			wants[name] = profile
+		}
+		err = rows.Err()
+		rows.Close()
+		if err != nil {
+			return err
+		}
 	}
 	if len(children) != len(wants) {
 		return coldInvalid("one child creation task is required for each resource")

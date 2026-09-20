@@ -307,6 +307,12 @@ func finishMigrationKey(ctx context.Context, j *sharding.Journal, h sharding.Han
 		if sourcePhase != "frozen" {
 			return errors.New("source is not frozen")
 		}
+		if err := source.replicated(ctx, "frozen", ""); err != nil {
+			return err
+		}
+		if err := target.replicated(ctx, "ready", attempt); err != nil {
+			return err
+		}
 		if err := j.Commit(ctx, current); err != nil {
 			return err
 		}
@@ -314,10 +320,16 @@ func finishMigrationKey(ctx context.Context, j *sharding.Journal, h sharding.Han
 	if err := target.activate(ctx, attempt); err != nil {
 		return err
 	}
+	if err := target.replicated(ctx, "serving", attempt); err != nil {
+		return err
+	}
 	if current.State == sharding.Cleaned {
 		return nil
 	}
 	if err := source.clean(ctx); err != nil {
+		return err
+	}
+	if err := source.replicated(ctx, "cleaned", ""); err != nil {
 		return err
 	}
 	return j.MarkCleaned(ctx, current)

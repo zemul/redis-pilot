@@ -29,8 +29,9 @@ type shardBlockRecord struct {
 }
 
 type shardBlockingActive struct {
-	mu       sync.Mutex
-	sessions map[string]bool
+	mu          sync.Mutex
+	sessions    map[string]bool
+	connections map[string]*cacheConn
 }
 
 func (b *shardBlockingActive) set(node, field string, active bool) {
@@ -43,6 +44,30 @@ func (b *shardBlockingActive) set(node, field string, active bool) {
 		b.sessions[node+"/"+field] = true
 	} else {
 		delete(b.sessions, node+"/"+field)
+		delete(b.connections, node+"/"+field)
+	}
+}
+
+func (b *shardBlockingActive) track(node, field string, c *cacheConn) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.connections == nil {
+		b.connections = map[string]*cacheConn{}
+	}
+	b.connections[node+"/"+field] = c
+}
+
+func (b *shardBlockingActive) interrupt(node string) {
+	b.mu.Lock()
+	var conns []*cacheConn
+	for id, c := range b.connections {
+		if strings.HasPrefix(id, node+"/") {
+			conns = append(conns, c)
+		}
+	}
+	b.mu.Unlock()
+	for _, c := range conns {
+		c.Close()
 	}
 }
 func (b *shardBlockingActive) has(node, field string) bool {
@@ -111,6 +136,7 @@ func (s *cacheShards) block(parent context.Context, args [][]byte) []byte {
 		return shardRuntimeError(err)
 	}
 	s.blocking.set(n.node.ID, field, true)
+	s.blocking.track(n.node.ID, field, c)
 	defer s.blocking.set(n.node.ID, field, false)
 	c.shard = n
 	b, err = c.call(ctx, "EVAL", shardBlockRegisterScript, "2", s.r.guard, shardBlockingRegistry, token, field, string(payload), strconv.Itoa(shardBlockingCapacity))
@@ -132,7 +158,7 @@ func (s *cacheShards) block(parent context.Context, args [][]byte) []byte {
 	// Cleanup failure leaves the durable record for the probe/migration path.
 	// A known pop result remains usable; cleanup is not a business replay.
 	s.finishBlocking(parent, n, field, string(payload), record)
-	if err != nil {
+	if err != nil || n.blocked.Load() {
 		s.r.s.uncertain.Inc()
 		s.r.events.WithLabelValues("blocking_unknown").Inc()
 		return []byte("-ERR blocking result unknown or interrupted by migration; command was not retried\r\n")

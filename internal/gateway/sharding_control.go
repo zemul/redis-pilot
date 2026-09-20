@@ -87,6 +87,9 @@ func (s *Service) shardControlOnce(ctx context.Context) error {
 	if c.ID != s.cfg.ServiceID || c.GatewayID != s.cfg.GatewayID || c.NodeID != s.cfg.ControlPlane.NodeID || c.HotAddress != s.cfg.RedisAddress || c.UsesCache() != s.cfg.Cache.enabled() || !c.ValidEngine() || c.StorageEngine() != s.cfg.Cache.coldEngine() || (c.WritePolicy != "" && c.WritePolicy != s.cfg.Cache.WritePolicy) {
 		return errors.New("cluster placement mismatch")
 	}
+	if err := s.reconcilePrimaries(ctx, c); err != nil {
+		return err
+	}
 	if c.Ingress != nil && !c.Ingress.Ready && c.Ingress.GatewayAddress == s.cfg.Listen && s.frontendPassword == "" {
 		// Initial topology must agree before publishing a business entry point.
 		want, e := coldTaskTopology(c.Revision, c.Shards)
@@ -240,7 +243,7 @@ func (s *cacheShards) preflightCold(ctx context.Context, n *cacheShardNode, empt
 		return err
 	}
 	defer c.Close()
-	a, _ := netip.ParseAddrPort(n.node.Address)
+	a, _ := netip.ParseAddrPort(n.backendAddress())
 	if !a.Addr().IsLoopback() {
 		if err := checkBackendClock(ctx, c); err != nil {
 			return err

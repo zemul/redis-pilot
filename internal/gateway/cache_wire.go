@@ -144,7 +144,7 @@ func (r *cacheRuntime) connect(ctx context.Context, hot bool) (*cacheConn, error
 		if a == nil || a.runtime != r || !a.live.Load() {
 			return nil, errors.New("cold shard selection required")
 		}
-		c, err := r.connectAddress(ctx, false, a.node.node.Address, a.node.password)
+		c, err := r.shards.raw(ctx, a.node)
 		if err == nil {
 			c.shard = a.node
 		}

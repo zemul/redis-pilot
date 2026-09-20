@@ -14,7 +14,7 @@ import (
 
 // InitialConfig renders a fresh installation only. It must never reconstruct
 // lost ownership state after migration or read credential contents.
-func InitialConfig(cluster apitypes.ColdCluster, req apitypes.GatewayBootstrapRequest) (string, error) {
+func InitialConfig(cluster apitypes.ColdCluster, req apitypes.GatewayBootstrapRequest, replicaAddresses ...string) (string, error) {
 	if cluster.Revision != 1 || cluster.Task != nil {
 		return "", fmt.Errorf("initial config requires revision 1 with no migration task; preserve existing Gateway state")
 	}
@@ -73,6 +73,11 @@ func InitialConfig(cluster apitypes.ColdCluster, req apitypes.GatewayBootstrapRe
 			return "", err
 		}
 		c.Cache.Sharding.Nodes = append(c.Cache.Sharding.Nodes, ShardNodeConfig{ID: shard.ID, Address: shard.Address})
+	}
+	for _, address := range replicaAddresses {
+		if err := addAddress(address); err != nil {
+			return "", err
+		}
 	}
 	for network := range networks {
 		c.Cache.BackendNetworks = append(c.Cache.BackendNetworks, network)

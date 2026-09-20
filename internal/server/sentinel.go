@@ -275,6 +275,9 @@ func (s *Server) reconcileSentinelOnce() error {
 		if group == nil || group.Type != "replication" || group.CurrentMaster == "" {
 			continue
 		}
+		if building, err := s.db.ClusterGroupBuilding(groupName); err != nil || building {
+			continue // do not elect a new primary while creation verifies initial roles
+		}
 		// 异常记录：failover_conflict 标记(立即记/清除即恢复，不依赖网络查询)。
 		s.emitFailoverConflict(groupName, group.FailoverConflict)
 		inst := instances.Instances[group.CurrentMaster]
@@ -577,6 +580,9 @@ func sentinelMasterNames(reply interface{}) []string {
 }
 
 func (s *Server) handleSentinelFailover(group, newMasterAddr, source, operator string) error {
+	if building, err := s.db.ClusterGroupBuilding(group); err != nil || building {
+		return fmt.Errorf("cluster group provisioning is not complete")
+	}
 	// 全程持编排锁：本函数是"改状态 → 写磁盘配置 → 下发 Sentinel"的复合序列，
 	// 三步都完成之前不能让另一次故障转移插进来（原因见 Server.topologyMu 的注释）。
 	// 四条触发路径都会走到这里：Sentinel 事件回调、watcher 协程、周期 reconcile、
@@ -1023,6 +1029,11 @@ func (s *Server) buildSentinelMasters(node *apitypes.NodeState, instances *apity
 	for groupName, group := range instances.Groups {
 		if group == nil || group.Type != "replication" || group.CurrentMaster == "" {
 			continue
+		}
+		if s.db != nil {
+			if building, err := s.db.ClusterGroupBuilding(groupName); err != nil || building {
+				continue
+			}
 		}
 		// 只要求 CurrentMaster 记录存在且地址可解析，不要求它当前健康。
 		// 曾经这里额外要求 inst.Role == "master" && inst.Status == "running"，

@@ -43,11 +43,12 @@ export function CreateCustomClusterModal({ request, servers, clusters, onClose, 
         <Field title="Gateway / Proxy 所在节点">{nodeSelect(form.node_id, v => set('node_id', v), false)}</Field>
         <Field title="存储引擎"><select className={control} value={form.engine} onChange={e => setForm(f => ({ ...f, engine: e.target.value, cache: e.target.value === 'redis' ? false : f.cache }))}><option value="redis">Redis</option><option value="kvrocks">Kvrocks</option></select></Field>
         <Field title="分片数量"><input className={control} type="number" min="1" max="128" step="1" required value={form.count} onChange={e => set('count', e.target.value)} /></Field>
+        <Field title="每分片副本数"><select className={control} value={form.replicas || 0} onChange={e => set('replicas', e.target.value)}><option value="0">无副本</option><option value="1">1 个副本</option><option value="2">2 个副本</option></select></Field>
       </div>
       {options && !available.length && <p role="status" className="text-sm text-amber-700">没有空闲 Gateway 标识。请先在 Server 配置独立机器凭据；这里不创建或展示密码。</p>}
       <section className="space-y-3 border-t pt-4"><h3 className="font-medium">存储分片 · {form.engine === 'redis' ? 'Redis' : 'Kvrocks'}</h3><div className="grid gap-3 sm:grid-cols-3">{input('cold_memory', '每分片内存')}{input('cold_cpus', '每分片 CPU', 'number')}<Field title="每分片磁盘预算（可选）"><input className={control} placeholder="如 10Gi" value={form.cold_disk} onChange={e => set('cold_disk', e.target.value)} /></Field></div>
         <div className="grid gap-3 sm:grid-cols-2">{Array.from({ length: Math.min(128, Math.max(0, Number(form.count) || 0)) }, (_, i) => <Field key={i} title={`分片 s${i + 1} 部署节点`}>{nodeSelect(form.servers[i] || '', v => setForm(f => { const values = [...f.servers]; values[i] = v; return { ...f, servers: values }; }))}</Field>)}</div>
-        <p className="text-xs text-gray-500">使用服务器默认引擎版本。自动调度校验登记容量，但不保证跨机分散；磁盘预算不是硬配额。当前分片无副本自动切换。</p>
+        <p className="text-xs text-gray-500">副本与主库使用相同规格，并部署到不同服务器；选择副本需要已启用 Sentinel。不同分片允许共用服务器，磁盘预算不是硬配额。故障切换遵循原生异步复制边界，可能丢失最近写入。</p>
         {form.engine === 'redis' && <p className="text-xs text-gray-500">Redis 分片保存权威数据，禁止自动淘汰，启用 AOF 同步落盘及 RDB；内存不足时可能拒绝写入。此配置优先保证存储可靠性，会增加写入延迟。</p>}
       </section>
       {form.engine === 'kvrocks' && <section className="space-y-3 border-t pt-4"><label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={form.cache} onChange={e => set('cache', e.target.checked)} />启用 Redis 缓存加速</label>

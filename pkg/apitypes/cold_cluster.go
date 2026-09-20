@@ -14,9 +14,9 @@ type ColdIngress struct {
 	Ready          bool   `json:"ready"`
 }
 
-// Cold shards reference existing passwordless standalone instances. ID is the
-// stable HRW identity, Instance is the platform resource, Address is resolved
-// by Server and must match the Gateway's local endpoint registry.
+// Cold shards reference passwordless storage groups through a stable anchor
+// instance. ID and Address retain their HRW/journal identity after election;
+// the control-only Primaries projection supplies the actual current endpoint.
 type ColdShard struct {
 	ID       string `json:"id"`
 	Instance string `json:"instance"`
@@ -54,7 +54,8 @@ func (c ColdClusterSpec) ValidWritePolicy() bool {
 }
 
 type ColdCluster struct {
-	Ingress *ColdIngress `json:"ingress,omitempty"`
+	Primaries []ShardPrimary `json:"primaries,omitempty"` // control assignment only; not HRW topology
+	Ingress   *ColdIngress   `json:"ingress,omitempty"`
 	ColdClusterSpec
 	HotAddress string    `json:"hot_address"`
 	Revision   uint64    `json:"revision"`

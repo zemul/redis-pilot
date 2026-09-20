@@ -38,6 +38,16 @@ test('aggregate pending and completed clusters without duplicate member rows', (
 });
 
 const form = { id: 'orders', gateway_id: 'g', node_id: 'n', count: 2, servers: ['n'], cold_memory: '256Mi', cold_cpus: '0.25', cold_disk: '1Gi', cache: true, hot_memory: '128Mi', hot_cpus: '0.25', hot_server: '', write_policy: 'update_existing' };
+test('shard replicas stay in the cluster and follow current roles', () => {
+  const c = { cache_enabled: false, shards: [{ id: 's1', instance: 'old' }] };
+  const instances = new Map([['old', { group: 'g', role: 'replica' }], ['new', { group: 'g', role: 'master' }], ['other', { group: 'other', role: 'master' }]]);
+  const members = clusterMembers(c, instances);
+  assert.deepEqual(members.map(m => m.instance), ['new', 'old']);
+  assert.equal(members[0].role, '分片 s1 · 主库');
+  assert.equal(members[1].replica, true);
+  assert.equal(makeClusterSpec({ ...form, replicas: 2 }).cold.replicas, 2);
+  assert.throws(() => makeClusterSpec({ ...form, replicas: 3 }));
+});
 test('creation form builds exact three-mode API shapes, truncating removed shards', () => {
   const result = makeClusterSpec(form);
   assert.equal(result.cold.cpus, 0.25);

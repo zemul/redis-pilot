@@ -1,5 +1,16 @@
 # Gateway 部署与运维
 
+## 分片副本与切主隔离验证（2026-09-20，非服务发布）
+
+未提交工作树完成 Server 主库版本、分片副本创建、Gateway 换址和固定副本组迁移屏障的开发验证。本轮没有升级开发环境常驻 Server/Agent/Gateway/Proxy，没有操作原数据库容器。
+
+- 本地 Redis 7.2.5：真实复制和单 Sentinel 故障选举、Gateway 换址、旧通知拒绝、首次部署前切主、运行时重启、两种缓存失效及阻塞连接中断。迁移 prepared/committed/cleaned 三阶段分别切换目标主库，旧主重新加入后重启 Gateway 并完成缩容；不是性能或三 Sentinel 仲裁验收。
+- redis02：运行 `apache/kvrocks:2.15.0` 临时容器，`--network none`，640Mi / 1 CPU，内部只启动回环测试数据库。`TestMigrationKvrocksReplicaBarrier` 以及上述三阶段的 Kvrocks 换主/恢复测试通过。Kvrocks 旧复制连接退出前可能暂时拒绝旧主重新加入，测试按原生异步收敛过程重试，不能当成立即完成的同步操作。
+- 临时容器 `pilot-ha-kvrocks-tests` 已随测试结束自动移除；`/opt/pilot-ha-tests.pTmli3/gateway.test` 保留为复现产物，无业务数据。常驻 Agent 保持 active。
+- 全仓 Go 测试、go vet、专项 race、前端 12 项测试及构建通过。前端构建保留已有大 bundle 提示。
+
+尚需单独部署验收：新版 Agent/Gateway/Server 在三台主机组成的平台创建链路、真实 Sentinel 通知自动下发、主从互通防火墙和故障恢复。上线前须升级所有相关组件，并允许 Gateway/Sentinel/复制组成员访问对应后端端口；不能仅升级 Server 页面就把旧 Gateway 当成具备此能力。
+
 ## 内存预算与 Kvrocks RSS 修复部署（2026-09-18）
 
 未提交工作树构建版本 `3df594c-memory-fix`，更新 redis01–03 Agent 和 redis01 Server/内嵌页面；仅重启这些管理服务。三台数据库容器 ID 与运行时长保持不变，Gateway/Proxy 未重启。抽查 pmdev-hot maxmemory 仍为 33554432、galaxy-1 仍为 1073741824，没有自动降低已有实例预算。

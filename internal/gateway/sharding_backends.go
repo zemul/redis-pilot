@@ -22,6 +22,9 @@ type cacheShardEndpoint struct {
 }
 type cacheShardNode struct {
 	node            sharding.Node
+	address         string // immutable physical primary override; node retains migration identity
+	blocked         atomic.Bool
+	replicas        int // immutable, managed group membership is fixed
 	password        string
 	mu              sync.Mutex
 	token, previous string
@@ -42,7 +45,8 @@ type cacheShards struct {
 	workerRunning      atomic.Bool
 	finalizeMu         sync.Mutex
 	retiring           *sharding.Transition
-	publicationPending bool // a publish ACK was lost; reconcile before admission
+	publicationPending bool   // a publish ACK was lost; reconcile before admission
+	primaryEpoch       uint64 // invalidates WATCH/SCAN on physical primary replacement
 }
 
 func newCacheShards(r *cacheRuntime, t *sharding.Topology, endpoints []cacheShardEndpoint) (*cacheShards, error) {
@@ -98,7 +102,17 @@ func (s *cacheShards) validateTopology(t *sharding.Topology) error {
 }
 
 func (s *cacheShards) raw(ctx context.Context, n *cacheShardNode) (*cacheConn, error) {
-	return s.r.connectAddress(ctx, false, n.node.Address, n.password)
+	if n.blocked.Load() {
+		return nil, sharding.ErrPrimaryPending
+	}
+	return s.r.connectAddress(ctx, false, n.backendAddress(), n.password)
+}
+
+func (n *cacheShardNode) backendAddress() string {
+	if n.address != "" {
+		return n.address
+	}
+	return n.node.Address
 }
 
 func (s *cacheShards) start(ctx context.Context) error {
@@ -108,12 +122,21 @@ func (s *cacheShards) start(ctx context.Context) error {
 		}
 	}
 	for _, n := range s.requiredNodes() {
-		if s.r.cfg.coldEngine() == "redis" || (s.r.s.cfg.ControlPlane.ManageShards && s.journal != nil) {
-			if err := s.preflightCold(ctx, n, false); err != nil {
-				return err
-			}
+		if n.blocked.Load() {
+			continue
 		}
-		if err := s.startNode(ctx, n); err != nil {
+		var err error
+		if s.r.cfg.coldEngine() == "redis" || (s.r.s.cfg.ControlPlane.ManageShards && s.journal != nil) {
+			err = s.preflightCold(ctx, n, false)
+		}
+		if err == nil {
+			err = s.startNode(ctx, n)
+		}
+		if err != nil {
+			if s.r.s.cfg.ControlPlane.ManageShards && s.r.shardState != nil {
+				n.blocked.Store(true)
+				continue // start control polling even when the former master is down
+			}
 			return err
 		}
 	}

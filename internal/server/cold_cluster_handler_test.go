@@ -1,6 +1,7 @@
 package server
 
 import (
+	"encoding/json"
 	"net/http"
 	"strings"
 	"testing"
@@ -113,6 +114,21 @@ func testCustomClusterAPI(t *testing.T, cacheEnabled bool) {
 	}
 	if w := doRequestWithAuth(r, "GET", path, heartbeatToken, nil); w.Code != 200 {
 		t.Fatal(w.Code, w.Body.String())
+	} else {
+		var response struct {
+			Data apitypes.ColdCluster `json:"data"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+			t.Fatal(err)
+		}
+		if len(response.Data.Primaries) != 2 || strings.Contains(w.Body.String(), "secret") {
+			t.Fatal(w.Body.String())
+		}
+		for _, p := range response.Data.Primaries {
+			if p.Generation == 0 || p.Group != p.Instance || p.ShardID != p.Instance || p.Address == "" {
+				t.Fatal(p)
+			}
+		}
 	}
 	if w := doRequestWithAuth(r, "GET", "/api/v1/gateway/control/other/clusters/cluster", "other-gateway-token-long", nil); w.Code != 403 {
 		t.Fatal(w.Code)

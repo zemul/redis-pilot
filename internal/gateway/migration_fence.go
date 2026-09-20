@@ -22,13 +22,15 @@ type migrationFence struct {
 	c                                     migrationCaller
 	ownerKey, owner, marker, key, binding string
 	node                                  sharding.Node
+	address                               string // physical endpoint for clock checks, not handoff identity
+	replicas                              int
 }
 
 func newMigrationFence(c migrationCaller, node sharding.Node, ownerKey, owner string, h sharding.Handoff) (*migrationFence, error) {
 	if c == nil || owner == "" || ownerKey != cachePrefix+"owner" || h.TaskID == "" || h.Sequence <= 0 || !h.Placement.Moves() || !cacheBusinessKey(h.Key) || (node != h.Placement.Source && node != h.Placement.Target) {
 		return nil, errors.New("invalid migration fence identity")
 	}
-	return &migrationFence{c: c, node: node, ownerKey: ownerKey, owner: owner,
+	return &migrationFence{c: c, node: node, address: node.Address, ownerKey: ownerKey, owner: owner,
 		marker: fmt.Sprintf("%smigration:%x", cachePrefix, sha256.Sum256(h.Key)),
 		key:    string(h.Key), binding: h.TaskID + ":" + strconv.FormatInt(h.Sequence, 10)}, nil
 }

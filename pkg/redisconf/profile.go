@@ -14,7 +14,8 @@ func ValidateProfile(profile, engine, category, kind, replica string, overrides 
 	if profile == "" {
 		return nil
 	}
-	if kind != "standalone" || replica != "" {
+	storageReplica := (profile == RedisStorageProfile || profile == KvrocksStorageProfile) && kind == "replication"
+	if !storageReplica && (kind != "standalone" || replica != "") {
 		return fmt.Errorf("dedicated profile requires standalone without replicas")
 	}
 	switch profile {

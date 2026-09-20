@@ -15,9 +15,9 @@ var errShardWatchChanged = errors.New("WATCH topology changed")
 func (s *cacheShards) revisionLocked() uint64 {
 	if s.change != nil {
 		_, to := s.change.Revisions()
-		return to
+		return to + s.primaryEpoch
 	}
-	return s.topology.Revision()
+	return s.topology.Revision() + s.primaryEpoch
 }
 
 // admit is also used by WATCH/EXEC. Its release retains the topology read lease
@@ -41,6 +41,9 @@ func (s *cacheShards) admitLocked(ctx context.Context, keys [][]byte) (context.C
 		return nil, nil, errors.New("topology publication requires reconciliation")
 	}
 	if len(keys) == 0 {
+		if s.node(s.topology.Config().Nodes[0].ID).blocked.Load() {
+			return nil, nil, sharding.ErrPrimaryPending
+		}
 		a := &shardAdmission{runtime: s.r, node: s.node(s.topology.Config().Nodes[0].ID), revision: s.revisionLocked()}
 		a.live.Store(true)
 		return context.WithValue(ctx, shardAdmissionKey{}, a), func() { a.live.Store(false) }, nil
@@ -48,6 +51,11 @@ func (s *cacheShards) admitLocked(ctx context.Context, keys [][]byte) (context.C
 	p, err := planCacheKeys(s.topology, s.change, keys, false)
 	if err != nil {
 		return nil, nil, err
+	}
+	for _, g := range p.groups {
+		if s.node(g.node.ID).blocked.Load() {
+			return nil, nil, sharding.ErrPrimaryPending
+		}
 	}
 	release, err := s.r.acquireKeys(ctx, keys)
 	if err != nil {
@@ -195,6 +203,8 @@ func (s *cacheShards) moveLocked(ctx context.Context, key []byte) (sharding.Hand
 	if err != nil {
 		return h, err
 	}
+	f.address, t.address = sourceNode.backendAddress(), targetNode.backendAddress()
+	f.replicas, t.replicas = sourceNode.replicas, targetNode.replicas
 	var attempt string
 	if h.State == sharding.Prepared {
 		attempt, err = copyMigrationKey(ctx, s.journal, h, f, t)

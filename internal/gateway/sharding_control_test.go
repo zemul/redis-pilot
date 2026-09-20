@@ -311,7 +311,7 @@ func TestColdControlStorageRecovery(t *testing.T) {
 				} else if r.Method == "POST" {
 					data = map[string]any{"accepted_sequence": 1}
 				} else {
-					data, err = d.GetColdCluster("cluster")
+					data, err = d.ColdAssignment("gw", "cluster")
 				}
 				if err != nil {
 					w.WriteHeader(409)

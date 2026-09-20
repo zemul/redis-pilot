@@ -30,7 +30,7 @@ func (a *Agent) instanceVerifyProfile(c *gin.Context) {
 		fail(c, 409, err.Error())
 		return
 	}
-	if err := probeProvisionDatabase(net.JoinHostPort("127.0.0.1", strconv.Itoa(req.Port)), req.Profile); err != nil {
+	if err := probeProvisionDatabase(net.JoinHostPort("127.0.0.1", strconv.Itoa(req.Port)), req.Profile, req.ReplicaOf); err != nil {
 		fail(c, 503, err.Error())
 		return
 	}
@@ -45,7 +45,7 @@ func (a *Agent) instanceVerifyProfile(c *gin.Context) {
 
 // Deliberately read-only: do not flush, repair or inject a test key into a
 // database whose ownership/readiness has not yet been accepted by Server.
-func probeProvisionDatabase(addr, profile string) error {
+func probeProvisionDatabase(addr, profile string, upstream ...string) error {
 	conn, err := net.DialTimeout("tcp", addr, 2*time.Second)
 	if err != nil {
 		return err
@@ -85,7 +85,15 @@ func probeProvisionDatabase(addr, profile string) error {
 			fields[k] = v
 		}
 	}
-	if fields["role"] != "master" || fields["cluster_enabled"] != "0" || (fields["loading"] != "" && fields["loading"] != "0") {
+	wantRole := "master"
+	if len(upstream) > 0 && upstream[0] != "" {
+		wantRole = "slave"
+		host, port, err := net.SplitHostPort(upstream[0])
+		if err != nil || fields["master_host"] != host || fields["master_port"] != port || fields["master_link_status"] != "up" || (fields["master_sync_in_progress"] != "" && fields["master_sync_in_progress"] != "0") || fields["master_sync_unrecoverable_error"] == "yes" {
+			return fmt.Errorf("replica has not connected and synchronized with the reserved primary")
+		}
+	}
+	if fields["role"] != wantRole || fields["cluster_enabled"] != "0" || (fields["loading"] != "" && fields["loading"] != "0") {
 		return fmt.Errorf("database is loading, not standalone, or not master")
 	}
 	if profile == redisconf.KvrocksStorageProfile {

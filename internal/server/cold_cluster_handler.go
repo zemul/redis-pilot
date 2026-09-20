@@ -139,6 +139,11 @@ func (s *Server) coldAssignment(c *gin.Context) {
 		fail(c, 403, "Gateway does not own this cluster")
 		return
 	}
+	v, err = s.db.ColdAssignment(c.Param("name"), c.Param("cluster"))
+	if err != nil {
+		s.coldError(c, err)
+		return
+	}
 	ok(c, v)
 }
 func (s *Server) coldReport(c *gin.Context) {

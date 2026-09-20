@@ -18,7 +18,7 @@ var ErrColdNotFound = errors.New("cold cluster not found")
 
 func coldInvalid(reason string) error { return fmt.Errorf("%w: %s", ErrColdInvalid, reason) }
 
-func coldResource(tx *sql.Tx, name, node, engine string) (string, error) {
+func coldResource(tx *sql.Tx, name, node, engine string, storage ...bool) (string, error) {
 	var host, role, kind, actualEngine, desired, lock, group, proxy string
 	var port, count int
 	err := tx.QueryRow(`SELECT i.server,i.role,i.port,i.desired_state,i.lock,i.grp,g.type,g.engine,g.proxy FROM instances i JOIN instance_groups g ON i.grp=g.name WHERE i.name=?`, name).Scan(&host, &role, &port, &desired, &lock, &group, &kind, &actualEngine, &proxy)
@@ -28,7 +28,8 @@ func coldResource(tx *sql.Tx, name, node, engine string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if actualEngine != engine || kind != "standalone" || role != "master" || desired != "running" || port < 1 || port > 65535 || (lock != "null" && lock != "{}" && lock != "") {
+	replicated := len(storage) > 0 && storage[0] && kind == "replication"
+	if actualEngine != engine || (!replicated && (kind != "standalone" || role != "master")) || desired != "running" || port < 1 || port > 65535 || (lock != "null" && lock != "{}" && lock != "") {
 		return "", coldInvalid("requires an unlocked running standalone instance with the correct engine")
 	}
 	var p *apitypes.ProxyConfig
@@ -38,8 +39,27 @@ func coldResource(tx *sql.Tx, name, node, engine string) (string, error) {
 	if err := tx.QueryRow(`SELECT count(*) FROM instances WHERE grp=?`, group).Scan(&count); err != nil {
 		return "", err
 	}
-	if count != 1 {
+	if !replicated && count != 1 {
 		return "", coldInvalid("backend group must contain exactly one instance")
+	}
+	if replicated {
+		var invalid int
+		if err := tx.QueryRow(`SELECT count(*) FROM instances i JOIN instance_groups g ON i.grp=g.name WHERE i.grp=? AND (i.profile!=? OR i.desired_state!='running' OR COALESCE(json_extract(i.lock,'$.HeldBy'),'')!='' OR (i.name=g.current_master AND (i.role!='master' OR i.replica_of!='')) OR (i.name!=g.current_master AND (i.role!='replica' OR i.replica_of!=g.current_master)))`, group, engine+"-storage").Scan(&invalid); err != nil {
+			return "", err
+		}
+		if invalid != 0 || count < 2 || count > 3 {
+			return "", coldInvalid("storage group requires one primary and 1..2 verified dedicated replicas")
+		}
+		var masters, hosts int
+		if err := tx.QueryRow(`SELECT count(*) FROM instances i JOIN instance_groups g ON g.name=i.grp WHERE g.name=? AND i.name=g.current_master AND i.role='master'`, group).Scan(&masters); err != nil {
+			return "", err
+		}
+		if err := tx.QueryRow(`SELECT count(DISTINCT s.endpoint) FROM instances i JOIN servers s ON s.name=i.server WHERE i.grp=?`, group).Scan(&hosts); err != nil {
+			return "", err
+		}
+		if masters != 1 || hosts != count {
+			return "", coldInvalid("replicated storage requires a current primary and distinct hosts")
+		}
 	}
 	ip := netip.MustParseAddr("127.0.0.1")
 	if host != node {
@@ -63,15 +83,24 @@ func resolveColdShards(tx *sql.Tx, nodes []apitypes.ColdShard, host, engine stri
 	}
 	out := append([]apitypes.ColdShard(nil), nodes...)
 	ids, names, addrs := map[string]bool{}, map[string]bool{}, map[string]bool{}
+	groups := map[string]bool{}
 	for i := range out {
 		n := &out[i]
 		if !gatewayDraftName.MatchString(n.ID) || n.Instance == "" || ids[n.ID] || names[n.Instance] {
 			return nil, coldInvalid("duplicate or invalid shard/instance identity")
 		}
-		a, err := coldResource(tx, n.Instance, host, engine)
+		a, err := coldResource(tx, n.Instance, host, engine, true)
 		if err != nil {
 			return nil, err
 		}
+		var group string
+		if err := tx.QueryRow(`SELECT grp FROM instances WHERE name=?`, n.Instance).Scan(&group); err != nil {
+			return nil, err
+		}
+		if groups[group] {
+			return nil, coldInvalid("a storage group cannot belong to multiple shards")
+		}
+		groups[group] = true
 		if (n.Address != "" && n.Address != a) || addrs[a] {
 			return nil, coldInvalid("backend address mismatch or duplicate")
 		}
@@ -149,6 +178,7 @@ func saveColdCluster(tx *sql.Tx, c *apitypes.ColdCluster) error {
 	v := *c
 	v.Task = nil
 	v.Ingress = nil
+	v.Primaries = nil
 	raw, err := json.Marshal(v)
 	if err != nil {
 		return err
@@ -165,6 +195,36 @@ func saveColdTask(tx *sql.Tx, t *apitypes.ColdTask) error {
 	return err
 }
 func reserveCold(tx *sql.Tx, cluster, instance string) error {
+	if instance == "" {
+		return nil
+	}
+	rows, err := tx.Query(`SELECT name FROM instances WHERE grp=(SELECT grp FROM instances WHERE name=?)`, instance)
+	if err != nil {
+		return err
+	}
+	var members []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			rows.Close()
+			return err
+		}
+		members = append(members, name)
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return err
+	}
+	for _, name := range members {
+		if err := reserveColdInstance(tx, cluster, name); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func reserveColdInstance(tx *sql.Tx, cluster, instance string) error {
 	if instance == "" {
 		return nil
 	}

@@ -250,3 +250,54 @@ func TestPrimarySwitchDoesNotRehash(t *testing.T) {
 		}
 	}
 }
+
+func TestPrimaryRetargetAndMembership(t *testing.T) {
+	ctx := context.Background()
+	s, err := CreatePrimaryStore(ctx, primaryDB(t, filepath.Join(t.TempDir(), "runtime.db")), primaryFixture())
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := primaryFixture()[0]
+	next := old
+	next.Instance, next.Address, next.Generation = "replica-a", "127.0.0.1:6400", 2
+	if err = s.Prepare(ctx, old, next); err != nil {
+		t.Fatal(err)
+	}
+	if err = s.ReconcileMembers(ctx, primaryFixture()[1:]); !errors.Is(err, ErrPrimaryConflict) {
+		t.Fatal("removed pending intent", err)
+	}
+	third := next
+	third.Instance, third.Address, third.Generation = "replica-b", "127.0.0.1:6401", 3
+	if err = s.Retarget(ctx, next, third); err != nil {
+		t.Fatal(err)
+	}
+	if err = s.Complete(ctx, next); !errors.Is(err, ErrPrimaryConflict) {
+		t.Fatal("completed superseded intent", err)
+	}
+	if err = s.Retarget(ctx, third, next); !errors.Is(err, ErrPrimaryConflict) {
+		t.Fatal("retarget downgraded generation", err)
+	}
+	if err = s.Complete(ctx, third); err != nil {
+		t.Fatal(err)
+	}
+	// An older placement snapshot must not overwrite the elected primary.
+	if err = s.ReconcileMembers(ctx, primaryFixture()); err != nil {
+		t.Fatal(err)
+	}
+	if p, e := s.Resolve(ctx, "s1"); e != nil || p != third {
+		t.Fatal(p, e)
+	}
+	add := Primary{ShardID: "s3", Group: "group-3", Instance: "c", Address: "127.0.0.1:6500", Generation: 1}
+	if err = s.ReconcileMembers(ctx, append(primaryFixture(), add)); err != nil {
+		t.Fatal(err)
+	}
+	if p, e := s.Resolve(ctx, "s3"); e != nil || p != add {
+		t.Fatal(p, e)
+	}
+	if err = s.ReconcileMembers(ctx, []Primary{third, add}); err != nil {
+		t.Fatal(err)
+	}
+	if _, e := s.Resolve(ctx, "s2"); !errors.Is(e, sql.ErrNoRows) {
+		t.Fatal("retired primary retained", e)
+	}
+}

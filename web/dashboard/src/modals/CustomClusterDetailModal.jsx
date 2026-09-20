@@ -5,7 +5,7 @@ import { getField, statusMeta } from '../lib/format.js';
 const action = 'rounded-md border border-gray-200 bg-white px-3 py-1.5 text-xs hover:bg-gray-50 disabled:opacity-40';
 export function CustomClusterDetailModal({ cluster: c, member, instances, observations, error, isAdmin, onAction, onClose }) {
   const creating = !!c.creation;
-  const members = clusterMembers(c).filter(m => !member || m.instance === member);
+  const members = clusterMembers(c, instances).filter(m => !member || m.instance === member);
   return <Dialog open onOpenChange={open => { if (!open) onClose(); }}><DialogContent className="max-w-3xl max-h-[90vh] overflow-y-auto">
     <DialogTitle>{member ? `成员详情 · ${member}` : `集群详情 · ${c.id}`}</DialogTitle>
     <DialogDescription>{cachePolicy(c)} · {error ? '状态待刷新' : clusterRuntime(c, observations)}</DialogDescription>

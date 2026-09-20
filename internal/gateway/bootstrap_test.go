@@ -82,3 +82,18 @@ func TestInitialConfigRejectsUnsafeBootstrap(t *testing.T) {
 		})
 	}
 }
+
+func TestInitialConfigIncludesReplicaNetworks(t *testing.T) {
+	c, req := bootstrapFixture()
+	raw, err := InitialConfig(c, req, "10.0.0.99:6379")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := DecodeConfig(strings.NewReader(raw))
+	if err != nil || !cfg.Cache.allowsBackend("10.0.0.99:6380") {
+		t.Fatal("replica host omitted", err)
+	}
+	if _, err := InitialConfig(c, req, "8.8.8.8:6379"); err == nil {
+		t.Fatal("public replica accepted")
+	}
+}

@@ -44,8 +44,8 @@ func clockIntervalSafe(start, end, remote time.Time) bool {
 }
 
 func checkMigrationClocks(ctx context.Context, source, target *migrationFence) error {
-	a, _ := netip.ParseAddrPort(source.node.Address)
-	b, _ := netip.ParseAddrPort(target.node.Address)
+	a, _ := netip.ParseAddrPort(source.address)
+	b, _ := netip.ParseAddrPort(target.address)
 	if a.Addr() == b.Addr() {
 		return nil
 	}

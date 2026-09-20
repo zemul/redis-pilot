@@ -80,7 +80,7 @@ func testProvisionNativeRedis(t *testing.T, profile string) {
 }
 
 func TestProvisionDatabaseReadiness(t *testing.T) {
-	for _, mode := range []string{"redis", "kvrocks", "loading", "replica", "nonempty", "other-db", "bad-policy", "wal-off", "noauth", "bad-config", "wrong-engine", "redis-storage", "redis-storage-async", "redis-storage-eviction"} {
+	for _, mode := range []string{"redis", "kvrocks", "loading", "replica", "nonempty", "other-db", "bad-policy", "wal-off", "noauth", "bad-config", "wrong-engine", "redis-storage", "redis-storage-async", "redis-storage-eviction", "redis-storage-replica", "redis-storage-replica-down", "redis-storage-replica-wrong-source", "redis-storage-replica-syncing"} {
 		t.Run(mode, func(t *testing.T) {
 			ln, err := net.Listen("tcp", "127.0.0.1:0")
 			if err != nil {
@@ -124,6 +124,18 @@ func TestProvisionDatabaseReadiness(t *testing.T) {
 						}
 						if mode == "replica" {
 							info = strings.ReplaceAll(info, "role:master", "role:slave")
+						}
+						if strings.HasPrefix(mode, "redis-storage-replica") {
+							info = strings.ReplaceAll(info, "role:master", "role:slave") + "master_host:10.0.0.1\r\nmaster_port:6379\r\nmaster_link_status:up\r\nmaster_sync_in_progress:0\r\n"
+							if mode == "redis-storage-replica-down" {
+								info = strings.ReplaceAll(info, "master_link_status:up", "master_link_status:down")
+							}
+							if mode == "redis-storage-replica-wrong-source" {
+								info = strings.ReplaceAll(info, "master_port:6379", "master_port:6380")
+							}
+							if mode == "redis-storage-replica-syncing" {
+								info = strings.ReplaceAll(info, "master_sync_in_progress:0", "master_sync_in_progress:1")
+							}
 						}
 						if mode == "other-db" {
 							info += "db1:keys=1,expires=0\r\n"
@@ -172,8 +184,12 @@ func TestProvisionDatabaseReadiness(t *testing.T) {
 			if mode == "kvrocks" || mode == "wal-off" {
 				profile = "kvrocks-storage"
 			}
-			err = probeProvisionDatabase(ln.Addr().String(), profile)
-			if (mode == "redis" || mode == "kvrocks" || mode == "redis-storage") != (err == nil) {
+			upstream := ""
+			if strings.HasPrefix(mode, "redis-storage-replica") {
+				upstream = "10.0.0.1:6379"
+			}
+			err = probeProvisionDatabase(ln.Addr().String(), profile, upstream)
+			if (mode == "redis" || mode == "kvrocks" || mode == "redis-storage" || mode == "redis-storage-replica") != (err == nil) {
 				t.Fatalf("unexpected readiness result: %v", err)
 			}
 		})

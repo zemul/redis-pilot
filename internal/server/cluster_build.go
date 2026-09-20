@@ -65,7 +65,9 @@ func (s *Server) trackClusterBuildTask(task store.Task) {
 	}
 	if _, err := s.db.FinishClusterBuild(task.ID); err != nil {
 		wait("Cluster registration pending: " + err.Error())
+		return
 	}
+	s.syncSentinel()
 }
 
 func (s *Server) verifyClusterChild(child store.Task) error {
