@@ -16,6 +16,35 @@ func primaryGeneration(t *testing.T, d *DB, group string) uint64 {
 	return n
 }
 
+func TestReservedNodeHealthPreservesPrimaryGeneration(t *testing.T) {
+	d := openTestDB(t)
+	spec := coldFixture(t, d)
+	if _, err := d.CreateColdCluster(spec); err != nil {
+		t.Fatal(err)
+	}
+	before := primaryGeneration(t, d, "a")
+	if err := d.WithNode(func(n *apitypes.NodeState) error {
+		n.Servers["node"].Status = "healthy"
+		n.Servers["node"].LastHeartbeat = "2026-09-20T12:00:00Z"
+		return nil
+	}); err != nil {
+		t.Fatal("reserved node health blocked", err)
+	}
+	n, err := d.GetServer("node")
+	if err != nil || n.Status != "healthy" || n.LastHeartbeat == "" {
+		t.Fatal(n, err)
+	}
+	if after := primaryGeneration(t, d, "a"); after != before {
+		t.Fatal("health changed primary generation", before, after)
+	}
+	if err := d.WithServers(func(n map[string]*apitypes.NodeServer) error {
+		delete(n, "node")
+		return nil
+	}); err == nil {
+		t.Fatal("reserved node deletion allowed")
+	}
+}
+
 func TestPrimaryGenerationTransactional(t *testing.T) {
 	d := openTestDB(t)
 	g := &apitypes.InstanceGroupState{Type: "replication", Engine: "redis", CurrentMaster: "a"}

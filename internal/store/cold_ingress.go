@@ -46,6 +46,12 @@ func (d *DB) CreateColdIngress(id string, req apitypes.ColdIngressRequest, start
 		return nil, err
 	}
 	defer tx.Rollback()
+	// Reserve the writer before the first read. A heartbeat can otherwise commit
+	// between our snapshot and INSERT, producing SQLITE_BUSY_SNAPSHOT despite
+	// busy_timeout and the application mutex.
+	if _, err := tx.Exec(`UPDATE cold_ingress SET ready=ready WHERE 0`); err != nil {
+		return nil, err
+	}
 	c, err := loadColdCluster(tx, id)
 	if err != nil {
 		return nil, err

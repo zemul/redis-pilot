@@ -1,5 +1,48 @@
 # Gateway 部署与运维
 
+## 三机分片副本部署与故障验收（2026-09-20）
+
+基线 `4ff6170` 已部署 redis01 Server/内嵌页面、redis01–03 Agent，以及下列三个新增独立 Gateway。Server 另包含本轮健康写回和 SQLite 并发事务修复，版本标记 `4ff6170-ha-fix2`；这些修复、脚本和本记录尚未提交。不改原 Proxy 二进制、不覆盖旧 Gateway，不对既有数据库注入故障。三个新 Gateway 与后端启动单元均开启 systemd 自启动，但没有重启宿主机验证。
+
+| 独立测试集群 | 模式 | Proxy 端口（redis01） | Gateway / 管理端口（回环） | 存储与缓存 |
+| --- | --- | --- | --- | --- |
+| ha-redis-dev | Redis 无缓存 | 16513 | 17683 / 19604 | 2 分片，每片 1 副本，128Mi/0.25 CPU |
+| ha-update-dev | Kvrocks 双写更新 | 16514 | 17684 / 19605 | 2 分片，每片 1 副本，256Mi/0.25 CPU；热 Redis 64Mi |
+| ha-invalidate-dev | Kvrocks 删除缓存 | 16515 | 17685 / 19606 | 同上，热 Redis 独占 |
+
+主从交叉放在 redis02/03，热库和 Gateway 在 redis01。沿用三台现有 Sentinel，quorum=2、down-after=5s。资源经真实 Server API → Agent → Podman 创建，首次创建同规格重放得到相同任务；未手工写数据库状态或伪造切主通知。Gateway 配置由 Server 导出，业务请求通过真实 discovery Proxy。
+
+### 验证方法与结果
+
+每组生成随机前缀及私有 manifest，写入 240 组 String/Hash/List/Set/ZSet（1200 个对象），另测 MSET/MGET、绝对 TTL、到期、同分片 MULTI/EXEC 和 Lua、2000 字段 Hash。故障与迁移后逐项核对值、未修改字段和绝对到期时间。双写模式更新字段后检查热库完整 Hash 仍在；删除模式检查失效后再读回温。
+
+- 三组基础数据与缓存策略验收通过；两个热库分别停止、冷层继续写新值、恢复后连续读取新值，未读到旧热缓存。
+- 停止 s1 主容器，三 Sentinel 原生选举 → Server 记录新主/递增 generation → Gateway 更新 runtime.db，无人工切换地址。Redis 第二轮约 7.93s、Kvrocks 更新模式约 8.04s、删除模式约 9.66s；时间从执行停止主容器前计至 Gateway 确认换址，**不是零中断或性能 SLA**。旧主启动后自动作为副本加入，完整数据复核通过。
+- 故障下成功写后读校验：Redis 第二轮 1706 次、Kvrocks 更新 4103 次、删除 1511 次，均未发现旧值。故障窗口实际出现 TRYAGAIN/ERR，单独记录，绝不算成成功。原生异步复制的丢写边界仍存在，测试零旧值不能证明故障零丢失。
+- Redis、Kvrocks 更新模式在迁移 active 阶段再次停止主库，完成自动切主及旧主归队，再 SIGKILL Gateway，由 systemd 使用原运行状态自动恢复，最终缩容 2→1 完成。分别 3026/7803 次成功写后读校验；故障窗口包含 TRYAGAIN 和连接断开，未自动重放结果未知的写入。每次恢复均核对全部对象与 TTL。
+- 无故障迁移：Redis 1→2 扩容 4766 次、Kvrocks 更新 1→2 扩容 6102 次、Kvrocks 删除 2→1 缩容 15126 次、反向 1→2 扩容 14575 次成功写后读校验，均无请求错误或旧值。三个集群最终均为 revision=3、2 分片，最后一个任务 complete。
+- Server 停止约 10s 时，已建立 Proxy 连接完成 400 次写后读；恢复控制面后全量校验通过。单独停止 Redis 存储副本，400 次写后读通过，主库 generation 不变，恢复后复制正常。
+- Kvrocks 更新模式 Gateway 停止期间发生真实选举，启动后从 Server 发现新主，未退回 YAML 旧地址，全量校验通过。
+- 上述通过的故障/迁移并发场景合计 58718 次成功写后读检查、4284 次故障窗口错误、0 次旧值检查失败。错误包含主动 SIGKILL 断连及切主准入重试，不能宣传为全程零错误；失败的早期部署/脚本轮次未计入成功验收统计，日志保留。
+- 最终核对三个 Sentinel、Server 的 CurrentMaster 和 Gateway 持久主库地址一致、无 pending；旧集群 revision/shards/ingress 与部署前快照比对。该检查通过后才清理本轮随机前缀数据，保留集群与运行状态供后续开发。
+- 上述最终核对三组均通过，删除本轮测试 key：Redis 1212、Kvrocks 更新 1309、Kvrocks 删除 1212，共 3733 个；没有 FLUSH 冷库、删卷或删运行状态。这些是脚本生成的测试数据，可重新生成，不保留其删除回滚副本。
+
+### 发现并修复的问题
+
+1. 节点健康更新以前先删除所有 servers 再插入，触发集群节点保护，且可能误动主库代次。改成只删除明确移除的节点，其余 UPSERT；健康更新不增主库 generation，真正删除/改地址仍受保护。新增保留节点心跳和代次回归。
+2. 入口登记、迁移任务/进度事务与独立审计等写入发生 WAL 快照升级冲突，出现 SQLITE_BUSY / BUSY_SNAPSHOT。相关写事务在首次读取前通过无行 UPDATE 取得写锁，不修改任何行，让 busy_timeout 等待发生在读取快照前；没有把所有只读事务改成写事务。新增持续并发写入下的入口重放/任务进度测试。
+3. 开发防火墙旧规则也匹配 Podman 出站复制流量。新增端口仅允许三台开发机，并精确放行可信 Podman 网桥到对端新增端口；不能按容器当前 IP 固定许可，因为 stop/start 会分配新 IP。保留既有数据库端口限制，不全局关闭防火墙。第一轮 Redis 旧主归队因此超时，保留失败日志，修复后第二轮通过。
+4. 首版验收脚本试图在迁移已移出流量的分片上找新业务 marker，导致测试前置等待超时；修正为迁移期间只检查实际复制链路，不把这种测试脚本错误当作产品故障或成功。恢复原任务继续故障注入，没有删除 journal 或重建数据。
+
+### 产物、复现与边界
+
+- redis01 私有目录 `/opt/pilot-ha-release.fWQThl`，redis02 `/opt/pilot-ha-release.fo8vra`，redis03 `/opt/pilot-ha-release.Ed2ZD3`。保留旧组件二进制、Server 配置/一致性 SQLite 备份。不要用旧 pilot.db 覆盖新资源。
+- 业务凭据、随机前缀 manifest、API 规格及验收日志仅在 redis01 上述私有目录。主要日志：`failover-redis-repeat.log`、`failover-update.log`、`failover-invalidate.log`、`migration-redis.log`、`migration-update-resume.log`、`migration-invalidate.log`、`expand-*.log`、`server-outage.log`、`replica-outage.log`、`offline-election.log`、`audit-*.log`。失败首轮日志同样保留。
+- 新 Gateway 二进制/配置/状态为 `/opt/redis-gateway-<cluster>`、`/etc/redis-gateway-<cluster>`、`/var/lib/redis-gateway-<cluster>`，只首次初始化，升级/恢复不删除 runtime.db 或迁移日志。防火墙与数据库启动单元为 `redis-pilot-ha-firewall`、`redis-pilot-ha-backends`。
+- [部署脚本](../../scripts/ha-dev.py) 只能在已核对端口和容量的三台开发机上分动作执行，不能整份重复首次安装。[验收脚本](../../scripts/verify-ha-dev.py) 的参数为私有目录、动作、固定 ha-* 集群 ID；故障动作仅停止该集群容器并在 finally 恢复。正常业务路径走 Proxy；复制确认诊断只对本轮 marker 做同值写并 WAIT，不写业务验收对象，不 FLUSH 冷库。
+- 本轮实机覆盖每分片 **1 个副本**；0 副本沿用原有集群，2 副本仍只有代码/单测覆盖。未验收三机网络分区、整机掉电、磁盘损坏、Gateway 跨机接管、在线增减副本、生产性能或长稳。没有浏览器点选创建验收；页面构建未改，创建用真实 API。
+- 全量 Go 测试、go vet 及新增存储并发 race 回归通过后发布；副本确认仍非共识/磁盘零丢失保证。普通业务写不 WAIT；迁移等待副本确认会降速，不能以本轮小规格测试推导吞吐上限。
+
 ## 分片副本与切主隔离验证（2026-09-20，非服务发布）
 
 未提交工作树完成 Server 主库版本、分片副本创建、Gateway 换址和固定副本组迁移屏障的开发验证。本轮没有升级开发环境常驻 Server/Agent/Gateway/Proxy，没有操作原数据库容器。
@@ -9,7 +52,7 @@
 - 临时容器 `pilot-ha-kvrocks-tests` 已随测试结束自动移除；`/opt/pilot-ha-tests.pTmli3/gateway.test` 保留为复现产物，无业务数据。常驻 Agent 保持 active。
 - 全仓 Go 测试、go vet、专项 race、前端 12 项测试及构建通过。前端构建保留已有大 bundle 提示。
 
-尚需单独部署验收：新版 Agent/Gateway/Server 在三台主机组成的平台创建链路、真实 Sentinel 通知自动下发、主从互通防火墙和故障恢复。上线前须升级所有相关组件，并允许 Gateway/Sentinel/复制组成员访问对应后端端口；不能仅升级 Server 页面就把旧 Gateway 当成具备此能力。
+本隔离阶段尚未包含三机平台部署；后续验收已补充于本文开头。上线前仍须升级所有相关组件，并允许 Gateway/Sentinel/复制组成员访问对应后端端口；不能仅升级 Server 页面就把旧 Gateway 当成具备此能力。
 
 ## 内存预算与 Kvrocks RSS 修复部署（2026-09-18）
 

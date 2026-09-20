@@ -160,19 +160,32 @@ func (d *DB) WithServers(fn func(map[string]*apitypes.NodeServer) error) error {
 	}
 	defer tx.Rollback() //nolint:errcheck
 
+	// Acquire the writer before reading; task writers need not hold d.mu.
+	if _, err := tx.Exec(`UPDATE servers SET status=status WHERE 0`); err != nil {
+		return err
+	}
 	// 读全量
 	servers, err := d.getAllServersInTx(tx)
 	if err != nil {
 		return err
+	}
+	original := make([]string, 0, len(servers))
+	for name := range servers {
+		original = append(original, name)
 	}
 
 	if err := fn(servers); err != nil {
 		return err
 	}
 
-	// 写回：先删全部再插入（节点数量极少，全量重写无性能问题）
-	if _, err := tx.Exec(`DELETE FROM servers`); err != nil {
-		return err
+	// Keep identities stable: delete only explicitly removed nodes. A health
+	// update must not fire cluster ownership deletion guards or version triggers.
+	for _, name := range original {
+		if _, exists := servers[name]; !exists {
+			if _, err := tx.Exec(`DELETE FROM servers WHERE name=?`, name); err != nil {
+				return err
+			}
+		}
 	}
 	for name, srv := range servers {
 		labelsJSON, _ := json.Marshal(srv.Labels)
@@ -180,7 +193,10 @@ func (d *DB) WithServers(fn func(map[string]*apitypes.NodeServer) error) error {
 		instancesJSON, _ := json.Marshal(srv.Instances)
 		if _, err := tx.Exec(`
 			INSERT INTO servers(name, endpoint, agent_port, agent_token, labels, capacity, instances, status, last_heartbeat)
-			VALUES(?,?,?,?,?,?,?,?,?)`,
+			VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(name) DO UPDATE SET
+			endpoint=excluded.endpoint, agent_port=excluded.agent_port, agent_token=excluded.agent_token,
+			labels=excluded.labels, capacity=excluded.capacity, instances=excluded.instances,
+			status=excluded.status, last_heartbeat=excluded.last_heartbeat`,
 			name,
 			srv.Endpoint, srv.AgentPort, srv.AgentToken,
 			string(labelsJSON), string(capacityJSON), string(instancesJSON),

@@ -270,6 +270,9 @@ func (d *DB) createColdCluster(spec apitypes.ColdClusterSpec, buildTaskID string
 		return nil, err
 	}
 	defer tx.Rollback()
+	if _, err := tx.Exec(`UPDATE cold_clusters SET body=body WHERE 0`); err != nil {
+		return nil, err
+	}
 	if err := checkClusterBuildTx(tx, spec, buildTaskID); err != nil {
 		return nil, err
 	}
@@ -343,6 +346,9 @@ func (d *DB) CreateColdTask(id string, req apitypes.ColdTaskRequest) (*apitypes.
 		return nil, err
 	}
 	defer tx.Rollback()
+	if _, err := tx.Exec(`UPDATE cold_clusters SET body=body WHERE 0`); err != nil {
+		return nil, err
+	}
 	c, err := loadColdCluster(tx, id)
 	if err != nil {
 		return nil, err
@@ -444,6 +450,11 @@ func (d *DB) ReportColdTask(gateway, id string, r apitypes.ColdTaskReport) error
 		return err
 	}
 	defer tx.Rollback()
+	// Reserve the writer before reading progress: audit/task writes may bypass
+	// d.mu and otherwise invalidate this WAL snapshot before its first update.
+	if _, err := tx.Exec(`UPDATE cold_clusters SET body=body WHERE 0`); err != nil {
+		return err
+	}
 	c, err := loadColdCluster(tx, id)
 	if err != nil {
 		return err
