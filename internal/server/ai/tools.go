@@ -49,6 +49,10 @@ func isWriteTool(name string) bool { return writeTools[name] }
 // 确保 ai 包是写工具白名单的唯一来源。
 func IsWriteTool(name string) bool { return isWriteTool(name) }
 
+// WriteToolSummary 是 writeToolSummary 的导出版本，供执行端点在后端自动续接时
+// 生成「上一步已执行」的可信摘要（不依赖前端回传）。
+func WriteToolSummary(name, argsJSON string) string { return writeToolSummary(name, argsJSON) }
+
 // writeToolSummary 由后端根据 tool+args 生成**可信**的人类可读摘要，供前端确认弹窗展示。
 // 刻意不使用 LLM 生成的描述，防止模型谎报将要执行的动作。
 func writeToolSummary(name, argsJSON string) string {

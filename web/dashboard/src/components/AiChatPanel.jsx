@@ -1,8 +1,9 @@
 import { useState, useRef, useEffect } from 'react';
+import { useAiChat, useAiChatOptional } from './AiChatProvider.jsx';
+import { summarizeTrace, formatDuration, formatClock, isFailed } from '../lib/aiTrace.js';
 import { Sparkles, Send, Loader2, Wrench, CheckCircle2, AlertCircle, Square, ShieldAlert, Plus, Trash2, MessageSquare, Gauge, Stethoscope, ScanSearch, Database, LineChart, ChevronDown } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { authHeaders } from '../Auth.jsx';
 
 // Markdown 渲染（assistant 回复）。remark-gfm 支持表格/删除线/任务列表；
 // 各元素用 tailwind 定制样式，避免依赖 @tailwindcss/typography。
@@ -61,6 +62,11 @@ const TOOL_LABELS = {
   get_metrics_history: '获取历史指标',
   list_nodes: '列出服务器节点',
   query_audit: '查询操作审计',
+  query_tasks: '查询运维任务',
+  get_task_detail: '查看任务详情',
+  query_incidents: '查询异常记录',
+  describe_key: '查看 Key 信息',
+  get_key: '读取 Key 内容',
   load_skill: '加载技能手册',
   create_instance: '创建实例',
   start_instance: '启动实例',
@@ -71,6 +77,11 @@ const TOOL_LABELS = {
   set_access_mode: '设置访问模式',
   replicate: '添加副本',
   backup_set_schedule: '设置备份计划',
+  resize_instance: '调整实例规格',
+  scan_bigkeys: '发起大 key 扫描',
+  cancel_task: '取消任务',
+  write_key: '写入 Key',
+  delete_key: '删除 Key',
 };
 
 // 空对话时的快捷入口：按能力大类分组，点分类切换下方预置问题，点问题直接发送。
@@ -145,321 +156,40 @@ const PROMPT_CATEGORIES = [
   },
 ];
 
-// 多步写操作自动续接的安全上限：单条用户意图链最多自动发起多少轮后续对话。
-// 正常场景每步仍需用户点「确认执行」，此上限仅防御异常（如模型反复提议）。
-const MAX_AUTO_CONTINUE = 25;
-
-// 解析一个 SSE 事件块（形如 "event: token\ndata: {...}"）
-function parseEvent(raw) {
-  let event = 'message';
-  let data = '';
-  for (const line of raw.split('\n')) {
-    if (line.startsWith('event:')) event = line.slice(6).trim();
-    else if (line.startsWith('data:')) data += line.slice(5).trim();
-  }
-  if (!data) return { event, data: {} };
-  try {
-    return { event, data: JSON.parse(data) };
-  } catch {
-    return { event, data: {} };
-  }
-}
-
-// 把后端 tool_calls JSON 字符串解析为数组（渲染留痕用）
-function parseToolCalls(raw) {
-  if (!raw) return [];
-  try {
-    const arr = JSON.parse(raw);
-    return Array.isArray(arr) ? arr : [];
-  } catch {
-    return [];
-  }
-}
-
+// 会话状态全部在 AiChatProvider（挂在 AppShell 上），本组件只负责展示与交互：
+// 切 tab 卸载本组件不影响后台 run 与流式状态，切回来即是离开时的样子。
 export default function AiChatPanel() {
-  const [messages, setMessages] = useState([]); // 已完成的对话 [{role, content, tool_calls?, interrupted?}]
+  const {
+    conversations, convId, messages, streaming, current, toolStatus, liveStats, error, pendingConfirm,
+    executing, loadingConv, allowWrite,
+    send, stop, loadConversation, newConversation, deleteConversation, confirmExecute, cancelConfirm,
+    conversationStatus,
+  } = useAiChat();
   const [input, setInput] = useState('');
-  const [streaming, setStreaming] = useState(false);
-  const [current, setCurrent] = useState(''); // 当前正在流式输出的助手文本
-  const [toolStatus, setToolStatus] = useState(null); // {name, running, ok}
-  const [error, setError] = useState('');
-  const [pendingConfirm, setPendingConfirm] = useState(null); // {tool, args, summary} 待确认的写操作
-  const [executing, setExecuting] = useState(false);
-  const [conversations, setConversations] = useState([]); // 会话列表
-  const [convId, setConvId] = useState(''); // 当前会话 id，''=新会话未落库
-  const [loadingConv, setLoadingConv] = useState(false);
   const [promptCat, setPromptCat] = useState(PROMPT_CATEGORIES[0].key); // 空态选中的预置问题分类
-  const [allowWrite, setAllowWrite] = useState(false); // 后端是否允许写操作（总闸 && admin），决定是否展示「运维操作」类
   const scrollRef = useRef(null);
-  const abortRef = useRef(null);
-  // 多步写操作自动续接的深度计数：每条用户意图链从 0 开始，每自动续接一轮 +1。
-  // 纯防御上限，正常每步仍需用户点「确认执行」，几乎不会触顶。
-  const continueDepthRef = useRef(0);
 
   useEffect(() => {
     const el = scrollRef.current;
     if (el) el.scrollTop = el.scrollHeight;
-  }, [messages, current, toolStatus, error, pendingConfirm]);
+  }, [messages, current, toolStatus, error, pendingConfirm, convId]);
 
-  // 流式输出中拦截页面刷新/关闭，避免用户误操作丢失当前回答
-  useEffect(() => {
-    const handler = (e) => {
-      if (streaming) { e.preventDefault(); e.returnValue = ''; }
-    };
-    window.addEventListener('beforeunload', handler);
-    return () => window.removeEventListener('beforeunload', handler);
-  }, [streaming]);
-
-  // 挂载时拉取会话列表 + 探测写操作能力
-  useEffect(() => {
-    refreshConversations();
-    fetchCapabilities();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  async function fetchCapabilities() {
-    try {
-      const resp = await fetch('/api/v1/ai/capabilities', { headers: { ...authHeaders() } });
-      const body = await resp.json().catch(() => null);
-      if (resp.ok && body?.success) setAllowWrite(!!body.data?.allow_write);
-    } catch {
-      /* 探测失败按无写权限处理，只展示只读分类 */
-    }
-  }
-
-  async function refreshConversations() {
-    try {
-      const resp = await fetch('/api/v1/ai/conversations', { headers: { ...authHeaders() } });
-      const body = await resp.json().catch(() => null);
-      if (resp.ok && body?.success) setConversations(body.data || []);
-    } catch {
-      /* 会话列表拉取失败不阻断主流程 */
-    }
-  }
-
-  // 点击会话项：拉取历史并回填
-  async function loadConversation(id) {
-    if (streaming || id === convId) return;
-    setLoadingConv(true);
-    setError('');
-    try {
-      const resp = await fetch(`/api/v1/ai/conversations/${id}`, { headers: { ...authHeaders() } });
-      const body = await resp.json().catch(() => null);
-      if (!resp.ok || !body?.success) throw new Error(body?.error || `加载失败：${resp.status}`);
-      const msgs = (body.data?.messages || []).map((m) => ({
-        role: m.role,
-        content: m.content,
-        tool_calls: parseToolCalls(m.tool_calls),
-        interrupted: m.interrupted,
-      })).filter((m) => !(m.role === 'user' && m.content.startsWith('[系统提示]')));
-      setMessages(msgs);
-      setConvId(id);
-      setCurrent('');
-      setToolStatus(null);
-      setPendingConfirm(null);
-    } catch (e) {
-      setError(e.message || String(e));
-    } finally {
-      setLoadingConv(false);
-    }
-  }
-
-  // 新建会话：清空对话区
-  function newConversation() {
-    if (streaming) return;
-    setMessages([]);
-    setConvId('');
-    setCurrent('');
-    setToolStatus(null);
-    setPendingConfirm(null);
-    setError('');
-    setInput('');
-  }
-
-  // 删除会话
-  async function deleteConversation(id, e) {
-    e.stopPropagation();
-    if (streaming) return;
-    try {
-      const resp = await fetch(`/api/v1/ai/conversations/${id}`, {
-        method: 'DELETE',
-        headers: { ...authHeaders() },
-      });
-      const body = await resp.json().catch(() => null);
-      if (!resp.ok || !body?.success) throw new Error(body?.error || `删除失败：${resp.status}`);
-      setConversations((cs) => cs.filter((c) => c.id !== id));
-      if (id === convId) newConversation();
-    } catch (err) {
-      setError(err.message || String(err));
-    }
-  }
-
-  // streamChat 跑一轮完整对话：给定要发给后端的完整 history，处理 SSE 流。
-  // 不负责把 user 消息 push 进 messages（由调用方决定是否显示），只在本轮结束时
-  // 把 assistant 回复（含工具/写操作留痕）push 进 messages。
-  async function streamChat(history) {
-    setStreaming(true);
-    setCurrent('');
-    setToolStatus(null);
-
-    const controller = new AbortController();
-    abortRef.current = controller;
-    let assistantText = '';
-    const toolCalls = []; // 累积本轮工具/写操作留痕，落到 assistant 消息上
-    let newConvId = ''; // 若本轮新建会话，记录后端下发的 convId
-    try {
-      const resp = await fetch('/api/v1/ai/chat', {
-        method: 'POST',
-        headers: { ...authHeaders(), 'Content-Type': 'application/json' },
-        body: JSON.stringify({ messages: history, conversation_id: convId }),
-        signal: controller.signal,
-      });
-      if (!resp.ok || !resp.body) {
-        const body = await resp.json().catch(() => null);
-        throw new Error(body?.error || `请求失败：${resp.status}`);
-      }
-      const reader = resp.body.getReader();
-      const decoder = new TextDecoder();
-      let buf = '';
-      while (true) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        buf += decoder.decode(value, { stream: true });
-        const parts = buf.split('\n\n');
-        buf = parts.pop() || '';
-        for (const part of parts) {
-          if (!part.trim()) continue;
-          const { event, data } = parseEvent(part);
-          if (event === 'conversation') {
-            // 新建会话：后端下发 convId，绑定并稍后刷新侧栏
-            newConvId = data.id || '';
-            if (newConvId) setConvId(newConvId);
-          } else if (event === 'token') {
-            assistantText += data.text || '';
-            setCurrent(assistantText);
-            setToolStatus(null);
-          } else if (event === 'tool_call') {
-            setToolStatus({ name: data.name, running: true });
-            toolCalls.push({ type: 'tool_call', tool: data.name, args: data.args });
-          } else if (event === 'tool_result') {
-            setToolStatus({ name: data.name, running: false, ok: data.ok });
-          } else if (event === 'confirm') {
-            // 模型提议写操作：不执行，弹出二次确认卡片（摘要由后端可信生成）
-            setPendingConfirm({ tool: data.tool, args: data.args, summary: data.summary });
-            toolCalls.push({ type: 'write_confirm', tool: data.tool, summary: data.summary });
-          } else if (event === 'error') {
-            throw new Error(data.message || 'AI 服务出错');
-          }
-        }
-      }
-      if (assistantText || toolCalls.length) {
-        setMessages((m) => [...m, { role: 'assistant', content: assistantText, tool_calls: toolCalls }]);
-      }
-    } catch (e) {
-      if (e.name !== 'AbortError') setError(e.message || String(e));
-      else if (assistantText || toolCalls.length) {
-        // 用户中断：保留已生成的部分并标记 interrupted
-        setMessages((m) => [...m, { role: 'assistant', content: assistantText, tool_calls: toolCalls, interrupted: true }]);
-      }
-    } finally {
-      setStreaming(false);
-      setCurrent('');
-      setToolStatus(null);
-      abortRef.current = null;
-      // 新建会话后刷新侧栏，使其出现在列表；续聊也刷新以更新 updated_at 排序
-      refreshConversations();
-    }
-  }
-
-  // 把已完成消息过滤成发给后端的 history（去掉本地 system 回显，避免污染上下文）。
-  function historyFromMessages() {
-    return messages.filter((m) => m.role !== 'system').map((m) => ({ role: m.role, content: m.content }));
-  }
-
-  async function send(text) {
+  async function submit(text) {
     const q = (text ?? input).trim();
     if (!q || streaming) return;
-    setError('');
     setInput('');
-    setPendingConfirm(null); // 新一轮对话，清掉上一个未处理的确认
-    continueDepthRef.current = 0; // 用户主动发问：重置自动续接链计数
-    const history = [...historyFromMessages(), { role: 'user', content: q }];
-    setMessages((m) => [...m, { role: 'user', content: q }]);
-    await streamChat(history);
-  }
-
-  // continueAfterExecute 在写操作执行成功后自动发起新一轮对话，让 AI 接续多步意图的
-  // 下一步（如主从创建：主库建好→自动续→AI 提议建从库）。续接的提示消息只作为本次
-  // 请求 history 的最后一条 user 消息发给后端，不 push 进 messages、界面不显示——
-  // 用户看到的是「✅ 已执行」灰条 + AI 自动接上的下一轮回复。
-  async function continueAfterExecute(summary) {
-    if (continueDepthRef.current >= MAX_AUTO_CONTINUE) {
-      // 防御：异常情况下链条过长则停止自动续接，避免失控。
-      setMessages((m) => [...m, { role: 'system', content: '已达到自动续接上限，如需继续请手动输入。' }]);
-      return;
-    }
-    continueDepthRef.current += 1;
-    const followup =
-      `[系统提示] 上一步写操作已成功执行：${summary}。` +
-      `如果用户最初的意图还需要后续写操作才能完成（例如“创建主从实例”在主库创建后还需创建从库并建立复制），` +
-      `请继续提议下一步并简要说明；如果整个意图已经完成，请简要总结，不要再提议任何写操作。`;
-    const history = [...historyFromMessages(), { role: 'user', content: followup }];
-    await streamChat(history);
-  }
-
-  function stop() {
-    abortRef.current?.abort();
-  }
-
-  // 用户点「确认执行」：调独立执行端点（不走 LLM）执行写操作。
-  // 执行成功后自动发起新一轮对话（continueAfterExecute），让 AI 接续多步意图的下一步；
-  // 失败则就地报错、不续接。
-  async function confirmExecute() {
-    if (!pendingConfirm || executing) return;
-    setExecuting(true);
-    setError('');
-    const summary = pendingConfirm.summary;
-    let argsObj = {};
-    try {
-      argsObj = pendingConfirm.args ? JSON.parse(pendingConfirm.args) : {};
-    } catch {
-      argsObj = {};
-    }
-    try {
-      const resp = await fetch('/api/v1/ai/execute', {
-        method: 'POST',
-        headers: { ...authHeaders(), 'Content-Type': 'application/json' },
-        body: JSON.stringify({ tool: pendingConfirm.tool, args: argsObj, conversation_id: convId }),
-      });
-      const body = await resp.json().catch(() => null);
-      if (!resp.ok) throw new Error(body?.error || `执行失败：${resp.status}`);
-      setMessages((m) => [...m, { role: 'system', content: `已完成 · ${summary}` }]);
-      setPendingConfirm(null);
-      setExecuting(false);
-      // 执行成功：自动发起下一轮，让 AI 判断是否还有后续步骤（多步写自动续接）。
-      await continueAfterExecute(summary);
-      return;
-    } catch (e) {
-      setError(e.message || String(e));
-    } finally {
-      setExecuting(false);
-    }
-  }
-
-  function cancelConfirm() {
-    if (executing) return;
-    setMessages((m) => [...m, { role: 'system', content: `已取消：${pendingConfirm.summary}` }]);
-    setPendingConfirm(null);
+    const ok = await send(q);
+    if (!ok && text == null) setInput(q); // 发送失败（如会话正在回复中）把输入还给用户
   }
 
   function onKeyDown(e) {
-    if (e.key === 'Enter' && !e.shiftKey) {
+    if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
       e.preventDefault();
-      send();
+      submit();
     }
   }
 
-  const empty = messages.length === 0 && !streaming;
+  const empty = messages.length === 0 && !streaming && !loadingConv;
 
   return (
     <div className="border border-gray-100 rounded-lg bg-white flex h-[calc(100vh-180px)] min-h-[480px] overflow-hidden">
@@ -468,8 +198,7 @@ export default function AiChatPanel() {
         <div className="p-3 border-b border-gray-100">
           <button
             onClick={newConversation}
-            disabled={streaming}
-            className="w-full h-9 rounded-md bg-gray-900 text-white inline-flex items-center justify-center gap-1.5 text-[13px] cursor-pointer hover:bg-gray-800 disabled:opacity-40 disabled:cursor-not-allowed"
+            className="w-full h-9 rounded-md bg-gray-900 text-white inline-flex items-center justify-center gap-1.5 text-[13px] cursor-pointer hover:bg-gray-800"
           >
             <Plus size={15} /> 新建会话
           </button>
@@ -478,26 +207,39 @@ export default function AiChatPanel() {
           {conversations.length === 0 ? (
             <div className="px-3 py-6 text-center text-xs text-gray-400">暂无历史会话</div>
           ) : (
-            conversations.map((c) => (
-              <div
-                key={c.id}
-                onClick={() => loadConversation(c.id)}
-                className={`group flex items-center gap-2 px-3 py-2 mx-1.5 my-0.5 rounded-md cursor-pointer text-[13px] ${
-                  c.id === convId ? 'bg-gray-200 text-gray-900' : 'text-gray-600 hover:bg-gray-100'
-                }`}
-              >
-                <MessageSquare size={14} className="shrink-0 text-gray-400" />
-                <span className="flex-1 truncate">{c.title || '未命名会话'}</span>
-                <button
-                  onClick={(e) => deleteConversation(c.id, e)}
-                  disabled={streaming}
-                  className="opacity-0 group-hover:opacity-100 text-gray-400 hover:text-red-500 shrink-0 disabled:cursor-not-allowed"
-                  title="删除会话"
+            conversations.map((c) => {
+              const st = conversationStatus(c);
+              return (
+                <div
+                  key={c.id}
+                  onClick={() => loadConversation(c.id)}
+                  className={`group flex items-center gap-2 px-3 py-2 mx-1.5 my-0.5 rounded-md cursor-pointer text-[13px] ${
+                    c.id === convId ? 'bg-gray-200 text-gray-900' : 'text-gray-600 hover:bg-gray-100'
+                  }`}
                 >
-                  <Trash2 size={14} />
-                </button>
-              </div>
-            ))
+                  {st.running ? (
+                    <Loader2 size={14} className="shrink-0 text-blue-500 animate-spin" aria-label="回复中" />
+                  ) : st.pending ? (
+                    <ShieldAlert size={14} className="shrink-0 text-amber-500" aria-label="待确认" />
+                  ) : (
+                    <MessageSquare size={14} className="shrink-0 text-gray-400" />
+                  )}
+                  <span className="flex-1 truncate" title={st.running ? '回复中' : st.pending ? '有待确认的写操作' : undefined}>
+                    {c.title || '未命名会话'}
+                  </span>
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      deleteConversation(c.id);
+                    }}
+                    className="opacity-0 group-hover:opacity-100 text-gray-400 hover:text-red-500 shrink-0"
+                    title={st.running ? '删除会话（将停止正在进行的回复）' : '删除会话'}
+                  >
+                    <Trash2 size={14} />
+                  </button>
+                </div>
+              );
+            })
           )}
         </div>
       </aside>
@@ -513,7 +255,7 @@ export default function AiChatPanel() {
             </div>
           )}
 
-          {empty && !loadingConv && (
+          {empty && (
             <div className="pt-2">
               {/* 标题 */}
               <h2 className="text-[22px] font-semibold text-gray-900 mb-5">
@@ -547,7 +289,7 @@ export default function AiChatPanel() {
                 {(PROMPT_CATEGORIES.find((c) => c.key === promptCat)?.prompts || []).map((p) => (
                   <button
                     key={p}
-                    onClick={() => send(p)}
+                    onClick={() => submit(p)}
                     className="w-full text-left text-[14px] text-gray-700 border border-gray-200 rounded-xl px-4 py-3.5 bg-white hover:bg-gray-50 hover:border-gray-300 cursor-pointer transition-colors"
                   >
                     {p}
@@ -564,21 +306,22 @@ export default function AiChatPanel() {
           {/* 正在进行的助手回复 */}
           {streaming && (
             <div className="flex flex-col gap-2">
-              {toolStatus && <ToolStatus status={toolStatus} />}
+              {toolStatus && <ToolStatus status={toolStatus} stats={liveStats} />}
               {current ? (
                 <MessageBubble role="assistant" content={current} />
               ) : (
                 !toolStatus && (
                   <div className="inline-flex items-center gap-2 text-gray-400 text-[13px]">
                     <Loader2 size={15} className="animate-spin" /> 正在思考…
+                    <LiveMeta stats={liveStats} />
                   </div>
                 )
               )}
             </div>
           )}
 
-          {/* 写操作二次确认卡片：模型提议 → 用户人工确认后才执行 */}
-          {pendingConfirm && (
+          {/* 写操作二次确认卡片：模型提议 → 用户人工确认后才执行。刷新页面后由后端恢复 */}
+          {pendingConfirm && !streaming && (
             <ConfirmCard
               summary={pendingConfirm.summary}
               executing={executing}
@@ -603,7 +346,8 @@ export default function AiChatPanel() {
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={onKeyDown}
               rows={1}
-              placeholder="输入问题，Enter 发送，Shift+Enter 换行"
+              aria-label="输入问题"
+              placeholder={streaming ? 'AI 正在回复，可随时切换页面，回复会在后台继续…' : '输入问题，Enter 发送，Shift+Enter 换行'}
               className="flex-1 resize-none max-h-32 min-h-[40px] rounded-md border border-gray-200 px-3 py-2.5 text-sm text-gray-900 outline-none focus:border-gray-400 focus:ring-1 focus:ring-gray-300"
             />
             {streaming ? (
@@ -615,7 +359,7 @@ export default function AiChatPanel() {
               </button>
             ) : (
               <button
-                onClick={() => send()}
+                onClick={() => submit()}
                 disabled={!input.trim()}
                 className="h-[40px] px-3.5 rounded-md bg-gray-900 text-white inline-flex items-center gap-1.5 text-sm cursor-pointer hover:bg-gray-800 disabled:opacity-40 disabled:cursor-not-allowed"
               >
@@ -629,81 +373,151 @@ export default function AiChatPanel() {
   );
 }
 
-// ToolCallTrace 渲染 assistant 消息里持久化的工具调用/写操作留痕（§13.8）。
-// 竖排一行一个，点击可展开查看该次调用的参数（tool_call/write_confirm）。
-function ToolCallTrace({ calls }) {
-  const [open, setOpen] = useState({}); // 索引 → 是否展开
-  if (!calls || calls.length === 0) return null;
+// AiNavIndicator 主导航「AI 助手」项上的状态：任一会话回复中→转圈；有待确认写操作→琥珀点。
+// 放在本文件以便与面板的状态展示保持一致；Provider 外渲染时不显示。
+export function AiNavIndicator({ active }) {
+  const ai = useAiChatOptional();
+  if (!ai) return null;
+  if (ai.anyRunning) {
+    return <Loader2 size={14} className={`ml-auto animate-spin ${active ? 'text-white' : 'text-blue-500'}`} aria-label="AI 回复中" />;
+  }
+  if (ai.anyPending) {
+    return <span className="ml-auto w-2 h-2 rounded-full bg-amber-500" aria-label="AI 有待确认的写操作" />;
+  }
+  return null;
+}
 
-  // 把 args 规整为可读的 JSON 文本（后端 args 可能是 JSON 字符串或对象）
-  const prettyArgs = (args) => {
-    if (args == null || args === '') return '';
-    let obj = args;
-    if (typeof args === 'string') {
-      try {
-        obj = JSON.parse(args);
-      } catch {
-        return args; // 非 JSON 字符串，原样展示
-      }
-    }
+// prettyArgs 把 args 规整为可读的 JSON 文本（后端 args 可能是 JSON 字符串或对象）。
+function prettyArgs(args) {
+  if (args == null || args === '') return '';
+  let obj = args;
+  if (typeof args === 'string') {
     try {
-      return JSON.stringify(obj, null, 2);
+      obj = JSON.parse(args);
     } catch {
-      return String(args);
+      return args; // 非 JSON 字符串，原样展示
     }
-  };
+  }
+  try {
+    return JSON.stringify(obj, null, 2);
+  } catch {
+    return String(args);
+  }
+}
+
+// ToolCallTrace 渲染 assistant 消息里持久化的工具调用/写操作留痕（§13.8、§14.6）。
+// 默认折叠成一行摘要「已处理 X 秒 · 调用 N 次工具（M 次失败）」，点开是按时间顺序的
+// 时间线，连续相同工具合并为「×N」，再点某组看每次调用的参数与结果。
+// 写操作提议/执行数量少且关键，始终在摘要下方单独展示。
+function ToolCallTrace({ calls }) {
+  const [open, setOpen] = useState(false);
+  const [openGroup, setOpenGroup] = useState({});
+  const { groups, writes, total, failed, durationMs } = summarizeTrace(calls);
+  if (groups.length === 0 && writes.length === 0) return null;
+
+  const head = [durationMs != null ? `已处理 ${formatDuration(durationMs)}` : null, total ? `调用 ${total} 次工具` : null]
+    .filter(Boolean)
+    .join(' · ');
 
   return (
-    <div className="flex flex-col gap-0.5 mt-2">
-      {calls.map((el, i) => {
-        const label = TOOL_LABELS[el.tool] || el.tool;
-        const isConfirm = el.type === 'write_confirm';
-        const isExecute = el.type === 'write_execute';
-        // 可展开内容：tool_call 看参数；write_confirm 看摘要；write_execute 无更多信息
-        const detail = isConfirm ? el.summary : prettyArgs(el.args);
-        const expandable = !!detail;
-        const isOpen = !!open[i];
+    <div className="flex flex-col gap-0.5 mt-2 text-[12px]">
+      {total > 0 && (
+        <button
+          type="button"
+          onClick={() => setOpen((o) => !o)}
+          aria-expanded={open}
+          className="inline-flex items-center gap-1.5 text-gray-500 hover:text-gray-900 cursor-pointer w-fit"
+        >
+          {failed ? <AlertCircle size={13} className="text-red-500" /> : <Wrench size={13} className="text-gray-400" />}
+          <span>{head}</span>
+          {failed > 0 && <span className="text-red-600">（{failed} 次失败）</span>}
+          <ChevronDown size={13} className={`text-gray-400 transition-transform ${open ? 'rotate-180' : ''}`} />
+        </button>
+      )}
 
-        let Icon = Wrench;
-        let iconCls = 'text-gray-400';
-        let head = `已使用工具: ${label}`;
-        if (isExecute) {
-          Icon = CheckCircle2;
-          iconCls = 'text-emerald-500';
-          head = `已执行 ${label}`;
-        } else if (isConfirm) {
-          Icon = ShieldAlert;
-          iconCls = 'text-amber-500';
-          head = `提议 ${label}`;
-        }
-
-        return (
-          <div key={i} className="text-[12px]">
-            <button
-              type="button"
-              onClick={() => expandable && setOpen((o) => ({ ...o, [i]: !o[i] }))}
-              className={`inline-flex items-center gap-1.5 text-gray-600 ${expandable ? 'cursor-pointer hover:text-gray-900' : 'cursor-default'}`}
-            >
-              <Icon size={13} className={iconCls} />
-              <span>{head}</span>
-              {expandable && <ChevronDown size={13} className={`text-gray-400 transition-transform ${isOpen ? 'rotate-180' : ''}`} />}
-            </button>
-            {expandable && isOpen && (
-              <div className="mt-1 mb-1.5 ml-5">
-                <div className="text-[11px] text-gray-400 mb-1">{isConfirm ? '摘要' : '参数'}</div>
-                {isConfirm ? (
-                  <div className="px-2.5 py-2 rounded bg-gray-50 text-[12px] text-gray-700 leading-relaxed">
-                    {detail}
+      {open && (
+        <div className="ml-1.5 pl-3 border-l border-gray-200 flex flex-col gap-0.5 my-1">
+          {groups.map((g, i) => {
+            const label = TOOL_LABELS[g.tool] || g.tool;
+            const gOpen = !!openGroup[i];
+            return (
+              <div key={i}>
+                <button
+                  type="button"
+                  onClick={() => setOpenGroup((o) => ({ ...o, [i]: !o[i] }))}
+                  aria-expanded={gOpen}
+                  className="inline-flex items-center gap-1.5 text-gray-600 hover:text-gray-900 cursor-pointer"
+                >
+                  {g.failed ? <AlertCircle size={12} className="text-red-500" /> : <CheckCircle2 size={12} className="text-gray-300" />}
+                  <span>{label}</span>
+                  {g.count > 1 && <span className="text-gray-400">×{g.count}</span>}
+                  {g.failed > 0 && <span className="text-red-600">{g.failed} 次失败</span>}
+                  <ChevronDown size={12} className={`text-gray-400 transition-transform ${gOpen ? 'rotate-180' : ''}`} />
+                </button>
+                {gOpen && (
+                  <div className="ml-5 mt-1 mb-1.5 flex flex-col gap-1">
+                    {g.items.map((c, j) => {
+                      const detail = prettyArgs(c.args);
+                      const bad = isFailed(c);
+                      return (
+                        <div key={j}>
+                          {g.count > 1 && <div className="text-[11px] text-gray-400 mb-0.5">第 {j + 1} 次{bad ? ' · 失败' : ''}</div>}
+                          {detail && (
+                            <pre className="px-2.5 py-2 rounded bg-gray-50 text-[11px] font-mono text-gray-700 overflow-x-auto whitespace-pre-wrap break-words">{detail}</pre>
+                          )}
+                          {bad && c.result_summary && <div className="text-[11px] text-red-600 mt-0.5 break-words">{c.result_summary}</div>}
+                        </div>
+                      );
+                    })}
                   </div>
-                ) : (
-                  <pre className="px-2.5 py-2 rounded bg-gray-50 text-[11px] font-mono text-gray-700 overflow-x-auto whitespace-pre-wrap break-words">{detail}</pre>
                 )}
               </div>
+            );
+          })}
+        </div>
+      )}
+
+      {writes.map((w, i) => {
+        const label = TOOL_LABELS[w.tool] || w.tool;
+        const isExecute = w.type === 'write_execute';
+        return (
+          <div key={`w${i}`} className="inline-flex items-start gap-1.5 text-gray-600">
+            {isExecute ? (
+              <CheckCircle2 size={13} className="text-emerald-500 mt-px shrink-0" />
+            ) : (
+              <ShieldAlert size={13} className="text-amber-500 mt-px shrink-0" />
             )}
+            <span>
+              {isExecute ? `已执行 ${label}` : `提议 ${label}`}
+              {!isExecute && w.summary && <span className="text-gray-400"> · {w.summary}</span>}
+            </span>
           </div>
         );
       })}
     </div>
+  );
+}
+
+// useElapsed 运行中每秒刷新一次的已用时长（毫秒）。
+function useElapsed(startedAt) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!startedAt) return undefined;
+    const t = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, [startedAt]);
+  return startedAt ? Math.max(0, now - startedAt) : null;
+}
+
+// LiveMeta 运行中附加信息「· 已调用 N 次 · 0:42」。
+function LiveMeta({ stats }) {
+  const elapsed = useElapsed(stats?.startedAt);
+  if (!stats) return null;
+  return (
+    <span className="text-gray-400">
+      {stats.calls > 0 && ` · 已调用 ${stats.calls} 次`}
+      {elapsed != null && ` · ${formatClock(elapsed)}`}
+    </span>
   );
 }
 
@@ -778,7 +592,7 @@ function ConfirmCard({ summary, executing, onConfirm, onCancel }) {
   );
 }
 
-function ToolStatus({ status }) {
+function ToolStatus({ status, stats }) {
   const label = TOOL_LABELS[status.name] || status.name;
   return (
     <div className="inline-flex items-center gap-2 text-[13px] text-gray-500 bg-gray-50 border border-gray-200 rounded-md px-3 py-2 w-fit">
@@ -791,6 +605,7 @@ function ToolStatus({ status }) {
       )}
       <Wrench size={13} className="text-gray-400" />
       {status.running ? `正在${label}…` : `${label} 完成`}
+      <LiveMeta stats={stats} />
     </div>
   );
 }

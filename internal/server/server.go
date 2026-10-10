@@ -69,6 +69,8 @@ type Server struct {
 
 	// aiAgent 内嵌式 AI 运维助手；仅在 cfg.AI.Enabled 时构造，否则为 nil。
 	aiAgent *ai.Agent
+	// aiRuns 管理 AI 后台 run（与 HTTP 连接解耦、可断点续订），见 ai_run.go。
+	aiRuns *aiRunManager
 
 	// incidents 异常记录服务：把 reconcile/topology/task 观测转成可查询的异常生命周期。
 	incidents *IncidentService
@@ -108,6 +110,7 @@ func New(cfg *Config) (*Server, error) {
 		sentinelMaster:   make(map[string]string),
 		runtimeReplicaOf: make(map[string]string),
 		proxyRuntime:     make(map[string]proxyRuntimeObservation),
+		aiRuns:           newAIRunManager(),
 	}
 	s.scheduler = newBackupScheduler(s)
 	s.incidents = newIncidentService(db, s.log)
@@ -341,6 +344,10 @@ func (s *Server) Router() *gin.Engine {
 	authed.GET("/api/v1/ai/conversations", s.aiListConversations)
 	authed.GET("/api/v1/ai/conversations/:id", s.aiGetConversation)
 	authed.DELETE("/api/v1/ai/conversations/:id", s.aiDeleteConversation)
+	// AI 后台 run（§14）：断点续订 SSE、显式停止、取消待确认写操作。
+	authed.GET("/api/v1/ai/conversations/:id/stream", s.aiStreamConversation)
+	authed.POST("/api/v1/ai/conversations/:id/stop", s.aiStopConversation)
+	authed.POST("/api/v1/ai/conversations/:id/dismiss", s.aiDismissConfirm)
 
 	// 以下写操作仅 admin
 	adminAuthed.POST("/reconcile", s.reconcile)

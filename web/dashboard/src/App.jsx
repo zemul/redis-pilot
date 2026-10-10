@@ -35,7 +35,8 @@ import {
   CreateInstanceModal,
   GroupLabelsModal,
 } from './modals/index.jsx';
-import AiChatPanel from './components/AiChatPanel.jsx';
+import AiChatPanel, { AiNavIndicator } from './components/AiChatPanel.jsx';
+import { AiChatProvider } from './components/AiChatProvider.jsx';
 import { normalizeMap, backupRows, auditQuery, getField } from './lib/format.js';
 import { buildInstanceGroups } from './lib/instance.js';
 
@@ -432,6 +433,7 @@ function AppShell() {
             <Icon size={19} className={activeTab === tab.id ? 'text-white' : 'text-gray-400'} />
             <span>{tab.label}</span>
             {tab.id === 'tasks' && activeTaskCount > 0 && <span className={`ml-auto min-w-5 h-5 px-1 rounded-full inline-grid place-items-center text-[11px] font-semibold ${activeTab === 'tasks' ? 'bg-white text-gray-900' : 'bg-amber-100 text-amber-700'}`}>{activeTaskCount > 99 ? '99+' : activeTaskCount}</span>}
+            {tab.id === 'ai' && <AiNavIndicator active={activeTab === 'ai'} />}
             {tab.id === 'incidents' && incidentCount > 0 && <span className={`ml-auto min-w-5 h-5 px-1 rounded-full inline-grid place-items-center text-[11px] font-semibold ${activeTab === 'incidents' ? 'bg-white text-gray-900' : incidentHasCritical ? 'bg-red-100 text-red-700' : 'bg-amber-100 text-amber-700'}`}>{incidentCount > 99 ? '99+' : incidentCount}</span>}
           </button>
         );
@@ -448,7 +450,10 @@ function AppShell() {
     return <Navigate to="/" replace />;
   }
 
+  // AiChatProvider 包住整个外壳：AI 会话/流式状态不随页面切换卸载，导航角标也能读到运行状态。
+  // 以用户名为 key，切换账号时重置。
   return (
+    <AiChatProvider key={auth.username} username={auth.username}>
     <div className="min-h-screen grid grid-cols-[248px_minmax(0,1fr)] max-md:block">
       {/* Mobile header */}
       <header className="hidden max-md:flex sticky top-0 z-20 h-[52px] px-3.5 items-center justify-between bg-white border-b border-gray-200">
@@ -580,5 +585,6 @@ function AppShell() {
         />
       )}
     </div>
+    </AiChatProvider>
   );
 }

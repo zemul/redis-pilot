@@ -7,12 +7,12 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
 
-	"gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/internal/logger"
 	"gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/internal/server/ai"
 	"gitlab.dev.ihuman.com/ihuman-infrastructure/dev/galaxy/common/redis-pilot/internal/store"
 )
@@ -64,97 +64,27 @@ func (p aiPlatform) GetKey(_ context.Context, name, key, cursor string, offset, 
 	return p.s.keyGet(name, key, cursor, offset, count, false)
 }
 
-// sseSink 把 Agent 的运行事件写成 SSE 帧推给前端，同时把工具调用与 token 用量
-// 写入结构化日志（可观测性，见 §7.5；token 记录见 §7.3）。
-type sseSink struct {
-	c       *gin.Context
-	flusher http.Flusher
-	log     *logger.Logger
-	user    string
-
-	// 累积器：aiChat 结束后从这里取完整 assistant 文本 + tool_calls 落库（§13.5.2-b）。
-	// 不侵入 ai/ 包——在各 On* 回调里顺带 append。
-	sb    strings.Builder // 累积流式 token（assistant 回复全文）
-	calls []any           // 累积 tool_call / write_confirm 元素
-}
-
-func (k *sseSink) send(event string, payload any) {
-	data, _ := json.Marshal(payload)
-	fmt.Fprintf(k.c.Writer, "event: %s\ndata: %s\n\n", event, data)
-	k.flusher.Flush()
-}
-
-func (k *sseSink) OnToken(text string) {
-	k.sb.WriteString(text)
-	k.send("token", map[string]string{"text": text})
-}
-func (k *sseSink) OnToolCall(name, args string) {
-	k.log.Infof("ai tool_call: user=%s tool=%s args=%s", k.user, name, args)
-	k.calls = append(k.calls, map[string]any{"type": "tool_call", "tool": name, "args": args})
-	k.send("tool_call", map[string]string{"name": name, "args": args})
-}
-func (k *sseSink) OnToolResult(name string, ok bool, errMsg string) {
-	if ok {
-		k.log.Infof("ai tool_result: user=%s tool=%s ok", k.user, name)
-	} else {
-		k.log.Infof("ai tool_result: user=%s tool=%s error=%s", k.user, name, errMsg)
-	}
-	// 把结果状态补写回最近一个同名 tool_call 元素的 result_summary（§13.3）。
-	summary := "ok"
-	if !ok {
-		summary = "error: " + errMsg
-	}
-	for i := len(k.calls) - 1; i >= 0; i-- {
-		if m, isMap := k.calls[i].(map[string]any); isMap && m["type"] == "tool_call" && m["tool"] == name {
-			if _, has := m["result_summary"]; !has {
-				m["result_summary"] = summary
-			}
-			break
-		}
-	}
-	k.send("tool_result", map[string]any{"name": name, "ok": ok, "error": errMsg})
-}
-func (k *sseSink) OnUsage(promptTokens, completionTokens, totalTokens int64) {
-	k.log.Infof("ai usage: user=%s prompt=%d completion=%d total=%d",
-		k.user, promptTokens, completionTokens, totalTokens)
-	k.send("usage", map[string]int64{
-		"prompt_tokens": promptTokens, "completion_tokens": completionTokens, "total_tokens": totalTokens,
-	})
-}
-func (k *sseSink) OnConfirm(tool, args, summary string) {
-	// 写操作提议：不执行，推给前端做二次确认（方案 A，见 §7.2）。summary 由后端可信生成。
-	k.log.Infof("ai confirm: user=%s tool=%s args=%s", k.user, tool, args)
-	k.calls = append(k.calls, map[string]any{"type": "write_confirm", "tool": tool, "args": args, "summary": summary})
-	k.send("confirm", map[string]string{"tool": tool, "args": args, "summary": summary})
-}
-func (k *sseSink) OnError(err error) { k.send("error", map[string]string{"message": err.Error()}) }
-func (k *sseSink) OnDone()           { k.send("done", map[string]bool{"done": true}) }
-
-// OnConversation 在新建会话时告知前端 convID，使前端能绑定新会话（§13.5.2-c）。
-func (k *sseSink) OnConversation(id string) { k.send("conversation", map[string]string{"id": id}) }
-
-// toolCallsJSON 把累积的 tool_calls 元素序列化为 JSON 字符串（落库用）。
-func (k *sseSink) toolCallsJSON() string {
-	if len(k.calls) == 0 {
-		return "[]"
-	}
-	b, err := json.Marshal(k.calls)
-	if err != nil {
-		return "[]"
-	}
-	return string(b)
-}
-
 type aiChatRequest struct {
+	// Message 本轮用户提问。兼容旧前端：为空时取 Messages 里最后一条 user 消息。
+	// 对话上下文以服务端落库的会话历史为准（不再信任前端回传的完整 history）。
+	Message        string       `json:"message"`
 	Messages       []ai.Message `json:"messages"`
 	ConversationID string       `json:"conversation_id"` // 空=新建会话
 }
 
-// aiChat 是 AI 助手的 SSE 端点（POST /api/v1/ai/chat）。
+// aiChat 是 AI 助手的对话端点（POST /api/v1/ai/chat）。
 // 挂在 authed group：所有登录用户（含普通用户）均可使用只读诊断。
+//
+// 行为（§14）：落库 user 消息 → 启动与本连接解耦的后台 run → 以 SSE 订阅该 run 的事件。
+// 客户端断开只结束订阅，run 继续执行并在结束时落库；客户端可经
+// GET /ai/conversations/:id/stream 断点续订，显式停止走 POST /ai/conversations/:id/stop。
 func (s *Server) aiChat(c *gin.Context) {
 	if s.aiAgent == nil {
 		fail(c, http.StatusServiceUnavailable, "AI assistant is not enabled")
+		return
+	}
+	if s.db == nil {
+		fail(c, http.StatusServiceUnavailable, "storage unavailable")
 		return
 	}
 	var req aiChatRequest
@@ -162,82 +92,153 @@ func (s *Server) aiChat(c *gin.Context) {
 		fail(c, http.StatusBadRequest, err.Error())
 		return
 	}
-	if len(req.Messages) == 0 {
-		fail(c, http.StatusBadRequest, "messages is required")
-		return
-	}
-	flusher, ok := c.Writer.(http.Flusher)
-	if !ok {
-		fail(c, http.StatusInternalServerError, "streaming unsupported")
-		return
-	}
-	c.Header("Content-Type", "text/event-stream")
-	c.Header("Cache-Control", "no-cache")
-	c.Header("Connection", "keep-alive")
-	c.Header("X-Accel-Buffering", "no") // 禁止 nginx 缓冲，保证流式
-
-	s.log.Infof("ai chat: user=%s messages=%d", operatorFrom(c), len(req.Messages))
-	user := operatorFrom(c)
-	sink := &sseSink{c: c, flusher: flusher, log: s.log, user: user}
-
-	// ── 会话落库（§13.5.2-b / §13.7） ──────────────────────────────────────
-	// 取最后一条 user 消息作为本轮提问正文（前端仍发完整 history，DB 只存档）。
-	lastUser := ""
-	for i := len(req.Messages) - 1; i >= 0; i-- {
-		if req.Messages[i].Role == "user" {
-			lastUser = req.Messages[i].Content
-			break
-		}
-	}
-	convID := req.ConversationID
-	if s.db != nil {
-		if convID == "" {
-			// 新建会话：id=conv-<UnixNano>，title=首条 user 消息截断 30 字。
-			convID = fmt.Sprintf("conv-%d", time.Now().UnixNano())
-			if err := s.db.CreateConversation(store.AIConversation{
-				ID:    convID,
-				User:  user,
-				Title: convTitle(lastUser),
-			}); err != nil {
-				s.log.Errorf("ai chat: create conversation failed: %v", err)
-			} else {
-				// 新建会话时先发 conversation 事件，让前端绑定 convID。
-				sink.OnConversation(convID)
+	question := strings.TrimSpace(req.Message)
+	if question == "" {
+		for i := len(req.Messages) - 1; i >= 0; i-- {
+			if req.Messages[i].Role == "user" {
+				question = strings.TrimSpace(req.Messages[i].Content)
+				break
 			}
 		}
-		// 写 user 消息（seq 自增）。
-		if _, err := s.db.AppendMessage(store.AIMessage{
-			ID:      fmt.Sprintf("msg-%d", time.Now().UnixNano()),
-			ConvID:  convID,
-			Role:    "user",
-			Content: lastUser,
+	}
+	if question == "" {
+		fail(c, http.StatusBadRequest, "message is required")
+		return
+	}
+	user := operatorFrom(c)
+	s.log.Infof("ai chat: user=%s conv=%s", user, req.ConversationID)
+
+	convID := req.ConversationID
+	var history []ai.Message
+	if convID != "" {
+		_, msgs, err := s.db.GetConversationMessages(convID, user)
+		if err == store.ErrNotFound {
+			fail(c, http.StatusNotFound, "conversation not found")
+			return
+		}
+		if err != nil {
+			fail(c, http.StatusInternalServerError, err.Error())
+			return
+		}
+		if running, _ := s.aiRuns.status(convID); running {
+			fail(c, http.StatusConflict, "该会话正在回复中，请等待完成或先停止")
+			return
+		}
+		history = historyFromStore(msgs)
+	} else {
+		// 新建会话：id=conv-<UnixNano>，title=首条 user 消息截断 30 字。
+		convID = fmt.Sprintf("conv-%d", time.Now().UnixNano())
+		if err := s.db.CreateConversation(store.AIConversation{
+			ID:    convID,
+			User:  user,
+			Title: convTitle(question),
 		}); err != nil {
-			s.log.Errorf("ai chat: append user message failed: %v", err)
+			fail(c, http.StatusInternalServerError, "create conversation: "+err.Error())
+			return
 		}
 	}
+	if _, err := s.db.AppendMessage(store.AIMessage{
+		ID:      fmt.Sprintf("msg-%d", time.Now().UnixNano()),
+		ConvID:  convID,
+		Role:    "user",
+		Content: question,
+	}); err != nil {
+		s.log.Errorf("ai chat: append user message failed: %v", err)
+	}
+	history = append(history, ai.Message{Role: "user", Content: question})
 
+	// 用户主动发问：重置多步写操作自动续接链计数。
+	s.aiRuns.resetDepth(convID)
 	// 写操作闸门 = 配置总闸 && 调用者为 admin。为 false 时模型看不到写工具。
-	allowWrite := s.cfg.AI.AllowWrite && c.GetString("auth_role") == "admin"
-	// admin 门控受限 K/V 浏览器的读工具（describe_key/get_key），与 handler 硬校验 admin 一致。
 	admin := c.GetString("auth_role") == "admin"
-	// c.Request.Context() 在客户端断开时取消，Agent 会随之中止。
-	ctx := c.Request.Context()
-	s.aiAgent.Run(ctx, req.Messages, sink, allowWrite, admin)
+	allowWrite := s.cfg.AI.AllowWrite && admin
+	r, err := s.startAIRun(convID, user, history, allowWrite, admin)
+	if err == errAIRunBusy {
+		fail(c, http.StatusConflict, "该会话正在回复中，请等待完成或先停止")
+		return
+	}
+	if err != nil {
+		fail(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+	streamAIRun(c, r, 0)
+}
 
-	// ── Agent 结束后落库 assistant 消息（§13.7） ───────────────────────────
-	// 正常结束 interrupted=0；ctx 被取消（客户端断开/停止）interrupted=1，content=已累积部分。
-	if s.db != nil && convID != "" {
-		interrupted := ctx.Err() != nil
-		if _, err := s.db.AppendMessage(store.AIMessage{
-			ID:          fmt.Sprintf("msg-%d", time.Now().UnixNano()),
-			ConvID:      convID,
-			Role:        "assistant",
-			Content:     sink.sb.String(),
-			ToolCalls:   sink.toolCallsJSON(),
-			Interrupted: interrupted,
-		}); err != nil {
-			s.log.Errorf("ai chat: append assistant message failed: %v", err)
+// startAIRun 以后台 run 执行一轮 Agent 对话；结束时落库 assistant 消息（§13.7）：
+// 正常结束 interrupted=0；被停止/超时 interrupted=1，content=已累积部分。
+func (s *Server) startAIRun(convID, user string, history []ai.Message, allowWrite, admin bool) (*aiRun, error) {
+	timeout, _ := time.ParseDuration(s.cfg.AI.Timeout)
+	return s.aiRuns.start(convID, user, s.log,
+		func(ctx context.Context, r *aiRun) {
+			s.aiAgent.Run(ctx, history, &aiRunSink{r: r, log: s.log, timeout: timeout}, allowWrite, admin)
+		},
+		func(r *aiRun, interrupted bool) {
+			if s.db == nil {
+				return
+			}
+			if _, err := s.db.AppendMessage(store.AIMessage{
+				ID:          fmt.Sprintf("msg-%d", time.Now().UnixNano()),
+				ConvID:      convID,
+				Role:        "assistant",
+				Content:     r.sb.String(),
+				ToolCalls:   r.toolCallsJSON(),
+				Interrupted: interrupted,
+			}); err != nil {
+				s.log.Errorf("ai run: append assistant message failed: %v", err)
+			}
+		},
+	)
+}
+
+// historyFromStore 把落库消息转成发给 Agent 的对话上下文。
+// 空 content 的消息（如只提议了写操作的 assistant 回复）跳过，避免 LLM 接口拒绝空消息。
+func historyFromStore(msgs []store.AIMessage) []ai.Message {
+	out := make([]ai.Message, 0, len(msgs))
+	for _, m := range msgs {
+		if m.Role != "user" && m.Role != "assistant" {
+			continue
 		}
+		if strings.TrimSpace(m.Content) == "" {
+			continue
+		}
+		out = append(out, ai.Message{Role: m.Role, Content: m.Content})
+	}
+	return out
+}
+
+// aiAutoContinuePrefix 标记后端自动续接注入的 user 消息；前端加载历史时据此隐藏。
+const aiAutoContinuePrefix = "[系统提示]"
+
+// continueAfterExecute 在写操作执行成功后由后端自动发起下一轮 run，让 AI 接续多步意图的
+// 下一步（如主从创建：主库建好 → 自动续 → AI 提议建从库）。放在后端而非前端，
+// 保证执行成功后即使用户刷新/切走页面，多步链也不会断。
+func (s *Server) continueAfterExecute(convID, user, summary string, allowWrite bool) {
+	if s.db == nil || s.aiAgent == nil {
+		return
+	}
+	if !s.aiRuns.nextDepth(convID) {
+		s.log.Infof("ai execute: auto-continue limit reached: conv=%s", convID)
+		return
+	}
+	followup := aiAutoContinuePrefix + ` 上一步写操作已成功执行：` + summary + `。` +
+		`如果用户最初的意图还需要后续写操作才能完成（例如“创建主从实例”在主库创建后还需创建从库并建立复制），` +
+		`请继续提议下一步并简要说明；如果整个意图已经完成，请简要总结，不要再提议任何写操作。`
+	if _, err := s.db.AppendMessage(store.AIMessage{
+		ID:      fmt.Sprintf("msg-%d", time.Now().UnixNano()),
+		ConvID:  convID,
+		Role:    "user",
+		Content: followup,
+	}); err != nil {
+		s.log.Errorf("ai execute: append followup failed: %v", err)
+		return
+	}
+	_, msgs, err := s.db.GetConversationMessages(convID, user)
+	if err != nil {
+		s.log.Errorf("ai execute: load history failed: %v", err)
+		return
+	}
+	if _, err := s.startAIRun(convID, user, historyFromStore(msgs), allowWrite, true); err != nil {
+		s.log.Errorf("ai execute: auto-continue start failed: conv=%s: %v", convID, err)
 	}
 }
 
@@ -546,9 +547,17 @@ func (s *Server) aiExecute(c *gin.Context) {
 			"task_id": taskID,
 			"result":  "accepted",
 		}
-		if err := s.db.AppendToolCallToLatestAssistant(req.ConversationID, realUser, element); err != nil && err != store.ErrNotFound {
-			s.log.Errorf("ai execute: append write_execute failed: %v", err)
+		if err := s.db.AppendToolCallToLatestAssistant(req.ConversationID, realUser, element); err != nil {
+			if err != store.ErrNotFound {
+				s.log.Errorf("ai execute: append write_execute failed: %v", err)
+			}
+			return
 		}
+		// 待确认已被执行：清掉，并由后端自动续接下一轮（前端随后订阅会话 stream 即可）。
+		// run 在本 handler 返回前就已登记，保证前端拿到响应后订阅一定能命中。
+		s.aiRuns.clearPending(req.ConversationID)
+		summary := ai.WriteToolSummary(req.Tool, string(req.Args))
+		s.continueAfterExecute(req.ConversationID, realUser, summary, s.cfg.AI.AllowWrite)
 	}
 }
 
@@ -584,6 +593,13 @@ func (s *Server) aiCapabilities(c *gin.Context) {
 	ok(c, map[string]bool{"allow_write": allowWrite})
 }
 
+// aiConversationItem 是会话列表项：会话元数据 + 内存中的运行状态（侧栏转圈/待确认角标用）。
+type aiConversationItem struct {
+	store.AIConversation
+	Running        bool `json:"running"`
+	PendingConfirm bool `json:"pending_confirm"`
+}
+
 // aiListConversations 列出当前用户未删除的会话（GET /api/v1/ai/conversations）。
 func (s *Server) aiListConversations(c *gin.Context) {
 	if s.db == nil {
@@ -595,17 +611,24 @@ func (s *Server) aiListConversations(c *gin.Context) {
 		fail(c, http.StatusInternalServerError, err.Error())
 		return
 	}
-	ok(c, list)
+	out := make([]aiConversationItem, 0, len(list))
+	for _, conv := range list {
+		running, pending := s.aiRuns.status(conv.ID)
+		out = append(out, aiConversationItem{AIConversation: conv, Running: running, PendingConfirm: pending})
+	}
+	ok(c, out)
 }
 
 // aiGetConversation 取某会话及其全部消息（GET /api/v1/ai/conversations/:id）。
+// 额外返回 run（运行中时：前端据此断点续订）与 pending（待确认写操作：刷新后恢复确认卡片）。
 // 归属校验失败或不存在 → 404。
 func (s *Server) aiGetConversation(c *gin.Context) {
 	if s.db == nil {
 		fail(c, http.StatusServiceUnavailable, "storage unavailable")
 		return
 	}
-	conv, msgs, err := s.db.GetConversationMessages(c.Param("id"), operatorFrom(c))
+	user := operatorFrom(c)
+	conv, msgs, err := s.db.GetConversationMessages(c.Param("id"), user)
 	if err == store.ErrNotFound {
 		fail(c, http.StatusNotFound, "conversation not found")
 		return
@@ -614,17 +637,26 @@ func (s *Server) aiGetConversation(c *gin.Context) {
 		fail(c, http.StatusInternalServerError, err.Error())
 		return
 	}
-	ok(c, gin.H{"conversation": conv, "messages": msgs})
+	var run any
+	if r := s.aiRuns.get(conv.ID, user); r != nil && r.running() {
+		run = gin.H{"id": r.id, "running": true}
+	}
+	var pending any
+	if p := s.aiRuns.pendingFor(conv.ID); p != nil {
+		pending = p
+	}
+	ok(c, gin.H{"conversation": conv, "messages": msgs, "run": run, "pending": pending})
 }
 
 // aiDeleteConversation 软删除某会话（DELETE /api/v1/ai/conversations/:id）。
-// 归属校验失败或不存在 → 404。
+// 同时中止其运行中的 run 并清理内存状态。归属校验失败或不存在 → 404。
 func (s *Server) aiDeleteConversation(c *gin.Context) {
 	if s.db == nil {
 		fail(c, http.StatusServiceUnavailable, "storage unavailable")
 		return
 	}
-	err := s.db.SoftDeleteConversation(c.Param("id"), operatorFrom(c))
+	id := c.Param("id")
+	err := s.db.SoftDeleteConversation(id, operatorFrom(c))
 	if err == store.ErrNotFound {
 		fail(c, http.StatusNotFound, "conversation not found")
 		return
@@ -633,5 +665,44 @@ func (s *Server) aiDeleteConversation(c *gin.Context) {
 		fail(c, http.StatusInternalServerError, err.Error())
 		return
 	}
+	s.aiRuns.forget(id)
 	ok(c, gin.H{"deleted": true})
+}
+
+// aiStreamConversation 断点续订会话当前/最近一次 run 的事件
+// （GET /api/v1/ai/conversations/:id/stream?run=<run_id>&after=<seq>）。
+// run 与当前不一致（已被新 run 取代）时从头回放；无 run → 204。
+func (s *Server) aiStreamConversation(c *gin.Context) {
+	r := s.aiRuns.get(c.Param("id"), operatorFrom(c))
+	if r == nil {
+		c.Status(http.StatusNoContent)
+		return
+	}
+	var after int64
+	if c.Query("run") == r.id {
+		after, _ = strconv.ParseInt(c.Query("after"), 10, 64)
+	}
+	streamAIRun(c, r, after)
+}
+
+// aiStopConversation 显式停止会话正在运行的 run（POST /api/v1/ai/conversations/:id/stop）。
+// 断开连接不再等于停止，只有这里会中止 run；已生成部分以 interrupted=1 落库。
+func (s *Server) aiStopConversation(c *gin.Context) {
+	stopped := s.aiRuns.stop(c.Param("id"), operatorFrom(c))
+	ok(c, gin.H{"stopped": stopped})
+}
+
+// aiDismissConfirm 用户取消待确认的写操作（POST /api/v1/ai/conversations/:id/dismiss）。
+func (s *Server) aiDismissConfirm(c *gin.Context) {
+	if s.db == nil {
+		fail(c, http.StatusServiceUnavailable, "storage unavailable")
+		return
+	}
+	id := c.Param("id")
+	if _, _, err := s.db.GetConversationMessages(id, operatorFrom(c)); err != nil {
+		fail(c, http.StatusNotFound, "conversation not found")
+		return
+	}
+	s.aiRuns.clearPending(id)
+	ok(c, gin.H{"dismissed": true})
 }

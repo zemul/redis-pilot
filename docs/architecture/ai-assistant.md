@@ -177,6 +177,8 @@ sink.Done()
 
 ### 3.5 SSE 端点（`handler.go` / `sse.go`）
 
+> 已演进：回复改为与连接解耦的后台 run，支持断点续订与显式停止，见 §14。
+
 - 路由：`POST /api/v1/ai/chat`（挂在 `authed` group，见 §5）。
 - 请求体：`{ "session_id": "...", "messages": [...], "skill": "可选：显式选中的技能", "instance": "可选：@选中的实例" }`。
 - 响应：`Content-Type: text/event-stream`，事件类型：
@@ -599,6 +601,8 @@ authed.DELETE("/api/v1/ai/conversations/:id", s.aiDeleteConversation)
 
 ### 13.6 接口契约（完整请求/响应）
 
+> 注：`/ai/chat` 的请求体与 SSE 事件格式、`ctx` 取消即中断的落库时机已被 §14 取代（新增 `run`/`end` 事件与 stream/stop/dismiss 端点）。
+
 统一响应包装沿用项目现有 `ok(c, data)` / `fail(c, code, msg)`（`success`+`data`/`error` 形态）。
 
 **POST `/api/v1/ai/chat`**（SSE，不走 `ok()`）
@@ -705,3 +709,67 @@ const [convId, setConvId] = useState('');               // 当前会话 id，''=
 - LLM 生成会话标题、会话重命名
 - 会话共享 / 多端实时协同 / admin 跨用户审计视图（受 §13.4-2 私有约束，若将来要做需单独评审权限模型）
 - 会话数量上限 / 自动归档 / 定期清理
+
+---
+
+## 14. 后台 run 与断点续订（切 tab / 刷新不中断）
+
+> 实现状态（2026-10-10 已落地并在开发环境 redis01 验证）。本节**取代** §3.5 与 §13.6/§13.7 中「SSE 绑定请求连接、断开即中止」的行为；会话/消息表结构不变。
+
+### 14.1 动机
+
+原实现中 `Agent.Run` 使用 `c.Request.Context()`，前端 `AiChatPanel` 又以 `activeTab === 'ai'` 条件渲染：切 tab 组件卸载丢失流式状态，刷新页面则连接断开、后端中止并以 `interrupted=1` 落库半截内容；多步写操作的自动续接也由前端发起，刷新即断链。
+
+### 14.2 后端：run 管理器（`internal/server/ai_run.go`）
+
+- 每次回复是一个**后台 run**：独立 `context.Background()` + `cfg.AI.Timeout` 总超时（Agent 内部施加），与 HTTP 连接解耦。客户端断开只结束订阅，run 继续执行并在结束时落库。
+- run 产生的事件按 `seq`（单 run 内从 1 递增）缓存在**内存**，订阅者可凭 `(run_id, after=最后收到的 seq)` 断点续订。
+- 约束：同一会话同时只允许一个 run（运行中再发消息 → 409）；多个标签页可同时订阅同一 run。
+- 待确认写操作（`confirm`）在 run 正常结束后挂到会话上（`pending`），刷新后打开会话可恢复确认卡片；有效期 30 分钟，新一轮对话 / dismiss / execute 成功时清除。
+- run 结束后在内存保留 2 分钟供晚到订阅者拿到尾部事件，之后回收。
+- **刻意不落库事件**：Server 重启/崩溃属小概率事件，重启后 run 丢失，会话里只剩已落库历史（最后一轮提问无回复），用户重问即可。
+- 对话上下文以**服务端落库历史**为准（`historyFromStore`），不再信任前端回传完整 history；空 content 的 assistant 消息跳过。
+- 多步写操作自动续接移到后端：`/ai/execute` 成功后由 `continueAfterExecute` 写入一条 `[系统提示]` 前缀的隐藏 user 消息并启动下一轮 run（上限 25 轮，用户主动发问时重置）。run 在 execute 响应返回前即已登记，前端拿到响应后订阅一定能命中。
+- SSE 每 15s 发 `: ping` 心跳注释帧，防代理空闲断连。
+
+### 14.3 接口
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| POST | `/api/v1/ai/chat` | 请求 `{message, conversation_id}`（兼容旧 `messages`，取最后一条 user）；启动 run 并以 SSE 订阅。运行中 → 409 |
+| GET | `/api/v1/ai/conversations/:id/stream?run=&after=` | 断点续订；`run` 与当前不一致时从头回放新 run；无 run → 204 |
+| POST | `/api/v1/ai/conversations/:id/stop` | 显式停止（断开连接**不再**等于停止）；已生成部分以 `interrupted=1` 落库 |
+| POST | `/api/v1/ai/conversations/:id/dismiss` | 取消待确认写操作 |
+| GET | `/api/v1/ai/conversations` | 列表项新增 `running`、`pending_confirm` |
+| GET | `/api/v1/ai/conversations/:id` | 新增 `run: {id, running} \| null`、`pending: {tool, args, summary, created_at} \| null` |
+| DELETE | `/api/v1/ai/conversations/:id` | 额外中止该会话运行中的 run 并清理内存状态 |
+
+SSE 事件格式：每次订阅首帧 `event: run` / `data: {"id","conversation_id"}`（无 id 行，取代旧 `conversation` 事件）；之后为 `id: <seq>` + `event: token|tool_call|tool_result|confirm|usage|error|done|end`。`end` 恒为最后一帧，`data: {"interrupted","stopped"}`；显式停止不发 `error`，超时发「AI 回复超时」`error`。
+
+### 14.4 前端
+
+- `components/AiChatProvider.jsx`：React Context，挂在 `AppShell` 外层（以用户名为 key），持有会话列表、当前会话、消息、流式文本、待确认等全部状态；`AiChatPanel` 只做展示，切 tab 卸载不影响。
+- 当前会话 id 存 `localStorage`（`redisPilotAiConv:<user>`），刷新后自动打开；会话 `run.running` 时自动经 stream 端点订阅（从头回放，无重复）；会话已删除/404 退回空白新会话。
+- 订阅意外断开时按 `(run_id, last_seq)` 退避重连（最多 5 次）。
+- 转圈：侧栏会话项运行中显示 `Loader2` 旋转、待确认显示琥珀 `ShieldAlert`；主导航「AI 助手」项任一会话运行中显示转圈、有待确认显示琥珀点（`AiNavIndicator`）。有会话运行时每 3s 轮询列表，全部结束后停止。
+- 移除 `beforeunload` 拦截（刷新不再丢内容）；SSE 解析抽到 `lib/aiStream.js`（单测 `test/aiStream.test.js`）。
+
+### 14.5 验证
+
+- 后端：`internal/server/ai_run_test.go`（`-race`）覆盖断点续订、单会话单 run（409）、显式停止落库 `interrupted`、待确认恢复/dismiss、GC 与续接上限；端到端用假 OpenAI 流式服务验证「断开后 run 继续 → 续订拼出完整文本 → 落库完整、未中断」。
+- 前端：`npm test`、`npm run build` 通过。
+- 开发环境（redis01，真实模型）：回复中切 tab → 侧栏/导航转圈、切回同会话继续输出；回复中硬刷新 → 自动回到会话续订至完成，落库 `interrupted=false`、内容不重复；控制台无错误。
+
+### 14.6 工具留痕折叠展示
+
+- 落库 `tool_calls`：`tool_call`/`write_confirm` 元素带 `ts`（毫秒），`tool_call` 结果回填 `ok`；有工具调用时末尾追加 `{"type":"run_meta","started_at","finished_at"}`。SSE `run` 首帧带 `started_at`。表结构不变。
+- 前端 `lib/aiTrace.js`（单测 `test/aiTrace.test.js`）：连续同名工具合并为「×N」、统计失败次数、计算耗时。
+- 历史消息默认折叠为一行「已处理 X 秒 · 调用 N 次工具（M 次失败）」，失败数红色标出；点开为时间线，再点某组看每次调用参数与错误。写操作提议/执行始终单独展示。老消息无 `run_meta` 时只显示「调用 N 次工具」。
+- 运行中状态条显示「正在 X… · 已调用 N 次 · 0:42」。
+
+### 14.6 工具留痕折叠展示
+
+- 落库 `tool_calls`：`tool_call`/`write_confirm` 元素带 `ts`（毫秒），`tool_call` 结果回填 `ok`；有工具调用时末尾追加 `{"type":"run_meta","started_at","finished_at"}`。SSE `run` 首帧带 `started_at`。表结构不变。
+- 前端 `lib/aiTrace.js`（单测 `test/aiTrace.test.js`）：连续同名工具合并为「×N」、统计失败次数、计算耗时。
+- 历史消息默认折叠为一行「已处理 X 秒 · 调用 N 次工具（M 次失败）」，失败数红色标出；点开为时间线，再点某组看每次调用参数与错误。写操作提议/执行始终单独展示。老消息无 `run_meta` 时只显示「调用 N 次工具」。
+- 运行中状态条显示「正在 X… · 已调用 N 次 · 0:42」。
